@@ -6,7 +6,7 @@ authors = ["Symlinkarr Contributors"]
 description = "Intelligent symlink manager for Real-Debrid media libraries"
 license = "Apache-2.0"
 repository = ""
-rust-version = "1.83"
+rust-version = "1.85"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
