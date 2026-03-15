@@ -132,8 +132,8 @@ pub(crate) async fn build_anime_episode_requests(
             }
 
             let has_file_filter = match kind {
-                AnimeEpisodeKind::Missing => record.has_file,         // skip if has file
-                AnimeEpisodeKind::CutoffUpgrade => !record.has_file,  // skip if no file
+                AnimeEpisodeKind::Missing => record.has_file, // skip if has file
+                AnimeEpisodeKind::CutoffUpgrade => !record.has_file, // skip if no file
             };
             if !record.monitored || has_file_filter {
                 continue;
@@ -157,8 +157,8 @@ pub(crate) async fn build_anime_episode_requests(
                 .has_active_link_for_episode(&media_id, record.season_number, record.episode_number)
                 .await?;
             let skip_due_to_link = match kind {
-                AnimeEpisodeKind::Missing => has_active,         // already linked → skip
-                AnimeEpisodeKind::CutoffUpgrade => !has_active,  // not linked → skip
+                AnimeEpisodeKind::Missing => has_active, // already linked → skip
+                AnimeEpisodeKind::CutoffUpgrade => !has_active, // not linked → skip
             };
             if skip_due_to_link {
                 continue;

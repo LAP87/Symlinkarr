@@ -888,7 +888,8 @@ mod tests {
 
     #[test]
     fn test_custom_naming_template() {
-        let linker = Linker::new_with_options(false, true, "{episode:02}x{season:02} - {title}", true);
+        let linker =
+            Linker::new_with_options(false, true, "{episode:02}x{season:02} - {title}", true);
         let name = linker.format_episode_name("My Show", 1, 5, "Episode Title", "mkv");
         assert_eq!(name, "05x01 - My Show.mkv");
     }
@@ -1031,10 +1032,7 @@ mod tests {
         let linker = Linker::new(false, true, "");
 
         let summary = linker
-            .process_matches(
-                &[sample_movie_match(&lib_path, &source_path)],
-                &db,
-            )
+            .process_matches(&[sample_movie_match(&lib_path, &source_path)], &db)
             .await
             .unwrap();
 

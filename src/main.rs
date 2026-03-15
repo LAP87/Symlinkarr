@@ -1,5 +1,5 @@
-mod api;
 mod anime_scanner;
+mod api;
 mod auto_acquire;
 mod backup;
 mod cache;
@@ -557,13 +557,17 @@ async fn run_scan(
                 if coverage >= MIN_CACHE_COVERAGE {
                     info!(
                         "Using cached source data ({}/{} downloaded torrents, {:.0}% coverage)",
-                        cached, total, coverage * 100.0
+                        cached,
+                        total,
+                        coverage * 100.0
                     );
                     true
                 } else {
                     info!(
                         "Cache coverage too low ({}/{} = {:.0}%), walking filesystem instead",
-                        cached, total, coverage * 100.0
+                        cached,
+                        total,
+                        coverage * 100.0
                     );
                     false
                 }
@@ -1368,7 +1372,10 @@ async fn run_daemon(cfg: &Config, db: &Database) -> Result<()> {
     }
 
     // C-06: Recover jobs stuck in Downloading after a crash.
-    match db.recover_stale_downloading_jobs(cfg.decypharr.completion_timeout_minutes).await {
+    match db
+        .recover_stale_downloading_jobs(cfg.decypharr.completion_timeout_minutes)
+        .await
+    {
         Ok(n) if n > 0 => info!("Recovered {} stale Downloading jobs after restart", n),
         Ok(_) => {}
         Err(e) => tracing::warn!("Stale job recovery failed (non-fatal): {}", e),
@@ -1840,13 +1847,19 @@ async fn run_repair(
                         };
 
                         // Pick category based on media type
-                        let cats = prowlarr_categories(dead_link.media_type, dead_link.content_type);
+                        let cats =
+                            prowlarr_categories(dead_link.media_type, dead_link.content_type);
                         let request = AutoAcquireRequest {
                             label: dead_link.meta.title.clone(),
                             query: query.clone(),
                             imdb_id: None,
                             categories: cats,
-                            arr: decypharr_arr_name(cfg, dead_link.media_type, dead_link.content_type).to_string(),
+                            arr: decypharr_arr_name(
+                                cfg,
+                                dead_link.media_type,
+                                dead_link.content_type,
+                            )
+                            .to_string(),
                             library_filter: library_name_for_path(cfg, &dead_link.symlink_path),
                             relink_check: RelinkCheck::SymlinkPath(dead_link.symlink_path.clone()),
                         };
@@ -2141,12 +2154,20 @@ async fn run_cache(cfg: &Config, db: &Database, action: CacheAction) -> Result<(
                 "\nCache build complete: {}/{} downloaded torrents have file info ({:.0}%)",
                 cached,
                 total,
-                if total > 0 { cached as f64 / total as f64 * 100.0 } else { 0.0 }
+                if total > 0 {
+                    cached as f64 / total as f64 * 100.0
+                } else {
+                    0.0
+                }
             );
         }
         CacheAction::Status => {
             let (cached, total) = db.get_rd_torrent_counts().await?;
-            let coverage = if total > 0 { cached as f64 / total as f64 * 100.0 } else { 0.0 };
+            let coverage = if total > 0 {
+                cached as f64 / total as f64 * 100.0
+            } else {
+                0.0
+            };
             println!("RD cache status:");
             println!("  Downloaded torrents:    {}", total);
             println!("  With file info cached:  {} ({:.0}%)", cached, coverage);
@@ -2423,7 +2444,11 @@ fn prowlarr_categories(media_type: MediaType, content_type: ContentType) -> Vec<
     }
 }
 
-fn decypharr_arr_name(cfg: &Config, media_type: MediaType, content_type: ContentType) -> &'static str {
+fn decypharr_arr_name(
+    cfg: &Config,
+    media_type: MediaType,
+    content_type: ContentType,
+) -> &'static str {
     match (media_type, content_type) {
         (MediaType::Movie, _) => "radarr",
         (MediaType::Tv, ContentType::Anime) if cfg.has_sonarr_anime() => "sonarr-anime",
@@ -2493,7 +2518,6 @@ pub(crate) async fn lookup_item_imdb_id(
         _ => None,
     }
 }
-
 
 fn build_repair_self_heal_query(dead_link: &repair::DeadLink) -> Option<String> {
     let mut query = dead_link.meta.title.trim().to_string();
@@ -2753,5 +2777,4 @@ mod tests {
         assert_eq!(normalize_decypharr_arr_name("sonarr_anime"), "sonarranime");
         assert_eq!(normalize_decypharr_arr_name("sonarr-anime"), "sonarranime");
     }
-
 }

@@ -79,9 +79,7 @@ impl<'a> TorrentCache<'a> {
             .filter(|t| {
                 t.status == "downloaded"
                     && match db_map.get(&t.id) {
-                        Some((h, s, fp)) => {
-                            h != &t.hash || s != &t.status || *fp != t.links.len()
-                        }
+                        Some((h, s, fp)) => h != &t.hash || s != &t.status || *fp != t.links.len(),
                         None => true,
                     }
             })
@@ -121,13 +119,12 @@ impl<'a> TorrentCache<'a> {
         } else if total_need_fetch > 0 {
             progress.update(format!(
                 "{} torrents need file info ({} total, {} cached)",
-                total_need_fetch, total_api, db_map.len()
+                total_need_fetch,
+                total_api,
+                db_map.len()
             ));
         } else {
-            progress.update(format!(
-                "{} torrents, checking for changes...",
-                total_api
-            ));
+            progress.update(format!("{} torrents, checking for changes...", total_api));
         }
 
         let mut info_fetched = 0usize;
@@ -171,8 +168,7 @@ impl<'a> TorrentCache<'a> {
                 // within the per-cycle cap.  Others get stored with an empty file
                 // list so we still track status transitions; the scanner's filesystem
                 // fallback handles file discovery for un-cached torrents.
-                let should_fetch_files =
-                    t.status == "downloaded" && info_fetched < effective_limit;
+                let should_fetch_files = t.status == "downloaded" && info_fetched < effective_limit;
 
                 if should_fetch_files {
                     info_fetched += 1;
@@ -189,7 +185,11 @@ impl<'a> TorrentCache<'a> {
 
                             self.db
                                 .upsert_rd_torrent(
-                                    &t.id, &t.hash, &t.filename, &t.status, &files_json,
+                                    &t.id,
+                                    &t.hash,
+                                    &t.filename,
+                                    &t.status,
+                                    &files_json,
                                 )
                                 .await?;
 

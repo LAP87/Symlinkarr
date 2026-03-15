@@ -196,7 +196,14 @@ impl ProwlarrClient {
     }
 
     pub async fn get_system_status(&self) -> Result<()> {
-        crate::api::http::check_system_status(&self.client, &self.base_url, &self.api_key, "v1", "Prowlarr").await
+        crate::api::http::check_system_status(
+            &self.client,
+            &self.base_url,
+            &self.api_key,
+            "v1",
+            "Prowlarr",
+        )
+        .await
     }
 }
 

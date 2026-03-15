@@ -189,7 +189,11 @@ pub async fn process_auto_acquire_queue(
         (
             requests
                 .into_iter()
-                .map(|request| QueuedAcquire { job_id: 0, attempts: 0, request })
+                .map(|request| QueuedAcquire {
+                    job_id: 0,
+                    attempts: 0,
+                    request,
+                })
                 .collect::<VecDeque<_>>(),
             Vec::new(),
             Vec::new(),
@@ -310,7 +314,9 @@ pub async fn process_auto_acquire_queue(
             let mut still_downloading = Vec::new();
 
             for submitted in downloading.drain(..) {
-                match inspect_submitted(cfg, db, &submitted, queue_snapshots.get(&submitted.arr)).await? {
+                match inspect_submitted(cfg, db, &submitted, queue_snapshots.get(&submitted.arr))
+                    .await?
+                {
                     SubmittedState::Downloading => still_downloading.push(submitted),
                     SubmittedState::Failed(message) => {
                         db.update_acquisition_job_state(
@@ -700,7 +706,9 @@ async fn persist_terminal_outcome(
                     release_title: outcome.release_title.clone(),
                     info_hash: None,
                     error: Some(outcome.message.clone()),
-                    next_retry_at: Some(now + ChronoDuration::minutes(failed_retry_minutes(attempts))),
+                    next_retry_at: Some(
+                        now + ChronoDuration::minutes(failed_retry_minutes(attempts)),
+                    ),
                     submitted_at: None,
                     completed_at: None,
                     increment_attempts: true,
@@ -2264,7 +2272,7 @@ mod tests {
         assert_eq!(failed_retry_minutes(3), 180);
         assert_eq!(failed_retry_minutes(4), 180); // capped
         assert_eq!(failed_retry_minutes(5), 180); // capped
-        // Edge: 0 or negative treated as attempt 1
+                                                  // Edge: 0 or negative treated as attempt 1
         assert_eq!(failed_retry_minutes(0), 30);
     }
 
@@ -2275,7 +2283,7 @@ mod tests {
         assert_eq!(completed_unlinked_retry_minutes(3), 45);
         assert_eq!(completed_unlinked_retry_minutes(4), 120);
         assert_eq!(completed_unlinked_retry_minutes(5), 120); // capped
-        // Edge: 0 or negative treated as attempt 1
+                                                              // Edge: 0 or negative treated as attempt 1
         assert_eq!(completed_unlinked_retry_minutes(0), 5);
     }
 

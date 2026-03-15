@@ -809,7 +809,10 @@ impl Repairer {
                         normalized_title,
                         season: item.season,
                         episode: item.episode,
-                        quality: item.quality.clone().or_else(|| extract_quality(&file_stem_owned)),
+                        quality: item
+                            .quality
+                            .clone()
+                            .or_else(|| extract_quality(&file_stem_owned)),
                         year: item.year.or_else(|| extract_year(&file_stem_owned)),
                         file_size,
                     });
@@ -1081,8 +1084,7 @@ impl Repairer {
                     .await
             } else {
                 println!("   🧭 Building Anime source catalog (filesystem walk)...");
-                let (ticker_stop, ticker) =
-                    spawn_activity_ticker("Building Anime source catalog");
+                let (ticker_stop, ticker) = spawn_activity_ticker("Building Anime source catalog");
                 let catalog = self.build_source_catalog(source_paths, ContentType::Anime);
                 stop_activity_ticker(ticker_stop, ticker).await;
                 catalog

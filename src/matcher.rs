@@ -170,8 +170,7 @@ impl Matcher {
                             completed, total, pct
                         );
                     }
-                    metadata_progress
-                        .update(format!("{}/{} ({:.1}%)", completed, total, pct));
+                    metadata_progress.update(format!("{}/{} ({:.1}%)", completed, total, pct));
                     last_metadata_progress = Instant::now();
                 }
 
@@ -457,7 +456,6 @@ impl Matcher {
 
         Ok(())
     }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -952,13 +950,14 @@ fn match_source_slice(
                 let parsed = resolve_source_for_library_item(
                     item,
                     parsed,
-                    metadata_map
-                        .get(&exact_idx)
-                        .and_then(|meta| meta.as_ref()),
+                    metadata_map.get(&exact_idx).and_then(|meta| meta.as_ref()),
                 );
                 if let Some(parsed) = parsed {
                     let media_id = item.id.to_string();
-                    let aliases = alias_map.get(&exact_idx).map(|v| v.as_slice()).unwrap_or(&[]);
+                    let aliases = alias_map
+                        .get(&exact_idx)
+                        .map(|v| v.as_slice())
+                        .unwrap_or(&[]);
                     let normalized_source = normalize(&parsed.parsed_title);
                     let matched_alias = aliases
                         .first()

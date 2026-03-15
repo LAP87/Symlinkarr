@@ -1545,19 +1545,17 @@ impl Database {
     /// Delete old records that accumulate unboundedly.
     /// Safe to call at daemon startup and periodically during long runs.
     pub async fn housekeeping(&self) -> Result<HousekeepingStats> {
-        let scan_runs_deleted = sqlx::query(
-            "DELETE FROM scan_runs WHERE run_at < datetime('now', '-90 days')",
-        )
-        .execute(&self.pool)
-        .await?
-        .rows_affected();
+        let scan_runs_deleted =
+            sqlx::query("DELETE FROM scan_runs WHERE run_at < datetime('now', '-90 days')")
+                .execute(&self.pool)
+                .await?
+                .rows_affected();
 
-        let link_events_deleted = sqlx::query(
-            "DELETE FROM link_events WHERE event_at < datetime('now', '-30 days')",
-        )
-        .execute(&self.pool)
-        .await?
-        .rows_affected();
+        let link_events_deleted =
+            sqlx::query("DELETE FROM link_events WHERE event_at < datetime('now', '-30 days')")
+                .execute(&self.pool)
+                .await?
+                .rows_affected();
 
         let old_jobs_deleted = sqlx::query(
             "DELETE FROM acquisition_jobs
@@ -1587,8 +1585,7 @@ impl Database {
     /// Jobs that were `Downloading` when the daemon crashed will never progress.
     /// This resets them to `Failed` with a short retry window so the queue drains normally.
     pub async fn recover_stale_downloading_jobs(&self, timeout_minutes: u64) -> Result<u32> {
-        let cutoff = chrono::Utc::now()
-            - chrono::Duration::minutes(timeout_minutes as i64);
+        let cutoff = chrono::Utc::now() - chrono::Duration::minutes(timeout_minutes as i64);
         let cutoff_str = cutoff.to_rfc3339();
 
         let rows = sqlx::query_as::<_, (i64, Option<String>)>(
@@ -1604,9 +1601,7 @@ impl Database {
                 None => true,
             };
             if is_stale {
-                let next_retry = (chrono::Utc::now()
-                    + chrono::Duration::minutes(30))
-                .to_rfc3339();
+                let next_retry = (chrono::Utc::now() + chrono::Duration::minutes(30)).to_rfc3339();
                 sqlx::query(
                     "UPDATE acquisition_jobs
                      SET status = 'failed',
