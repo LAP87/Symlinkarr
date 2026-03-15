@@ -1,0 +1,49 @@
+/* Symlinkarr Web UI - High Contrast Accessibility Theme */
+/* Designed for maximum readability and WCAG AA compliance */
+
+:root {
+  --bg-primary: #000000;
+  --bg-secondary: #111111;
+  --accent-primary: #ffff00;
+  --accent-secondary: #00ff00;
+  --text-primary: #ffffff;
+  --text-secondary: #cccccc;
+  --success: #00ff00;
+  --warning: #ffff00;
+  --error: #ff0000;
+  --info: #00ffff;
+  --border-color: #ffffff;
+  --card-bg: #000000;
+}
+
+/* Enhanced contrast for accessibility */
+:root {
+  --severity-critical: #ff0000;
+  --severity-high: #ff8800;
+  --severity-warning: #ffff00;
+  --severity-info: #00ffff;
+  --severity-success: #00ff00;
+}
+
+/* Additional accessibility enhancements */
+* {
+  outline: 1px solid transparent !important;
+}
+
+:focus {
+  outline: 3px solid --accent-primary !important;
+  outline-offset: 2px;
+}
+
+/* Increase touch targets for motor accessibility */
+.btn, .form-control {
+  min-height: 48px !important;
+  min-width: 48px !important;
+}
+
+/* Reduce animations for vestibular sensitivity */
+* {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+}

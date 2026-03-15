@@ -1,0 +1,24 @@
+services:
+  symlinkarr:
+    build: .
+    # image: ghcr.io/symlinkarr/symlinkarr:latest  # Use when published
+    container_name: symlinkarr
+    restart: unless-stopped
+    user: "1000:1000"
+    command: ["--config", "/app/config/config.yaml", "daemon"]
+    environment:
+      - TZ=Europe/London
+      - RUST_LOG=info
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Config file
+      - ./config.docker.yaml:/app/config/config.yaml:ro
+      # Secret files used by config.docker.yaml
+      - ./secrets:/app/secrets:ro
+      # Database persistence
+      - ./data:/app/data
+      # Plex library (adjust to your paths)
+      - /mnt/storage/plex:/mnt/storage/plex
+      # Real-Debrid mount (adjust to your paths)
+      - /mnt/decypharr/realdebrid:/mnt/decypharr/realdebrid:ro

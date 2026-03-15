@@ -1,0 +1,92 @@
+/* Symlinkarr Web UI - Compact Theme */
+/* Reduced padding and spacing for information-dense layouts */
+
+:root {
+  --bg-primary: #1a1a2e;
+  --bg-secondary: #16213e;
+  --accent-primary: #0f346a;
+  --accent-secondary: #e94560;
+  --text-primary: #f5f5f5;
+  --text-secondary: #a0a0a0;
+  --success: #4caf50;
+  --warning: #ff9800;
+  --error: #f44336;
+  --info: #2196f3;
+  --border-color: #2a2a4e;
+  --card-bg: #1e1e3f;
+}
+
+/* Spacing scales - reduced for compact layout */
+:root {
+  --spacing-xs: 2px;
+  --spacing-sm: 4px;
+  --spacing-md: 8px;
+  --spacing-lg: 12px;
+  --spacing-xl: 16px;
+  --spacing-xxl: 24px;
+}
+
+/* Override default spacing for compactness */
+* {
+  --space-xs: var(--spacing-xs) !important;
+  --space-sm: var(--spacing-sm) !important;
+  --space-md: var(--spacing-md) !important;
+  --space-lg: var(--spacing-lg) !important;
+  --space-xl: var(--spacing-xl) !important;
+  --space-xxl: var(--spacing-xxl) !important;
+}
+
+/* Compact form elements */
+.form-control {
+  padding: 0.25rem 0.5rem !important;
+  font-size: 0.75rem !important;
+}
+
+.btn {
+  padding: 0.25rem 0.75rem !important;
+  font-size: 0.75rem !important;
+  height: auto !important;
+}
+
+/* Compact cards */
+.card {
+  padding: 0.75rem !important;
+  margin-bottom: 0.75rem !important;
+}
+
+/* Compact table cells */
+.data-table th,
+.data-table td {
+  padding: 0.35rem 0.5rem !important;
+  font-size: 0.75rem !important;
+}
+
+/* Compact badges */
+.badge {
+  padding: 0.15rem 0.35rem !important;
+  font-size: 0.65rem !important;
+}
+
+/* Compact headers */
+.page-title,
+.section-title,
+.card-title {
+  margin-bottom: 0.5rem !important;
+}
+
+/* Compact navigation */
+.nav-link {
+  padding: 0.5rem 0.75rem !important;
+  font-size: 0.85rem !important;
+}
+
+/* Compact alerts */
+.alert {
+  padding: 0.75rem !important;
+}
+
+/* Reduced animation duration for snappier feel */
+* {
+  animation-duration: 0.15s !important;
+  transition-duration: 0.1s !important;
+}

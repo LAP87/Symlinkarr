@@ -1,0 +1,16 @@
+/target
+/backups/
+/data/
+/secrets/
+*.db
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
+.env
+.env.*
+config.yaml
+config.local.yaml
+config.override.yaml
+dry-run-output.log
+.claude/

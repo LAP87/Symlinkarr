@@ -1,0 +1,1968 @@
+use std::path::{Path, PathBuf};
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
+use anyhow::Result;
+use serde::{Deserialize, Serialize};
+
+use crate::models::MediaType;
+use crate::utils::{fast_path_health, PathHealth};
+
+/// Content type that controls which filename parser to use.
+/// Separate from MediaType — Anime maps to MediaType::Tv in the DB.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ContentType {
+    #[default]
+    Tv,
+    Anime,
+    Movie,
+}
+
+impl ContentType {
+    /// Derive content type from MediaType (fallback when not specified)
+    pub fn from_media_type(mt: MediaType) -> Self {
+        match mt {
+            MediaType::Tv => ContentType::Tv,
+            MediaType::Movie => ContentType::Movie,
+        }
+    }
+}
+
+/// Matching strictness policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum MatchingMode {
+    #[default]
+    Strict,
+    Balanced,
+    Aggressive,
+}
+
+impl MatchingMode {
+    pub fn is_strict(self) -> bool {
+        matches!(self, MatchingMode::Strict)
+    }
+}
+
+/// Metadata lookup policy for matching and title enrichment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MetadataMode {
+    /// Use API clients when cache is missing.
+    #[default]
+    Full,
+    /// Use cache only (never perform new API requests).
+    CacheOnly,
+    /// Disable metadata entirely; local folder titles only.
+    Off,
+}
+
+impl MetadataMode {
+    pub fn allows_network(self) -> bool {
+        matches!(self, MetadataMode::Full)
+    }
+}
+
+/// Matching configuration.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MatchingConfig {
+    /// Matching mode: strict, balanced, or aggressive
+    #[serde(default)]
+    pub mode: MatchingMode,
+    /// Metadata lookup mode: full, cache_only, or off
+    #[serde(default)]
+    pub metadata_mode: MetadataMode,
+    /// Maximum concurrent metadata API fetches (default: 8)
+    #[serde(default = "default_metadata_concurrency")]
+    pub metadata_concurrency: usize,
+}
+
+fn default_metadata_concurrency() -> usize {
+    8
+}
+
+impl Default for MatchingConfig {
+    fn default() -> Self {
+        Self {
+            mode: MatchingMode::Strict,
+            metadata_mode: MetadataMode::Full,
+            metadata_concurrency: default_metadata_concurrency(),
+        }
+    }
+}
+
+/// Top-level application configuration
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Config {
+    /// Plex/Jellyfin library directories to scan for ID-tagged folders
+    pub libraries: Vec<LibraryConfig>,
+    /// Real-Debrid mount directories to scan for source files
+    #[serde(default)]
+    pub sources: Vec<SourceConfig>,
+    /// API keys and settings
+    #[serde(default)]
+    pub api: ApiConfig,
+    /// Real-Debrid API settings
+    #[serde(default)]
+    pub realdebrid: RealDebridConfig,
+    /// Decypharr integration settings
+    #[serde(default)]
+    pub decypharr: DecypharrConfig,
+    /// Debrid Media Manager integration (optional)
+    #[serde(default)]
+    pub dmm: DmmConfig,
+    /// Symlink backup settings
+    #[serde(default)]
+    pub backup: BackupConfig,
+    /// Path to the SQLite database file
+    #[serde(default = "default_db_path")]
+    pub db_path: String,
+    /// Log level (trace, debug, info, warn, error)
+    #[serde(default = "default_log_level")]
+    pub log_level: String,
+    /// Daemon/scheduler settings
+    #[serde(default)]
+    pub daemon: DaemonConfig,
+    /// Symlink creation settings
+    #[serde(default)]
+    pub symlink: SymlinkConfig,
+    /// Matching behavior settings
+    #[serde(default)]
+    pub matching: MatchingConfig,
+    /// Prowlarr indexer integration (optional)
+    #[serde(default)]
+    pub prowlarr: ProwlarrConfig,
+    /// Bazarr subtitle integration (optional)
+    #[serde(default)]
+    pub bazarr: BazarrConfig,
+    /// Tautulli Plex stats integration (optional)
+    #[serde(default)]
+    pub tautulli: TautulliConfig,
+    /// Plex integration for targeted library refresh (optional)
+    #[serde(default)]
+    pub plex: PlexConfig,
+    /// Radarr integration (optional)
+    #[serde(default)]
+    pub radarr: RadarrConfig,
+    /// Sonarr integration (optional)
+    #[serde(default)]
+    pub sonarr: SonarrConfig,
+    /// Sonarr Anime instance (optional)
+    #[serde(default)]
+    pub sonarr_anime: SonarrConfig,
+    /// Feature flags
+    #[serde(default)]
+    pub features: FeaturesConfig,
+    /// Security policy
+    #[serde(default)]
+    pub security: SecurityConfig,
+    /// Cleanup policy
+    #[serde(default)]
+    pub cleanup: CleanupPolicyConfig,
+    /// Path of the config file that was loaded, when available
+    #[serde(skip)]
+    pub loaded_from: Option<PathBuf>,
+    /// Resolved secret files referenced via `secretfile:`
+    #[serde(skip)]
+    pub secret_files: Vec<PathBuf>,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ValidationReport {
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+/// Configuration for a Plex/Jellyfin library directory
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LibraryConfig {
+    /// Human-readable name (e.g., "Serier", "Filmer", "Anime")
+    pub name: String,
+    /// Absolute path to the library root
+    pub path: PathBuf,
+    /// Media type: tv or movie (used in DB)
+    #[serde(default = "default_media_type")]
+    pub media_type: MediaType,
+    /// Content type: tv, anime, or movie (controls filename parsing)
+    /// If omitted, auto-derived from media_type
+    pub content_type: Option<ContentType>,
+    /// How deep to scan for ID-tagged folders (usually 1)
+    #[serde(default = "default_depth")]
+    pub depth: usize,
+}
+
+/// Configuration for a Real-Debrid source mount
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SourceConfig {
+    /// Human-readable name (e.g., "RealDebrid")
+    pub name: String,
+    /// Absolute path to the arrow mount root
+    pub path: PathBuf,
+    /// Media type filter: tv, movie, or auto (scan both)
+    #[serde(default = "default_source_media_type")]
+    pub media_type: String,
+}
+
+/// API client configuration
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApiConfig {
+    /// TMDB API key (required for alias matching)
+    #[serde(default)]
+    pub tmdb_api_key: String,
+    /// Optional TMDB v4 read access token (preferred over api_key when set)
+    #[serde(default)]
+    pub tmdb_read_access_token: String,
+    /// TVDB API key (optional)
+    #[serde(default)]
+    pub tvdb_api_key: String,
+    /// How long to cache API responses (hours)
+    #[serde(default = "default_cache_ttl")]
+    pub cache_ttl_hours: u64,
+}
+
+impl Default for ApiConfig {
+    fn default() -> Self {
+        Self {
+            tmdb_api_key: String::new(),
+            tmdb_read_access_token: String::new(),
+            tvdb_api_key: String::new(),
+            cache_ttl_hours: default_cache_ttl(),
+        }
+    }
+}
+
+/// Daemon/scheduler configuration
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DaemonConfig {
+    /// Whether to run in daemon mode
+    #[serde(default)]
+    pub enabled: bool,
+    /// Interval between scans in minutes
+    #[serde(default = "default_interval")]
+    pub interval_minutes: u64,
+    /// Allow the daemon to search and acquire missing items
+    #[serde(default)]
+    pub search_missing: bool,
+}
+
+impl Default for DaemonConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interval_minutes: default_interval(),
+            search_missing: false,
+        }
+    }
+}
+
+/// Symlink creation settings
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SymlinkConfig {
+    /// Dry-run mode: log actions without creating symlinks
+    #[serde(default)]
+    pub dry_run: bool,
+    /// Naming template for symlinked episodes
+    #[serde(default = "default_naming_template")]
+    pub naming_template: String,
+}
+
+impl Default for SymlinkConfig {
+    fn default() -> Self {
+        Self {
+            dry_run: false,
+            naming_template: default_naming_template(),
+        }
+    }
+}
+
+/// Real-Debrid API configuration
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RealDebridConfig {
+    /// RD API token (from https://real-debrid.com/apitoken)
+    #[serde(default)]
+    pub api_token: String,
+    /// Max torrents to request per page from RD API pagination
+    #[serde(default = "default_realdebrid_torrents_page_limit")]
+    pub torrents_page_limit: u32,
+    /// Delay between RD pagination requests in milliseconds
+    #[serde(default = "default_realdebrid_pagination_delay_ms")]
+    pub pagination_delay_ms: u64,
+    /// Safety cap for maximum RD pagination pages per sync
+    #[serde(default = "default_realdebrid_max_pages")]
+    pub max_pages: u32,
+}
+
+impl Default for RealDebridConfig {
+    fn default() -> Self {
+        Self {
+            api_token: String::new(),
+            torrents_page_limit: default_realdebrid_torrents_page_limit(),
+            pagination_delay_ms: default_realdebrid_pagination_delay_ms(),
+            max_pages: default_realdebrid_max_pages(),
+        }
+    }
+}
+
+/// Decypharr integration configuration
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DecypharrConfig {
+    /// Decypharr web UI URL (e.g., "http://localhost:8282")
+    #[serde(default = "default_decypharr_url")]
+    pub url: String,
+    /// Decypharr API token (if auth is enabled)
+    #[serde(default)]
+    pub api_token: Option<String>,
+    /// Seconds between queue/completion polls
+    #[serde(default = "default_decypharr_poll_interval_seconds")]
+    pub poll_interval_seconds: u64,
+    /// Max minutes to wait for a download to complete
+    #[serde(default = "default_decypharr_completion_timeout_minutes")]
+    pub completion_timeout_minutes: u64,
+    /// Max minutes to wait for Symlinkarr to relink completed content
+    #[serde(default = "default_decypharr_relink_timeout_minutes")]
+    pub relink_timeout_minutes: u64,
+    /// Max incomplete torrents Symlinkarr allows in Decypharr before pausing new grabs
+    #[serde(default = "default_decypharr_max_in_flight")]
+    pub max_in_flight: usize,
+    /// Max new acquisition requests Symlinkarr enqueues in a single run
+    #[serde(default = "default_decypharr_max_requests_per_run")]
+    pub max_requests_per_run: usize,
+    /// Page size used when polling Decypharr queue endpoints
+    #[serde(default = "default_decypharr_queue_page_size")]
+    pub queue_page_size: usize,
+}
+
+impl Default for DecypharrConfig {
+    fn default() -> Self {
+        Self {
+            url: default_decypharr_url(),
+            api_token: None,
+            poll_interval_seconds: default_decypharr_poll_interval_seconds(),
+            completion_timeout_minutes: default_decypharr_completion_timeout_minutes(),
+            relink_timeout_minutes: default_decypharr_relink_timeout_minutes(),
+            max_in_flight: default_decypharr_max_in_flight(),
+            max_requests_per_run: default_decypharr_max_requests_per_run(),
+            queue_page_size: default_decypharr_queue_page_size(),
+        }
+    }
+}
+
+/// Debrid Media Manager integration
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DmmConfig {
+    /// Public or self-hosted DMM URL (e.g. "https://debridmediamanager.com")
+    #[serde(default)]
+    pub url: String,
+    /// Restrict torrent results to DMM's trusted cache set
+    #[serde(default = "default_dmm_only_trusted")]
+    pub only_trusted: bool,
+    /// Max media candidates to inspect per DMM title lookup
+    #[serde(default = "default_dmm_max_search_results")]
+    pub max_search_results: usize,
+    /// Max cached torrent candidates to inspect per media lookup
+    #[serde(default = "default_dmm_max_torrent_results")]
+    pub max_torrent_results: usize,
+}
+
+impl Default for DmmConfig {
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            only_trusted: default_dmm_only_trusted(),
+            max_search_results: default_dmm_max_search_results(),
+            max_torrent_results: default_dmm_max_torrent_results(),
+        }
+    }
+}
+
+/// Prowlarr indexer integration
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct ProwlarrConfig {
+    /// Prowlarr URL (e.g., "http://localhost:9696")
+    #[serde(default)]
+    pub url: String,
+    /// Prowlarr API key
+    #[serde(default)]
+    pub api_key: String,
+}
+
+/// Bazarr subtitle integration
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct BazarrConfig {
+    /// Bazarr URL (e.g., "http://localhost:6767")
+    #[serde(default)]
+    pub url: String,
+    /// Bazarr API key
+    #[serde(default)]
+    pub api_key: String,
+}
+
+/// Tautulli Plex monitoring integration
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct TautulliConfig {
+    /// Tautulli URL (e.g., "http://localhost:8383")
+    #[serde(default)]
+    pub url: String,
+    /// Tautulli API key
+    #[serde(default)]
+    pub api_key: String,
+}
+
+/// Plex integration
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct PlexConfig {
+    /// Plex URL (e.g. "http://localhost:32400")
+    #[serde(default)]
+    pub url: String,
+    /// Plex token for library refresh requests
+    #[serde(default)]
+    pub token: String,
+}
+
+/// Radarr integration
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct RadarrConfig {
+    /// Radarr URL (e.g., "http://localhost:7878")
+    #[serde(default)]
+    pub url: String,
+    /// Radarr API key
+    #[serde(default)]
+    pub api_key: String,
+}
+
+/// Sonarr integration
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct SonarrConfig {
+    /// Sonarr URL (e.g., "http://localhost:8989")
+    #[serde(default)]
+    pub url: String,
+    /// Sonarr API key
+    #[serde(default)]
+    pub api_key: String,
+}
+
+/// Symlink backup settings
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BackupConfig {
+    /// Enable automatic backups
+    #[serde(default = "default_backup_enabled")]
+    pub enabled: bool,
+    /// Directory to store backup files
+    #[serde(default = "default_backup_path")]
+    pub path: PathBuf,
+    /// Hours between scheduled full backups (0 = disabled)
+    #[serde(default = "default_backup_interval")]
+    pub interval_hours: u64,
+    /// Maximum number of scheduled backups to keep
+    #[serde(default = "default_max_backups")]
+    pub max_backups: usize,
+    /// Maximum number of safety snapshots to keep (0 = keep all, never rotate)
+    #[serde(default = "default_max_safety_backups")]
+    pub max_safety_backups: usize,
+}
+
+impl Default for BackupConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_backup_enabled(),
+            path: default_backup_path(),
+            interval_hours: default_backup_interval(),
+            max_backups: default_max_backups(),
+            max_safety_backups: default_max_safety_backups(),
+        }
+    }
+}
+
+fn default_backup_enabled() -> bool {
+    true
+}
+
+fn default_backup_path() -> PathBuf {
+    PathBuf::from("backups")
+}
+
+fn default_backup_interval() -> u64 {
+    24
+}
+
+fn default_max_backups() -> usize {
+    10
+}
+
+fn default_max_safety_backups() -> usize {
+    25
+}
+
+/// Feature flags controlling rollout behavior.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FeaturesConfig {
+    /// Enable anti-churn reconciliation path in scan/link lifecycle
+    #[serde(default = "default_true")]
+    pub reconcile_links: bool,
+}
+
+impl Default for FeaturesConfig {
+    fn default() -> Self {
+        Self {
+            reconcile_links: default_true(),
+        }
+    }
+}
+
+/// Security policy controls for destructive operations and secret handling.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SecurityConfig {
+    /// Enforce path allowlists for destructive operations
+    #[serde(default = "default_true")]
+    pub enforce_roots: bool,
+    /// Require credentials to be loaded via env:/secretfile: indirection
+    #[serde(default)]
+    pub require_secret_provider: bool,
+    /// Enforce secure file permissions for artifacts written by Symlinkarr
+    #[serde(default = "default_true")]
+    pub enforce_secure_permissions: bool,
+}
+
+impl Default for SecurityConfig {
+    fn default() -> Self {
+        Self {
+            enforce_roots: default_true(),
+            require_secret_provider: false,
+            enforce_secure_permissions: default_true(),
+        }
+    }
+}
+
+/// Cleanup policy configuration.
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct CleanupPolicyConfig {
+    #[serde(default)]
+    pub prune: PrunePolicyConfig,
+}
+
+/// Prune-policy settings.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PrunePolicyConfig {
+    /// Enforce report freshness/scope/version/confirmation policy before apply
+    #[serde(default = "default_true")]
+    pub enforce_policy: bool,
+    /// Maximum report age (hours) when applying prune
+    #[serde(default = "default_prune_max_report_age_hours")]
+    pub max_report_age_hours: u64,
+    /// Default max delete cap for apply when CLI does not specify --max-delete
+    #[serde(default = "default_prune_default_max_delete")]
+    pub default_max_delete: usize,
+}
+
+impl Default for PrunePolicyConfig {
+    fn default() -> Self {
+        Self {
+            enforce_policy: default_true(),
+            max_report_age_hours: default_prune_max_report_age_hours(),
+            default_max_delete: default_prune_default_max_delete(),
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_prune_max_report_age_hours() -> u64 {
+    72
+}
+
+fn default_prune_default_max_delete() -> usize {
+    5000
+}
+
+// --- Default value functions ---
+
+fn default_db_path() -> String {
+    "symlinkarr.db".to_string()
+}
+
+fn default_log_level() -> String {
+    "info".to_string()
+}
+
+fn default_media_type() -> MediaType {
+    MediaType::Tv
+}
+
+fn default_source_media_type() -> String {
+    "auto".to_string()
+}
+
+fn default_depth() -> usize {
+    1
+}
+
+fn default_cache_ttl() -> u64 {
+    168 // 7 days
+}
+
+fn default_interval() -> u64 {
+    30
+}
+
+fn default_realdebrid_torrents_page_limit() -> u32 {
+    5000
+}
+
+fn default_realdebrid_pagination_delay_ms() -> u64 {
+    200
+}
+
+fn default_realdebrid_max_pages() -> u32 {
+    5000
+}
+
+fn default_naming_template() -> String {
+    "{title} - S{season:02}E{episode:02} - {episode_title}".to_string()
+}
+
+fn default_decypharr_url() -> String {
+    "http://localhost:8282".to_string()
+}
+
+fn default_decypharr_poll_interval_seconds() -> u64 {
+    30
+}
+
+fn default_decypharr_completion_timeout_minutes() -> u64 {
+    180
+}
+
+fn default_decypharr_relink_timeout_minutes() -> u64 {
+    15
+}
+
+fn default_decypharr_max_in_flight() -> usize {
+    3
+}
+
+fn default_decypharr_max_requests_per_run() -> usize {
+    10
+}
+
+fn default_decypharr_queue_page_size() -> usize {
+    100
+}
+
+fn default_dmm_only_trusted() -> bool {
+    true
+}
+
+fn default_dmm_max_search_results() -> usize {
+    3
+}
+
+fn default_dmm_max_torrent_results() -> usize {
+    10
+}
+
+impl Config {
+    /// Load configuration from a YAML file.
+    /// If `path` is provided, it tries to load that specific file.
+    /// Otherwise, checks default locations: config.yaml, /app/config/config.yaml.
+    pub fn load(path: Option<String>) -> Result<Self> {
+        let paths = candidate_config_paths(path);
+
+        for path in &paths {
+            if path.exists() {
+                load_dotenv_chain(path)?;
+                let config_str = std::fs::read_to_string(path)?;
+                let mut value: serde_yaml::Value = serde_yaml::from_str(&config_str)?;
+                apply_legacy_aliases(&mut value);
+                warn_for_plaintext_secrets(&value);
+                let secret_files = collect_secret_file_paths(&value, path.parent());
+                let mut config: Config = serde_yaml::from_value(value)?;
+                config.resolve_secret_fields(path.parent())?;
+                config.loaded_from = Some(path.to_path_buf());
+                config.secret_files = secret_files;
+                tracing::info!("Configuration loaded from {:?}", path);
+                return Ok(config);
+            }
+        }
+
+        anyhow::bail!("No config.yaml found. Searched paths: {:?}", paths)
+    }
+
+    pub fn validate(&self) -> ValidationReport {
+        let mut report = self.validate_runtime_settings();
+        self.validate_paths(&mut report);
+        report
+    }
+
+    pub fn validate_runtime_settings(&self) -> ValidationReport {
+        let mut report = ValidationReport::default();
+
+        if self.libraries.is_empty() {
+            report.errors.push("No libraries configured".to_string());
+        }
+        if self.sources.is_empty() {
+            report.errors.push("No sources configured".to_string());
+        }
+
+        if self.security.require_secret_provider {
+            if self.realdebrid.api_token.is_empty() {
+                report.warnings.push(
+                    "security.require_secret_provider enabled but realdebrid.api_token is empty"
+                        .to_string(),
+                );
+            }
+            if cfg_has_url_without_key(&self.prowlarr.url, &self.prowlarr.api_key) {
+                report
+                    .errors
+                    .push("Prowlarr configured without api_key".to_string());
+            }
+            if cfg_has_url_without_key(&self.bazarr.url, &self.bazarr.api_key) {
+                report
+                    .errors
+                    .push("Bazarr configured without api_key".to_string());
+            }
+            if cfg_has_url_without_key(&self.tautulli.url, &self.tautulli.api_key) {
+                report
+                    .errors
+                    .push("Tautulli configured without api_key".to_string());
+            }
+            if cfg_has_url_without_key(&self.plex.url, &self.plex.token) {
+                report
+                    .errors
+                    .push("Plex configured without token".to_string());
+            }
+            if cfg_has_url_without_key(&self.radarr.url, &self.radarr.api_key) {
+                report
+                    .errors
+                    .push("Radarr configured without api_key".to_string());
+            }
+            if cfg_has_url_without_key(&self.sonarr.url, &self.sonarr.api_key) {
+                report
+                    .errors
+                    .push("Sonarr configured without api_key".to_string());
+            }
+            if cfg_has_url_without_key(&self.sonarr_anime.url, &self.sonarr_anime.api_key) {
+                report
+                    .errors
+                    .push("Sonarr-Anime configured without api_key".to_string());
+            }
+        }
+
+        if self.backup.max_safety_backups == 0 {
+            report.warnings.push(
+                "backup.max_safety_backups=0 keeps unlimited safety snapshots; use a bounded value"
+                    .to_string(),
+            );
+        }
+
+        if self.api.cache_ttl_hours == 0 {
+            report
+                .errors
+                .push("api.cache_ttl_hours must be greater than 0".to_string());
+        } else if self.api.cache_ttl_hours > 24 * 30 {
+            report.warnings.push(
+                "api.cache_ttl_hours is very high; stale metadata may linger for a long time"
+                    .to_string(),
+            );
+        }
+
+        if self.has_decypharr() {
+            if self.decypharr.poll_interval_seconds == 0 {
+                report
+                    .errors
+                    .push("decypharr.poll_interval_seconds must be greater than 0".to_string());
+            }
+            if self.decypharr.completion_timeout_minutes == 0 {
+                report.errors.push(
+                    "decypharr.completion_timeout_minutes must be greater than 0".to_string(),
+                );
+            }
+            if self.decypharr.relink_timeout_minutes == 0 {
+                report
+                    .errors
+                    .push("decypharr.relink_timeout_minutes must be greater than 0".to_string());
+            }
+            if self.decypharr.max_in_flight == 0 {
+                report
+                    .errors
+                    .push("decypharr.max_in_flight must be greater than 0".to_string());
+            }
+            if self.decypharr.max_requests_per_run == 0 {
+                report
+                    .errors
+                    .push("decypharr.max_requests_per_run must be greater than 0".to_string());
+            }
+            if self.decypharr.queue_page_size == 0 {
+                report
+                    .errors
+                    .push("decypharr.queue_page_size must be greater than 0".to_string());
+            }
+        }
+
+        if self.has_dmm() {
+            if self.dmm.max_search_results == 0 {
+                report
+                    .errors
+                    .push("dmm.max_search_results must be greater than 0".to_string());
+            }
+            if self.dmm.max_torrent_results == 0 {
+                report
+                    .errors
+                    .push("dmm.max_torrent_results must be greater than 0".to_string());
+            }
+        }
+
+        if !self.realdebrid.api_token.is_empty() {
+            if self.realdebrid.torrents_page_limit == 0 {
+                report
+                    .errors
+                    .push("realdebrid.torrents_page_limit must be greater than 0".to_string());
+            }
+            if self.realdebrid.max_pages == 0 {
+                report
+                    .errors
+                    .push("realdebrid.max_pages must be greater than 0".to_string());
+            }
+        }
+
+        if self.security.enforce_secure_permissions {
+            validate_secure_permissions(self, &mut report);
+        }
+
+        validate_naming_template(&self.symlink.naming_template, &mut report);
+
+        report
+    }
+
+    fn validate_paths(&self, report: &mut ValidationReport) {
+        for lib in &self.libraries {
+            match fast_path_health(&lib.path) {
+                PathHealth::Healthy => {}
+                PathHealth::Missing => report.errors.push(format!(
+                    "Library '{}' path does not exist: {}",
+                    lib.name,
+                    lib.path.display()
+                )),
+                PathHealth::TransportDisconnected => report.errors.push(format!(
+                    "Library '{}' path is mounted but unhealthy: {} (transport endpoint is not connected)",
+                    lib.name,
+                    lib.path.display()
+                )),
+                PathHealth::Timeout => report.errors.push(format!(
+                    "Library '{}' path probe timed out: {}",
+                    lib.name,
+                    lib.path.display()
+                )),
+                PathHealth::IoError(err) => report.errors.push(format!(
+                    "Library '{}' path is not readable: {} ({})",
+                    lib.name,
+                    lib.path.display(),
+                    err
+                )),
+            }
+        }
+
+        for source in &self.sources {
+            match fast_path_health(&source.path) {
+                PathHealth::Healthy => {}
+                PathHealth::Missing => report.errors.push(format!(
+                    "Source '{}' path does not exist: {}",
+                    source.name,
+                    source.path.display()
+                )),
+                PathHealth::TransportDisconnected => report.errors.push(format!(
+                    "Source '{}' path is mounted but unhealthy: {} (transport endpoint is not connected; restart/remount the source)",
+                    source.name,
+                    source.path.display()
+                )),
+                PathHealth::Timeout => report.errors.push(format!(
+                    "Source '{}' path probe timed out: {}",
+                    source.name,
+                    source.path.display()
+                )),
+                PathHealth::IoError(err) => report.errors.push(format!(
+                    "Source '{}' path is not readable: {} ({})",
+                    source.name,
+                    source.path.display(),
+                    err
+                )),
+            }
+        }
+    }
+
+    /// Check if TMDB API is configured
+    pub fn has_tmdb(&self) -> bool {
+        !self.api.tmdb_api_key.is_empty() || !self.api.tmdb_read_access_token.is_empty()
+    }
+
+    /// Check if TVDB API is configured
+    pub fn has_tvdb(&self) -> bool {
+        !self.api.tvdb_api_key.is_empty()
+    }
+
+    /// Check if Real-Debrid API is configured
+    pub fn has_realdebrid(&self) -> bool {
+        !self.realdebrid.api_token.is_empty()
+    }
+
+    /// Check if Decypharr is configured
+    pub fn has_decypharr(&self) -> bool {
+        !self.decypharr.url.is_empty()
+    }
+
+    /// Check if Debrid Media Manager is configured
+    pub fn has_dmm(&self) -> bool {
+        !self.dmm.url.is_empty()
+    }
+
+    /// Check if Prowlarr is configured
+    pub fn has_prowlarr(&self) -> bool {
+        !self.prowlarr.url.is_empty() && !self.prowlarr.api_key.is_empty()
+    }
+
+    /// Check if Bazarr is configured
+    pub fn has_bazarr(&self) -> bool {
+        !self.bazarr.url.is_empty() && !self.bazarr.api_key.is_empty()
+    }
+
+    /// Check if Tautulli is configured
+    pub fn has_tautulli(&self) -> bool {
+        !self.tautulli.url.is_empty() && !self.tautulli.api_key.is_empty()
+    }
+
+    /// Check if Plex is configured
+    pub fn has_plex(&self) -> bool {
+        !self.plex.url.is_empty() && !self.plex.token.is_empty()
+    }
+
+    /// Check if Radarr is configured
+    pub fn has_radarr(&self) -> bool {
+        !self.radarr.url.is_empty() && !self.radarr.api_key.is_empty()
+    }
+
+    /// Check if Sonarr is configured
+    pub fn has_sonarr(&self) -> bool {
+        !self.sonarr.url.is_empty() && !self.sonarr.api_key.is_empty()
+    }
+
+    /// Check if Sonarr Anime is configured
+    pub fn has_sonarr_anime(&self) -> bool {
+        !self.sonarr_anime.url.is_empty() && !self.sonarr_anime.api_key.is_empty()
+    }
+
+    fn resolve_secret_fields(&mut self, config_dir: Option<&Path>) -> Result<()> {
+        self.api.tmdb_api_key = resolve_secret(
+            &self.api.tmdb_api_key,
+            "api.tmdb_api_key",
+            self.security.require_secret_provider,
+            config_dir,
+        )?;
+        self.api.tmdb_read_access_token = resolve_secret(
+            &self.api.tmdb_read_access_token,
+            "api.tmdb_read_access_token",
+            self.security.require_secret_provider,
+            config_dir,
+        )?;
+        self.api.tvdb_api_key = resolve_secret(
+            &self.api.tvdb_api_key,
+            "api.tvdb_api_key",
+            self.security.require_secret_provider,
+            config_dir,
+        )?;
+        self.realdebrid.api_token = resolve_secret(
+            &self.realdebrid.api_token,
+            "realdebrid.api_token",
+            self.security.require_secret_provider,
+            config_dir,
+        )?;
+        if let Some(token) = &self.decypharr.api_token {
+            let resolved = resolve_secret(
+                token,
+                "decypharr.api_token",
+                self.security.require_secret_provider,
+                config_dir,
+            )?;
+            self.decypharr.api_token = Some(resolved);
+        }
+        self.prowlarr.api_key = resolve_secret(
+            &self.prowlarr.api_key,
+            "prowlarr.api_key",
+            self.security.require_secret_provider,
+            config_dir,
+        )?;
+        self.bazarr.api_key = resolve_secret(
+            &self.bazarr.api_key,
+            "bazarr.api_key",
+            self.security.require_secret_provider,
+            config_dir,
+        )?;
+        self.tautulli.api_key = resolve_secret(
+            &self.tautulli.api_key,
+            "tautulli.api_key",
+            self.security.require_secret_provider,
+            config_dir,
+        )?;
+        self.plex.token = resolve_secret(
+            &self.plex.token,
+            "plex.token",
+            self.security.require_secret_provider,
+            config_dir,
+        )?;
+        self.radarr.api_key = resolve_secret(
+            &self.radarr.api_key,
+            "radarr.api_key",
+            self.security.require_secret_provider,
+            config_dir,
+        )?;
+        self.sonarr.api_key = resolve_secret(
+            &self.sonarr.api_key,
+            "sonarr.api_key",
+            self.security.require_secret_provider,
+            config_dir,
+        )?;
+        self.sonarr_anime.api_key = resolve_secret(
+            &self.sonarr_anime.api_key,
+            "sonarr_anime.api_key",
+            self.security.require_secret_provider,
+            config_dir,
+        )?;
+
+        Ok(())
+    }
+}
+
+fn validate_naming_template(template: &str, report: &mut ValidationReport) {
+    let known: &[&str] = &[
+        "{title}",
+        "{season}",
+        "{season:02}",
+        "{episode}",
+        "{episode:02}",
+        "{episode_title}",
+    ];
+
+    // Extract all {…} placeholders using a simple scanner.
+    let chars = template.char_indices();
+    for (i, c) in chars {
+        if c == '{' {
+            let start = i;
+            let mut end = None;
+            for (j, ch) in template[start + 1..].char_indices() {
+                if ch == '}' {
+                    end = Some(start + 1 + j);
+                    break;
+                }
+                if ch == '{' {
+                    // Nested brace — not a placeholder, skip.
+                    break;
+                }
+            }
+            if let Some(end_idx) = end {
+                let placeholder = &template[start..=end_idx];
+                if !known.contains(&placeholder) {
+                    report.errors.push(format!(
+                        "Unknown naming_template placeholder: {}",
+                        placeholder
+                    ));
+                }
+            }
+        }
+    }
+
+    let has_episode = template.contains("{episode}") || template.contains("{episode:02}");
+    if !has_episode {
+        report.errors.push(
+            "naming_template must contain at least one episode placeholder: \
+             {episode} or {episode:02}"
+                .to_string(),
+        );
+    }
+}
+
+fn candidate_config_paths(path: Option<String>) -> Vec<PathBuf> {
+    if let Some(p) = path {
+        return vec![PathBuf::from(p)];
+    }
+
+    let mut paths = Vec::new();
+    if let Ok(env_path) = std::env::var("SYMLINKARR_CONFIG") {
+        let env_path = env_path.trim();
+        if !env_path.is_empty() {
+            paths.push(PathBuf::from(env_path));
+        }
+    }
+    paths.push(PathBuf::from("config.yaml"));
+    paths.push(PathBuf::from("/app/config/config.yaml"));
+    paths
+}
+
+fn load_dotenv_chain(config_path: &Path) -> Result<()> {
+    for path in candidate_dotenv_paths(config_path) {
+        if path.exists() {
+            let loaded = load_dotenv_file(&path)?;
+            if loaded > 0 {
+                tracing::info!("Loaded {} env var(s) from {:?}", loaded, path);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn candidate_dotenv_paths(config_path: &Path) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+
+    let mut push_unique = |path: PathBuf| {
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+    };
+
+    if let Some(config_dir) = config_path.parent() {
+        push_unique(config_dir.join(".env"));
+        push_unique(config_dir.join(".env.local"));
+    }
+    push_unique(PathBuf::from(".env"));
+    push_unique(PathBuf::from(".env.local"));
+    paths
+}
+
+fn load_dotenv_file(path: &Path) -> Result<usize> {
+    let content = std::fs::read_to_string(path)?;
+    let mut loaded = 0usize;
+
+    for (line_no, raw_line) in content.lines().enumerate() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        let line = line.strip_prefix("export ").unwrap_or(line);
+        let Some((key, value)) = line.split_once('=') else {
+            anyhow::bail!(
+                "Invalid .env entry in {} at line {}",
+                path.display(),
+                line_no + 1
+            );
+        };
+
+        let key = key.trim();
+        if key.is_empty() {
+            anyhow::bail!(
+                "Invalid .env key in {} at line {}",
+                path.display(),
+                line_no + 1
+            );
+        }
+        if std::env::var_os(key).is_some() {
+            continue;
+        }
+
+        let value = parse_dotenv_value(value.trim());
+        std::env::set_var(key, value);
+        loaded += 1;
+    }
+
+    Ok(loaded)
+}
+
+fn parse_dotenv_value(raw: &str) -> String {
+    if raw.len() >= 2 {
+        let bytes = raw.as_bytes();
+        let first = bytes[0];
+        let last = bytes[raw.len() - 1];
+        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
+            return raw[1..raw.len() - 1].to_string();
+        }
+    }
+
+    raw.to_string()
+}
+
+fn warn_for_plaintext_secrets(root: &serde_yaml::Value) {
+    let plaintext_fields = raw_plaintext_secret_fields(root);
+    if plaintext_fields.is_empty() {
+        return;
+    }
+
+    let require_provider =
+        yaml_bool_at(root, &["security", "require_secret_provider"]).unwrap_or(false);
+    if require_provider {
+        return;
+    }
+
+    tracing::warn!(
+        "Plaintext secrets found in config for: {}. Prefer env:VAR or secretfile:/path",
+        plaintext_fields.join(", ")
+    );
+}
+
+fn raw_plaintext_secret_fields(root: &serde_yaml::Value) -> Vec<&'static str> {
+    let mut fields = Vec::new();
+    for (path, field_name) in secret_field_paths() {
+        if let Some(value) = yaml_str_at(root, path) {
+            if !value.is_empty() && !uses_secret_provider(value) {
+                fields.push(field_name);
+            }
+        }
+    }
+    fields
+}
+
+fn yaml_value_at<'a>(root: &'a serde_yaml::Value, path: &[&str]) -> Option<&'a serde_yaml::Value> {
+    let mut current = root;
+    for segment in path {
+        let mapping = current.as_mapping()?;
+        current = mapping.get(serde_yaml::Value::from(*segment))?;
+    }
+    Some(current)
+}
+
+fn yaml_str_at<'a>(root: &'a serde_yaml::Value, path: &[&str]) -> Option<&'a str> {
+    yaml_value_at(root, path)?.as_str()
+}
+
+fn yaml_bool_at(root: &serde_yaml::Value, path: &[&str]) -> Option<bool> {
+    yaml_value_at(root, path)?.as_bool()
+}
+
+fn collect_secret_file_paths(root: &serde_yaml::Value, config_dir: Option<&Path>) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+
+    for (path, _) in secret_field_paths() {
+        let Some(value) = yaml_str_at(root, path) else {
+            continue;
+        };
+        let Some(secret_file) = value.strip_prefix("secretfile:") else {
+            continue;
+        };
+
+        let secret_path = PathBuf::from(secret_file);
+        let resolved = if secret_path.is_relative() {
+            if let Some(config_dir) = config_dir {
+                config_dir.join(secret_path)
+            } else {
+                secret_path
+            }
+        } else {
+            secret_path
+        };
+
+        paths.push(resolved);
+    }
+
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+fn secret_field_paths() -> [(&'static [&'static str], &'static str); 12] {
+    [
+        (&["api", "tmdb_api_key"], "api.tmdb_api_key"),
+        (
+            &["api", "tmdb_read_access_token"],
+            "api.tmdb_read_access_token",
+        ),
+        (&["api", "tvdb_api_key"], "api.tvdb_api_key"),
+        (&["realdebrid", "api_token"], "realdebrid.api_token"),
+        (&["decypharr", "api_token"], "decypharr.api_token"),
+        (&["prowlarr", "api_key"], "prowlarr.api_key"),
+        (&["bazarr", "api_key"], "bazarr.api_key"),
+        (&["tautulli", "api_key"], "tautulli.api_key"),
+        (&["plex", "token"], "plex.token"),
+        (&["radarr", "api_key"], "radarr.api_key"),
+        (&["sonarr", "api_key"], "sonarr.api_key"),
+        (&["sonarr_anime", "api_key"], "sonarr_anime.api_key"),
+    ]
+}
+
+fn apply_legacy_aliases(root: &mut serde_yaml::Value) {
+    let Some(mapping) = root.as_mapping_mut() else {
+        return;
+    };
+
+    let backup_key = serde_yaml::Value::from("backup");
+    let Some(backup_value) = mapping.get_mut(&backup_key) else {
+        return;
+    };
+    let Some(backup_map) = backup_value.as_mapping_mut() else {
+        return;
+    };
+
+    let path_key = serde_yaml::Value::from("path");
+    let dir_key = serde_yaml::Value::from("dir");
+    if !backup_map.contains_key(&path_key) {
+        if let Some(dir_value) = backup_map.get(&dir_key).cloned() {
+            backup_map.insert(path_key, dir_value);
+            tracing::warn!(
+                "Deprecated config key 'backup.dir' detected; please migrate to 'backup.path'"
+            );
+        }
+    }
+}
+
+fn resolve_secret(
+    raw: &str,
+    field: &str,
+    require_provider: bool,
+    config_dir: Option<&Path>,
+) -> Result<String> {
+    if raw.is_empty() {
+        return Ok(String::new());
+    }
+
+    if let Some(var) = raw.strip_prefix("env:") {
+        let value = std::env::var(var)
+            .map_err(|_| anyhow::anyhow!("Missing environment variable '{}' for {}", var, field))?;
+        return Ok(value.trim().to_string());
+    }
+
+    if let Some(file) = raw.strip_prefix("secretfile:") {
+        let file_path = PathBuf::from(file);
+        let resolved_path = if file_path.is_relative() {
+            if let Some(config_dir) = config_dir {
+                config_dir.join(file_path)
+            } else {
+                file_path
+            }
+        } else {
+            file_path
+        };
+        let value = std::fs::read_to_string(&resolved_path).map_err(|e| {
+            anyhow::anyhow!(
+                "Failed reading secret file '{}' for {}: {}",
+                resolved_path.display(),
+                field,
+                e
+            )
+        })?;
+        let trimmed = value.trim().to_string();
+        if trimmed.is_empty() {
+            anyhow::bail!(
+                "Secret file '{}' is empty or contains only whitespace",
+                resolved_path.display()
+            );
+        }
+        return Ok(trimmed);
+    }
+
+    if require_provider {
+        anyhow::bail!(
+            "Plaintext secret is not allowed for {}. Use env:VAR or secretfile:/path/to/file",
+            field
+        );
+    }
+
+    Ok(raw.to_string())
+}
+
+fn uses_secret_provider(raw: &str) -> bool {
+    raw.starts_with("env:") || raw.starts_with("secretfile:")
+}
+
+fn cfg_has_url_without_key(url: &str, api_key: &str) -> bool {
+    !url.trim().is_empty() && api_key.trim().is_empty()
+}
+
+fn validate_secure_permissions(cfg: &Config, report: &mut ValidationReport) {
+    #[cfg(unix)]
+    {
+        if let Some(db_path) = secure_path_if_exists(Path::new(&cfg.db_path)) {
+            validate_private_path(db_path, "db_path", report);
+        }
+        if let Some(backup_path) = secure_path_if_exists(&cfg.backup.path) {
+            validate_private_path(backup_path, "backup.path", report);
+        }
+        for secret_path in &cfg.secret_files {
+            if let Some(secret_path) = secure_path_if_exists(secret_path) {
+                validate_private_path(secret_path, "secretfile", report);
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        report.warnings.push(
+            "security.enforce_secure_permissions is not enforced on this platform".to_string(),
+        );
+    }
+}
+
+#[cfg(unix)]
+fn secure_path_if_exists(path: &Path) -> Option<&Path> {
+    path.exists().then_some(path)
+}
+
+#[cfg(unix)]
+fn validate_private_path(path: &Path, label: &str, report: &mut ValidationReport) {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        report.errors.push(format!(
+            "{} could not be inspected for permissions: {}",
+            label,
+            path.display()
+        ));
+        return;
+    };
+
+    let mode = metadata.permissions().mode() & 0o777;
+    if mode & 0o077 != 0 {
+        report.errors.push(format!(
+            "{} must not be group/world accessible: {} (mode {:o})",
+            label,
+            path.display(),
+            mode
+        ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn candidate_paths_include_app_config_when_no_explicit_path_is_set() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::remove_var("SYMLINKARR_CONFIG");
+
+        let paths = candidate_config_paths(None);
+        assert_eq!(
+            paths,
+            vec![
+                PathBuf::from("config.yaml"),
+                PathBuf::from("/app/config/config.yaml")
+            ]
+        );
+    }
+
+    #[test]
+    fn candidate_paths_prioritize_env_override() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::set_var("SYMLINKARR_CONFIG", "/tmp/symlinkarr-env.yaml");
+
+        let paths = candidate_config_paths(None);
+        assert_eq!(
+            paths,
+            vec![
+                PathBuf::from("/tmp/symlinkarr-env.yaml"),
+                PathBuf::from("config.yaml"),
+                PathBuf::from("/app/config/config.yaml")
+            ]
+        );
+
+        std::env::remove_var("SYMLINKARR_CONFIG");
+    }
+
+    #[test]
+    fn load_dotenv_file_sets_missing_vars_without_overwriting_existing_env() {
+        let _guard = env_lock().lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let env_path = dir.path().join(".env");
+        std::fs::write(
+            &env_path,
+            "SYMLINKARR_FROM_FILE=file-value\nexport SYMLINKARR_QUOTED=\"quoted value\"\n",
+        )
+        .unwrap();
+
+        std::env::remove_var("SYMLINKARR_FROM_FILE");
+        std::env::set_var("SYMLINKARR_QUOTED", "shell-value");
+
+        let loaded = load_dotenv_file(&env_path).unwrap();
+        assert_eq!(loaded, 1);
+        assert_eq!(
+            std::env::var("SYMLINKARR_FROM_FILE").unwrap(),
+            "file-value".to_string()
+        );
+        assert_eq!(
+            std::env::var("SYMLINKARR_QUOTED").unwrap(),
+            "shell-value".to_string()
+        );
+
+        std::env::remove_var("SYMLINKARR_FROM_FILE");
+        std::env::remove_var("SYMLINKARR_QUOTED");
+    }
+
+    #[test]
+    fn resolve_secret_reads_secretfile() {
+        let dir = tempfile::tempdir().unwrap();
+        let secret_path = dir.path().join("api.key");
+        std::fs::write(&secret_path, "secret-value\n").unwrap();
+
+        let value = resolve_secret(
+            &format!("secretfile:{}", secret_path.display()),
+            "api.tmdb_api_key",
+            true,
+            None,
+        )
+        .unwrap();
+        assert_eq!(value, "secret-value");
+    }
+
+    #[test]
+    fn resolve_secret_rejects_plaintext_when_provider_is_required() {
+        let err = resolve_secret("plaintext", "api.tmdb_api_key", true, None).unwrap_err();
+        assert!(err.to_string().contains("Plaintext secret is not allowed"));
+    }
+
+    #[test]
+    fn resolve_secretfile_relative_to_config_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path().join("config");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(config_dir.join("tmdb.key"), "tmdb-secret").unwrap();
+
+        let value = resolve_secret(
+            "secretfile:tmdb.key",
+            "api.tmdb_api_key",
+            true,
+            Some(&config_dir),
+        )
+        .unwrap();
+        assert_eq!(value, "tmdb-secret");
+    }
+
+    #[test]
+    fn config_load_reads_env_file_from_config_directory() {
+        let _guard = env_lock().lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.yaml");
+        let env_path = dir.path().join(".env");
+        std::env::remove_var("SYMLINKARR_RD_TOKEN");
+
+        std::fs::write(&env_path, "SYMLINKARR_RD_TOKEN=rd-from-dotenv\n").unwrap();
+        std::fs::write(
+            &config_path,
+            r#"
+libraries:
+  - name: Movies
+    path: "/tmp/library"
+    media_type: movie
+sources:
+  - name: RD
+    path: "/tmp/source"
+    media_type: auto
+realdebrid:
+  api_token: "env:SYMLINKARR_RD_TOKEN"
+"#,
+        )
+        .unwrap();
+
+        let cfg = Config::load(Some(config_path.display().to_string())).unwrap();
+        assert_eq!(cfg.realdebrid.api_token, "rd-from-dotenv");
+
+        std::env::remove_var("SYMLINKARR_RD_TOKEN");
+    }
+
+    #[test]
+    fn validate_treats_missing_paths_as_errors() {
+        let cfg = Config {
+            libraries: vec![LibraryConfig {
+                name: "Movies".to_string(),
+                path: PathBuf::from("/definitely/missing/library"),
+                media_type: MediaType::Movie,
+                content_type: Some(ContentType::Movie),
+                depth: 1,
+            }],
+            sources: vec![SourceConfig {
+                name: "RD".to_string(),
+                path: PathBuf::from("/definitely/missing/source"),
+                media_type: "auto".to_string(),
+            }],
+            api: ApiConfig::default(),
+            realdebrid: RealDebridConfig::default(),
+            decypharr: DecypharrConfig::default(),
+            dmm: DmmConfig::default(),
+            backup: BackupConfig::default(),
+            db_path: default_db_path(),
+            log_level: default_log_level(),
+            daemon: DaemonConfig::default(),
+            symlink: SymlinkConfig::default(),
+            matching: MatchingConfig::default(),
+            prowlarr: ProwlarrConfig::default(),
+            bazarr: BazarrConfig::default(),
+            tautulli: TautulliConfig::default(),
+            plex: PlexConfig::default(),
+            radarr: RadarrConfig::default(),
+            sonarr: SonarrConfig::default(),
+            sonarr_anime: SonarrConfig::default(),
+            features: FeaturesConfig::default(),
+            security: SecurityConfig::default(),
+            cleanup: CleanupPolicyConfig::default(),
+            loaded_from: None,
+            secret_files: Vec::new(),
+        };
+
+        let report = cfg.validate();
+        assert_eq!(report.errors.len(), 2);
+        assert!(report
+            .errors
+            .iter()
+            .any(|err| err.contains("Library 'Movies' path does not exist")));
+        assert!(report
+            .errors
+            .iter()
+            .any(|err| err.contains("Source 'RD' path does not exist")));
+    }
+
+    #[test]
+    fn validate_runtime_settings_skips_missing_path_errors() {
+        let cfg = Config {
+            libraries: vec![LibraryConfig {
+                name: "Movies".to_string(),
+                path: PathBuf::from("/definitely/missing/library"),
+                media_type: MediaType::Movie,
+                content_type: Some(ContentType::Movie),
+                depth: 1,
+            }],
+            sources: vec![SourceConfig {
+                name: "RD".to_string(),
+                path: PathBuf::from("/definitely/missing/source"),
+                media_type: "auto".to_string(),
+            }],
+            api: ApiConfig::default(),
+            realdebrid: RealDebridConfig::default(),
+            decypharr: DecypharrConfig::default(),
+            dmm: DmmConfig::default(),
+            backup: BackupConfig::default(),
+            db_path: default_db_path(),
+            log_level: default_log_level(),
+            daemon: DaemonConfig::default(),
+            symlink: SymlinkConfig::default(),
+            matching: MatchingConfig::default(),
+            prowlarr: ProwlarrConfig::default(),
+            bazarr: BazarrConfig::default(),
+            tautulli: TautulliConfig::default(),
+            plex: PlexConfig::default(),
+            radarr: RadarrConfig::default(),
+            sonarr: SonarrConfig::default(),
+            sonarr_anime: SonarrConfig::default(),
+            features: FeaturesConfig::default(),
+            security: SecurityConfig::default(),
+            cleanup: CleanupPolicyConfig::default(),
+            loaded_from: None,
+            secret_files: Vec::new(),
+        };
+
+        let report = cfg.validate_runtime_settings();
+        assert!(report.errors.is_empty());
+    }
+
+    #[test]
+    fn validate_rejects_zero_decypharr_polling_settings() {
+        let mut cfg = Config {
+            libraries: vec![LibraryConfig {
+                name: "Movies".to_string(),
+                path: PathBuf::from("/tmp/library"),
+                media_type: MediaType::Movie,
+                content_type: Some(ContentType::Movie),
+                depth: 1,
+            }],
+            sources: vec![SourceConfig {
+                name: "RD".to_string(),
+                path: PathBuf::from("/tmp/source"),
+                media_type: "auto".to_string(),
+            }],
+            api: ApiConfig::default(),
+            realdebrid: RealDebridConfig::default(),
+            decypharr: DecypharrConfig::default(),
+            dmm: DmmConfig::default(),
+            backup: BackupConfig::default(),
+            db_path: default_db_path(),
+            log_level: default_log_level(),
+            daemon: DaemonConfig::default(),
+            symlink: SymlinkConfig::default(),
+            matching: MatchingConfig::default(),
+            prowlarr: ProwlarrConfig::default(),
+            bazarr: BazarrConfig::default(),
+            tautulli: TautulliConfig::default(),
+            plex: PlexConfig::default(),
+            radarr: RadarrConfig::default(),
+            sonarr: SonarrConfig::default(),
+            sonarr_anime: SonarrConfig::default(),
+            features: FeaturesConfig::default(),
+            security: SecurityConfig::default(),
+            cleanup: CleanupPolicyConfig::default(),
+            loaded_from: None,
+            secret_files: Vec::new(),
+        };
+        cfg.decypharr.poll_interval_seconds = 0;
+        cfg.decypharr.completion_timeout_minutes = 0;
+        cfg.decypharr.relink_timeout_minutes = 0;
+        cfg.decypharr.max_in_flight = 0;
+        cfg.decypharr.max_requests_per_run = 0;
+        cfg.decypharr.queue_page_size = 0;
+
+        let report = cfg.validate_runtime_settings();
+        assert!(report
+            .errors
+            .iter()
+            .any(|err| err.contains("decypharr.poll_interval_seconds")));
+        assert!(report
+            .errors
+            .iter()
+            .any(|err| err.contains("decypharr.completion_timeout_minutes")));
+        assert!(report
+            .errors
+            .iter()
+            .any(|err| err.contains("decypharr.relink_timeout_minutes")));
+        assert!(report
+            .errors
+            .iter()
+            .any(|err| err.contains("decypharr.max_in_flight")));
+        assert!(report
+            .errors
+            .iter()
+            .any(|err| err.contains("decypharr.max_requests_per_run")));
+        assert!(report
+            .errors
+            .iter()
+            .any(|err| err.contains("decypharr.queue_page_size")));
+    }
+
+    #[test]
+    fn validate_rejects_zero_realdebrid_pagination_limits() {
+        let mut cfg = Config {
+            libraries: vec![LibraryConfig {
+                name: "Movies".to_string(),
+                path: PathBuf::from("/tmp/library"),
+                media_type: MediaType::Movie,
+                content_type: Some(ContentType::Movie),
+                depth: 1,
+            }],
+            sources: vec![SourceConfig {
+                name: "RD".to_string(),
+                path: PathBuf::from("/tmp/source"),
+                media_type: "auto".to_string(),
+            }],
+            api: ApiConfig::default(),
+            realdebrid: RealDebridConfig::default(),
+            decypharr: DecypharrConfig::default(),
+            dmm: DmmConfig::default(),
+            backup: BackupConfig::default(),
+            db_path: default_db_path(),
+            log_level: default_log_level(),
+            daemon: DaemonConfig::default(),
+            symlink: SymlinkConfig::default(),
+            matching: MatchingConfig::default(),
+            prowlarr: ProwlarrConfig::default(),
+            bazarr: BazarrConfig::default(),
+            tautulli: TautulliConfig::default(),
+            plex: PlexConfig::default(),
+            radarr: RadarrConfig::default(),
+            sonarr: SonarrConfig::default(),
+            sonarr_anime: SonarrConfig::default(),
+            features: FeaturesConfig::default(),
+            security: SecurityConfig::default(),
+            cleanup: CleanupPolicyConfig::default(),
+            loaded_from: None,
+            secret_files: Vec::new(),
+        };
+        cfg.realdebrid.api_token = "token".to_string();
+        cfg.realdebrid.torrents_page_limit = 0;
+        cfg.realdebrid.max_pages = 0;
+
+        let report = cfg.validate_runtime_settings();
+        assert!(report
+            .errors
+            .iter()
+            .any(|err| err.contains("realdebrid.torrents_page_limit")));
+        assert!(report
+            .errors
+            .iter()
+            .any(|err| err.contains("realdebrid.max_pages")));
+    }
+
+    fn runtime_config_fixture() -> Config {
+        Config {
+            libraries: vec![LibraryConfig {
+                name: "Movies".to_string(),
+                path: PathBuf::from("/tmp/library"),
+                media_type: MediaType::Movie,
+                content_type: Some(ContentType::Movie),
+                depth: 1,
+            }],
+            sources: vec![SourceConfig {
+                name: "RD".to_string(),
+                path: PathBuf::from("/tmp/source"),
+                media_type: "auto".to_string(),
+            }],
+            api: ApiConfig::default(),
+            realdebrid: RealDebridConfig::default(),
+            decypharr: DecypharrConfig::default(),
+            dmm: DmmConfig::default(),
+            backup: BackupConfig::default(),
+            db_path: default_db_path(),
+            log_level: default_log_level(),
+            daemon: DaemonConfig::default(),
+            symlink: SymlinkConfig::default(),
+            matching: MatchingConfig::default(),
+            prowlarr: ProwlarrConfig::default(),
+            bazarr: BazarrConfig::default(),
+            tautulli: TautulliConfig::default(),
+            plex: PlexConfig::default(),
+            radarr: RadarrConfig::default(),
+            sonarr: SonarrConfig::default(),
+            sonarr_anime: SonarrConfig::default(),
+            features: FeaturesConfig::default(),
+            security: SecurityConfig::default(),
+            cleanup: CleanupPolicyConfig::default(),
+            loaded_from: None,
+            secret_files: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_zero_api_cache_ttl() {
+        let mut cfg = runtime_config_fixture();
+        cfg.api.cache_ttl_hours = 0;
+
+        let report = cfg.validate_runtime_settings();
+        assert!(report
+            .errors
+            .iter()
+            .any(|err| err.contains("api.cache_ttl_hours")));
+    }
+
+    #[test]
+    fn validate_warns_for_very_high_api_cache_ttl() {
+        let mut cfg = runtime_config_fixture();
+        cfg.api.cache_ttl_hours = 24 * 31;
+
+        let report = cfg.validate_runtime_settings();
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("api.cache_ttl_hours")));
+    }
+
+    #[test]
+    fn raw_plaintext_secret_fields_detects_unwrapped_secrets() {
+        let value: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+api:
+  tmdb_api_key: "plaintext"
+  tmdb_read_access_token: "env:TMDB_TOKEN"
+realdebrid:
+  api_token: "secretfile:rd.token"
+sonarr:
+  api_key: "another-plaintext"
+"#,
+        )
+        .unwrap();
+
+        let fields = raw_plaintext_secret_fields(&value);
+        assert_eq!(fields, vec!["api.tmdb_api_key", "sonarr.api_key"]);
+    }
+
+    #[test]
+    fn collect_secret_file_paths_resolves_relative_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path().join("cfg");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let value: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+api:
+  tmdb_api_key: "secretfile:tmdb.key"
+prowlarr:
+  api_key: "env:PROWLARR_API_KEY"
+tautulli:
+  api_key: "secretfile:/tmp/tautulli.key"
+"#,
+        )
+        .unwrap();
+
+        let paths = collect_secret_file_paths(&value, Some(&config_dir));
+        assert_eq!(
+            paths,
+            vec![
+                config_dir.join("tmdb.key"),
+                PathBuf::from("/tmp/tautulli.key")
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validate_reports_insecure_runtime_permissions() {
+        let dir = tempfile::tempdir().unwrap();
+        let library_dir = dir.path().join("library");
+        let source_dir = dir.path().join("source");
+        let backup_dir = dir.path().join("backups");
+        let db_path = dir.path().join("symlinkarr.db");
+        let secret_path = dir.path().join("tmdb.key");
+
+        std::fs::create_dir_all(&library_dir).unwrap();
+        std::fs::create_dir_all(&source_dir).unwrap();
+        std::fs::create_dir_all(&backup_dir).unwrap();
+        std::fs::write(&db_path, "").unwrap();
+        std::fs::write(&secret_path, "secret").unwrap();
+
+        std::fs::set_permissions(&db_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::set_permissions(&backup_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&secret_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let cfg = Config {
+            libraries: vec![LibraryConfig {
+                name: "Movies".to_string(),
+                path: library_dir,
+                media_type: MediaType::Movie,
+                content_type: Some(ContentType::Movie),
+                depth: 1,
+            }],
+            sources: vec![SourceConfig {
+                name: "RD".to_string(),
+                path: source_dir,
+                media_type: "auto".to_string(),
+            }],
+            api: ApiConfig::default(),
+            realdebrid: RealDebridConfig::default(),
+            decypharr: DecypharrConfig::default(),
+            dmm: DmmConfig::default(),
+            backup: BackupConfig {
+                path: backup_dir,
+                ..BackupConfig::default()
+            },
+            db_path: db_path.display().to_string(),
+            log_level: default_log_level(),
+            daemon: DaemonConfig::default(),
+            symlink: SymlinkConfig::default(),
+            matching: MatchingConfig::default(),
+            prowlarr: ProwlarrConfig::default(),
+            bazarr: BazarrConfig::default(),
+            tautulli: TautulliConfig::default(),
+            plex: PlexConfig::default(),
+            radarr: RadarrConfig::default(),
+            sonarr: SonarrConfig::default(),
+            sonarr_anime: SonarrConfig::default(),
+            features: FeaturesConfig::default(),
+            security: SecurityConfig {
+                enforce_secure_permissions: true,
+                ..SecurityConfig::default()
+            },
+            cleanup: CleanupPolicyConfig::default(),
+            loaded_from: None,
+            secret_files: vec![secret_path],
+        };
+
+        let report = cfg.validate();
+        assert!(report
+            .errors
+            .iter()
+            .any(|err| err.contains("db_path must not be group/world accessible")));
+        assert!(report
+            .errors
+            .iter()
+            .any(|err| err.contains("backup.path must not be group/world accessible")));
+        assert!(report
+            .errors
+            .iter()
+            .any(|err| err.contains("secretfile must not be group/world accessible")));
+    }
+}

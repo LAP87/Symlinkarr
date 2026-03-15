@@ -1,0 +1,12 @@
+pub mod bazarr;
+pub mod decypharr;
+pub mod dmm;
+pub mod http;
+pub mod plex;
+pub mod prowlarr;
+pub mod radarr;
+pub mod realdebrid;
+pub mod sonarr;
+pub mod tautulli;
+pub mod tmdb;
+pub mod tvdb;

@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+
+{% block title %}Prune Preview - Symlinkarr{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>👀 Prune Preview</h1>
+    <p>Review the symlinks that would be removed during cleanup prune operation.</p>
+</div>
+
+{% if findings|length > 0 %}
+<div class="summary-stats">
+    <div class="stat-item">
+        <h3>{{ total }}</h3>
+        <p>Total Findings</p>
+    </div>
+    <div class="stat-item">
+        <h3 class="text-critical">{{ critical }}</h3>
+        <p>Critical</p>
+    </div>
+    <div class="stat-item">
+        <h3 class="text-high">{{ high }}</h3>
+        <p>High</p>
+    </div>
+    <div class="stat-item">
+        <h3 class="text-warning">{{ warning }}</h3>
+        <p>Warning</p>
+    </div>
+</div>
+
+<div class="alert alert-info">
+    <h3>⚠️ Safety Information</h3>
+    <p>
+        <strong>Confirmation Token:</strong> <code>{{ confirmation_token }}</code}<br>
+        This token is required to apply the prune operation. Copy it for use in the confirmation step.
+    </p>
+    <p>
+        Only high/critical findings and safe duplicate warnings will be pruned.
+        Pure warning-only findings (like season count anomalies alone) are excluded for safety.
+    </p>
+</div>
+
+<div class="findings-table">
+    <h2>📋 Findings Details</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Severity</th>
+                <th>Symlink Path</th>
+                <th>Source Path</th>
+                <th>Media ID</th>
+                <th>Season/Episode</th>
+                <th>Reasons</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for finding in findings %}
+            <tr class="finding-row severity-{{ finding.severity | lower }}">
+                <td>
+                    <span class="badge badge-{{ finding.severity | lower }}">
+                        {{ finding.severity }}
+                    </span>
+                </td>
+                <td><code>{{ finding.symlink_path }}</code></td>
+                <td><code>{{ finding.source_path }}</code></td>
+                <td>{{ finding.media_id }}</td>
+                <td>
+                    {% if finding.parsed.season and finding.parsed.episode %}
+                    S{{ "%02d"|format(finding.parsed.season) }}E{{ "%02d"|format(finding.parsed.episode) }}
+                    {% else %}
+                    N/A
+                    {% endif %}
+                </td>
+                <td>
+                    {% for reason in finding.reasons %}
+                    <span class="reason-tag">{{ reason }}</span>
+                    {% endfor %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<div class="btn-group">
+    <form action="/cleanup/prune" method="post" class="prune-form">
+        <input type="hidden" name="report" value="{{ report_path|default('') }}">
+        <div class="form-group">
+            <label for="token">Confirmation Token:</label>
+            <input type="password" id="token" name="token" placeholder="Enter confirmation token from above" required>
+            <small class="text-muted">
+                Get the token from the audit results or preview step above
+            </small>
+        </div>
+        <button type="submit" class="btn btn-danger">
+            ⚠️ Apply Prune ({{ high_or_critical_candidates|default(0) }} links will be removed)
+        </button>
+    </form>
+    <a href="/cleanup" class="btn btn-secondary">← Back to Cleanup</a>
+</div>
+
+{% else %}
+<div class="alert alert-info">
+    <h2>✅ No Issues Found</h2>
+    <p>Your symlink library appears to be in good condition! No problematic links were detected during the audit.</p>
+</div>
+
+<div class="btn-group">
+    <a href="/cleanup" class="btn">← Back to Cleanup</a>
+    <a href="/" class="btn btn-secondary">🏠 Dashboard</a>
+</div>
+{% endif %}
+{% endblock %}

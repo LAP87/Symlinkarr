@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+
+{% block title %}Cleanup Result - Symlinkarr{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>🧹 Cleanup Result</h1>
+</div>
+
+{% if success %}
+<div class="alert alert-success">
+    <h2>✅ Audit Completed Successfully</h2>
+    <p>{{ message }}</p>
+</div>
+
+{% if report_path %}
+<div class="report-info">
+    <h2>📄 Audit Report Generated</h2>
+    <p><strong>Report Location:</strong> <code>{{ report_path }}</code></p>
+    <div class="btn-group">
+        <a href="/cleanup/prune?report={{ report_path }}" class="btn btn-secondary">
+            👀 Preview Prune Actions
+        </a>
+    </div>
+</div>
+{% endif %}
+{% else %}
+<div class="alert alert-error">
+    <h2>❌ Audit Failed</h2>
+    <p>{{ message }}</p>
+</div>
+{% endif %}
+
+<div class="btn-group">
+    <a href="/cleanup" class="btn">← Back to Cleanup</a>
+    <a href="/" class="btn btn-secondary">🏠 Dashboard</a>
+</div>
+{% endblock %}

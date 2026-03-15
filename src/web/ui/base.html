@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Symlinkarr{% endblock %}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script src="https://unpkg.com/alpinejs@3.13.3/dist/cdn.min.js" defer></script>
+    {% block head %}{% endblock %}
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <nav class="sidebar">
+            <a href="/" class="logo">
+                🔗 <span>Symlinkarr</span>
+            </a>
+            <ul class="nav">
+                <li class="nav-item">
+                    <a href="/" class="nav-link {% if page == "dashboard" %}active{% endif %}">
+                        📊 Dashboard
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a href="/status" class="nav-link {% if page == "status" %}active{% endif %}">
+                        📈 Status
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a href="/health" class="nav-link {% if page == "health" %}active{% endif %}">
+                        💚 Health
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a href="/scan" class="nav-link {% if page == "scan" %}active{% endif %}">
+                        🔍 Scan
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a href="/cleanup" class="nav-link {% if page == "cleanup" %}active{% endif %}">
+                        🧹 Cleanup
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a href="/links" class="nav-link {% if page == "links" %}active{% endif %}">
+                        🔗 Links
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a href="/config" class="nav-link {% if page == "config" %}active{% endif %}">
+                        ⚙️ Config
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a href="/doctor" class="nav-link {% if page == "doctor" %}active{% endif %}">
+                        🩺 Doctor
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a href="/discover" class="nav-link {% if page == "discover" %}active{% endif %}">
+                        🧭 Discover
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a href="/backup" class="nav-link {% if page == "backup" %}active{% endif %}">
+                        💾 Backup
+                    </a>
+                </li>
+            </ul>
+        </nav>
+
+        <!-- Main content -->
+        <main class="main-content">
+            {% block content %}{% endblock %}
+        </main>
+    </div>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div>
+            Symlinkarr v0.1.0 |
+            <a href="https://github.com/anthropics/claude-code" target="_blank">GitHub</a>
+        </div>
+        <div class="status-indicator healthy"></div>
+    </footer>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>

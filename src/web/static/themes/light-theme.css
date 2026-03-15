@@ -1,0 +1,25 @@
+/* Symlinkarr Web UI - Light Theme Alternative */
+
+:root {
+  --bg-primary: #ffffff;
+  --bg-secondary: #f8f9fa;
+  --accent-primary: #007bff;
+  --accent-secondary: #28a745;
+  --text-primary: #212529;
+  --text-secondary: #6c757d;
+  --success: #28a745;
+  --warning: #ffc107;
+  --error: #dc3545;
+  --info: #17a2b8;
+  --border-color: #dee2e6;
+  --card-bg: #ffffff;
+}
+
+/* Severity-specific colors for badges and indicators */
+:root {
+  --severity-critical: #dc3545;
+  --severity-high: #fd7e14;
+  --severity-warning: #ffc107;
+  --severity-info: #17a2b8;
+  --severity-success: #28a745;
+}

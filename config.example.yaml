@@ -1,0 +1,99 @@
+security:
+  require_secret_provider: true
+  enforce_roots: true
+  enforce_secure_permissions: true
+
+libraries:
+  - name: "Movies"
+    path: "/mnt/storage/plex/movies"
+    media_type: "movie"
+    depth: 1
+
+  - name: "Series"
+    path: "/mnt/storage/plex/series"
+    media_type: "tv"
+    depth: 1
+
+sources:
+  - name: "RealDebrid"
+    path: "/mnt/decypharr/realdebrid/__all__"
+    media_type: "auto"
+
+db_path: "./data/symlinkarr.db"
+
+daemon:
+  interval_minutes: 60
+  search_missing: false
+
+symlink:
+  naming_template: "{title} - S{season:02}E{episode:02} - {episode_title}"
+  dry_run: false
+
+matching:
+  mode: "strict"
+  metadata_mode: "full"
+
+api:
+  tmdb_api_key: "env:SYMLINKARR_TMDB_API_KEY"
+  # Optional: prefer a TMDB v4 read access token to avoid query-string auth.
+  tmdb_read_access_token: ""
+  tvdb_api_key: "env:SYMLINKARR_TVDB_API_KEY"
+  cache_ttl_hours: 24
+
+realdebrid:
+  api_token: "env:SYMLINKARR_REALDEBRID_API_TOKEN"
+  torrents_page_limit: 5000   # Items per page when listing torrents (max 5000)
+  pagination_delay_ms: 200    # Delay between pagination requests
+  max_pages: 5000             # Safety limit on total pages fetched
+  # Cache note: per-torrent file info is rate-limited to 150 fetches per scan
+  # cycle to avoid RD 429 errors. Run `symlinkarr cache build` for a full sync.
+  # Cache coverage < 80% triggers an automatic filesystem walk fallback.
+
+dmm:
+  url: "https://debridmediamanager.com"
+  only_trusted: true
+  max_search_results: 3
+  max_torrent_results: 10
+
+decypharr:
+  url: "http://host.docker.internal:8282"
+  poll_interval_seconds: 30
+  completion_timeout_minutes: 180
+  relink_timeout_minutes: 15
+  max_in_flight: 3
+  max_requests_per_run: 10
+  queue_page_size: 100
+
+prowlarr:
+  url: "http://host.docker.internal:9696"
+  api_key: "env:SYMLINKARR_PROWLARR_API_KEY"
+
+bazarr:
+  url: "http://host.docker.internal:6767"
+  api_key: "env:SYMLINKARR_BAZARR_API_KEY"
+
+tautulli:
+  url: "http://host.docker.internal:8383"
+  api_key: "env:SYMLINKARR_TAUTULLI_API_KEY"
+
+# Optional: targeted Plex library refresh after Symlinkarr links or relinks content
+# plex:
+#   url: "http://host.docker.internal:32400"
+#   token: "env:SYMLINKARR_PLEX_TOKEN"
+
+radarr:
+  url: "http://host.docker.internal:7878"
+  api_key: "env:SYMLINKARR_RADARR_API_KEY"
+
+sonarr:
+  url: "http://host.docker.internal:8989"
+  api_key: "env:SYMLINKARR_SONARR_API_KEY"
+
+sonarr_anime:
+  url: "http://host.docker.internal:8990"
+  api_key: "env:SYMLINKARR_SONARR_ANIME_API_KEY"
+
+backup:
+  enabled: true
+  path: "./data/backups"
+  max_backups: 25

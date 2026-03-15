@@ -1,0 +1,36 @@
+[package]
+name = "symlinkarr"
+version = "0.1.0"
+edition = "2021"
+authors = ["Symlinkarr Contributors"]
+description = "Intelligent symlink manager for Real-Debrid media libraries"
+license = "Apache-2.0"
+repository = ""
+rust-version = "1.83"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+reqwest = { version = "0.11", features = ["json", "multipart"] }
+regex = "1.10"
+quick-xml = { version = "0.31", features = ["serialize"] }
+sqlx = { version = "0.7", features = ["runtime-tokio-native-tls", "sqlite"] }
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+walkdir = "2.4"
+clap = { version = "4", features = ["derive"] }
+chrono = { version = "0.4", features = ["serde"] }
+unicode-normalization = "0.1"
+
+# Web UI dependencies
+axum = "0.7"
+askama = "0.12"
+askama_axum = "0.4"
+tower-http = { version = "0.5", features = ["fs", "cors", "trace"] }
+tokio-util = { version = "0.7", features = ["io"] }
+
+[dev-dependencies]
+tempfile = "3.10"

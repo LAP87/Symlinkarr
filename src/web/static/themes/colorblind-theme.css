@@ -1,0 +1,48 @@
+/* Symlinkarr Web UI - Colorblind Friendly Theme */
+/* Uses shapes, patterns, and color combinations safe for various types of color blindness */
+
+:root {
+  --bg-primary: #1a1a2e;
+  --bg-secondary: #16213e;
+  --accent-primary: #0066cc;
+  --accent-secondary: #cc6600;
+  --text-primary: #ffffff;
+  --text-secondary: #b0b0b0;
+  --success: #009900;
+  --warning: #cc9900;
+  --error: #cc0000;
+  --info: #0066cc;
+  --border-color: #404040;
+  --card-bg: #222222;
+}
+
+/* Colorblind-safe severity indicators */
+/* Using combinations that work for protanopia, deuteranopia, and tritanopia */
+:root {
+  --severity-critical: #cc0000; /* Red - still distinguishable by brightness */
+  --severity-high: #ff8800;   /* Orange */
+  --severity-warning: #ffcc00; /* Yellow */
+  --severity-info: #0099cc;   /* Blue */
+  --severity-success: #009900; /* Green */
+}
+
+/* Additional visual cues for colorblind users */
+/* These would be implemented in the HTML/templates with icons/patterns */
+:root {
+  --cue-critical: "◼";    /* Solid square */
+  --cue-high: "▲";        /* Triangle up */
+  --cue-warning: "◆";     /* Diamond */
+  --cue-info: "○";        /* Circle */
+  --cue-success: "✓";     /* Check mark */
+}
+
+/* Enhanced focus indicators */
+:focus {
+  box-shadow: 0 0 0 3px --accent-primary, 0 0 0 5px rgba(0, 102, 204, 0.5);
+  outline: 2px solid --accent-primary;
+}
+
+/* Increased contrast for text */
+body {
+  text-shadow: 0 0 1px rgba(0,0,0,0.5);
+}

@@ -1,0 +1,99 @@
+security:
+  require_secret_provider: true
+  enforce_roots: true
+  enforce_secure_permissions: true
+
+libraries:
+  - name: "Movies"
+    path: "/mnt/storage/plex/movies"
+    media_type: "movie"
+    depth: 1
+
+  - name: "Series"
+    path: "/mnt/storage/plex/series"
+    media_type: "tv"
+    depth: 1
+
+  - name: "Anime"
+    path: "/mnt/storage/plex/anime"
+    media_type: "tv"
+    content_type: "anime"
+    depth: 1
+
+sources:
+  - name: "RealDebrid"
+    path: "/mnt/decypharr/realdebrid/__all__"
+    media_type: "auto"
+
+db_path: "/app/data/symlinkarr.db"
+
+daemon:
+  interval_minutes: 60
+
+symlink:
+  naming_template: "{Show} - S{season:02}E{episode:02} - {Title}.{ext}"
+  dry_run: false
+
+matching:
+  mode: "strict"
+  metadata_mode: "full"
+
+api:
+  tmdb_api_key: "secretfile:/app/secrets/tmdb_api_key"
+  tvdb_api_key: "secretfile:/app/secrets/tvdb_api_key"
+  cache_ttl_hours: 24
+
+realdebrid:
+  api_token: "secretfile:/app/secrets/realdebrid_api_token"
+  torrents_page_limit: 5000
+  pagination_delay_ms: 200
+  max_pages: 5000
+
+dmm:
+  url: "https://debridmediamanager.com"
+  only_trusted: true
+  max_search_results: 3
+  max_torrent_results: 10
+
+decypharr:
+  url: "http://host.docker.internal:8282"
+  poll_interval_seconds: 30
+  completion_timeout_minutes: 180
+  relink_timeout_minutes: 15
+  max_in_flight: 3
+  max_requests_per_run: 10
+  queue_page_size: 100
+
+prowlarr:
+  url: "http://host.docker.internal:9696"
+  api_key: "secretfile:/app/secrets/prowlarr_api_key"
+
+bazarr:
+  url: "http://host.docker.internal:6767"
+  api_key: "secretfile:/app/secrets/bazarr_api_key"
+
+tautulli:
+  url: "http://host.docker.internal:8383"
+  api_key: "secretfile:/app/secrets/tautulli_api_key"
+
+# Optional: targeted Plex library refresh after Symlinkarr links or relinks content
+# plex:
+#   url: "http://host.docker.internal:32400"
+#   token: "secretfile:/app/secrets/plex_token"
+
+radarr:
+  url: "http://host.docker.internal:7878"
+  api_key: "secretfile:/app/secrets/radarr_api_key"
+
+sonarr:
+  url: "http://host.docker.internal:8989"
+  api_key: "secretfile:/app/secrets/sonarr_api_key"
+
+sonarr_anime:
+  url: "http://host.docker.internal:8990"
+  api_key: "secretfile:/app/secrets/sonarr_anime_api_key"
+
+backup:
+  enabled: true
+  path: "/app/data/backups"
+  max_backups: 50
