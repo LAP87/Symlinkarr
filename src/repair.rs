@@ -683,7 +683,7 @@ impl Repairer {
             {
                 let path = entry.path();
                 scanned_files += 1;
-                if scanned_files.is_multiple_of(100_000) {
+                if scanned_files % 100_000 == 0 {
                     info!(
                         "Catalog progress ({:?}): {} filesystem entries scanned",
                         content_type, scanned_files
