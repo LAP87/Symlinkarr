@@ -79,7 +79,11 @@ impl<'a> TorrentCache<'a> {
             .filter(|t| {
                 t.status == "downloaded"
                     && match db_map.get(&t.id) {
-                        Some((h, s, fp)) => h != &t.hash || s != &t.status || *fp != t.links.len(),
+                        Some((h, s, fp)) => {
+                            h != &t.hash
+                                || s != &t.status
+                                || (t.links.len() > 0 && *fp != t.links.len())
+                        }
                         None => true,
                     }
             })
@@ -119,12 +123,13 @@ impl<'a> TorrentCache<'a> {
         } else if total_need_fetch > 0 {
             progress.update(format!(
                 "{} torrents need file info ({} total, {} cached)",
-                total_need_fetch,
-                total_api,
-                db_map.len()
+                total_need_fetch, total_api, db_map.len()
             ));
         } else {
-            progress.update(format!("{} torrents, checking for changes...", total_api));
+            progress.update(format!(
+                "{} torrents, checking for changes...",
+                total_api
+            ));
         }
 
         let mut info_fetched = 0usize;
@@ -142,9 +147,12 @@ impl<'a> TorrentCache<'a> {
                     } else if db_status != &t.status {
                         // Status transition (e.g. downloading → downloaded)
                         true
-                    } else if *db_fingerprint != api_links_count {
+                    } else if api_links_count > 0 && *db_fingerprint != api_links_count {
                         // File selection changed: stored selected-file count differs from
                         // the link count reported by the API list endpoint.
+                        // Only compare when API actually returns links — RD's list endpoint
+                        // often returns links=[] even for downloaded torrents, so a 0 from
+                        // the API is not a meaningful signal.
                         debug!(
                             "Torrent {} file selection changed (cached={}, api={})",
                             t.id, db_fingerprint, api_links_count
@@ -168,7 +176,8 @@ impl<'a> TorrentCache<'a> {
                 // within the per-cycle cap.  Others get stored with an empty file
                 // list so we still track status transitions; the scanner's filesystem
                 // fallback handles file discovery for un-cached torrents.
-                let should_fetch_files = t.status == "downloaded" && info_fetched < effective_limit;
+                let should_fetch_files =
+                    t.status == "downloaded" && info_fetched < effective_limit;
 
                 if should_fetch_files {
                     info_fetched += 1;
@@ -185,11 +194,7 @@ impl<'a> TorrentCache<'a> {
 
                             self.db
                                 .upsert_rd_torrent(
-                                    &t.id,
-                                    &t.hash,
-                                    &t.filename,
-                                    &t.status,
-                                    &files_json,
+                                    &t.id, &t.hash, &t.filename, &t.status, &files_json,
                                 )
                                 .await?;
 
