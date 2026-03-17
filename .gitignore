@@ -14,3 +14,4 @@ config.local.yaml
 config.override.yaml
 dry-run-output.log
 .claude/
+references/
