@@ -18,7 +18,7 @@ cargo test --lib matcher       # Run tests in a specific module
 cargo clippy --all-targets --all-features -- -D warnings
 ```
 
-Tests are inline `#[cfg(test)]` modules within each source file (no separate `tests/` directory). 159 tests across 21 files — most heavily tested modules are `repair.rs`, `source_scanner.rs`, `config.rs`, `cleanup_audit.rs`, `main.rs`, and `matcher.rs`.
+Tests are inline `#[cfg(test)]` modules within each source file (no separate `tests/` directory). 217 tests across 28 files — most heavily tested modules are `repair.rs`, `source_scanner.rs`, `config.rs`, `cleanup_audit.rs`, `matcher.rs`, and `commands/`.
 
 ### Common Operations
 ```bash
@@ -64,10 +64,22 @@ docker-compose build           # Rebuild image
 2. `source_scanner.rs` scans RD mount (filesystem walk or RD API cache via `cache.rs`) → parses filenames → produces `SourceItem`s
 3. `matcher.rs` fetches all aliases from TMDB/TVDB → scores source↔library pairs using token-boundary title matching → deterministic best-candidate selection → `MatchResult`s
 4. `linker.rs` creates/updates symlinks with naming template; records each link in SQLite via `db.rs`; reconciles dead/missing links
-5. In daemon mode, `main.rs` polls and repeats the cycle; auto-acquire queue triggers Prowlarr→DMM→Decypharr pipeline
+5. In daemon mode, `commands/daemon.rs` polls and repeats the cycle; auto-acquire queue triggers Prowlarr→DMM→Decypharr pipeline
 
 ### Core Modules (`src/`)
-- `main.rs` — CLI entry point (`clap` derive); all command dispatch logic lives here (large file, ~2000+ lines)
+- `main.rs` — Slim CLI entry point (~310 lines): `clap` derive types, `main()` dispatch, CLI tests
+- `commands/mod.rs` — Shared helpers: `selected_libraries()`, `print_final_summary()`, panel display, cross-cutting utilities
+- `commands/scan.rs` — Full scan→match→link cycle, Plex refresh, missing-search auto-acquire
+- `commands/status.rs` — Database stats + per-service health checks
+- `commands/repair.rs` — Dead symlink repair with self-heal via Prowlarr/Decypharr
+- `commands/cleanup.rs` — Dead-link cleanup, audit, and prune workflows
+- `commands/daemon.rs` — Continuous polling loop
+- `commands/discover.rs` — Gap analysis: RD content not in library
+- `commands/queue.rs` — Auto-acquire job inspection and retry
+- `commands/backup.rs` — JSON backup/restore with safety snapshots
+- `commands/cache.rs` — RD torrent cache build/status
+- `commands/config.rs` — Config validation
+- `commands/doctor.rs` — Preflight health checklist
 - `config.rs` — YAML config parsing; `env:VAR` and `secretfile:` secret indirection; defines `Config`, `ContentType`, `MatchingMode`, `MetadataMode`
 - `models.rs` — Shared data types: `MediaType`, `MediaId`, `LibraryItem`, `SourceItem`, `MatchResult`, `LinkRecord`
 - `db.rs` — SQLite via `sqlx`; schema for links, scan history, cache, acquisition jobs
@@ -78,6 +90,7 @@ docker-compose build           # Rebuild image
 - `cache.rs` — RD torrent metadata cache (avoid filesystem walk when API data available)
 - `cleanup_audit.rs` — Two-step cleanup: `CleanupAuditor` inspects symlinks, emits JSON report with `FindingSeverity`/`FindingReason`
 - `auto_acquire.rs` — Prowlarr→DMM→Decypharr acquisition pipeline with job state machine (Queued→Downloading→Relinking→Completed)
+- `anime_scanner.rs` — Sonarr anime integration: missing episode detection, scene numbering, query building
 - `discovery.rs` — Gap analysis: finds RD content not present in library
 - `repair.rs` — Dead symlink repair: finds replacements on RD mount or via Prowlarr self-heal
 - `backup.rs` — JSON backup/restore of symlink state with safety snapshots before destructive ops

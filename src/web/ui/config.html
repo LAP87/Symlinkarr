@@ -1,0 +1,118 @@
+{% extends "web/ui/base.html" %}
+
+{% block title %}Config - Symlinkarr{% endblock %}
+{% block nav_config %}active{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>&#9881;&#65039; Configuration</h1>
+    <p>Current Symlinkarr configuration and validation.</p>
+</div>
+
+{% match validation_result %}
+{% when Some with (result) %}
+{% if result.valid %}
+<div class="alert alert-success">
+    <strong>&#9989; Configuration is valid</strong>
+    {% if result.warnings|length > 0 %}
+    <ul style="margin-top:0.5rem;padding-left:1.5rem;">
+        {% for w in result.warnings %}
+        <li class="text-warning">&#9888; {{ w }}</li>
+        {% endfor %}
+    </ul>
+    {% endif %}
+</div>
+{% else %}
+<div class="alert alert-error">
+    <strong>&#10060; Configuration has errors</strong>
+    <ul style="margin-top:0.5rem;padding-left:1.5rem;">
+        {% for e in result.errors %}
+        <li>{{ e }}</li>
+        {% endfor %}
+    </ul>
+    {% if result.warnings|length > 0 %}
+    <ul style="margin-top:0.5rem;padding-left:1.5rem;">
+        {% for w in result.warnings %}
+        <li class="text-warning">&#9888; {{ w }}</li>
+        {% endfor %}
+    </ul>
+    {% endif %}
+</div>
+{% endif %}
+{% when None %}
+{% endmatch %}
+
+<div class="card" style="margin-bottom:1rem;">
+    <form action="/config/validate" method="post">
+        <button type="submit" class="btn btn-primary">&#9989; Validate Config</button>
+    </form>
+</div>
+
+<div class="card">
+    <h2 class="section-title">Libraries ({{ config.libraries|length }})</h2>
+    {% if config.libraries|length > 0 %}
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Path</th>
+                <th>Media Type</th>
+                <th>Content Type</th>
+                <th>Depth</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for lib in config.libraries %}
+            <tr>
+                <td><strong>{{ lib.name }}</strong></td>
+                <td><code class="mono">{{ lib.path.display() }}</code></td>
+                <td>{{ lib.media_type }}</td>
+                <td>
+                    {% match lib.content_type %}
+                    {% when Some with (ct) %}{{ ct }}{% when None %}<span class="text-muted">auto</span>{% endmatch %}
+                </td>
+                <td>{{ lib.depth }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="text-muted">No libraries configured.</p>
+    {% endif %}
+</div>
+
+<div class="card">
+    <h2 class="section-title">Sources ({{ config.sources|length }})</h2>
+    {% if config.sources|length > 0 %}
+    <table class="data-table">
+        <thead>
+            <tr><th>Name</th><th>Path</th><th>Media Type</th></tr>
+        </thead>
+        <tbody>
+            {% for src in config.sources %}
+            <tr>
+                <td><strong>{{ src.name }}</strong></td>
+                <td><code class="mono">{{ src.path.display() }}</code></td>
+                <td>{{ src.media_type }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="text-muted">No sources configured.</p>
+    {% endif %}
+</div>
+
+<div class="card">
+    <h2 class="section-title">General Settings</h2>
+    <table class="data-table">
+        <tbody>
+            <tr><td><strong>Database Path</strong></td><td><code class="mono">{{ config.db_path }}</code></td></tr>
+            <tr><td><strong>Log Level</strong></td><td>{{ config.log_level }}</td></tr>
+            <tr><td><strong>Matching Mode</strong></td><td>{{ config.matching.mode }}</td></tr>
+            <tr><td><strong>Metadata Mode</strong></td><td>{{ config.matching.metadata_mode }}</td></tr>
+            <tr><td><strong>Backup Path</strong></td><td><code class="mono">{{ config.backup.path.display() }}</code></td></tr>
+        </tbody>
+    </table>
+</div>
+{% endblock %}

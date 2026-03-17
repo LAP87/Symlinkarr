@@ -12,13 +12,15 @@ const MAX_ATTEMPTS: usize = 6;
 const BASE_BACKOFF_MS: u64 = 250;
 const RATE_LIMIT_BASE_BACKOFF_SECS: u64 = 2;
 
-/// Minimum gap between requests to rate-limited APIs.
-/// TMDB allows ~40 requests per 10 seconds. We use 280ms to provide
-/// padding against network jitter and edge-server race conditions.
-const RATE_LIMIT_MIN_GAP_MS: u64 = 280;
-// Real-Debrid allows ~1 request per 250ms on most endpoints.
-// During massive continuous cache syncs, 250ms is too aggressive and triggers 429s.
-// 400ms provides a safer conservative baseline.
+/// TMDB: 40 requests per 10 seconds = 250ms minimum gap.
+/// At 90% capacity → 275ms between requests.
+const RATE_LIMIT_TMDB_GAP_MS: u64 = 275;
+/// TVDB: No strict published limit; ~50 req/10s is safe = 200ms gap.
+/// At 90% capacity → 220ms between requests.
+const RATE_LIMIT_TVDB_GAP_MS: u64 = 220;
+/// Real-Debrid: ~1 request per 250ms on most endpoints.
+/// During massive continuous cache syncs, 250ms triggers 429s.
+/// 400ms provides a safer baseline for sustained bursts.
 const RATE_LIMIT_RD_GAP_MS: u64 = 400;
 
 // Debrid Media Manager (DMM) is a community API and can be strict.
@@ -32,30 +34,30 @@ struct RateLimiter {
 impl RateLimiter {
     fn new(gap_ms: u64) -> Self {
         let (tx, mut rx) = mpsc::channel::<oneshot::Sender<()>>(1000);
-
+        
         tokio::spawn(async move {
             let gap = Duration::from_millis(gap_ms);
             let mut last = Instant::now() - gap; // Allow first request immediately
-
+            
             while let Some(req_tx) = rx.recv().await {
                 let now = Instant::now();
                 let elapsed = now.saturating_duration_since(last);
-
+                
                 if elapsed < gap {
                     sleep(gap - elapsed).await;
                     last = Instant::now();
                 } else {
                     last = now;
                 }
-
+                
                 // Signal the requester that it's their turn
                 let _ = req_tx.send(());
             }
         });
-
+        
         Self { sender: tx }
     }
-
+    
     async fn acquire(&self) {
         let (tx, rx) = oneshot::channel();
         if self.sender.send(tx).await.is_ok() {
@@ -74,12 +76,12 @@ pub async fn apply_rate_limit(req: &RequestBuilder) {
         if let Ok(built_req) = req_clone.build() {
             let url = built_req.url();
             let host = url.host_str().unwrap_or("");
-
+            
             if host.contains("api.themoviedb.org") {
-                let limit = TMDB_API.get_or_init(|| RateLimiter::new(RATE_LIMIT_MIN_GAP_MS));
+                let limit = TMDB_API.get_or_init(|| RateLimiter::new(RATE_LIMIT_TMDB_GAP_MS));
                 limit.acquire().await;
             } else if host.contains("api4.thetvdb.com") {
-                let limit = TVDB_API.get_or_init(|| RateLimiter::new(RATE_LIMIT_MIN_GAP_MS));
+                let limit = TVDB_API.get_or_init(|| RateLimiter::new(RATE_LIMIT_TVDB_GAP_MS));
                 limit.acquire().await;
             } else if host.contains("api.real-debrid.com") {
                 let limit = RD_API.get_or_init(|| RateLimiter::new(RATE_LIMIT_RD_GAP_MS));
@@ -120,11 +122,7 @@ pub async fn send_with_retry(request: RequestBuilder) -> Result<Response> {
         // Pace requests to rate-limited APIs (TMDB/TVDB) BEFORE every attempt
         apply_rate_limit(&req).await;
 
-        let host = req
-            .try_clone()
-            .and_then(|r| r.build().ok())
-            .and_then(|r| r.url().host_str().map(|s| s.to_string()))
-            .unwrap_or_else(|| "unknown_host".to_string());
+        let host = req.try_clone().and_then(|r| r.build().ok()).and_then(|r| r.url().host_str().map(|s| s.to_string())).unwrap_or_else(|| "unknown_host".to_string());
 
         match req.send().await {
             Ok(resp) => {

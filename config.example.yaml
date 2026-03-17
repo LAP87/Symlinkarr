@@ -38,7 +38,7 @@ api:
   # Optional: prefer a TMDB v4 read access token to avoid query-string auth.
   tmdb_read_access_token: ""
   tvdb_api_key: "env:SYMLINKARR_TVDB_API_KEY"
-  cache_ttl_hours: 24
+  cache_ttl_hours: 720
 
 realdebrid:
   api_token: "env:SYMLINKARR_REALDEBRID_API_TOKEN"
@@ -63,6 +63,10 @@ decypharr:
   max_in_flight: 3
   max_requests_per_run: 10
   queue_page_size: 100
+  # Arr instance names sent to Decypharr (must match your Decypharr config)
+  # arr_name_movie: "radarr"
+  # arr_name_tv: "sonarr"
+  # arr_name_anime: "sonarr-anime"
 
 prowlarr:
   url: "http://host.docker.internal:9696"
@@ -97,3 +101,8 @@ backup:
   enabled: true
   path: "./data/backups"
   max_backups: 25
+
+# Web UI (optional, for dashboard access)
+web:
+  enabled: false
+  port: 8726

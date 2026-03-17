@@ -1,13 +1,13 @@
 services:
   symlinkarr:
     build: .
-    # image: ghcr.io/symlinkarr/symlinkarr:latest  # Use when published
+    # image: ghcr.io/lenny/symlinkarr:latest  # Use when published
     container_name: symlinkarr
     restart: unless-stopped
     user: "1000:1000"
     command: ["--config", "/app/config/config.yaml", "daemon"]
     environment:
-      - TZ=Europe/London
+      - TZ=Europe/Stockholm
       - RUST_LOG=info
     extra_hosts:
       - "host.docker.internal:host-gateway"

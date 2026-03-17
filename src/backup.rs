@@ -377,11 +377,9 @@ impl BackupManager {
         });
 
         while files.len() > max_count {
-            if let Some(oldest) = files.first() {
-                info!("Rotating old backup: {:?}", oldest);
-                std::fs::remove_file(oldest)?;
-                files.remove(0);
-            }
+            let oldest = files.remove(0);
+            info!("Rotating old backup: {:?}", oldest);
+            std::fs::remove_file(&oldest)?;
         }
 
         Ok(())

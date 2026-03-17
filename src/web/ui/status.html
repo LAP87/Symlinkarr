@@ -1,0 +1,74 @@
+{% extends "web/ui/base.html" %}
+
+{% block title %}Status - Symlinkarr{% endblock %}
+{% block nav_status %}active{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>&#128200; Status</h1>
+    <p>Detailed system status and recent symlink activity.</p>
+</div>
+
+<div class="card-grid">
+    <div class="card" style="text-align:center;">
+        <div class="card-value text-success">{{ stats.active_links }}</div>
+        <div class="card-label">Active Links</div>
+    </div>
+    <div class="card" style="text-align:center;">
+        <div class="card-value {% if stats.dead_links > 0 %}text-error{% else %}text-success{% endif %}">{{ stats.dead_links }}</div>
+        <div class="card-label">Dead Links</div>
+    </div>
+    <div class="card" style="text-align:center;">
+        <div class="card-value">{{ stats.total_scans }}</div>
+        <div class="card-label">Total Scans</div>
+    </div>
+    <div class="card" style="text-align:center;">
+        <div class="card-label" style="font-size:0.875rem;margin-bottom:0.25rem;">Last Scan</div>
+        <div style="font-size:0.9rem;">
+            {% match stats.last_scan %}
+            {% when Some with (ts) %}{{ ts }}{% when None %}<span class="text-muted">Never</span>{% endmatch %}
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <h2 class="section-title">Recent Links (last 50)</h2>
+    {% if recent_links|length > 0 %}
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Media ID</th>
+                <th>Type</th>
+                <th>Target Path</th>
+                <th>Source Path</th>
+                <th>Status</th>
+                <th>Created</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for link in recent_links %}
+            <tr>
+                <td>{{ link.media_id }}</td>
+                <td>{{ link.media_type }}</td>
+                <td><code class="mono">{{ link.target_path.display() }}</code></td>
+                <td><code class="mono">{{ link.source_path.display() }}</code></td>
+                <td>
+                    {% match link.status %}
+                    {% when crate::models::LinkStatus::Active %}<span class="badge badge-success">Active</span>
+                    {% when crate::models::LinkStatus::Dead %}<span class="badge badge-danger">Dead</span>
+                    {% when crate::models::LinkStatus::Removed %}<span class="badge badge-warning">Removed</span>
+                    {% endmatch %}
+                </td>
+                <td>
+                    {% match link.created_at %}
+                    {% when Some with (ts) %}<span class="text-muted">{{ ts }}</span>{% when None %}&mdash;{% endmatch %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="text-muted">No links found.</p>
+    {% endif %}
+</div>
+{% endblock %}

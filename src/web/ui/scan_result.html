@@ -1,0 +1,71 @@
+{% extends "web/ui/base.html" %}
+
+{% block title %}Scan Result - Symlinkarr{% endblock %}
+{% block nav_scan %}active{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>&#128269; Scan Result</h1>
+    {% if dry_run %}<span class="badge badge-info" style="font-size:1rem;">DRY RUN</span>{% endif %}
+</div>
+
+{% if success %}
+<div class="alert alert-success">
+    <strong>&#9989; Scan Completed</strong><br>
+    {{ message }}
+</div>
+{% else %}
+<div class="alert alert-error">
+    <strong>&#10060; Scan Failed</strong><br>
+    {{ message }}
+</div>
+{% endif %}
+
+{% if matches|length > 0 %}
+<div class="card">
+    <h2 class="section-title">Matches Found ({{ matches|length }})</h2>
+    {% if dry_run %}
+    <p class="text-muted mb-2">Dry run: no symlinks were created.</p>
+    {% endif %}
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Library Title</th>
+                <th>Media ID</th>
+                <th>Source File</th>
+                <th>Season</th>
+                <th>Episode</th>
+                <th>Confidence</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for m in matches %}
+            <tr>
+                <td>{{ m.library_item.title }}</td>
+                <td><code class="mono">{{ m.library_item.id }}</code></td>
+                <td><code class="mono">{{ m.source_item.path.display() }}</code></td>
+                <td>
+                    {% match m.source_item.season %}
+                    {% when Some with (s) %}S{{ s }}{% when None %}&mdash;{% endmatch %}
+                </td>
+                <td>
+                    {% match m.source_item.episode %}
+                    {% when Some with (e) %}E{{ e }}{% when None %}&mdash;{% endmatch %}
+                </td>
+                <td>
+                    <span class="{% if m.confidence >= 0.9 %}text-success{% else if m.confidence >= 0.7 %}text-warning{% else %}text-error{% endif %}">
+                        {{ m.confidence }}
+                    </span>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+<div class="actions mt-2">
+    <a href="/scan" class="btn btn-secondary">&#8592; Back to Scan</a>
+    <a href="/" class="btn">&#127968; Dashboard</a>
+</div>
+{% endblock %}

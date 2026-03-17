@@ -20,6 +20,16 @@ pub enum ContentType {
     Movie,
 }
 
+impl std::fmt::Display for ContentType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ContentType::Tv => write!(f, "tv"),
+            ContentType::Anime => write!(f, "anime"),
+            ContentType::Movie => write!(f, "movie"),
+        }
+    }
+}
+
 impl ContentType {
     /// Derive content type from MediaType (fallback when not specified)
     pub fn from_media_type(mt: MediaType) -> Self {
@@ -38,6 +48,16 @@ pub enum MatchingMode {
     Strict,
     Balanced,
     Aggressive,
+}
+
+impl std::fmt::Display for MatchingMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MatchingMode::Strict => write!(f, "strict"),
+            MatchingMode::Balanced => write!(f, "balanced"),
+            MatchingMode::Aggressive => write!(f, "aggressive"),
+        }
+    }
 }
 
 impl MatchingMode {
@@ -59,6 +79,16 @@ pub enum MetadataMode {
     Off,
 }
 
+impl std::fmt::Display for MetadataMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MetadataMode::Full => write!(f, "full"),
+            MetadataMode::CacheOnly => write!(f, "cache_only"),
+            MetadataMode::Off => write!(f, "off"),
+        }
+    }
+}
+
 impl MetadataMode {
     pub fn allows_network(self) -> bool {
         matches!(self, MetadataMode::Full)
@@ -66,7 +96,7 @@ impl MetadataMode {
 }
 
 /// Matching configuration.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MatchingConfig {
     /// Matching mode: strict, balanced, or aggressive
     #[serde(default)]
@@ -93,8 +123,30 @@ impl Default for MatchingConfig {
     }
 }
 
+/// Web UI configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_web_port")]
+    pub port: u16,
+}
+
+fn default_web_port() -> u16 {
+    8726
+}
+
+impl Default for WebConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            port: default_web_port(),
+        }
+    }
+}
+
 /// Top-level application configuration
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// Plex/Jellyfin library directories to scan for ID-tagged folders
     pub libraries: Vec<LibraryConfig>,
@@ -161,6 +213,9 @@ pub struct Config {
     /// Cleanup policy
     #[serde(default)]
     pub cleanup: CleanupPolicyConfig,
+    /// Web UI settings
+    #[serde(default)]
+    pub web: WebConfig,
     /// Path of the config file that was loaded, when available
     #[serde(skip)]
     pub loaded_from: Option<PathBuf>,
@@ -176,7 +231,7 @@ pub struct ValidationReport {
 }
 
 /// Configuration for a Plex/Jellyfin library directory
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LibraryConfig {
     /// Human-readable name (e.g., "Serier", "Filmer", "Anime")
     pub name: String,
@@ -194,7 +249,7 @@ pub struct LibraryConfig {
 }
 
 /// Configuration for a Real-Debrid source mount
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceConfig {
     /// Human-readable name (e.g., "RealDebrid")
     pub name: String,
@@ -206,7 +261,7 @@ pub struct SourceConfig {
 }
 
 /// API client configuration
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiConfig {
     /// TMDB API key (required for alias matching)
     #[serde(default)]
@@ -234,7 +289,7 @@ impl Default for ApiConfig {
 }
 
 /// Daemon/scheduler configuration
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonConfig {
     /// Whether to run in daemon mode
     #[serde(default)]
@@ -258,7 +313,7 @@ impl Default for DaemonConfig {
 }
 
 /// Symlink creation settings
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SymlinkConfig {
     /// Dry-run mode: log actions without creating symlinks
     #[serde(default)]
@@ -278,7 +333,7 @@ impl Default for SymlinkConfig {
 }
 
 /// Real-Debrid API configuration
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RealDebridConfig {
     /// RD API token (from https://real-debrid.com/apitoken)
     #[serde(default)]
@@ -306,7 +361,7 @@ impl Default for RealDebridConfig {
 }
 
 /// Decypharr integration configuration
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DecypharrConfig {
     /// Decypharr web UI URL (e.g., "http://localhost:8282")
     #[serde(default = "default_decypharr_url")]
@@ -332,6 +387,15 @@ pub struct DecypharrConfig {
     /// Page size used when polling Decypharr queue endpoints
     #[serde(default = "default_decypharr_queue_page_size")]
     pub queue_page_size: usize,
+    /// Arr instance name for movies (sent to Decypharr)
+    #[serde(default = "default_arr_name_movie")]
+    pub arr_name_movie: String,
+    /// Arr instance name for TV shows (sent to Decypharr)
+    #[serde(default = "default_arr_name_tv")]
+    pub arr_name_tv: String,
+    /// Arr instance name for anime (sent to Decypharr)
+    #[serde(default = "default_arr_name_anime")]
+    pub arr_name_anime: String,
 }
 
 impl Default for DecypharrConfig {
@@ -345,12 +409,15 @@ impl Default for DecypharrConfig {
             max_in_flight: default_decypharr_max_in_flight(),
             max_requests_per_run: default_decypharr_max_requests_per_run(),
             queue_page_size: default_decypharr_queue_page_size(),
+            arr_name_movie: default_arr_name_movie(),
+            arr_name_tv: default_arr_name_tv(),
+            arr_name_anime: default_arr_name_anime(),
         }
     }
 }
 
 /// Debrid Media Manager integration
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DmmConfig {
     /// Public or self-hosted DMM URL (e.g. "https://debridmediamanager.com")
     #[serde(default)]
@@ -378,7 +445,7 @@ impl Default for DmmConfig {
 }
 
 /// Prowlarr indexer integration
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProwlarrConfig {
     /// Prowlarr URL (e.g., "http://localhost:9696")
     #[serde(default)]
@@ -389,7 +456,7 @@ pub struct ProwlarrConfig {
 }
 
 /// Bazarr subtitle integration
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct BazarrConfig {
     /// Bazarr URL (e.g., "http://localhost:6767")
     #[serde(default)]
@@ -400,7 +467,7 @@ pub struct BazarrConfig {
 }
 
 /// Tautulli Plex monitoring integration
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TautulliConfig {
     /// Tautulli URL (e.g., "http://localhost:8383")
     #[serde(default)]
@@ -411,7 +478,7 @@ pub struct TautulliConfig {
 }
 
 /// Plex integration
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PlexConfig {
     /// Plex URL (e.g. "http://localhost:32400")
     #[serde(default)]
@@ -422,7 +489,7 @@ pub struct PlexConfig {
 }
 
 /// Radarr integration
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RadarrConfig {
     /// Radarr URL (e.g., "http://localhost:7878")
     #[serde(default)]
@@ -433,7 +500,7 @@ pub struct RadarrConfig {
 }
 
 /// Sonarr integration
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SonarrConfig {
     /// Sonarr URL (e.g., "http://localhost:8989")
     #[serde(default)]
@@ -444,7 +511,7 @@ pub struct SonarrConfig {
 }
 
 /// Symlink backup settings
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackupConfig {
     /// Enable automatic backups
     #[serde(default = "default_backup_enabled")]
@@ -496,7 +563,7 @@ fn default_max_safety_backups() -> usize {
 }
 
 /// Feature flags controlling rollout behavior.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeaturesConfig {
     /// Enable anti-churn reconciliation path in scan/link lifecycle
     #[serde(default = "default_true")]
@@ -512,7 +579,7 @@ impl Default for FeaturesConfig {
 }
 
 /// Security policy controls for destructive operations and secret handling.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecurityConfig {
     /// Enforce path allowlists for destructive operations
     #[serde(default = "default_true")]
@@ -536,14 +603,14 @@ impl Default for SecurityConfig {
 }
 
 /// Cleanup policy configuration.
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CleanupPolicyConfig {
     #[serde(default)]
     pub prune: PrunePolicyConfig,
 }
 
 /// Prune-policy settings.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrunePolicyConfig {
     /// Enforce report freshness/scope/version/confirmation policy before apply
     #[serde(default = "default_true")]
@@ -601,7 +668,7 @@ fn default_depth() -> usize {
 }
 
 fn default_cache_ttl() -> u64 {
-    168 // 7 days
+    87600 // 10 years — metadata rarely changes; users can clear manually
 }
 
 fn default_interval() -> u64 {
@@ -650,6 +717,18 @@ fn default_decypharr_max_requests_per_run() -> usize {
 
 fn default_decypharr_queue_page_size() -> usize {
     100
+}
+
+fn default_arr_name_movie() -> String {
+    "radarr".to_string()
+}
+
+fn default_arr_name_tv() -> String {
+    "sonarr".to_string()
+}
+
+fn default_arr_name_anime() -> String {
+    "sonarr-anime".to_string()
 }
 
 fn default_dmm_only_trusted() -> bool {
@@ -762,11 +841,6 @@ impl Config {
             report
                 .errors
                 .push("api.cache_ttl_hours must be greater than 0".to_string());
-        } else if self.api.cache_ttl_hours > 24 * 30 {
-            report.warnings.push(
-                "api.cache_ttl_hours is very high; stale metadata may linger for a long time"
-                    .to_string(),
-            );
         }
 
         if self.has_decypharr() {
@@ -951,6 +1025,12 @@ impl Config {
     /// Check if Sonarr Anime is configured
     pub fn has_sonarr_anime(&self) -> bool {
         !self.sonarr_anime.url.is_empty() && !self.sonarr_anime.api_key.is_empty()
+    }
+
+    /// Check if the web UI is enabled
+    #[allow(dead_code)]
+    pub fn has_web(&self) -> bool {
+        self.web.enabled
     }
 
     fn resolve_secret_fields(&mut self, config_dir: Option<&Path>) -> Result<()> {
@@ -1161,7 +1241,9 @@ fn load_dotenv_file(path: &Path) -> Result<usize> {
         }
 
         let value = parse_dotenv_value(value.trim());
-        std::env::set_var(key, value);
+        // SAFETY: called once during single-threaded config init, before any
+        // async runtime or worker threads are spawned.
+        unsafe { std::env::set_var(key, value) };
         loaded += 1;
     }
 
@@ -1595,6 +1677,7 @@ realdebrid:
             features: FeaturesConfig::default(),
             security: SecurityConfig::default(),
             cleanup: CleanupPolicyConfig::default(),
+            web: WebConfig::default(),
             loaded_from: None,
             secret_files: Vec::new(),
         };
@@ -1646,6 +1729,7 @@ realdebrid:
             features: FeaturesConfig::default(),
             security: SecurityConfig::default(),
             cleanup: CleanupPolicyConfig::default(),
+            web: WebConfig::default(),
             loaded_from: None,
             secret_files: Vec::new(),
         };
@@ -1689,6 +1773,7 @@ realdebrid:
             features: FeaturesConfig::default(),
             security: SecurityConfig::default(),
             cleanup: CleanupPolicyConfig::default(),
+            web: WebConfig::default(),
             loaded_from: None,
             secret_files: Vec::new(),
         };
@@ -1761,6 +1846,7 @@ realdebrid:
             features: FeaturesConfig::default(),
             security: SecurityConfig::default(),
             cleanup: CleanupPolicyConfig::default(),
+            web: WebConfig::default(),
             loaded_from: None,
             secret_files: Vec::new(),
         };
@@ -1813,6 +1899,7 @@ realdebrid:
             features: FeaturesConfig::default(),
             security: SecurityConfig::default(),
             cleanup: CleanupPolicyConfig::default(),
+            web: WebConfig::default(),
             loaded_from: None,
             secret_files: Vec::new(),
         }
@@ -1831,12 +1918,12 @@ realdebrid:
     }
 
     #[test]
-    fn validate_warns_for_very_high_api_cache_ttl() {
+    fn validate_accepts_high_api_cache_ttl() {
         let mut cfg = runtime_config_fixture();
-        cfg.api.cache_ttl_hours = 24 * 31;
+        cfg.api.cache_ttl_hours = 87600; // 10 years — default
 
         let report = cfg.validate_runtime_settings();
-        assert!(report
+        assert!(report.warnings.is_empty() || !report
             .warnings
             .iter()
             .any(|warning| warning.contains("api.cache_ttl_hours")));
@@ -1947,6 +2034,7 @@ tautulli:
                 ..SecurityConfig::default()
             },
             cleanup: CleanupPolicyConfig::default(),
+            web: WebConfig::default(),
             loaded_from: None,
             secret_files: vec![secret_path],
         };

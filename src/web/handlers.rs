@@ -2,29 +2,23 @@
 
 use axum::{
     extract::{Form, Query, State},
-    http::StatusCode,
     response::{Html, IntoResponse},
-    Json,
 };
+use askama::Template;
 use serde::Deserialize;
 use std::collections::HashMap;
-use tokio::sync::oneshot;
+use std::path::PathBuf;
 use tracing::{error, info};
+use chrono::Utc;
 
-use crate::api::realdebrid::RealDebridClient;
 use crate::api::tmdb::TmdbClient;
 use crate::api::tvdb::TvdbClient;
 use crate::backup::BackupManager;
-use crate::cleanup_audit::{CleanupAuditor, CleanupScope};
-use crate::config::Config;
-use crate::db::Database;
-use crate::discovery::Discovery;
+use crate::cleanup_audit::{self, CleanupAuditor, CleanupScope};
 use crate::library_scanner::LibraryScanner;
 use crate::linker::Linker;
 use crate::matcher::Matcher;
-use crate::models::{LibraryItem, MediaType};
 use crate::source_scanner::SourceScanner;
-use crate::utils::normalize;
 
 use super::templates::*;
 use super::WebState;
@@ -34,8 +28,13 @@ pub async fn get_dashboard(State(state): State<WebState>) -> impl IntoResponse {
     info!("Serving dashboard");
 
     // Fetch database stats
-    let stats = match state.database.get_stats().await {
-        Ok(s) => s,
+    let stats = match state.database.get_web_stats().await {
+        Ok(s) => DashboardStats {
+            active_links: s.active_links,
+            dead_links: s.dead_links,
+            total_scans: s.total_scans,
+            last_scan: None,
+        },
         Err(e) => {
             error!("Failed to get stats: {}", e);
             DashboardStats::default()
@@ -50,8 +49,13 @@ pub async fn get_dashboard(State(state): State<WebState>) -> impl IntoResponse {
 pub async fn get_status(State(state): State<WebState>) -> impl IntoResponse {
     info!("Serving status page");
 
-    let stats = match state.database.get_stats().await {
-        Ok(s) => s,
+    let stats = match state.database.get_web_stats().await {
+        Ok(s) => DashboardStats {
+            active_links: s.active_links,
+            dead_links: s.dead_links,
+            total_scans: s.total_scans,
+            last_scan: None,
+        },
         Err(e) => {
             error!("Failed to get stats: {}", e);
             DashboardStats::default()
@@ -91,50 +95,46 @@ pub async fn get_health(State(state): State<WebState>) -> impl IntoResponse {
     );
 
     // Check external services
-    if let Some(ref tmdb_config) = state.config.tmdb {
-        if let Some(ref api_key) = tmdb_config.api_key {
-            if !api_key.is_empty() {
-                let status = if tmdb_config.api_key.is_some() {
-                    "configured"
-                } else {
-                    "missing"
-                };
-                health_checks.insert(
-                    "tmdb".to_string(),
-                    HealthCheck {
-                        service: "TMDB API".to_string(),
-                        status: status.to_string(),
-                        message: format!("API key: {}", if api_key.len() > 4 { "****" } else { "set" }),
-                    },
-                );
-            }
-        }
+    if state.config.has_tmdb() {
+        health_checks.insert(
+            "tmdb".to_string(),
+            HealthCheck {
+                service: "TMDB API".to_string(),
+                status: "configured".to_string(),
+                message: "API key set".to_string(),
+            },
+        );
+    } else {
+        health_checks.insert(
+            "tmdb".to_string(),
+            HealthCheck {
+                service: "TMDB API".to_string(),
+                status: "missing".to_string(),
+                message: "No API key configured".to_string(),
+            },
+        );
     }
 
-    if let Some(ref tvdb_config) = state.config.tvdb {
-        if tvdb_config.api_key.is_some() {
-            health_checks.insert(
-                "tvdb".to_string(),
-                HealthCheck {
-                    service: "TVDB API".to_string(),
-                    status: "configured".to_string(),
-                    message: "API key set".to_string(),
-                },
-            );
-        }
+    if state.config.has_tvdb() {
+        health_checks.insert(
+            "tvdb".to_string(),
+            HealthCheck {
+                service: "TVDB API".to_string(),
+                status: "configured".to_string(),
+                message: "API key set".to_string(),
+            },
+        );
     }
 
-    if let Some(ref rd_config) = state.config.realdebrid {
-        if !rd_config.api_key.is_empty() {
-            health_checks.insert(
-                "realdebrid".to_string(),
-                HealthCheck {
-                    service: "Real-Debrid API".to_string(),
-                    status: "configured".to_string(),
-                    message: "API key set".to_string(),
-                },
-            );
-        }
+    if state.config.has_realdebrid() {
+        health_checks.insert(
+            "realdebrid".to_string(),
+            HealthCheck {
+                service: "Real-Debrid API".to_string(),
+                status: "configured".to_string(),
+                message: "API token set".to_string(),
+            },
+        );
     }
 
     let template = HealthTemplate {
@@ -190,24 +190,26 @@ pub async fn post_scan_trigger(
             .collect()
     };
 
-    let source_items = source_scanner.scan_source(&state.config.sources);
+    let source_items = source_scanner.scan_all(&state.config.sources);
 
     // Create matcher and linker
-    let tmdb = state
-        .config
-        .tmdb
-        .as_ref()
-        .and_then(|c| c.api_key.as_ref())
-        .filter(|k| !k.is_empty())
-        .map(|_| TmdbClient::new(state.config.tmdb.clone().unwrap()));
+    let cfg = &state.config;
+    let tmdb = if cfg.has_tmdb() {
+        let rat = if cfg.api.tmdb_read_access_token.is_empty() {
+            None
+        } else {
+            Some(cfg.api.tmdb_read_access_token.as_str())
+        };
+        Some(TmdbClient::new(&cfg.api.tmdb_api_key, rat, cfg.api.cache_ttl_hours))
+    } else {
+        None
+    };
 
-    let tvdb = state
-        .config
-        .tvdb
-        .as_ref()
-        .and_then(|c| c.api_key.as_ref())
-        .filter(|k| !k.is_empty())
-        .map(|_| TvdbClient::new(state.config.tvdb.clone().unwrap()));
+    let tvdb = if cfg.has_tvdb() {
+        Some(TvdbClient::new(&cfg.api.tvdb_api_key, cfg.api.cache_ttl_hours))
+    } else {
+        None
+    };
 
     let matcher = Matcher::new(
         tmdb,
@@ -240,11 +242,11 @@ pub async fn post_scan_trigger(
     let linker = Linker::new_with_options(
         form.dry_run,
         state.config.matching.mode.is_strict(),
-        &state.config.linker.naming_template,
+        &state.config.symlink.naming_template,
         true,
     );
 
-    let link_result = match linker.process_matches(&matches, &matcher, &state.database).await {
+    let link_result = match linker.process_matches(&matches, &state.database).await {
         Ok(r) => r,
         Err(e) => {
             error!("Link failed: {}", e);
@@ -318,7 +320,7 @@ pub async fn get_cleanup(State(state): State<WebState>) -> impl IntoResponse {
 
     let template = CleanupTemplate {
         libraries: state.config.libraries.clone(),
-        last_report: last_report.cloned(),
+        last_report,
     };
 
     Html(template.render().unwrap_or_else(|e| e.to_string()))
@@ -349,18 +351,21 @@ pub async fn post_cleanup_audit(
     let auditor = CleanupAuditor::new_with_progress(&state.config, &state.database, true);
 
     // Use custom output path if library is specified, otherwise use default
+    let ts = Utc::now().format("%Y%m%d-%H%M%S");
     let output_path = if let Some(library_name) = &form.library {
         // Create a library-specific report path
-        let ts = Utc::now().format("%Y%m%d-%H%M%S");
         state.config.backup.path.join(format!(
             "cleanup-audit-{}-{}-{}.json",
             form.scope, library_name, ts
         ))
     } else {
-        &state.config.cleanup_audit.output_path
+        state.config.backup.path.join(format!(
+            "cleanup-audit-{}-{}.json",
+            form.scope, ts
+        ))
     };
 
-    let report_path = match auditor.run_audit(scope, Some(output_path)).await {
+    let report_path = match auditor.run_audit(scope, Some(&output_path)).await {
         Ok(p) => p,
         Err(e) => {
             error!("Audit failed: {}", e);
@@ -431,7 +436,7 @@ pub async fn get_cleanup_prune(
     }
 
     // Parse the JSON report to show actual preview data
-    let json = match std::fs::read_to_string(&report_path) {
+    let json = match std::fs::read_to_string(report_path) {
         Ok(j) => j,
         Err(e) => {
             error!("Failed to read cleanup report: {}", e);
@@ -551,7 +556,7 @@ pub async fn post_cleanup_prune(
         );
     }
 
-    let json = match std::fs::read_to_string(&report_path) {
+    let json = match std::fs::read_to_string(report_path) {
         Ok(j) => j,
         Err(e) => {
             error!("Failed to read cleanup report: {}", e);
@@ -587,7 +592,7 @@ pub async fn post_cleanup_prune(
     let outcome = match cleanup_audit::run_prune(
         &state.config,
         &state.database,
-        &report_path,
+        report_path,
         true, // apply
         None, // max_delete
         Some(&form.token), // confirmation_token
@@ -682,7 +687,7 @@ pub async fn post_repair(State(state): State<WebState>) -> impl IntoResponse {
 /// GET /config - Config page
 pub async fn get_config(State(state): State<WebState>) -> impl IntoResponse {
     let template = ConfigTemplate {
-        config: state.config.clone(),
+        config: (*state.config).clone(),
         validation_result: None,
     };
     Html(template.render().unwrap_or_else(|e| e.to_string()))
@@ -702,11 +707,11 @@ pub async fn post_config_validate(State(state): State<WebState>) -> impl IntoRes
         errors.push("No sources configured".to_string());
     }
 
-    if state.config.tmdb.is_none() || state.config.tmdb.as_ref().and_then(|c| c.api_key.as_ref()).filter(|k| !k.is_empty()).is_none() {
+    if !state.config.has_tmdb() {
         warnings.push("TMDB API key not configured".to_string());
     }
 
-    if state.config.tvdb.is_none() || state.config.tvdb.as_ref().and_then(|c| c.api_key.as_ref()).filter(|k| !k.is_empty()).is_none() {
+    if !state.config.has_tvdb() {
         warnings.push("TVDB API key not configured".to_string());
     }
 
@@ -725,7 +730,7 @@ pub async fn post_config_validate(State(state): State<WebState>) -> impl IntoRes
     };
 
     let template = ConfigTemplate {
-        config: state.config.clone(),
+        config: (*state.config).clone(),
         validation_result: result,
     };
     Html(template.render().unwrap_or_else(|e| e.to_string()))
@@ -764,7 +769,7 @@ pub async fn get_doctor(State(state): State<WebState>) -> impl IntoResponse {
     }
 
     // Check database
-    let db_ok = state.database.get_stats().await.is_ok();
+    let db_ok = state.database.get_web_stats().await.is_ok();
     checks.push(DoctorCheck {
         check: "Database connection".to_string(),
         passed: db_ok,
@@ -772,31 +777,26 @@ pub async fn get_doctor(State(state): State<WebState>) -> impl IntoResponse {
     });
 
     // Check API keys
-    if let Some(ref tmdb) = state.config.tmdb {
-        let has_key = tmdb.api_key.as_ref().filter(|k| !k.is_empty()).is_some();
-        checks.push(DoctorCheck {
-            check: "TMDB API key".to_string(),
-            passed: has_key,
-            message: if has_key { "Configured" } else { "Missing" }.to_string(),
-        });
-    }
+    let has_tmdb = state.config.has_tmdb();
+    checks.push(DoctorCheck {
+        check: "TMDB API key".to_string(),
+        passed: has_tmdb,
+        message: if has_tmdb { "Configured" } else { "Missing" }.to_string(),
+    });
 
-    if let Some(ref tvdb) = state.config.tvdb {
-        let has_key = tvdb.api_key.as_ref().filter(|k| !k.is_empty()).is_some();
-        checks.push(DoctorCheck {
-            check: "TVDB API key".to_string(),
-            passed: has_key,
-            message: if has_key { "Configured" } else { "Missing" }.to_string(),
-        });
-    }
+    let has_tvdb = state.config.has_tvdb();
+    checks.push(DoctorCheck {
+        check: "TVDB API key".to_string(),
+        passed: has_tvdb,
+        message: if has_tvdb { "Configured" } else { "Missing" }.to_string(),
+    });
 
-    if !state.config.realdebrid.api_key.is_empty() {
-        checks.push(DoctorCheck {
-            check: "Real-Debrid API key".to_string(),
-            passed: true,
-            message: "Configured".to_string(),
-        });
-    }
+    let has_rd = state.config.has_realdebrid();
+    checks.push(DoctorCheck {
+        check: "Real-Debrid API token".to_string(),
+        passed: has_rd,
+        message: if has_rd { "Configured" } else { "Missing" }.to_string(),
+    });
 
     let all_passed = checks.iter().all(|c| c.passed);
 
@@ -911,15 +911,38 @@ pub async fn post_backup_restore(
 
     let backup_path = state.config.backup.path.join(&form.backup_file);
 
-    let result = backup_manager.restore_backup(&backup_path, &state.database).await;
+    let allowed_roots: Vec<PathBuf> = state
+        .config
+        .libraries
+        .iter()
+        .map(|l| l.path.clone())
+        .collect();
+    let allowed_source_roots: Vec<PathBuf> = state
+        .config
+        .sources
+        .iter()
+        .map(|s| s.path.clone())
+        .collect();
+    let result = backup_manager
+        .restore(
+            &state.database,
+            &backup_path,
+            false,
+            &allowed_roots,
+            &allowed_source_roots,
+            true,
+        )
+        .await
+        .map(|_| ());
+
+    let (success, message) = match result {
+        Ok(()) => (true, "Backup restored successfully".to_string()),
+        Err(e) => (false, format!("Restore failed: {}", e)),
+    };
 
     let template = BackupResultTemplate {
-        success: result.is_ok(),
-        message: if result.is_ok() {
-            "Backup restored successfully".to_string()
-        } else {
-            format!("Restore failed: {}", result.unwrap_err())
-        },
+        success,
+        message,
         backup_path: Some(backup_path),
     };
 

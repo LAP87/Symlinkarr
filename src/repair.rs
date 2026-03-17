@@ -422,6 +422,16 @@ impl Repairer {
                 .unwrap_or("");
             let meta = parse_trash_filename(symlink_name);
 
+            // Skip stat on sources whose parent directory is missing — avoids
+            // hanging on disconnected FUSE mounts when many links are dead.
+            let original_size = record
+                .source_path
+                .parent()
+                .map(|p| p.exists())
+                .unwrap_or(false)
+                .then(|| std::fs::metadata(&record.source_path).ok().map(|m| m.len()))
+                .flatten();
+
             dead_links.push(DeadLink {
                 symlink_path: record.target_path.clone(),
                 original_source: record.source_path.clone(),
@@ -429,7 +439,7 @@ impl Repairer {
                 media_type: record.media_type,
                 content_type: ContentType::from_media_type(record.media_type),
                 meta,
-                original_size: std::fs::metadata(&record.source_path).ok().map(|m| m.len()),
+                original_size,
             });
         }
 
@@ -683,7 +693,7 @@ impl Repairer {
             {
                 let path = entry.path();
                 scanned_files += 1;
-                if scanned_files % 100_000 == 0 {
+                if scanned_files.is_multiple_of(100_000) {
                     info!(
                         "Catalog progress ({:?}): {} filesystem entries scanned",
                         content_type, scanned_files
@@ -809,10 +819,7 @@ impl Repairer {
                         normalized_title,
                         season: item.season,
                         episode: item.episode,
-                        quality: item
-                            .quality
-                            .clone()
-                            .or_else(|| extract_quality(&file_stem_owned)),
+                        quality: item.quality.clone().or_else(|| extract_quality(&file_stem_owned)),
                         year: item.year.or_else(|| extract_year(&file_stem_owned)),
                         file_size,
                     });
@@ -1084,7 +1091,8 @@ impl Repairer {
                     .await
             } else {
                 println!("   🧭 Building Anime source catalog (filesystem walk)...");
-                let (ticker_stop, ticker) = spawn_activity_ticker("Building Anime source catalog");
+                let (ticker_stop, ticker) =
+                    spawn_activity_ticker("Building Anime source catalog");
                 let catalog = self.build_source_catalog(source_paths, ContentType::Anime);
                 stop_activity_ticker(ticker_stop, ticker).await;
                 catalog

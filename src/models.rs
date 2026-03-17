@@ -12,6 +12,15 @@ pub enum MediaType {
     Movie,
 }
 
+impl std::fmt::Display for MediaType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MediaType::Tv => write!(f, "tv"),
+            MediaType::Movie => write!(f, "movie"),
+        }
+    }
+}
+
 /// A metadata identifier (TMDB or TVDB)
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum MediaId {

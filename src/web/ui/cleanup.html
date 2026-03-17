@@ -1,78 +1,80 @@
-{% extends "base.html" %}
+{% extends "web/ui/base.html" %}
 
 {% block title %}Cleanup - Symlinkarr{% endblock %}
+{% block nav_cleanup %}active{% endblock %}
 
 {% block content %}
 <div class="page-header">
-    <h1>🧹 Cleanup &amp; Maintenance</h1>
+    <h1>&#129529; Cleanup &amp; Maintenance</h1>
     <p>Audit and maintain your symlink library by identifying and removing problematic links.</p>
 </div>
 
-{% if libraries %}
-<div class="library-selector">
-    <h2>Select Libraries to Audit</h2>
+{% if libraries|length > 0 %}
+<div class="card">
+    <h2 class="section-title">Select Libraries to Audit</h2>
     <form action="/cleanup/audit" method="post">
-        <div class="checkbox-group">
+        <div class="form-group">
             {% for lib in libraries %}
-            <label class="checkbox-item">
+            <label class="checkbox-item" style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.5rem;">
                 <input type="checkbox" name="library" value="{{ lib.name }}" checked>
                 <span>{{ lib.name }}</span>
-                <small>{{ lib.path }}</small>
+                <small class="text-muted">{{ lib.path.display() }}</small>
             </label>
             {% endfor %}
         </div>
 
         <div class="form-group">
-            <label for="scope">Audit Scope:</label>
-            <select id="scope" name="scope">
+            <label class="form-label" for="scope">Audit Scope:</label>
+            <select id="scope" name="scope" class="form-control" style="max-width:300px;">
                 <option value="anime">Anime (Recommended)</option>
-                <!-- Additional scopes can be added here -->
             </select>
-            <small>Currently only anime scope is supported</small>
+            <small class="text-muted">Currently only anime scope is supported</small>
         </div>
 
         <button type="submit" class="btn btn-primary">
-            🔍 Start Audit
+            &#128269; Start Audit
         </button>
     </form>
 </div>
 {% endif %}
 
-{% if last_report %}
-<div class="report-section">
-    <h2>Last Audit Report</h2>
-    <p>Report file: <code>{{ last_report }}</code></p>
-    <div class="btn-group">
-        <a href="/cleanup/prune?report={{ last_report }}" class="btn btn-secondary">
-            👀 Preview Prune Actions
+{% match last_report %}
+{% when Some with (report) %}
+<div class="card">
+    <h2 class="section-title">Last Audit Report</h2>
+    <p>Report file: <code class="mono">{{ report.display() }}</code></p>
+    <div class="actions mt-2">
+        <a href="/cleanup/prune?report={{ report.display() }}" class="btn btn-secondary">
+            &#128064; Preview Prune Actions
         </a>
-        <form action="/cleanup/prune" method="post" class="inline-form">
-            <input type="hidden" name="report" value="{{ last_report }}">
-            <input type="password" name="token" placeholder="Confirmation token" required>
-            <button type="submit" class="btn btn-danger">
-                ⚠️ Apply Cleanup
+        <form action="/cleanup/prune" method="post" style="display:inline;">
+            <input type="hidden" name="report" value="{{ report.display() }}">
+            <input type="password" name="token" placeholder="Confirmation token" required style="padding:0.75rem;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:6px;color:var(--text-primary);margin-right:0.5rem;">
+            <button type="submit" class="btn btn-danger" style="background:var(--error);">
+                &#9888;&#65039; Apply Cleanup
             </button>
         </form>
     </div>
-    <small class="text-muted">
-        ⚠️ Warning: Prune operations will permanently remove symlinks. Always review the preview first.
+    <small class="text-muted mt-1" style="display:block;">
+        &#9888;&#65039; Warning: Prune operations will permanently remove symlinks. Always review the preview first.
     </small>
 </div>
-{% endif %}
+{% when None %}
+{% endmatch %}
 
-<div class="info-section">
-    <h2>How Cleanup Works</h2>
-    <ol>
+<div class="card">
+    <h2 class="section-title">How Cleanup Works</h2>
+    <ol style="padding-left:1.5rem;line-height:2;">
         <li><strong>Audit:</strong> Scans your libraries and identifies problematic symlinks based on various criteria</li>
         <li><strong>Review:</strong> Examine the audit report to understand what will be removed</li>
         <li><strong>Confirm:</strong> Apply the cleanup with a confirmation token for safety</li>
     </ol>
 
-    <h3>Finding Severities</h3>
-    <ul>
-        <li><span class="badge badge-critical">🔴 Critical:</strong> Definitely problematic links (broken sources, episode out of range, etc.)</li>
-        <li><span class="badge badge-high">🟠 High:</strong> Likely problematic (title mismatches, untracked in Sonarr, etc.)</li>
-        <li><span class="badge badge-warning">🟡 Warning:</strong> Potentially problematic (season count anomalies, duplicate episodes)</li>
+    <h3 class="section-title mt-2">Finding Severities</h3>
+    <ul style="list-style:none;">
+        <li style="margin-bottom:0.5rem;"><span class="badge badge-danger">Critical</span> Definitely problematic links (broken sources, episode out of range, etc.)</li>
+        <li style="margin-bottom:0.5rem;"><span class="badge badge-warning">High</span> Likely problematic (title mismatches, untracked in Sonarr, etc.)</li>
+        <li style="margin-bottom:0.5rem;"><span class="badge badge-info">Warning</span> Potentially problematic (season count anomalies, duplicate episodes)</li>
     </ul>
 </div>
 {% endblock %}

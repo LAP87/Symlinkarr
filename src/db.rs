@@ -189,6 +189,34 @@ impl AcquisitionJobCounts {
     }
 }
 
+/// Summary statistics for the web dashboard.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Default)]
+pub struct WebStats {
+    pub active_links: i64,
+    pub dead_links: i64,
+    pub total_scans: i64,
+    pub last_scan: Option<String>,
+}
+
+/// A single scan run record for the web history view.
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct ScanHistoryRecord {
+    pub id: i64,
+    pub started_at: String,
+    pub dry_run: bool,
+    pub library_items_found: i64,
+    pub source_items_found: i64,
+    pub matches_found: i64,
+    pub links_created: i64,
+    pub links_updated: i64,
+    pub dead_marked: i64,
+    pub links_removed: i64,
+    pub links_skipped: i64,
+    pub ambiguous_skipped: i64,
+}
+
 /// Database manager for Symlinkarr state.
 /// Uses SQLite via sqlx for async persistence.
 #[derive(Clone)]
@@ -1545,17 +1573,19 @@ impl Database {
     /// Delete old records that accumulate unboundedly.
     /// Safe to call at daemon startup and periodically during long runs.
     pub async fn housekeeping(&self) -> Result<HousekeepingStats> {
-        let scan_runs_deleted =
-            sqlx::query("DELETE FROM scan_runs WHERE run_at < datetime('now', '-90 days')")
-                .execute(&self.pool)
-                .await?
-                .rows_affected();
+        let scan_runs_deleted = sqlx::query(
+            "DELETE FROM scan_runs WHERE run_at < datetime('now', '-90 days')",
+        )
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
 
-        let link_events_deleted =
-            sqlx::query("DELETE FROM link_events WHERE event_at < datetime('now', '-30 days')")
-                .execute(&self.pool)
-                .await?
-                .rows_affected();
+        let link_events_deleted = sqlx::query(
+            "DELETE FROM link_events WHERE event_at < datetime('now', '-30 days')",
+        )
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
 
         let old_jobs_deleted = sqlx::query(
             "DELETE FROM acquisition_jobs
@@ -1585,7 +1615,8 @@ impl Database {
     /// Jobs that were `Downloading` when the daemon crashed will never progress.
     /// This resets them to `Failed` with a short retry window so the queue drains normally.
     pub async fn recover_stale_downloading_jobs(&self, timeout_minutes: u64) -> Result<u32> {
-        let cutoff = chrono::Utc::now() - chrono::Duration::minutes(timeout_minutes as i64);
+        let cutoff = chrono::Utc::now()
+            - chrono::Duration::minutes(timeout_minutes as i64);
         let cutoff_str = cutoff.to_rfc3339();
 
         let rows = sqlx::query_as::<_, (i64, Option<String>)>(
@@ -1601,7 +1632,9 @@ impl Database {
                 None => true,
             };
             if is_stale {
-                let next_retry = (chrono::Utc::now() + chrono::Duration::minutes(30)).to_rfc3339();
+                let next_retry = (chrono::Utc::now()
+                    + chrono::Duration::minutes(30))
+                .to_rfc3339();
                 sqlx::query(
                     "UPDATE acquisition_jobs
                      SET status = 'failed',
@@ -1618,6 +1651,68 @@ impl Database {
             }
         }
         Ok(recovered)
+    }
+
+    // --- Web UI helpers ---
+
+    /// Get all dead links (convenience wrapper for the web UI).
+    #[allow(dead_code)]
+    pub async fn get_dead_links(&self) -> Result<Vec<LinkRecord>> {
+        self.get_links_by_status(LinkStatus::Dead).await
+    }
+
+    /// Aggregate statistics for the web dashboard.
+    #[allow(dead_code)]
+    pub async fn get_web_stats(&self) -> Result<WebStats> {
+        let (active, dead, _total) = self.get_stats().await?;
+        let scan_count: i64 = sqlx::query("SELECT COUNT(*) as cnt FROM scan_runs")
+            .fetch_one(&self.pool)
+            .await?
+            .get("cnt");
+        let last_scan: Option<String> =
+            sqlx::query("SELECT run_at FROM scan_runs ORDER BY run_at DESC LIMIT 1")
+                .fetch_optional(&self.pool)
+                .await?
+                .map(|row| row.get("run_at"));
+        Ok(WebStats {
+            active_links: active,
+            dead_links: dead,
+            total_scans: scan_count,
+            last_scan,
+        })
+    }
+
+    /// Return recent scan runs in reverse chronological order.
+    #[allow(dead_code)]
+    pub async fn get_scan_history(&self, limit: i64) -> Result<Vec<ScanHistoryRecord>> {
+        let rows = sqlx::query(
+            "SELECT id, run_at, dry_run, library_items_found, source_items_found,
+                    matches_found, links_created, links_updated, dead_marked,
+                    links_removed, links_skipped, ambiguous_skipped
+             FROM scan_runs ORDER BY run_at DESC LIMIT ?",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut records = Vec::with_capacity(rows.len());
+        for row in rows {
+            records.push(ScanHistoryRecord {
+                id: row.get("id"),
+                started_at: row.get("run_at"),
+                dry_run: row.get::<i64, _>("dry_run") != 0,
+                library_items_found: row.get("library_items_found"),
+                source_items_found: row.get("source_items_found"),
+                matches_found: row.get("matches_found"),
+                links_created: row.get("links_created"),
+                links_updated: row.get("links_updated"),
+                dead_marked: row.get("dead_marked"),
+                links_removed: row.get("links_removed"),
+                links_skipped: row.get("links_skipped"),
+                ambiguous_skipped: row.get("ambiguous_skipped"),
+            });
+        }
+        Ok(records)
     }
 
     // --- Helpers ---
@@ -2223,5 +2318,902 @@ mod tests {
             stored.release_title.as_deref(),
             Some("[SubsPlease] Test Show - 01")
         );
+    }
+
+    // ── Test 1: housekeeping retention boundaries ──────────────────────────────
+
+    #[tokio::test]
+    async fn test_housekeeping_retention_boundaries() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        // scan_runs: one old (>90 days), one recent
+        sqlx::query(
+            "INSERT INTO scan_runs (run_at, dry_run, library_items_found, source_items_found, \
+             matches_found, links_created, links_updated, dead_marked, links_removed, \
+             links_skipped, ambiguous_skipped) \
+             VALUES (datetime('now', '-100 days'), 0, 10, 20, 5, 3, 1, 0, 0, 0, 0)",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO scan_runs (run_at, dry_run, library_items_found, source_items_found, \
+             matches_found, links_created, links_updated, dead_marked, links_removed, \
+             links_skipped, ambiguous_skipped) \
+             VALUES (datetime('now', '-10 days'), 0, 5, 10, 3, 2, 0, 0, 0, 0, 0)",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        // link_events: one old (>30 days), one recent
+        sqlx::query(
+            "INSERT INTO link_events (event_at, action, target_path) \
+             VALUES (datetime('now', '-40 days'), 'created', '/plex/old.mkv')",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO link_events (event_at, action, target_path) \
+             VALUES (datetime('now', '-5 days'), 'created', '/plex/recent.mkv')",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        // acquisition_jobs: old completed_linked (>30 days), recent completed_linked,
+        // active queued job (should NEVER be deleted regardless of age)
+        sqlx::query(
+            "INSERT INTO acquisition_jobs \
+             (request_key, label, query, categories_json, arr, relink_kind, relink_value, \
+              status, updated_at, created_at) \
+             VALUES ('key-old-done', 'Old Done', 'q', '[]', 'sonarr', 'media_id', 'tvdb-1', \
+                     'completed_linked', datetime('now', '-40 days'), datetime('now', '-40 days'))",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO acquisition_jobs \
+             (request_key, label, query, categories_json, arr, relink_kind, relink_value, \
+              status, updated_at, created_at) \
+             VALUES ('key-recent-done', 'Recent Done', 'q', '[]', 'sonarr', 'media_id', 'tvdb-2', \
+                     'completed_linked', datetime('now', '-5 days'), datetime('now', '-5 days'))",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO acquisition_jobs \
+             (request_key, label, query, categories_json, arr, relink_kind, relink_value, \
+              status, updated_at, created_at) \
+             VALUES ('key-active', 'Active Job', 'q', '[]', 'sonarr', 'media_id', 'tvdb-3', \
+                     'queued', datetime('now', '-100 days'), datetime('now', '-100 days'))",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        let stats = db.housekeeping().await.unwrap();
+
+        assert_eq!(stats.scan_runs_deleted, 1, "only old scan_run deleted");
+        assert_eq!(stats.link_events_deleted, 1, "only old link_event deleted");
+        assert_eq!(stats.old_jobs_deleted, 1, "only old completed job deleted");
+
+        // Verify recent scan_run survives
+        let remaining_runs: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM scan_runs")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(remaining_runs, 1);
+
+        // Verify recent link_event survives
+        let remaining_events: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM link_events")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(remaining_events, 1);
+
+        // Verify active (queued) job is never deleted, recent completed_linked survives
+        let remaining_jobs: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM acquisition_jobs")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(remaining_jobs, 2, "active + recent completed both survive");
+    }
+
+    // ── Test 2: recover_stale_downloading_jobs ─────────────────────────────────
+
+    fn make_seed(request_key: &str, label: &str, relink_value: &str) -> AcquisitionJobSeed {
+        AcquisitionJobSeed {
+            request_key: request_key.to_string(),
+            label: label.to_string(),
+            query: "some query".to_string(),
+            imdb_id: None,
+            categories: vec![5000],
+            arr: "sonarr".to_string(),
+            library_filter: None,
+            relink_kind: AcquisitionRelinkKind::MediaId,
+            relink_value: relink_value.to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_recover_stale_downloading_jobs() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        let seed_stale = make_seed("key1", "Stale Job", "tvdb-1");
+        let seed_recent = make_seed("key2", "Recent Job", "tvdb-2");
+        let seed_queued = make_seed("key3", "Queued Job", "tvdb-3");
+
+        db.enqueue_acquisition_jobs(std::slice::from_ref(&seed_stale))
+            .await
+            .unwrap();
+        db.enqueue_acquisition_jobs(std::slice::from_ref(&seed_recent))
+            .await
+            .unwrap();
+        db.enqueue_acquisition_jobs(std::slice::from_ref(&seed_queued))
+            .await
+            .unwrap();
+
+        let jobs = db.get_manageable_acquisition_jobs().await.unwrap();
+        let stale_job = jobs.iter().find(|j| j.request_key == "key1").unwrap();
+        let recent_job = jobs.iter().find(|j| j.request_key == "key2").unwrap();
+
+        // Set stale job to downloading with old submitted_at (>60 min ago)
+        let old_submitted = Utc::now() - chrono::Duration::hours(3);
+        db.update_acquisition_job_state(
+            stale_job.id,
+            &AcquisitionJobUpdate {
+                status: AcquisitionJobStatus::Downloading,
+                release_title: Some("Some.Release".to_string()),
+                info_hash: Some("abc".to_string()),
+                error: None,
+                next_retry_at: None,
+                submitted_at: Some(old_submitted),
+                completed_at: None,
+                increment_attempts: true,
+            },
+        )
+        .await
+        .unwrap();
+
+        // Set recent job to downloading with submitted_at < 60 min ago
+        let recent_submitted = Utc::now() - chrono::Duration::minutes(10);
+        db.update_acquisition_job_state(
+            recent_job.id,
+            &AcquisitionJobUpdate {
+                status: AcquisitionJobStatus::Downloading,
+                release_title: Some("Other.Release".to_string()),
+                info_hash: Some("def".to_string()),
+                error: None,
+                next_retry_at: None,
+                submitted_at: Some(recent_submitted),
+                completed_at: None,
+                increment_attempts: true,
+            },
+        )
+        .await
+        .unwrap();
+
+        let recovered = db.recover_stale_downloading_jobs(60).await.unwrap();
+        assert_eq!(recovered, 1, "only one stale job recovered");
+
+        // Stale job is now failed with "stale" in error message
+        let stale_stored = db
+            .list_acquisition_jobs(None, 10)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|j| j.request_key == "key1")
+            .unwrap();
+        assert_eq!(stale_stored.status, AcquisitionJobStatus::Failed);
+        assert!(
+            stale_stored
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains("stale"),
+            "error should mention stale"
+        );
+
+        // Recent downloading job is still downloading
+        let recent_stored = db
+            .list_acquisition_jobs(None, 10)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|j| j.request_key == "key2")
+            .unwrap();
+        assert_eq!(recent_stored.status, AcquisitionJobStatus::Downloading);
+
+        // Queued job is unchanged
+        let queued_stored = db
+            .list_acquisition_jobs(None, 10)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|j| j.request_key == "key3")
+            .unwrap();
+        assert_eq!(queued_stored.status, AcquisitionJobStatus::Queued);
+    }
+
+    // ── Test 3: MAX_JOB_ATTEMPTS gate ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_max_job_attempts_gate() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        let seed = make_seed("key-maxed", "Maxed Job", "tvdb-99");
+        db.enqueue_acquisition_jobs(std::slice::from_ref(&seed))
+            .await
+            .unwrap();
+
+        // Set attempts = 5 via raw SQL to hit the MAX_JOB_ATTEMPTS boundary
+        sqlx::query("UPDATE acquisition_jobs SET attempts = 5 WHERE request_key = 'key-maxed'")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+
+        let manageable = db.get_manageable_acquisition_jobs().await.unwrap();
+        assert!(
+            manageable.is_empty(),
+            "job with 5 attempts should be excluded"
+        );
+    }
+
+    // ── Test 4: retry_acquisition_jobs by status ───────────────────────────────
+
+    #[tokio::test]
+    async fn test_retry_acquisition_jobs_by_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        let seed_failed = make_seed("key-failed", "Failed Job", "tvdb-1");
+        let seed_blocked = make_seed("key-blocked", "Blocked Job", "tvdb-2");
+        let seed_no_result = make_seed("key-no-result", "No Result Job", "tvdb-3");
+
+        db.enqueue_acquisition_jobs(std::slice::from_ref(&seed_failed))
+            .await
+            .unwrap();
+        db.enqueue_acquisition_jobs(std::slice::from_ref(&seed_blocked))
+            .await
+            .unwrap();
+        db.enqueue_acquisition_jobs(std::slice::from_ref(&seed_no_result))
+            .await
+            .unwrap();
+
+        let jobs = db.get_manageable_acquisition_jobs().await.unwrap();
+        let failed_id = jobs.iter().find(|j| j.request_key == "key-failed").unwrap().id;
+        let blocked_id = jobs
+            .iter()
+            .find(|j| j.request_key == "key-blocked")
+            .unwrap()
+            .id;
+        let no_result_id = jobs
+            .iter()
+            .find(|j| j.request_key == "key-no-result")
+            .unwrap()
+            .id;
+
+        // Set statuses directly
+        db.update_acquisition_job_state(
+            failed_id,
+            &AcquisitionJobUpdate {
+                status: AcquisitionJobStatus::Failed,
+                release_title: None,
+                info_hash: None,
+                error: Some("failed".to_string()),
+                next_retry_at: None,
+                submitted_at: None,
+                completed_at: None,
+                increment_attempts: false,
+            },
+        )
+        .await
+        .unwrap();
+        db.update_acquisition_job_state(
+            blocked_id,
+            &AcquisitionJobUpdate {
+                status: AcquisitionJobStatus::Blocked,
+                release_title: None,
+                info_hash: None,
+                error: Some("blocked".to_string()),
+                next_retry_at: None,
+                submitted_at: None,
+                completed_at: None,
+                increment_attempts: false,
+            },
+        )
+        .await
+        .unwrap();
+        db.update_acquisition_job_state(
+            no_result_id,
+            &AcquisitionJobUpdate {
+                status: AcquisitionJobStatus::NoResult,
+                release_title: None,
+                info_hash: None,
+                error: None,
+                next_retry_at: None,
+                submitted_at: None,
+                completed_at: None,
+                increment_attempts: false,
+            },
+        )
+        .await
+        .unwrap();
+
+        // Retry only failed
+        let retried = db
+            .retry_acquisition_jobs(&[AcquisitionJobStatus::Failed])
+            .await
+            .unwrap();
+        assert_eq!(retried, 1);
+
+        let failed_now = db
+            .list_acquisition_jobs(None, 10)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|j| j.id == failed_id)
+            .unwrap();
+        assert_eq!(failed_now.status, AcquisitionJobStatus::Queued);
+
+        let blocked_now = db
+            .list_acquisition_jobs(None, 10)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|j| j.id == blocked_id)
+            .unwrap();
+        assert_eq!(blocked_now.status, AcquisitionJobStatus::Blocked);
+
+        // Retry blocked + no_result
+        let retried2 = db
+            .retry_acquisition_jobs(&[
+                AcquisitionJobStatus::Blocked,
+                AcquisitionJobStatus::NoResult,
+            ])
+            .await
+            .unwrap();
+        assert_eq!(retried2, 2);
+    }
+
+    // ── Test 5: get_manageable_acquisition_jobs ordering ──────────────────────
+
+    #[tokio::test]
+    async fn test_manageable_jobs_priority_ordering() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        let seed_queued = make_seed("key-queued", "Queued", "tvdb-1");
+        let seed_dl = make_seed("key-dl", "Downloading", "tvdb-2");
+        let seed_rl = make_seed("key-rl", "Relinking", "tvdb-3");
+
+        db.enqueue_acquisition_jobs(std::slice::from_ref(&seed_queued))
+            .await
+            .unwrap();
+        db.enqueue_acquisition_jobs(std::slice::from_ref(&seed_dl))
+            .await
+            .unwrap();
+        db.enqueue_acquisition_jobs(std::slice::from_ref(&seed_rl))
+            .await
+            .unwrap();
+
+        let jobs = db.get_manageable_acquisition_jobs().await.unwrap();
+        let dl_id = jobs.iter().find(|j| j.request_key == "key-dl").unwrap().id;
+        let rl_id = jobs.iter().find(|j| j.request_key == "key-rl").unwrap().id;
+
+        db.update_acquisition_job_state(
+            dl_id,
+            &AcquisitionJobUpdate {
+                status: AcquisitionJobStatus::Downloading,
+                release_title: None,
+                info_hash: None,
+                error: None,
+                next_retry_at: None,
+                submitted_at: Some(Utc::now()),
+                completed_at: None,
+                increment_attempts: false,
+            },
+        )
+        .await
+        .unwrap();
+
+        db.update_acquisition_job_state(
+            rl_id,
+            &AcquisitionJobUpdate {
+                status: AcquisitionJobStatus::Relinking,
+                release_title: None,
+                info_hash: None,
+                error: None,
+                next_retry_at: None,
+                submitted_at: None,
+                completed_at: None,
+                increment_attempts: false,
+            },
+        )
+        .await
+        .unwrap();
+
+        let ordered = db.get_manageable_acquisition_jobs().await.unwrap();
+        assert_eq!(ordered.len(), 3);
+        assert_eq!(ordered[0].status, AcquisitionJobStatus::Downloading);
+        assert_eq!(ordered[1].status, AcquisitionJobStatus::Relinking);
+        assert_eq!(ordered[2].status, AcquisitionJobStatus::Queued);
+    }
+
+    // ── Test 6: list_acquisition_jobs with status filter ──────────────────────
+
+    #[tokio::test]
+    async fn test_list_acquisition_jobs_status_filter() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        let seed_q = make_seed("key-q", "Queued", "tvdb-1");
+        let seed_f = make_seed("key-f", "Failed", "tvdb-2");
+        let seed_b = make_seed("key-b", "Blocked", "tvdb-3");
+
+        db.enqueue_acquisition_jobs(std::slice::from_ref(&seed_q))
+            .await
+            .unwrap();
+        db.enqueue_acquisition_jobs(std::slice::from_ref(&seed_f))
+            .await
+            .unwrap();
+        db.enqueue_acquisition_jobs(std::slice::from_ref(&seed_b))
+            .await
+            .unwrap();
+
+        let all_jobs = db.get_manageable_acquisition_jobs().await.unwrap();
+        let f_id = all_jobs.iter().find(|j| j.request_key == "key-f").unwrap().id;
+        let b_id = all_jobs.iter().find(|j| j.request_key == "key-b").unwrap().id;
+
+        db.update_acquisition_job_state(
+            f_id,
+            &AcquisitionJobUpdate {
+                status: AcquisitionJobStatus::Failed,
+                release_title: None,
+                info_hash: None,
+                error: Some("err".to_string()),
+                next_retry_at: None,
+                submitted_at: None,
+                completed_at: None,
+                increment_attempts: false,
+            },
+        )
+        .await
+        .unwrap();
+        db.update_acquisition_job_state(
+            b_id,
+            &AcquisitionJobUpdate {
+                status: AcquisitionJobStatus::Blocked,
+                release_title: None,
+                info_hash: None,
+                error: Some("blocked".to_string()),
+                next_retry_at: None,
+                submitted_at: None,
+                completed_at: None,
+                increment_attempts: false,
+            },
+        )
+        .await
+        .unwrap();
+
+        let failed_only = db
+            .list_acquisition_jobs(Some(&[AcquisitionJobStatus::Failed]), 10)
+            .await
+            .unwrap();
+        assert_eq!(failed_only.len(), 1);
+        assert_eq!(failed_only[0].status, AcquisitionJobStatus::Failed);
+
+        let all_listed = db.list_acquisition_jobs(None, 10).await.unwrap();
+        assert_eq!(all_listed.len(), 3);
+    }
+
+    // ── Test 7: RD torrent operations ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_rd_torrent_operations() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        // Insert two torrents: one downloaded (with files), one waiting_files
+        db.upsert_rd_torrent(
+            "id1",
+            "HASH1",
+            "Show S01 1080p",
+            "downloaded",
+            r#"{"files":[{"path":"/ep01.mkv","bytes":1000000000,"id":1}]}"#,
+        )
+        .await
+        .unwrap();
+
+        db.upsert_rd_torrent(
+            "id2",
+            "HASH2",
+            "Movie 2020",
+            "waiting_files",
+            r#"{"files":[]}"#,
+        )
+        .await
+        .unwrap();
+
+        // get_rd_torrents returns both
+        let all = db.get_rd_torrents().await.unwrap();
+        assert_eq!(all.len(), 2);
+
+        // rd_torrent_downloaded_by_hash: case-insensitive
+        assert!(db.rd_torrent_downloaded_by_hash("HASH1").await.unwrap());
+        assert!(db.rd_torrent_downloaded_by_hash("hash1").await.unwrap());
+        assert!(!db.rd_torrent_downloaded_by_hash("HASH2").await.unwrap());
+        assert!(!db.rd_torrent_downloaded_by_hash("HASH_UNKNOWN").await.unwrap());
+
+        // get_rd_torrent_counts: (cached_with_files, total_downloaded)
+        // id1 is downloaded with non-empty files -> cached=1, total=1
+        let (cached, total) = db.get_rd_torrent_counts().await.unwrap();
+        assert_eq!(total, 1, "only downloaded torrents counted");
+        assert_eq!(cached, 1, "id1 has non-empty files_json");
+
+        // delete_rd_torrent removes id1
+        db.delete_rd_torrent("id1").await.unwrap();
+        let remaining = db.get_rd_torrents().await.unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].0, "id2");
+    }
+
+    // ── Test 8: record_scan_run roundtrip ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_record_scan_run_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        let run = ScanRunRecord {
+            dry_run: true,
+            library_items_found: 42,
+            source_items_found: 100,
+            matches_found: 38,
+            links_created: 10,
+            links_updated: 5,
+            dead_marked: 2,
+            links_removed: 1,
+            links_skipped: 3,
+            ambiguous_skipped: 7,
+        };
+
+        db.record_scan_run(&run).await.unwrap();
+
+        let row = sqlx::query(
+            "SELECT dry_run, library_items_found, source_items_found, matches_found, \
+             links_created, links_updated, dead_marked, links_removed, links_skipped, \
+             ambiguous_skipped FROM scan_runs ORDER BY id DESC LIMIT 1",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+
+        let dry_run: i64 = row.get("dry_run");
+        assert_eq!(dry_run, 1, "dry_run stored as 1");
+        let lib: i64 = row.get("library_items_found");
+        assert_eq!(lib, 42);
+        let src: i64 = row.get("source_items_found");
+        assert_eq!(src, 100);
+        let matches: i64 = row.get("matches_found");
+        assert_eq!(matches, 38);
+        let created: i64 = row.get("links_created");
+        assert_eq!(created, 10);
+        let updated: i64 = row.get("links_updated");
+        assert_eq!(updated, 5);
+        let dead: i64 = row.get("dead_marked");
+        assert_eq!(dead, 2);
+        let removed: i64 = row.get("links_removed");
+        assert_eq!(removed, 1);
+        let skipped: i64 = row.get("links_skipped");
+        assert_eq!(skipped, 3);
+        let ambiguous: i64 = row.get("ambiguous_skipped");
+        assert_eq!(ambiguous, 7);
+    }
+
+    // ── Test 9: mark_removed and get_link_by_target ────────────────────────────
+
+    #[tokio::test]
+    async fn test_mark_removed_and_get_link_by_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        let record = sample_link("/mnt/rd/show/ep01.mkv", "/plex/show/S01E01.mkv");
+        db.insert_link(&record).await.unwrap();
+
+        // get_link_by_target_path returns it
+        let found = db
+            .get_link_by_target_path(Path::new("/plex/show/S01E01.mkv"))
+            .await
+            .unwrap();
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().status, LinkStatus::Active);
+
+        // mark_removed_path transitions to Removed
+        db.mark_removed_path(Path::new("/plex/show/S01E01.mkv"))
+            .await
+            .unwrap();
+
+        let removed_links = db.get_links_by_status(LinkStatus::Removed).await.unwrap();
+        assert_eq!(removed_links.len(), 1);
+        assert_eq!(
+            removed_links[0].target_path,
+            PathBuf::from("/plex/show/S01E01.mkv")
+        );
+
+        // get_active_links does not include it
+        let active = db.get_active_links().await.unwrap();
+        assert!(active.is_empty());
+    }
+
+    // ── Test 10: insert_link_in_tx – commit and rollback ──────────────────────
+
+    #[tokio::test]
+    async fn test_insert_link_in_tx_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        let record = sample_link("/mnt/rd/show/ep01.mkv", "/plex/show/S01E01.mkv");
+
+        let mut tx = db.begin().await.unwrap();
+        let id = db.insert_link_in_tx(&record, &mut tx).await.unwrap();
+        assert!(id > 0);
+        tx.commit().await.unwrap();
+
+        let active = db.get_active_links().await.unwrap();
+        assert_eq!(active.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_insert_link_in_tx_rollback() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        let record = sample_link("/mnt/rd/show/ep01.mkv", "/plex/show/S01E01.mkv");
+
+        {
+            let mut tx = db.begin().await.unwrap();
+            db.insert_link_in_tx(&record, &mut tx).await.unwrap();
+            // Drop tx without committing — implicit rollback
+        }
+
+        let active = db.get_active_links().await.unwrap();
+        assert!(active.is_empty(), "rolled-back insert should not persist");
+    }
+
+    // ── Test 11: escape_sql_like_pattern ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_escape_sql_like_pattern_special_chars() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        // Insert a link whose target path contains % and _
+        let record = sample_link(
+            "/mnt/rd/show/ep01.mkv",
+            "/plex/100%_Show/Season 01/S01E01.mkv",
+        );
+        db.insert_link(&record).await.unwrap();
+
+        // Also insert a link that should NOT match
+        let other = sample_link("/mnt/rd/other/ep01.mkv", "/plex/Other/S01E01.mkv");
+        db.insert_link(&other).await.unwrap();
+
+        // Scope to the exact directory containing % and _
+        let roots = vec![PathBuf::from("/plex/100%_Show")];
+        let scoped = db.get_links_scoped(Some(&roots)).await.unwrap();
+
+        // Only the link under the special-character path should match
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(
+            scoped[0].target_path,
+            PathBuf::from("/plex/100%_Show/Season 01/S01E01.mkv")
+        );
+    }
+
+    // ── Test 12: get_links_scoped (all statuses) ──────────────────────────────
+
+    #[tokio::test]
+    async fn test_get_links_scoped_all_statuses() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        // Three links under /plex/TV, one under /plex/Movies
+        let active = sample_link("/mnt/rd/a.mkv", "/plex/TV/Show/S01E01.mkv");
+        let mut dead = sample_link("/mnt/rd/b.mkv", "/plex/TV/Show/S01E02.mkv");
+        dead.media_id = "tvdb-dead".to_string();
+        let mut removed = sample_link("/mnt/rd/c.mkv", "/plex/TV/Show/S01E03.mkv");
+        removed.media_id = "tvdb-removed".to_string();
+        let other = sample_link("/mnt/rd/d.mkv", "/plex/Movies/Movie.mkv");
+
+        db.insert_link(&active).await.unwrap();
+        db.insert_link(&dead).await.unwrap();
+        db.insert_link(&removed).await.unwrap();
+        db.insert_link(&other).await.unwrap();
+
+        db.mark_dead_path(Path::new("/plex/TV/Show/S01E02.mkv"))
+            .await
+            .unwrap();
+        db.mark_removed_path(Path::new("/plex/TV/Show/S01E03.mkv"))
+            .await
+            .unwrap();
+
+        let roots = vec![PathBuf::from("/plex/TV")];
+        let scoped = db.get_links_scoped(Some(&roots)).await.unwrap();
+
+        assert_eq!(scoped.len(), 3, "active + dead + removed under /plex/TV");
+        let statuses: Vec<LinkStatus> = scoped.iter().map(|l| l.status).collect();
+        assert!(statuses.contains(&LinkStatus::Active));
+        assert!(statuses.contains(&LinkStatus::Dead));
+        assert!(statuses.contains(&LinkStatus::Removed));
+
+        // Movies link not included
+        assert!(!scoped
+            .iter()
+            .any(|l| l.target_path == Path::new("/plex/Movies/Movie.mkv")));
+    }
+
+    // ── Test 13: empty DB edge cases ──────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_empty_db_edge_cases() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        let (cached, total) = db.get_rd_torrent_counts().await.unwrap();
+        assert_eq!((cached, total), (0, 0));
+
+        let counts = db.get_acquisition_job_counts().await.unwrap();
+        assert_eq!(counts.queued, 0);
+        assert_eq!(counts.downloading, 0);
+        assert_eq!(counts.relinking, 0);
+        assert_eq!(counts.blocked, 0);
+        assert_eq!(counts.no_result, 0);
+        assert_eq!(counts.failed, 0);
+        assert_eq!(counts.completed_unlinked, 0);
+        assert_eq!(counts.active_total(), 0);
+
+        let stats = db.housekeeping().await.unwrap();
+        assert_eq!(stats.scan_runs_deleted, 0);
+        assert_eq!(stats.link_events_deleted, 0);
+        assert_eq!(stats.old_jobs_deleted, 0);
+    }
+
+    #[tokio::test]
+    async fn test_get_dead_links() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        let r = sample_link("/mnt/rd/show/ep01.mkv", "/plex/show/S01E01.mkv");
+        db.insert_link(&r).await.unwrap();
+        db.mark_dead("/plex/show/S01E01.mkv").await.unwrap();
+
+        let dead = db.get_dead_links().await.unwrap();
+        assert_eq!(dead.len(), 1);
+        assert_eq!(dead[0].status, LinkStatus::Dead);
+        assert_eq!(
+            dead[0].target_path,
+            PathBuf::from("/plex/show/S01E01.mkv")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_web_stats() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        // Initially all zeros, no last_scan
+        let stats = db.get_web_stats().await.unwrap();
+        assert_eq!(stats.active_links, 0);
+        assert_eq!(stats.dead_links, 0);
+        assert_eq!(stats.total_scans, 0);
+        assert!(stats.last_scan.is_none());
+
+        // Insert one active, one dead link
+        db.insert_link(&sample_link("/mnt/a", "/plex/a")).await.unwrap();
+        db.insert_link(&sample_link("/mnt/b", "/plex/b")).await.unwrap();
+        db.mark_dead("/plex/b").await.unwrap();
+
+        // Insert a scan_run
+        db.record_scan_run(&ScanRunRecord {
+            dry_run: false,
+            library_items_found: 10,
+            source_items_found: 20,
+            matches_found: 5,
+            links_created: 2,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let stats = db.get_web_stats().await.unwrap();
+        assert_eq!(stats.active_links, 1);
+        assert_eq!(stats.dead_links, 1);
+        assert_eq!(stats.total_scans, 1);
+        assert!(stats.last_scan.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_get_scan_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        // Insert 3 scan runs
+        for i in 0..3i64 {
+            db.record_scan_run(&ScanRunRecord {
+                dry_run: i == 0,
+                library_items_found: i * 10,
+                source_items_found: i * 20,
+                matches_found: i * 5,
+                links_created: i,
+                links_updated: i,
+                dead_marked: 0,
+                links_removed: 0,
+                links_skipped: 0,
+                ambiguous_skipped: 0,
+            })
+            .await
+            .unwrap();
+        }
+
+        // get_scan_history(2) returns 2 in reverse chronological order (latest first)
+        let history = db.get_scan_history(2).await.unwrap();
+        assert_eq!(history.len(), 2);
+        // Most recent has library_items_found=20 (i=2), next has 10 (i=1)
+        assert_eq!(history[0].library_items_found, 20);
+        assert_eq!(history[1].library_items_found, 10);
+
+        // Full history returns all 3
+        let all = db.get_scan_history(10).await.unwrap();
+        assert_eq!(all.len(), 3);
     }
 }

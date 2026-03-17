@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::io::{self, IsTerminal, Write};
+use unicode_normalization::UnicodeNormalization;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use unicode_normalization::UnicodeNormalization;
 
 /// Known video file extensions
 pub const VIDEO_EXTENSIONS: &[&str] = &[

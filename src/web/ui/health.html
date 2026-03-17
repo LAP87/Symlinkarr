@@ -1,0 +1,45 @@
+{% extends "web/ui/base.html" %}
+
+{% block title %}Health - Symlinkarr{% endblock %}
+{% block nav_health %}active{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>&#128154; Health</h1>
+    <p>Service connectivity and configuration status.</p>
+</div>
+
+<div class="card">
+    <h2 class="section-title">Service Health Checks</h2>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Service</th>
+                <th>Status</th>
+                <th>Message</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for (key, check) in checks %}
+            <tr>
+                <td><strong>{{ check.service }}</strong></td>
+                <td>
+                    {% if check.status == "healthy" %}
+                    <span class="badge badge-success">&#9989; healthy</span>
+                    {% else if check.status == "configured" %}
+                    <span class="badge badge-info">&#9989; configured</span>
+                    {% else if check.status == "missing" %}
+                    <span class="badge badge-warning">&#9888; missing</span>
+                    {% else %}
+                    <span class="badge badge-danger">{{ check.status }}</span>
+                    {% endif %}
+                </td>
+                <td class="text-muted">{{ check.message }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="3" class="text-muted">No health checks available.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

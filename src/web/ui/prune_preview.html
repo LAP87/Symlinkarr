@@ -1,48 +1,53 @@
-{% extends "base.html" %}
+{% extends "web/ui/base.html" %}
 
 {% block title %}Prune Preview - Symlinkarr{% endblock %}
+{% block nav_cleanup %}active{% endblock %}
 
 {% block content %}
 <div class="page-header">
-    <h1>👀 Prune Preview</h1>
+    <h1>&#128064; Prune Preview</h1>
     <p>Review the symlinks that would be removed during cleanup prune operation.</p>
 </div>
 
 {% if findings|length > 0 %}
-<div class="summary-stats">
-    <div class="stat-item">
-        <h3>{{ total }}</h3>
-        <p>Total Findings</p>
+<div class="card-grid">
+    <div class="card" style="text-align:center;">
+        <div class="card-value">{{ total }}</div>
+        <div class="card-label">Total Findings</div>
     </div>
-    <div class="stat-item">
-        <h3 class="text-critical">{{ critical }}</h3>
-        <p>Critical</p>
+    <div class="card" style="text-align:center;">
+        <div class="card-value text-error">{{ critical }}</div>
+        <div class="card-label">Critical</div>
     </div>
-    <div class="stat-item">
-        <h3 class="text-high">{{ high }}</h3>
-        <p>High</p>
+    <div class="card" style="text-align:center;">
+        <div class="card-value text-warning">{{ high }}</div>
+        <div class="card-label">High</div>
     </div>
-    <div class="stat-item">
-        <h3 class="text-warning">{{ warning }}</h3>
-        <p>Warning</p>
+    <div class="card" style="text-align:center;">
+        <div class="card-value text-info">{{ warning }}</div>
+        <div class="card-label">Warning</div>
     </div>
 </div>
 
-<div class="alert alert-info">
-    <h3>⚠️ Safety Information</h3>
+{% match confirmation_token %}
+{% when Some with (token) %}
+<div class="alert alert-warning">
+    <h3>&#9888;&#65039; Safety Information</h3>
     <p>
-        <strong>Confirmation Token:</strong> <code>{{ confirmation_token }}</code}<br>
+        <strong>Confirmation Token:</strong> <code class="mono">{{ token }}</code><br>
         This token is required to apply the prune operation. Copy it for use in the confirmation step.
     </p>
-    <p>
+    <p class="mt-1">
         Only high/critical findings and safe duplicate warnings will be pruned.
         Pure warning-only findings (like season count anomalies alone) are excluded for safety.
     </p>
 </div>
+{% when None %}
+{% endmatch %}
 
-<div class="findings-table">
-    <h2>📋 Findings Details</h2>
-    <table>
+<div class="card">
+    <h2 class="section-title">&#128203; Findings Details</h2>
+    <table class="data-table">
         <thead>
             <tr>
                 <th>Severity</th>
@@ -55,25 +60,23 @@
         </thead>
         <tbody>
             {% for finding in findings %}
-            <tr class="finding-row severity-{{ finding.severity | lower }}">
+            <tr>
                 <td>
-                    <span class="badge badge-{{ finding.severity | lower }}">
-                        {{ finding.severity }}
-                    </span>
+                    <span class="badge badge-danger">{{ finding.severity }}</span>
                 </td>
-                <td><code>{{ finding.symlink_path }}</code></td>
-                <td><code>{{ finding.source_path }}</code></td>
+                <td><code class="mono">{{ finding.symlink_path.display() }}</code></td>
+                <td><code class="mono">{{ finding.source_path.display() }}</code></td>
                 <td>{{ finding.media_id }}</td>
                 <td>
-                    {% if finding.parsed.season and finding.parsed.episode %}
-                    S{{ "%02d"|format(finding.parsed.season) }}E{{ "%02d"|format(finding.parsed.episode) }}
-                    {% else %}
-                    N/A
-                    {% endif %}
+                    {% match finding.parsed.season %}
+                    {% when Some with (s) %}
+                        {% match finding.parsed.episode %}
+                        {% when Some with (e) %}S{{ s }}E{{ e }}{% when None %}S{{ s }}{% endmatch %}
+                    {% when None %}N/A{% endmatch %}
                 </td>
                 <td>
                     {% for reason in finding.reasons %}
-                    <span class="reason-tag">{{ reason }}</span>
+                    <span class="badge badge-info" style="margin:1px;">{{ reason }}</span>
                     {% endfor %}
                 </td>
             </tr>
@@ -82,32 +85,34 @@
     </table>
 </div>
 
-<div class="btn-group">
-    <form action="/cleanup/prune" method="post" class="prune-form">
-        <input type="hidden" name="report" value="{{ report_path|default('') }}">
+<div class="card">
+    <form action="/cleanup/prune" method="post">
+        <input type="hidden" name="report" value="">
         <div class="form-group">
-            <label for="token">Confirmation Token:</label>
-            <input type="password" id="token" name="token" placeholder="Enter confirmation token from above" required>
+            <label class="form-label" for="token">Confirmation Token:</label>
+            <input type="password" id="token" name="token" class="form-control" style="max-width:400px;" placeholder="Enter confirmation token from above" required>
             <small class="text-muted">
                 Get the token from the audit results or preview step above
             </small>
         </div>
-        <button type="submit" class="btn btn-danger">
-            ⚠️ Apply Prune ({{ high_or_critical_candidates|default(0) }} links will be removed)
-        </button>
+        <div class="actions mt-2">
+            <button type="submit" class="btn btn-danger" style="background:var(--error);">
+                &#9888;&#65039; Apply Prune
+            </button>
+            <a href="/cleanup" class="btn btn-secondary">&#8592; Back to Cleanup</a>
+        </div>
     </form>
-    <a href="/cleanup" class="btn btn-secondary">← Back to Cleanup</a>
 </div>
 
 {% else %}
-<div class="alert alert-info">
-    <h2>✅ No Issues Found</h2>
+<div class="alert alert-success">
+    <h2>&#9989; No Issues Found</h2>
     <p>Your symlink library appears to be in good condition! No problematic links were detected during the audit.</p>
 </div>
 
-<div class="btn-group">
-    <a href="/cleanup" class="btn">← Back to Cleanup</a>
-    <a href="/" class="btn btn-secondary">🏠 Dashboard</a>
+<div class="actions mt-2">
+    <a href="/cleanup" class="btn btn-secondary">&#8592; Back to Cleanup</a>
+    <a href="/" class="btn">&#127968; Dashboard</a>
 </div>
 {% endif %}
 {% endblock %}

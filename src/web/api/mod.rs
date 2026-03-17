@@ -1,15 +1,13 @@
 //! JSON API endpoints for automation
 
 use axum::{
-    extract::State,
-    http::StatusCode,
+    extract::{Query, State},
     routing::{get, post},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
-use crate::api::realdebrid::RealDebridClient;
 use crate::backup::BackupManager;
 use crate::cleanup_audit::{CleanupAuditor, CleanupScope};
 use crate::config::Config;
@@ -159,7 +157,7 @@ pub struct ApiCleanupPruneRequest {
 pub async fn api_get_status(State(state): State<WebState>) -> Json<ApiStatus> {
     let stats = state
         .database
-        .get_stats()
+        .get_web_stats()
         .await
         .unwrap_or_default();
 
@@ -167,40 +165,35 @@ pub async fn api_get_status(State(state): State<WebState>) -> Json<ApiStatus> {
         active_links: stats.active_links,
         dead_links: stats.dead_links,
         total_scans: stats.total_scans,
-        last_scan: stats.last_scan.map(|s| s.to_string()),
+        last_scan: stats.last_scan,
     })
 }
 
 /// GET /api/v1/health
 pub async fn api_get_health(State(state): State<WebState>) -> Json<ApiHealth> {
-    let db_status = if state.database.get_stats().await.is_ok() {
+    let db_status = if state.database.get_web_stats().await.is_ok() {
         "healthy"
     } else {
         "unhealthy"
     };
 
-    let tmdb_status = state
-        .config
-        .tmdb
-        .as_ref()
-        .and_then(|c| c.api_key.as_ref())
-        .filter(|k| !k.is_empty())
-        .map_or("missing", |_| "configured");
+    let tmdb_status = if state.config.has_tmdb() {
+        "configured"
+    } else {
+        "missing"
+    };
 
-    let tvdb_status = state
-        .config
-        .tvdb
-        .as_ref()
-        .and_then(|c| c.api_key.as_ref())
-        .filter(|k| !k.is_empty())
-        .map_or("missing", |_| "configured");
+    let tvdb_status = if state.config.has_tvdb() {
+        "configured"
+    } else {
+        "missing"
+    };
 
-    let rd_status = state
-        .config
-        .realdebrid
-        .api_key
-        .is_empty()
-        .map_or("missing", |_| "configured");
+    let rd_status = if state.config.has_realdebrid() {
+        "configured"
+    } else {
+        "missing"
+    };
 
     Json(ApiHealth {
         database: db_status.to_string(),
@@ -238,27 +231,29 @@ pub async fn api_post_scan(
             .collect()
     };
 
-    let source_items = source_scanner.scan_source(&state.config.sources);
+    let source_items = source_scanner.scan_all(&state.config.sources);
 
     // Create matcher
     use crate::api::tmdb::TmdbClient;
     use crate::api::tvdb::TvdbClient;
 
-    let tmdb = state
-        .config
-        .tmdb
-        .as_ref()
-        .and_then(|c| c.api_key.as_ref())
-        .filter(|k| !k.is_empty())
-        .map(|_| TmdbClient::new(state.config.tmdb.clone().unwrap()));
+    let cfg = &state.config;
+    let tmdb = if cfg.has_tmdb() {
+        let rat = if cfg.api.tmdb_read_access_token.is_empty() {
+            None
+        } else {
+            Some(cfg.api.tmdb_read_access_token.as_str())
+        };
+        Some(TmdbClient::new(&cfg.api.tmdb_api_key, rat, cfg.api.cache_ttl_hours))
+    } else {
+        None
+    };
 
-    let tvdb = state
-        .config
-        .tvdb
-        .as_ref()
-        .and_then(|c| c.api_key.as_ref())
-        .filter(|k| !k.is_empty())
-        .map(|_| TvdbClient::new(state.config.tvdb.clone().unwrap()));
+    let tvdb = if cfg.has_tvdb() {
+        Some(TvdbClient::new(&cfg.api.tvdb_api_key, cfg.api.cache_ttl_hours))
+    } else {
+        None
+    };
 
     let matcher = Matcher::new(
         tmdb,
@@ -287,11 +282,11 @@ pub async fn api_post_scan(
     let linker = Linker::new_with_options(
         dry_run,
         state.config.matching.mode.is_strict(),
-        &state.config.linker.naming_template,
+        &state.config.symlink.naming_template,
         true,
     );
 
-    let link_result = match linker.process_matches(&matches, &matcher, &state.database).await {
+    let link_result = match linker.process_matches(&matches, &state.database).await {
         Ok(r) => r,
         Err(e) => {
             return Json(ApiScanResponse {
@@ -379,7 +374,12 @@ pub async fn api_post_cleanup_audit(
 
     let auditor = CleanupAuditor::new_with_progress(&state.config, &state.database, false);
 
-    let report_path = match auditor.run_audit(scope, Some(&state.config.cleanup_audit.output_path)).await {
+    let default_output = state.config.backup.path.join(format!(
+        "cleanup-audit-{}-{}.json",
+        req.scope,
+        chrono::Utc::now().format("%Y%m%d-%H%M%S")
+    ));
+    let report_path = match auditor.run_audit(scope, Some(&default_output)).await {
         Ok(p) => p.to_string_lossy().to_string(),
         Err(e) => {
             return Json(ApiCleanupAuditResponse {
@@ -465,11 +465,11 @@ pub async fn api_get_config_validate(State(state): State<WebState>) -> Json<ApiC
         errors.push("No sources configured".to_string());
     }
 
-    if state.config.tmdb.is_none() || state.config.tmdb.as_ref().and_then(|c| c.api_key.as_ref()).filter(|k| !k.is_empty()).is_none() {
+    if !state.config.has_tmdb() {
         warnings.push("TMDB API key not configured".to_string());
     }
 
-    if state.config.tvdb.is_none() || state.config.tvdb.as_ref().and_then(|c| c.api_key.as_ref()).filter(|k| !k.is_empty()).is_none() {
+    if !state.config.has_tvdb() {
         warnings.push("TVDB API key not configured".to_string());
     }
 
@@ -510,7 +510,7 @@ pub async fn api_get_doctor(State(state): State<WebState>) -> Json<ApiDoctorResp
         });
     }
 
-    let db_ok = state.database.get_stats().await.is_ok();
+    let db_ok = state.database.get_web_stats().await.is_ok();
     checks.push(ApiDoctorCheck {
         check: "Database connection".to_string(),
         passed: db_ok,

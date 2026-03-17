@@ -230,51 +230,7 @@ fn should_retry_with_query_auth(status: StatusCode) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Mutex};
-    use std::time::Duration;
-
-    fn spawn_sequence_http_server(
-        responses: &[(&str, &str)],
-    ) -> Option<(String, Arc<Mutex<Vec<String>>>)> {
-        use std::io::{Read, Write};
-        use std::net::TcpListener;
-
-        let listener = match TcpListener::bind("127.0.0.1:0") {
-            Ok(listener) => listener,
-            Err(_) => return None,
-        };
-        let addr = listener.local_addr().unwrap();
-        let planned_responses: Vec<(String, String)> = responses
-            .iter()
-            .map(|(status, body)| ((*status).to_string(), (*body).to_string()))
-            .collect();
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let captured_requests = Arc::clone(&requests);
-
-        std::thread::spawn(move || {
-            for (status, response_body) in planned_responses {
-                let Ok((mut stream, _)) = listener.accept() else {
-                    break;
-                };
-                let mut req_buf = [0u8; 4096];
-                let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-                let size = stream.read(&mut req_buf).unwrap_or(0);
-                captured_requests
-                    .lock()
-                    .unwrap()
-                    .push(String::from_utf8_lossy(&req_buf[..size]).to_string());
-                let response = format!(
-                    "{}\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}",
-                    status,
-                    response_body.len(),
-                    response_body
-                );
-                let _ = stream.write_all(response.as_bytes());
-            }
-        });
-
-        Some((format!("http://{}", addr), requests))
-    }
+    use crate::api::test_helpers::spawn_sequence_http_server;
 
     #[test]
     fn test_parse_activity_response() {

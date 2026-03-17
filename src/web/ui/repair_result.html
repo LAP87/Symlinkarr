@@ -1,0 +1,46 @@
+{% extends "web/ui/base.html" %}
+
+{% block title %}Repair Result - Symlinkarr{% endblock %}
+{% block nav_links %}active{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>&#128296; Repair Result</h1>
+</div>
+
+{% if success %}
+<div class="alert alert-success">
+    <strong>&#9989; Repair Completed</strong><br>
+    {{ message }}
+</div>
+{% else %}
+<div class="alert alert-error">
+    <strong>&#10060; Repair Failed</strong><br>
+    {{ message }}
+</div>
+{% endif %}
+
+<div class="card-grid">
+    <div class="card" style="text-align:center;">
+        <div class="card-value text-success">{{ repaired }}</div>
+        <div class="card-label">Repaired</div>
+    </div>
+    <div class="card" style="text-align:center;">
+        <div class="card-value {% if failed > 0 %}text-error{% else %}text-success{% endif %}">{{ failed }}</div>
+        <div class="card-label">Failed</div>
+    </div>
+</div>
+
+{% if failed > 0 %}
+<div class="alert alert-warning">
+    <strong>&#9888;&#65039; {{ failed }} link(s) could not be repaired.</strong>
+    Consider running cleanup to remove unrepairable dead links.
+</div>
+{% endif %}
+
+<div class="actions mt-2">
+    <a href="/links/dead" class="btn btn-secondary">&#128683; View Dead Links</a>
+    <a href="/cleanup" class="btn btn-secondary">&#129529; Cleanup</a>
+    <a href="/" class="btn">&#127968; Dashboard</a>
+</div>
+{% endblock %}

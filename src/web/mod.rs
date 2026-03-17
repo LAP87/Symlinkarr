@@ -2,24 +2,9 @@
 //!
 //! Provides a web-based interface for managing symlinks, viewing status,
 //! triggering scans, and running cleanup operations.
-//!
-//! ## Usage
-//!
-//! ```rust,no_run
-//! use symlinkarr::web;
-//! use symlinkarr::config::Config;
-//! use symlinkarr::db::Database;
-//!
-//! #[tokio::main]
-//! async fn main() -> anyhow::Result<()> {
-//!     let config = Config::load(None)?;
-//!     let db = Database::new(&config).await?;
-//!     web::serve(config, db, 8726).await?;
-//!     Ok(())
-//! }
-//! ```
 
 pub mod api;
+pub mod filters;
 pub mod handlers;
 pub mod templates;
 
@@ -118,7 +103,7 @@ fn create_router(state: WebState) -> Router {
         .nest("/api/v1", api_routes)
         .layer(TraceLayer::new_for_http())
         .layer(cors)
-        .nest_service("/static", ServeDir::new("src/web/static"))
+        .nest_service("/static", ServeDir::new(static_dir()))
         .with_state(state)
 }
 
@@ -139,4 +124,22 @@ pub async fn serve(config: Config, db: Database, port: u16) -> Result<()> {
     axum::serve(listener, router).await?;
 
     Ok(())
+}
+
+/// Resolve the static file directory. Checks (in order):
+/// 1. `src/web/static` (development)
+/// 2. Next to the executable at `<exe_dir>/static` (Docker / installed)
+fn static_dir() -> std::path::PathBuf {
+    let dev_path = std::path::PathBuf::from("src/web/static");
+    if dev_path.is_dir() {
+        return dev_path;
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        let exe_sibling = exe.parent().unwrap_or(exe.as_path()).join("static");
+        if exe_sibling.is_dir() {
+            return exe_sibling;
+        }
+    }
+    // Fallback — will 404 but won't panic
+    dev_path
 }

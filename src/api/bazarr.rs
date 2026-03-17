@@ -1,4 +1,9 @@
-#![allow(dead_code)] // Module scaffolded for future Bazarr integration
+// Bazarr API client
+// Note: Bazarr has no official public API. These endpoints are based on
+// reverse engineering and may break with future Bazarr updates.
+// See: https://github.com/morpheus65535/bazarr/issues/741
+
+#![allow(dead_code)] // Response types and webhook methods kept for future use
 
 use anyhow::Result;
 use reqwest::{Client, RequestBuilder, Response, StatusCode};
@@ -12,6 +17,7 @@ use crate::config::BazarrConfig;
 
 /// Episode subtitle status from Bazarr
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)] // Response type kept for future use
 pub struct BazarrEpisode {
     #[serde(default)]
     pub sonarr_episode_file_id: Option<i64>,
@@ -23,6 +29,7 @@ pub struct BazarrEpisode {
 
 /// Movie subtitle status from Bazarr
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)] // Response type kept for future use
 pub struct BazarrMovie {
     #[serde(default)]
     pub radarr_id: Option<i64>,
@@ -170,22 +177,21 @@ impl BazarrClient {
         Ok(())
     }
 
-    /// Trigger Bazarr's system tasks to search for missing subtitles.
+    /// Trigger Bazarr to search for missing subtitles.
     ///
-    /// This runs the "wanted subtitles" search for both series and movies,
-    /// which will pick up any newly created symlinks that need subtitles.
+    /// Uses `POST /api/system/tasks` with the scheduler job IDs that Bazarr
+    /// registers for wanted-subtitle searches. Returns 204 on success.
     pub async fn trigger_sync(&self) -> Result<()> {
-        info!("Bazarr: triggering subtitle sync...");
+        info!("Bazarr: triggering subtitle search for missing content...");
 
-        // Trigger series subtitle search
         let url = self.endpoint_url("api/system/tasks");
 
-        for task_name in &[
-            "search_wanted_subtitles_series",
-            "search_wanted_subtitles_movies",
+        for (task_id, label) in &[
+            ("wanted_search_missing_subtitles_series", "series"),
+            ("wanted_search_missing_subtitles_movies", "movies"),
         ] {
-            let body = serde_json::json!({ "taskid": task_name });
-            debug!("Bazarr: triggering task '{}'", task_name);
+            let body = serde_json::json!({ "taskid": task_id });
+            debug!("Bazarr: triggering {} subtitle search", label);
 
             let resp = self
                 .send_authenticated(&url, |url| self.client.post(url).json(&body))
@@ -194,12 +200,9 @@ impl BazarrClient {
             if !resp.status().is_success() {
                 let status = resp.status();
                 let body_text = resp.text().await.unwrap_or_default();
-                warn!(
-                    "Bazarr task '{}' trigger failed {}: {}",
-                    task_name, status, body_text
-                );
+                warn!("Bazarr {} subtitle search failed {}: {}", label, status, body_text);
             } else {
-                info!("Bazarr: task '{}' triggered successfully", task_name);
+                info!("Bazarr: {} subtitle search triggered successfully", label);
             }
         }
 
@@ -207,10 +210,12 @@ impl BazarrClient {
     }
 
     /// Lightweight Bazarr health check without side effects.
+    /// Uses the /api/system/health endpoint which is a standard health check.
     /// Note: Bazarr uses a dual-auth strategy (header + query-param fallback)
     /// that differs from the standard *arr pattern in `http::check_system_status`.
     pub async fn health_check(&self) -> Result<()> {
-        let url = self.endpoint_url("api/system/tasks");
+        // Use /api/system/health which exists and is lightweight
+        let url = self.endpoint_url("api/system/health");
         let resp = self
             .send_authenticated(&url, |url| self.client.get(url))
             .await
@@ -237,76 +242,7 @@ fn should_retry_with_query_auth(status: StatusCode) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
-    use std::sync::{Arc, Mutex};
-    use std::time::Duration;
-
-    fn spawn_one_shot_http_server(status_line: &str, body: &str) -> Option<String> {
-        let listener = match TcpListener::bind("127.0.0.1:0") {
-            Ok(listener) => listener,
-            Err(_) => return None,
-        };
-        let addr = listener.local_addr().unwrap();
-        let status = status_line.to_string();
-        let response_body = body.to_string();
-
-        std::thread::spawn(move || {
-            if let Ok((mut stream, _)) = listener.accept() {
-                let mut req_buf = [0u8; 1024];
-                let _ = stream.read(&mut req_buf);
-                let response = format!(
-                    "{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    status,
-                    response_body.len(),
-                    response_body
-                );
-                let _ = stream.write_all(response.as_bytes());
-            }
-        });
-
-        Some(format!("http://{}", addr))
-    }
-
-    fn spawn_sequence_http_server(
-        responses: &[(&str, &str)],
-    ) -> Option<(String, Arc<Mutex<Vec<String>>>)> {
-        let listener = match TcpListener::bind("127.0.0.1:0") {
-            Ok(listener) => listener,
-            Err(_) => return None,
-        };
-        let addr = listener.local_addr().unwrap();
-        let planned_responses: Vec<(String, String)> = responses
-            .iter()
-            .map(|(status, body)| ((*status).to_string(), (*body).to_string()))
-            .collect();
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let captured_requests = Arc::clone(&requests);
-
-        std::thread::spawn(move || {
-            for (status, response_body) in planned_responses {
-                let Ok((mut stream, _)) = listener.accept() else {
-                    break;
-                };
-                let mut req_buf = [0u8; 4096];
-                let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-                let size = stream.read(&mut req_buf).unwrap_or(0);
-                captured_requests
-                    .lock()
-                    .unwrap()
-                    .push(String::from_utf8_lossy(&req_buf[..size]).to_string());
-                let response = format!(
-                    "{}\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}",
-                    status,
-                    response_body.len(),
-                    response_body
-                );
-                let _ = stream.write_all(response.as_bytes());
-            }
-        });
-
-        Some((format!("http://{}", addr), requests))
-    }
+    use crate::api::test_helpers::{spawn_one_shot_http_server, spawn_sequence_http_server};
 
     #[test]
     fn with_query_api_key_appends_expected_parameter() {
@@ -416,8 +352,34 @@ mod tests {
 
         let captured = requests.lock().unwrap();
         assert_eq!(captured.len(), 2);
-        assert!(captured[0].contains("GET /api/system/tasks"));
+        // Health check now uses /api/system/health
+        assert!(captured[0].contains("GET /api/system/health"));
         assert!(!captured[0].contains("apikey=test"));
-        assert!(captured[1].contains("GET /api/system/tasks?apikey=test"));
+        assert!(captured[1].contains("GET /api/system/health?apikey=test"));
+    }
+
+    #[tokio::test]
+    async fn test_trigger_sync_success() {
+        // trigger_sync POSTs twice to /api/system/tasks with different taskid bodies
+        let Some((base_url, requests)) = spawn_sequence_http_server(&[
+            ("HTTP/1.1 204 No Content", ""),
+            ("HTTP/1.1 204 No Content", ""),
+        ]) else {
+            return;
+        };
+        let cfg = BazarrConfig {
+            url: base_url,
+            api_key: "test".to_string(),
+        };
+        let client = BazarrClient::new(&cfg);
+
+        client.trigger_sync().await.unwrap();
+
+        let captured = requests.lock().unwrap();
+        assert_eq!(captured.len(), 2);
+        assert!(captured[0].contains("POST /api/system/tasks"));
+        assert!(captured[0].contains("wanted_search_missing_subtitles_series"));
+        assert!(captured[1].contains("POST /api/system/tasks"));
+        assert!(captured[1].contains("wanted_search_missing_subtitles_movies"));
     }
 }

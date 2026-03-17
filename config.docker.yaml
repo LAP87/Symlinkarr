@@ -5,12 +5,12 @@ security:
 
 libraries:
   - name: "Movies"
-    path: "/mnt/storage/plex/movies"
+    path: "/mnt/storage/plex/film"
     media_type: "movie"
     depth: 1
 
   - name: "Series"
-    path: "/mnt/storage/plex/series"
+    path: "/mnt/storage/plex/serier"
     media_type: "tv"
     depth: 1
 
@@ -97,3 +97,8 @@ backup:
   enabled: true
   path: "/app/data/backups"
   max_backups: 50
+
+# Web UI (optional, for dashboard access)
+web:
+  enabled: false
+  port: 8726

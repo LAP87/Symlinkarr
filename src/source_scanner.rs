@@ -53,11 +53,15 @@ static SPACE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap())
 
 /// S01E01 with optional multi-episode suffix chains (S01E01E02, S01E01-E03).
 static MULTI_EP_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)[Ss](\d{1,2})[Ee](\d{1,3})(?:(?:[Ee]\d{1,3})+|(?:-[Ee]\d{1,3})+)?").unwrap()
+    Regex::new(
+        r"(?i)[Ss](\d{1,2})[Ee](\d{1,3})(?:(?:[Ee]\d{1,3})+|(?:-[Ee]\d{1,3})+)?",
+    )
+    .unwrap()
 });
 
 /// Matches a single E<num> token (used to find last episode in multi-ep match).
-static EP_NUM_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)[Ee](\d{1,3})").unwrap());
+static EP_NUM_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)[Ee](\d{1,3})").unwrap());
 
 /// Parser variant used for source filename interpretation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -325,7 +329,7 @@ impl SourceScanner {
             .and_then(|m| {
                 let year: u32 = m.as_str().parse().ok()?;
                 // Sanity check: valid year range
-                if (1900..=2030).contains(&year) {
+                if (1900..=2099).contains(&year) {
                     Some(year)
                 } else {
                     None
@@ -405,28 +409,29 @@ impl SourceScanner {
         let cleaned = MULTI_SUBGROUP_RE.replace(file_stem, "").to_string();
 
         // Step 2: Try standard S01E01 first (some anime uses it), with multi-episode support
-        let (season, episode, episode_end) = if SEASON_EPISODE_RE.is_match(&cleaned) {
-            // Delegate to extract_season_episode for multi-episode detection
-            self.extract_season_episode(&cleaned)
-        }
-        // Try "S2 - 03" format (separate season marker)
-        else if let Some(caps) = ANIME_SEASON_EPISODE_RE.captures(&cleaned) {
-            (
-                caps.get(1).and_then(|m| m.as_str().parse().ok()),
-                caps.get(2).and_then(|m| m.as_str().parse().ok()),
-                None,
-            )
-        }
-        // Try bare " - 03" format (absolute episode number, no season)
-        else if let Some(caps) = ANIME_EPISODE_RE.captures(&cleaned) {
-            (
-                None, // No season for absolute numbering
-                caps.get(1).and_then(|m| m.as_str().parse().ok()),
-                None,
-            )
-        } else {
-            (None, None, None)
-        };
+        let (season, episode, episode_end) =
+            if SEASON_EPISODE_RE.is_match(&cleaned) {
+                // Delegate to extract_season_episode for multi-episode detection
+                self.extract_season_episode(&cleaned)
+            }
+            // Try "S2 - 03" format (separate season marker)
+            else if let Some(caps) = ANIME_SEASON_EPISODE_RE.captures(&cleaned) {
+                (
+                    caps.get(1).and_then(|m| m.as_str().parse().ok()),
+                    caps.get(2).and_then(|m| m.as_str().parse().ok()),
+                    None,
+                )
+            }
+            // Try bare " - 03" format (absolute episode number, no season)
+            else if let Some(caps) = ANIME_EPISODE_RE.captures(&cleaned) {
+                (
+                    None, // No season for absolute numbering
+                    caps.get(1).and_then(|m| m.as_str().parse().ok()),
+                    None,
+                )
+            } else {
+                (None, None, None)
+            };
 
         // Step 3: Extract quality from [1080p], (1080p), or 1920x1080
         let quality = QUALITY_RE

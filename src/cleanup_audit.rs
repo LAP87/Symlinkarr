@@ -42,6 +42,16 @@ pub enum FindingSeverity {
     Warning,
 }
 
+impl std::fmt::Display for FindingSeverity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FindingSeverity::Critical => write!(f, "critical"),
+            FindingSeverity::High => write!(f, "high"),
+            FindingSeverity::Warning => write!(f, "warning"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum FindingReason {
@@ -52,6 +62,20 @@ pub enum FindingReason {
     DuplicateEpisodeSlot,
     SeasonCountAnomaly,
     NonRdSourcePath,
+}
+
+impl std::fmt::Display for FindingReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FindingReason::BrokenSource => write!(f, "broken_source"),
+            FindingReason::ParserTitleMismatch => write!(f, "parser_title_mismatch"),
+            FindingReason::ArrUntracked => write!(f, "arr_untracked"),
+            FindingReason::EpisodeOutOfRange => write!(f, "episode_out_of_range"),
+            FindingReason::DuplicateEpisodeSlot => write!(f, "duplicate_episode_slot"),
+            FindingReason::SeasonCountAnomaly => write!(f, "season_count_anomaly"),
+            FindingReason::NonRdSourcePath => write!(f, "non_rd_source_path"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -886,7 +910,7 @@ pub async fn run_prune(
     })
 }
 
-fn prune_confirmation_token(report: &CleanupReport, candidate_paths: &[PathBuf]) -> String {
+pub fn prune_confirmation_token(report: &CleanupReport, candidate_paths: &[PathBuf]) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
@@ -1078,7 +1102,7 @@ fn finding_slot_key(finding: &CleanupFinding) -> Option<(String, u32, u32)> {
     Some((finding.media_id.clone(), season, episode))
 }
 
-fn collect_safe_warning_duplicate_prunes(findings: &[CleanupFinding]) -> Vec<PathBuf> {
+pub fn collect_safe_warning_duplicate_prunes(findings: &[CleanupFinding]) -> Vec<PathBuf> {
     let mut tainted_slots: HashSet<(String, u32, u32)> = HashSet::new();
     for finding in findings {
         let Some(slot_key) = finding_slot_key(finding) else {

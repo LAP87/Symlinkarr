@@ -71,7 +71,12 @@ impl Discovery {
                 let size: i64 = serde_json::from_str::<serde_json::Value>(files_json)
                     .ok()
                     .and_then(|v| v.get("files")?.as_array().cloned())
-                    .map(|files| files.iter().filter_map(|f| f.get("bytes")?.as_i64()).sum())
+                    .map(|files| {
+                        files
+                            .iter()
+                            .filter_map(|f| f.get("bytes")?.as_i64())
+                            .sum()
+                    })
                     .unwrap_or(0);
 
                 debug!(

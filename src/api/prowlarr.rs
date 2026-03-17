@@ -196,14 +196,7 @@ impl ProwlarrClient {
     }
 
     pub async fn get_system_status(&self) -> Result<()> {
-        crate::api::http::check_system_status(
-            &self.client,
-            &self.base_url,
-            &self.api_key,
-            "v1",
-            "Prowlarr",
-        )
-        .await
+        crate::api::http::check_system_status(&self.client, &self.base_url, &self.api_key, "v1", "Prowlarr").await
     }
 }
 
@@ -371,34 +364,7 @@ fn parse_small_number_token(token: &str) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
-
-    fn spawn_one_shot_http_server(status_line: &str, body: &str) -> Option<String> {
-        let listener = match TcpListener::bind("127.0.0.1:0") {
-            Ok(listener) => listener,
-            Err(_) => return None,
-        };
-        let addr = listener.local_addr().unwrap();
-        let status = status_line.to_string();
-        let response_body = body.to_string();
-
-        std::thread::spawn(move || {
-            if let Ok((mut stream, _)) = listener.accept() {
-                let mut req_buf = [0u8; 1024];
-                let _ = stream.read(&mut req_buf);
-                let response = format!(
-                    "{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    status,
-                    response_body.len(),
-                    response_body
-                );
-                let _ = stream.write_all(response.as_bytes());
-            }
-        });
-
-        Some(format!("http://{}", addr))
-    }
+    use crate::api::test_helpers::spawn_one_shot_http_server;
 
     #[test]
     fn test_parse_prowlarr_search_result() {

@@ -5,12 +5,13 @@ use chrono::{DateTime, Utc};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
+#[allow(unused_imports)]
+use super::filters;
+
 use crate::cleanup_audit::CleanupReport;
 use crate::config::Config;
-use crate::db::ScanRunRecord;
+use crate::db::ScanHistoryRecord;
 use crate::models::LinkRecord;
-
-use super::handlers::*;
 
 // ─── Dashboard ──────────────────────────────────────────────────────
 
@@ -59,7 +60,7 @@ use crate::config::LibraryConfig;
 #[template(path = "web/ui/scan.html")]
 pub struct ScanTemplate {
     pub libraries: Vec<LibraryConfig>,
-    pub history: Vec<ScanRunRecord>,
+    pub history: Vec<ScanHistoryRecord>,
 }
 
 #[derive(Template)]
@@ -74,7 +75,7 @@ pub struct ScanResultTemplate {
 #[derive(Template)]
 #[template(path = "web/ui/scan_history.html")]
 pub struct ScanHistoryTemplate {
-    pub history: Vec<ScanRunRecord>,
+    pub history: Vec<ScanHistoryRecord>,
 }
 
 // ─── Cleanup ────────────────────────────────────────────────────────

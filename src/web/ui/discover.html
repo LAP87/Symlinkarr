@@ -1,0 +1,67 @@
+{% extends "web/ui/base.html" %}
+
+{% block title %}Discover - Symlinkarr{% endblock %}
+{% block nav_discover %}active{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>&#129517; Discover</h1>
+    <p>Find Real-Debrid content not yet in your library.</p>
+</div>
+
+<div class="card">
+    <h2 class="section-title">Filter by Library</h2>
+    <form action="/discover/add" method="post" id="discover-form">
+        <div class="form-group">
+            <label class="form-label" for="library">Target Library:</label>
+            <select id="library" name="library" class="form-control" style="max-width:350px;">
+                <option value="">All Libraries</option>
+                {% for lib in libraries %}
+                <option value="{{ lib.name }}">{{ lib.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+    </form>
+</div>
+
+{% if discovered_items|length > 0 %}
+<div class="card">
+    <h2 class="section-title">Discovered Items ({{ discovered_items|length }})</h2>
+    <p class="text-muted mb-2">Content available in Real-Debrid that is not in your local library.</p>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Title</th>
+                <th>Torrent Name</th>
+                <th>Status</th>
+                <th>Size</th>
+                <th>Action</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in discovered_items %}
+            <tr>
+                <td><strong>{{ item.parsed_title }}</strong></td>
+                <td><code class="mono">{{ item.torrent_name }}</code></td>
+                <td><span class="badge badge-info">{{ item.status }}</span></td>
+                <td class="text-muted">{{ item.size }}</td>
+                <td>
+                    <form action="/discover/add" method="post" style="display:inline;">
+                        <input type="hidden" name="torrent_id" value="{{ item.rd_torrent_id }}">
+                        <input type="hidden" name="library" value="">
+                        <button type="submit" class="btn btn-primary" style="padding:0.4rem 0.8rem;font-size:0.8rem;">
+                            &#10133; Add
+                        </button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div class="card">
+    <p class="text-muted">No undiscovered items found. All Real-Debrid content may already be in your library, or no RD cache is available.</p>
+</div>
+{% endif %}
+{% endblock %}

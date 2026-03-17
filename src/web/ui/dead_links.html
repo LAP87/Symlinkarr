@@ -1,0 +1,63 @@
+{% extends "web/ui/base.html" %}
+
+{% block title %}Dead Links - Symlinkarr{% endblock %}
+{% block nav_links %}active{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>&#128683; Dead Links</h1>
+    <p>Symlinks whose source files are no longer accessible.</p>
+</div>
+
+{% if links|length > 0 %}
+<div class="alert alert-warning">
+    <strong>&#9888;&#65039; {{ links|length }} dead link(s) detected.</strong>
+    Use auto-repair to attempt replacement, or run cleanup to prune unrepairable links.
+</div>
+
+<div class="card" style="margin-bottom:1rem;">
+    <div class="actions mb-2">
+        <form action="/links/repair" method="post">
+            <button type="submit" class="btn btn-primary">&#128296; Auto-Repair All</button>
+        </form>
+        <a href="/cleanup" class="btn btn-secondary">&#129529; Cleanup</a>
+    </div>
+
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Media ID</th>
+                <th>Type</th>
+                <th>Target Path (symlink)</th>
+                <th>Source Path (missing)</th>
+                <th>Updated</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for link in links %}
+            <tr>
+                <td>{{ link.media_id }}</td>
+                <td>{{ link.media_type }}</td>
+                <td><code class="mono">{{ link.target_path.display() }}</code></td>
+                <td><code class="mono text-error">{{ link.source_path.display() }}</code></td>
+                <td>
+                    {% match link.updated_at %}
+                    {% when Some with (ts) %}<span class="text-muted">{{ ts }}</span>{% when None %}&mdash;{% endmatch %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div class="alert alert-success">
+    <strong>&#9989; No dead links found.</strong>
+    Your library is in good shape!
+</div>
+{% endif %}
+
+<div class="actions mt-2">
+    <a href="/links" class="btn btn-secondary">&#8592; All Links</a>
+    <a href="/" class="btn">&#127968; Dashboard</a>
+</div>
+{% endblock %}

@@ -10,3 +10,6 @@ pub mod sonarr;
 pub mod tautulli;
 pub mod tmdb;
 pub mod tvdb;
+
+#[cfg(test)]
+pub(crate) mod test_helpers;

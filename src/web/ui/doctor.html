@@ -1,0 +1,52 @@
+{% extends "web/ui/base.html" %}
+
+{% block title %}Doctor - Symlinkarr{% endblock %}
+{% block nav_doctor %}active{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>&#129658; Doctor</h1>
+    <p>Preflight health checks for your Symlinkarr installation.</p>
+</div>
+
+{% if all_passed %}
+<div class="alert alert-success">
+    <strong>&#9989; All checks passed!</strong> Your Symlinkarr installation is healthy.
+</div>
+{% else %}
+<div class="alert alert-error">
+    <strong>&#10060; Some checks failed.</strong> Review the issues below.
+</div>
+{% endif %}
+
+<div class="card">
+    <ul class="check-list">
+        {% for check in checks %}
+        <li>
+            <span>
+                <strong>{{ check.check }}</strong>
+                <br>
+                <small class="text-muted">{{ check.message }}</small>
+            </span>
+            <span class="check-status">
+                {% if check.passed %}
+                <span class="check-icon passed">&#10003;</span>
+                <span class="text-success">Pass</span>
+                {% else %}
+                <span class="check-icon failed">&#10007;</span>
+                <span class="text-error">Fail</span>
+                {% endif %}
+            </span>
+        </li>
+        {% endfor %}
+    </ul>
+    {% if checks|length == 0 %}
+    <p class="text-muted">No checks available.</p>
+    {% endif %}
+</div>
+
+<div class="actions mt-2">
+    <a href="/doctor" class="btn btn-primary">&#128260; Re-run Checks</a>
+    <a href="/config" class="btn btn-secondary">&#9881;&#65039; View Config</a>
+</div>
+{% endblock %}

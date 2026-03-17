@@ -1,0 +1,61 @@
+{% extends "web/ui/base.html" %}
+
+{% block title %}Backup - Symlinkarr{% endblock %}
+{% block nav_backup %}active{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>&#128190; Backup</h1>
+    <p>Create and manage backups of your symlink database.</p>
+</div>
+
+<div class="card">
+    <h2 class="section-title">Create New Backup</h2>
+    <p class="text-muted mb-2">Backup directory: <code class="mono">{{ backup_dir.display() }}</code></p>
+    <form action="/backup/create" method="post">
+        <div class="form-group">
+            <label class="form-label" for="label">Label (optional):</label>
+            <input type="text" id="label" name="label" class="form-control" style="max-width:350px;" placeholder="e.g. before-cleanup">
+        </div>
+        <button type="submit" class="btn btn-primary">&#128190; Create Backup</button>
+    </form>
+</div>
+
+<div class="card">
+    <h2 class="section-title">Existing Backups ({{ backups|length }})</h2>
+    {% if backups|length > 0 %}
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Filename</th>
+                <th>Size</th>
+                <th>Modified</th>
+                <th>Action</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for backup in backups %}
+            <tr>
+                <td><code class="mono">{{ backup.filename }}</code></td>
+                <td class="text-muted">{{ backup.size }} bytes</td>
+                <td class="text-muted">
+                    {% match backup.modified %}
+                    {% when Some with (_ts) %}available{% when None %}&mdash;{% endmatch %}
+                </td>
+                <td>
+                    <form action="/backup/restore" method="post" style="display:inline;" onsubmit="return confirm('Restore backup {{ backup.filename }}? This will overwrite current links.');">
+                        <input type="hidden" name="backup_file" value="{{ backup.filename }}">
+                        <button type="submit" class="btn btn-secondary" style="padding:0.4rem 0.8rem;font-size:0.8rem;">
+                            &#9850; Restore
+                        </button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="text-muted">No backups found in <code class="mono">{{ backup_dir.display() }}</code>.</p>
+    {% endif %}
+</div>
+{% endblock %}

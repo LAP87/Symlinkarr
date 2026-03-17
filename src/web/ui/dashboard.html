@@ -1,0 +1,58 @@
+{% extends "web/ui/base.html" %}
+
+{% block title %}Dashboard - Symlinkarr{% endblock %}
+{% block nav_dashboard %}active{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>&#128202; Dashboard</h1>
+    <p>Overview of your Symlinkarr symlink manager.</p>
+</div>
+
+<div class="card-grid">
+    <div class="card" style="text-align:center;">
+        <div class="card-icon">&#128279;</div>
+        <div class="card-value text-success">{{ stats.active_links }}</div>
+        <div class="card-label">Active Links</div>
+    </div>
+    <div class="card" style="text-align:center;">
+        <div class="card-icon">&#128683;</div>
+        <div class="card-value {% if stats.dead_links > 0 %}text-error{% else %}text-success{% endif %}">{{ stats.dead_links }}</div>
+        <div class="card-label">Dead Links</div>
+    </div>
+    <div class="card" style="text-align:center;">
+        <div class="card-icon">&#128269;</div>
+        <div class="card-value">{{ stats.total_scans }}</div>
+        <div class="card-label">Total Scans</div>
+    </div>
+    <div class="card" style="text-align:center;">
+        <div class="card-icon">&#128336;</div>
+        <div class="card-value" style="font-size:1.25rem;">
+            {% match stats.last_scan %}
+            {% when Some with (ts) %}{{ ts }}{% when None %}Never{% endmatch %}
+        </div>
+        <div class="card-label">Last Scan</div>
+    </div>
+</div>
+
+<div class="card">
+    <h2 class="section-title">Quick Actions</h2>
+    <div class="actions">
+        <a href="/scan" class="btn btn-primary">&#128269; Run Scan</a>
+        <a href="/links/dead" class="btn btn-secondary">&#128683; View Dead Links</a>
+        <a href="/cleanup" class="btn btn-secondary">&#129529; Cleanup</a>
+        <a href="/doctor" class="btn btn-secondary">&#129658; Doctor</a>
+    </div>
+</div>
+
+{% if stats.dead_links > 0 %}
+<div class="alert alert-warning">
+    <strong>&#9888;&#65039; Action Required:</strong>
+    You have {{ stats.dead_links }} dead link(s).
+    <a href="/links/dead" style="color:inherit;font-weight:600;">View dead links</a> or
+    <form action="/links/repair" method="post" style="display:inline;">
+        <button type="submit" class="btn" style="padding:0.25rem 0.75rem;font-size:0.875rem;">Auto-repair</button>
+    </form>
+</div>
+{% endif %}
+{% endblock %}
