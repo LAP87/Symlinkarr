@@ -1573,19 +1573,17 @@ impl Database {
     /// Delete old records that accumulate unboundedly.
     /// Safe to call at daemon startup and periodically during long runs.
     pub async fn housekeeping(&self) -> Result<HousekeepingStats> {
-        let scan_runs_deleted = sqlx::query(
-            "DELETE FROM scan_runs WHERE run_at < datetime('now', '-90 days')",
-        )
-        .execute(&self.pool)
-        .await?
-        .rows_affected();
+        let scan_runs_deleted =
+            sqlx::query("DELETE FROM scan_runs WHERE run_at < datetime('now', '-90 days')")
+                .execute(&self.pool)
+                .await?
+                .rows_affected();
 
-        let link_events_deleted = sqlx::query(
-            "DELETE FROM link_events WHERE event_at < datetime('now', '-30 days')",
-        )
-        .execute(&self.pool)
-        .await?
-        .rows_affected();
+        let link_events_deleted =
+            sqlx::query("DELETE FROM link_events WHERE event_at < datetime('now', '-30 days')")
+                .execute(&self.pool)
+                .await?
+                .rows_affected();
 
         let old_jobs_deleted = sqlx::query(
             "DELETE FROM acquisition_jobs
@@ -1615,8 +1613,7 @@ impl Database {
     /// Jobs that were `Downloading` when the daemon crashed will never progress.
     /// This resets them to `Failed` with a short retry window so the queue drains normally.
     pub async fn recover_stale_downloading_jobs(&self, timeout_minutes: u64) -> Result<u32> {
-        let cutoff = chrono::Utc::now()
-            - chrono::Duration::minutes(timeout_minutes as i64);
+        let cutoff = chrono::Utc::now() - chrono::Duration::minutes(timeout_minutes as i64);
         let cutoff_str = cutoff.to_rfc3339();
 
         let rows = sqlx::query_as::<_, (i64, Option<String>)>(
@@ -1632,9 +1629,7 @@ impl Database {
                 None => true,
             };
             if is_stale {
-                let next_retry = (chrono::Utc::now()
-                    + chrono::Duration::minutes(30))
-                .to_rfc3339();
+                let next_retry = (chrono::Utc::now() + chrono::Duration::minutes(30)).to_rfc3339();
                 sqlx::query(
                     "UPDATE acquisition_jobs
                      SET status = 'failed',
@@ -2409,27 +2404,24 @@ mod tests {
         assert_eq!(stats.old_jobs_deleted, 1, "only old completed job deleted");
 
         // Verify recent scan_run survives
-        let remaining_runs: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM scan_runs")
-                .fetch_one(&db.pool)
-                .await
-                .unwrap();
+        let remaining_runs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM scan_runs")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
         assert_eq!(remaining_runs, 1);
 
         // Verify recent link_event survives
-        let remaining_events: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM link_events")
-                .fetch_one(&db.pool)
-                .await
-                .unwrap();
+        let remaining_events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM link_events")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
         assert_eq!(remaining_events, 1);
 
         // Verify active (queued) job is never deleted, recent completed_linked survives
-        let remaining_jobs: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM acquisition_jobs")
-                .fetch_one(&db.pool)
-                .await
-                .unwrap();
+        let remaining_jobs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM acquisition_jobs")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
         assert_eq!(remaining_jobs, 2, "active + recent completed both survive");
     }
 
@@ -2604,7 +2596,11 @@ mod tests {
             .unwrap();
 
         let jobs = db.get_manageable_acquisition_jobs().await.unwrap();
-        let failed_id = jobs.iter().find(|j| j.request_key == "key-failed").unwrap().id;
+        let failed_id = jobs
+            .iter()
+            .find(|j| j.request_key == "key-failed")
+            .unwrap()
+            .id;
         let blocked_id = jobs
             .iter()
             .find(|j| j.request_key == "key-blocked")
@@ -2789,8 +2785,16 @@ mod tests {
             .unwrap();
 
         let all_jobs = db.get_manageable_acquisition_jobs().await.unwrap();
-        let f_id = all_jobs.iter().find(|j| j.request_key == "key-f").unwrap().id;
-        let b_id = all_jobs.iter().find(|j| j.request_key == "key-b").unwrap().id;
+        let f_id = all_jobs
+            .iter()
+            .find(|j| j.request_key == "key-f")
+            .unwrap()
+            .id;
+        let b_id = all_jobs
+            .iter()
+            .find(|j| j.request_key == "key-b")
+            .unwrap()
+            .id;
 
         db.update_acquisition_job_state(
             f_id,
@@ -2872,7 +2876,10 @@ mod tests {
         assert!(db.rd_torrent_downloaded_by_hash("HASH1").await.unwrap());
         assert!(db.rd_torrent_downloaded_by_hash("hash1").await.unwrap());
         assert!(!db.rd_torrent_downloaded_by_hash("HASH2").await.unwrap());
-        assert!(!db.rd_torrent_downloaded_by_hash("HASH_UNKNOWN").await.unwrap());
+        assert!(!db
+            .rd_torrent_downloaded_by_hash("HASH_UNKNOWN")
+            .await
+            .unwrap());
 
         // get_rd_torrent_counts: (cached_with_files, total_downloaded)
         // id1 is downloaded with non-empty files -> cached=1, total=1
@@ -3136,10 +3143,7 @@ mod tests {
         let dead = db.get_dead_links().await.unwrap();
         assert_eq!(dead.len(), 1);
         assert_eq!(dead[0].status, LinkStatus::Dead);
-        assert_eq!(
-            dead[0].target_path,
-            PathBuf::from("/plex/show/S01E01.mkv")
-        );
+        assert_eq!(dead[0].target_path, PathBuf::from("/plex/show/S01E01.mkv"));
     }
 
     #[tokio::test]
@@ -3157,8 +3161,12 @@ mod tests {
         assert!(stats.last_scan.is_none());
 
         // Insert one active, one dead link
-        db.insert_link(&sample_link("/mnt/a", "/plex/a")).await.unwrap();
-        db.insert_link(&sample_link("/mnt/b", "/plex/b")).await.unwrap();
+        db.insert_link(&sample_link("/mnt/a", "/plex/a"))
+            .await
+            .unwrap();
+        db.insert_link(&sample_link("/mnt/b", "/plex/b"))
+            .await
+            .unwrap();
         db.mark_dead("/plex/b").await.unwrap();
 
         // Insert a scan_run

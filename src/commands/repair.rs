@@ -219,13 +219,19 @@ pub(crate) async fn run_repair(
                             continue;
                         };
 
-                        let cats = prowlarr_categories(dead_link.media_type, dead_link.content_type);
+                        let cats =
+                            prowlarr_categories(dead_link.media_type, dead_link.content_type);
                         let request = AutoAcquireRequest {
                             label: dead_link.meta.title.clone(),
                             query: query.clone(),
                             imdb_id: None,
                             categories: cats,
-                            arr: decypharr_arr_name(cfg, dead_link.media_type, dead_link.content_type).to_string(),
+                            arr: decypharr_arr_name(
+                                cfg,
+                                dead_link.media_type,
+                                dead_link.content_type,
+                            )
+                            .to_string(),
                             library_filter: library_name_for_path(cfg, &dead_link.symlink_path),
                             relink_check: RelinkCheck::SymlinkPath(dead_link.symlink_path.clone()),
                         };

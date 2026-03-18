@@ -26,7 +26,10 @@ pub(crate) async fn run_daemon(cfg: &Config, db: &Database) -> Result<()> {
         Err(e) => tracing::warn!("Housekeeping failed (non-fatal): {}", e),
     }
 
-    match db.recover_stale_downloading_jobs(cfg.decypharr.completion_timeout_minutes).await {
+    match db
+        .recover_stale_downloading_jobs(cfg.decypharr.completion_timeout_minutes)
+        .await
+    {
         Ok(n) if n > 0 => info!("Recovered {} stale Downloading jobs after restart", n),
         Ok(_) => {}
         Err(e) => tracing::warn!("Stale job recovery failed (non-fatal): {}", e),

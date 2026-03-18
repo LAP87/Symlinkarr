@@ -4,7 +4,11 @@ use crate::commands::print_json;
 use crate::db::{AcquisitionJobStatus, Database};
 use crate::{OutputFormat, QueueAction, QueueRetryScope};
 
-pub(crate) async fn run_queue(db: &Database, action: QueueAction, output: OutputFormat) -> Result<()> {
+pub(crate) async fn run_queue(
+    db: &Database,
+    action: QueueAction,
+    output: OutputFormat,
+) -> Result<()> {
     match action {
         QueueAction::List { status, limit } => {
             let statuses = status.map(|value| vec![value.into_job_status()]);

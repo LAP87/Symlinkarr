@@ -1,15 +1,15 @@
 //! HTTP handlers for the web UI
 
+use askama::Template;
 use axum::{
     extract::{Form, Query, State},
     response::{Html, IntoResponse},
 };
-use askama::Template;
+use chrono::Utc;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tracing::{error, info};
-use chrono::Utc;
 
 use crate::api::tmdb::TmdbClient;
 use crate::api::tvdb::TvdbClient;
@@ -200,13 +200,20 @@ pub async fn post_scan_trigger(
         } else {
             Some(cfg.api.tmdb_read_access_token.as_str())
         };
-        Some(TmdbClient::new(&cfg.api.tmdb_api_key, rat, cfg.api.cache_ttl_hours))
+        Some(TmdbClient::new(
+            &cfg.api.tmdb_api_key,
+            rat,
+            cfg.api.cache_ttl_hours,
+        ))
     } else {
         None
     };
 
     let tvdb = if cfg.has_tvdb() {
-        Some(TvdbClient::new(&cfg.api.tvdb_api_key, cfg.api.cache_ttl_hours))
+        Some(TvdbClient::new(
+            &cfg.api.tvdb_api_key,
+            cfg.api.cache_ttl_hours,
+        ))
     } else {
         None
     };
@@ -306,7 +313,8 @@ pub async fn get_cleanup(State(state): State<WebState>) -> impl IntoResponse {
 
             // Sort by modification time (newest first)
             reports.sort_by_key(|entry| {
-                entry.metadata()
+                entry
+                    .metadata()
                     .ok()
                     .and_then(|meta| meta.modified().ok())
                     .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
@@ -331,7 +339,10 @@ pub async fn post_cleanup_audit(
     State(state): State<WebState>,
     Form(form): Form<CleanupAuditForm>,
 ) -> impl IntoResponse {
-    info!("Running cleanup audit (scope={}, library={:?})", form.scope, form.library);
+    info!(
+        "Running cleanup audit (scope={}, library={:?})",
+        form.scope, form.library
+    );
 
     let scope = match CleanupScope::parse(&form.scope) {
         Ok(s) => s,
@@ -359,10 +370,11 @@ pub async fn post_cleanup_audit(
             form.scope, library_name, ts
         ))
     } else {
-        state.config.backup.path.join(format!(
-            "cleanup-audit-{}-{}.json",
-            form.scope, ts
-        ))
+        state
+            .config
+            .backup
+            .path
+            .join(format!("cleanup-audit-{}-{}.json", form.scope, ts))
     };
 
     let report_path = match auditor.run_audit(scope, Some(&output_path)).await {
@@ -382,7 +394,11 @@ pub async fn post_cleanup_audit(
     };
 
     let message = if let Some(library_name) = &form.library {
-        format!("Audit complete for library '{}': {}", library_name, report_path.display())
+        format!(
+            "Audit complete for library '{}': {}",
+            library_name,
+            report_path.display()
+        )
     } else {
         format!("Audit complete: {}", report_path.display())
     };
@@ -486,7 +502,8 @@ pub async fn get_cleanup_prune(
         })
         .collect();
 
-    let safe_warning_prunes = cleanup_audit::collect_safe_warning_duplicate_prunes(&report.findings);
+    let safe_warning_prunes =
+        cleanup_audit::collect_safe_warning_duplicate_prunes(&report.findings);
 
     let mut candidate_paths: Vec<PathBuf> = high_or_critical_candidates
         .iter()
@@ -593,10 +610,12 @@ pub async fn post_cleanup_prune(
         &state.config,
         &state.database,
         report_path,
-        true, // apply
-        None, // max_delete
+        true,              // apply
+        None,              // max_delete
         Some(&form.token), // confirmation_token
-    ).await {
+    )
+    .await
+    {
         Ok(o) => o,
         Err(e) => {
             error!("Prune operation failed: {}", e);
@@ -636,7 +655,10 @@ pub async fn get_links(
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
     let filter = params.get("filter").map(|f| f.as_str());
-    let limit: i64 = params.get("limit").and_then(|l| l.parse().ok()).unwrap_or(100);
+    let limit: i64 = params
+        .get("limit")
+        .and_then(|l| l.parse().ok())
+        .unwrap_or(100);
 
     let links = match filter {
         Some("dead") => state.database.get_dead_links().await.unwrap_or_default(),
@@ -800,10 +822,7 @@ pub async fn get_doctor(State(state): State<WebState>) -> impl IntoResponse {
 
     let all_passed = checks.iter().all(|c| c.passed);
 
-    let template = DoctorTemplate {
-        checks,
-        all_passed,
-    };
+    let template = DoctorTemplate { checks, all_passed };
     Html(template.render().unwrap_or_else(|e| e.to_string()))
 }
 

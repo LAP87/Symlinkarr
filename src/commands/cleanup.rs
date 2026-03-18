@@ -151,7 +151,11 @@ async fn run_cleanup_audit(
     Ok(())
 }
 
-pub(crate) async fn run_cleanup_prune(cfg: &Config, db: &Database, args: CleanupPruneArgs<'_>) -> Result<i64> {
+pub(crate) async fn run_cleanup_prune(
+    cfg: &Config,
+    db: &Database,
+    args: CleanupPruneArgs<'_>,
+) -> Result<i64> {
     info!("=== Symlinkarr Cleanup Prune ===");
     let CleanupPruneArgs {
         report,
@@ -243,10 +247,7 @@ pub(crate) async fn run_cleanup_prune(cfg: &Config, db: &Database, args: Cleanup
     Ok(outcome.removed as i64)
 }
 
-fn filter_cleanup_report_by_roots(
-    report: &mut cleanup_audit::CleanupReport,
-    roots: &[PathBuf],
-) {
+fn filter_cleanup_report_by_roots(report: &mut cleanup_audit::CleanupReport, roots: &[PathBuf]) {
     report
         .findings
         .retain(|f| path_under_roots(&f.symlink_path, roots));

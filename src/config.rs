@@ -1923,10 +1923,13 @@ realdebrid:
         cfg.api.cache_ttl_hours = 87600; // 10 years — default
 
         let report = cfg.validate_runtime_settings();
-        assert!(report.warnings.is_empty() || !report
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("api.cache_ttl_hours")));
+        assert!(
+            report.warnings.is_empty()
+                || !report
+                    .warnings
+                    .iter()
+                    .any(|warning| warning.contains("api.cache_ttl_hours"))
+        );
     }
 
     #[test]
