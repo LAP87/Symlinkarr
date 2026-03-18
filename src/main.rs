@@ -1,8 +1,8 @@
 #[cfg(not(unix))]
 compile_error!("Symlinkarr requires a Unix platform (symlink support).");
 
-mod api;
 mod anime_scanner;
+mod api;
 mod auto_acquire;
 mod backup;
 mod cache;

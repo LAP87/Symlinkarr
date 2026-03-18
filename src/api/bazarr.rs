@@ -200,7 +200,10 @@ impl BazarrClient {
             if !resp.status().is_success() {
                 let status = resp.status();
                 let body_text = resp.text().await.unwrap_or_default();
-                warn!("Bazarr {} subtitle search failed {}: {}", label, status, body_text);
+                warn!(
+                    "Bazarr {} subtitle search failed {}: {}",
+                    label, status, body_text
+                );
             } else {
                 info!("Bazarr: {} subtitle search triggered successfully", label);
             }

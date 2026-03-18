@@ -34,30 +34,30 @@ struct RateLimiter {
 impl RateLimiter {
     fn new(gap_ms: u64) -> Self {
         let (tx, mut rx) = mpsc::channel::<oneshot::Sender<()>>(1000);
-        
+
         tokio::spawn(async move {
             let gap = Duration::from_millis(gap_ms);
             let mut last = Instant::now() - gap; // Allow first request immediately
-            
+
             while let Some(req_tx) = rx.recv().await {
                 let now = Instant::now();
                 let elapsed = now.saturating_duration_since(last);
-                
+
                 if elapsed < gap {
                     sleep(gap - elapsed).await;
                     last = Instant::now();
                 } else {
                     last = now;
                 }
-                
+
                 // Signal the requester that it's their turn
                 let _ = req_tx.send(());
             }
         });
-        
+
         Self { sender: tx }
     }
-    
+
     async fn acquire(&self) {
         let (tx, rx) = oneshot::channel();
         if self.sender.send(tx).await.is_ok() {
@@ -76,7 +76,7 @@ pub async fn apply_rate_limit(req: &RequestBuilder) {
         if let Ok(built_req) = req_clone.build() {
             let url = built_req.url();
             let host = url.host_str().unwrap_or("");
-            
+
             if host.contains("api.themoviedb.org") {
                 let limit = TMDB_API.get_or_init(|| RateLimiter::new(RATE_LIMIT_TMDB_GAP_MS));
                 limit.acquire().await;
@@ -122,7 +122,11 @@ pub async fn send_with_retry(request: RequestBuilder) -> Result<Response> {
         // Pace requests to rate-limited APIs (TMDB/TVDB) BEFORE every attempt
         apply_rate_limit(&req).await;
 
-        let host = req.try_clone().and_then(|r| r.build().ok()).and_then(|r| r.url().host_str().map(|s| s.to_string())).unwrap_or_else(|| "unknown_host".to_string());
+        let host = req
+            .try_clone()
+            .and_then(|r| r.build().ok())
+            .and_then(|r| r.url().host_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| "unknown_host".to_string());
 
         match req.send().await {
             Ok(resp) => {

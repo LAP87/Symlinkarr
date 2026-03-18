@@ -155,11 +155,7 @@ pub struct ApiCleanupPruneRequest {
 
 /// GET /api/v1/status
 pub async fn api_get_status(State(state): State<WebState>) -> Json<ApiStatus> {
-    let stats = state
-        .database
-        .get_web_stats()
-        .await
-        .unwrap_or_default();
+    let stats = state.database.get_web_stats().await.unwrap_or_default();
 
     Json(ApiStatus {
         active_links: stats.active_links,
@@ -244,13 +240,20 @@ pub async fn api_post_scan(
         } else {
             Some(cfg.api.tmdb_read_access_token.as_str())
         };
-        Some(TmdbClient::new(&cfg.api.tmdb_api_key, rat, cfg.api.cache_ttl_hours))
+        Some(TmdbClient::new(
+            &cfg.api.tmdb_api_key,
+            rat,
+            cfg.api.cache_ttl_hours,
+        ))
     } else {
         None
     };
 
     let tvdb = if cfg.has_tvdb() {
-        Some(TvdbClient::new(&cfg.api.tvdb_api_key, cfg.api.cache_ttl_hours))
+        Some(TvdbClient::new(
+            &cfg.api.tvdb_api_key,
+            cfg.api.cache_ttl_hours,
+        ))
     } else {
         None
     };
@@ -428,7 +431,10 @@ pub async fn api_get_links(
     State(state): State<WebState>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Json<Vec<ApiLink>> {
-    let limit: i64 = params.get("limit").and_then(|l| l.parse().ok()).unwrap_or(100);
+    let limit: i64 = params
+        .get("limit")
+        .and_then(|l| l.parse().ok())
+        .unwrap_or(100);
     let status_filter = params.get("status").map(|s| s.as_str());
 
     let links = match status_filter {
@@ -453,7 +459,9 @@ pub async fn api_get_links(
 }
 
 /// GET /api/v1/config/validate
-pub async fn api_get_config_validate(State(state): State<WebState>) -> Json<ApiConfigValidateResponse> {
+pub async fn api_get_config_validate(
+    State(state): State<WebState>,
+) -> Json<ApiConfigValidateResponse> {
     let mut errors = vec![];
     let mut warnings = vec![];
 

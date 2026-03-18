@@ -170,7 +170,10 @@ impl TvdbClient {
 
             if resp.status() == 401 {
                 if retried {
-                    anyhow::bail!("TVDB authentication failed for {}: invalid API key or token", tvdb_id);
+                    anyhow::bail!(
+                        "TVDB authentication failed for {}: invalid API key or token",
+                        tvdb_id
+                    );
                 }
                 // Token expired, re-authenticate and retry once
                 self.authenticate().await?;

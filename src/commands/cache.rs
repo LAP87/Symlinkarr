@@ -26,12 +26,20 @@ pub(crate) async fn run_cache(cfg: &Config, db: &Database, action: CacheAction) 
                 "\nCache build complete: {}/{} downloaded torrents have file info ({:.0}%)",
                 cached,
                 total,
-                if total > 0 { cached as f64 / total as f64 * 100.0 } else { 0.0 }
+                if total > 0 {
+                    cached as f64 / total as f64 * 100.0
+                } else {
+                    0.0
+                }
             );
         }
         CacheAction::Status => {
             let (cached, total) = db.get_rd_torrent_counts().await?;
-            let coverage = if total > 0 { cached as f64 / total as f64 * 100.0 } else { 0.0 };
+            let coverage = if total > 0 {
+                cached as f64 / total as f64 * 100.0
+            } else {
+                0.0
+            };
             println!("RD cache status:");
             println!("  Downloaded torrents:    {}", total);
             println!("  With file info cached:  {} ({:.0}%)", cached, coverage);

@@ -72,13 +72,17 @@ pub(crate) async fn run_scan(
                 if coverage >= MIN_CACHE_COVERAGE {
                     info!(
                         "Using cached source data ({}/{} downloaded torrents, {:.0}% coverage)",
-                        cached, total, coverage * 100.0
+                        cached,
+                        total,
+                        coverage * 100.0
                     );
                     true
                 } else {
                     info!(
                         "Cache coverage too low ({}/{} = {:.0}%), walking filesystem instead",
-                        cached, total, coverage * 100.0
+                        cached,
+                        total,
+                        coverage * 100.0
                     );
                     false
                 }

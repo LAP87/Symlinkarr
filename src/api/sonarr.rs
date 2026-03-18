@@ -120,7 +120,14 @@ impl SonarrClient {
     }
 
     pub async fn get_system_status(&self) -> Result<()> {
-        crate::api::http::check_system_status(&self.client, &self.base_url, &self.api_key, "v3", "Sonarr").await
+        crate::api::http::check_system_status(
+            &self.client,
+            &self.base_url,
+            &self.api_key,
+            "v3",
+            "Sonarr",
+        )
+        .await
     }
 
     pub async fn get_series(&self) -> Result<Vec<SonarrSeries>> {

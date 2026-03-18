@@ -11,7 +11,12 @@ use crate::config::Config;
 use crate::db::Database;
 use crate::OutputFormat;
 
-pub(crate) async fn run_status(cfg: &Config, db: &Database, health: bool, output: OutputFormat) -> Result<()> {
+pub(crate) async fn run_status(
+    cfg: &Config,
+    db: &Database,
+    health: bool,
+    output: OutputFormat,
+) -> Result<()> {
     let (active, dead, total) = db.get_stats().await?;
     let acquisition = db.get_acquisition_job_counts().await?;
     let acquisition_json = serde_json::json!({
@@ -65,24 +70,69 @@ pub(crate) async fn run_status(cfg: &Config, db: &Database, health: bool, output
 
         check_tautulli(cfg, emit_text, &mut health_json).await;
         check_plex(cfg, emit_text, &mut health_json).await;
-        check_service("Prowlarr", cfg.has_prowlarr(), emit_text, &mut health_json, || async {
-            ProwlarrClient::new(&cfg.prowlarr).get_system_status().await.map(|_| ())
-        }).await;
-        check_service("Bazarr", cfg.has_bazarr(), emit_text, &mut health_json, || async {
-            BazarrClient::new(&cfg.bazarr).health_check().await
-        }).await;
-        check_service("Radarr", cfg.has_radarr(), emit_text, &mut health_json, || async {
-            crate::api::radarr::RadarrClient::new(&cfg.radarr.url, &cfg.radarr.api_key)
-                .get_system_status().await.map(|_| ())
-        }).await;
-        check_service("Sonarr", cfg.has_sonarr(), emit_text, &mut health_json, || async {
-            crate::api::sonarr::SonarrClient::new(&cfg.sonarr.url, &cfg.sonarr.api_key)
-                .get_system_status().await.map(|_| ())
-        }).await;
-        check_service("Sonarr-Anime", cfg.has_sonarr_anime(), emit_text, &mut health_json, || async {
-            crate::api::sonarr::SonarrClient::new(&cfg.sonarr_anime.url, &cfg.sonarr_anime.api_key)
-                .get_system_status().await.map(|_| ())
-        }).await;
+        check_service(
+            "Prowlarr",
+            cfg.has_prowlarr(),
+            emit_text,
+            &mut health_json,
+            || async {
+                ProwlarrClient::new(&cfg.prowlarr)
+                    .get_system_status()
+                    .await
+                    .map(|_| ())
+            },
+        )
+        .await;
+        check_service(
+            "Bazarr",
+            cfg.has_bazarr(),
+            emit_text,
+            &mut health_json,
+            || async { BazarrClient::new(&cfg.bazarr).health_check().await },
+        )
+        .await;
+        check_service(
+            "Radarr",
+            cfg.has_radarr(),
+            emit_text,
+            &mut health_json,
+            || async {
+                crate::api::radarr::RadarrClient::new(&cfg.radarr.url, &cfg.radarr.api_key)
+                    .get_system_status()
+                    .await
+                    .map(|_| ())
+            },
+        )
+        .await;
+        check_service(
+            "Sonarr",
+            cfg.has_sonarr(),
+            emit_text,
+            &mut health_json,
+            || async {
+                crate::api::sonarr::SonarrClient::new(&cfg.sonarr.url, &cfg.sonarr.api_key)
+                    .get_system_status()
+                    .await
+                    .map(|_| ())
+            },
+        )
+        .await;
+        check_service(
+            "Sonarr-Anime",
+            cfg.has_sonarr_anime(),
+            emit_text,
+            &mut health_json,
+            || async {
+                crate::api::sonarr::SonarrClient::new(
+                    &cfg.sonarr_anime.url,
+                    &cfg.sonarr_anime.api_key,
+                )
+                .get_system_status()
+                .await
+                .map(|_| ())
+            },
+        )
+        .await;
 
         if !emit_text {
             print_json(&serde_json::json!({
@@ -137,7 +187,9 @@ async fn check_service<F, Fut>(
 
 async fn check_tautulli(cfg: &Config, emit_text: bool, health_json: &mut Vec<serde_json::Value>) {
     if !cfg.has_tautulli() {
-        if emit_text { println!("   ⚪ Tautulli: Not configured"); }
+        if emit_text {
+            println!("   ⚪ Tautulli: Not configured");
+        }
         health_json.push(serde_json::json!({ "service": "tautulli", "configured": false }));
         return;
     }
@@ -147,19 +199,27 @@ async fn check_tautulli(cfg: &Config, emit_text: bool, health_json: &mut Vec<ser
         Ok(response) => {
             let stream_count = response.stream_count;
             if emit_text {
-                println!("   ✅ Tautulli: Connected ({} active streams)", stream_count);
+                println!(
+                    "   ✅ Tautulli: Connected ({} active streams)",
+                    stream_count
+                );
             }
             health_json.push(serde_json::json!({
                 "service": "tautulli", "ok": true, "streams": stream_count,
             }));
             if emit_text {
                 if let Ok(history) = tautulli.get_history(10, None).await {
-                    println!("      Recent activity: {} entries fetched", history.data.len());
+                    println!(
+                        "      Recent activity: {} entries fetched",
+                        history.data.len()
+                    );
                 }
             }
         }
         Err(e) => {
-            if emit_text { println!("   ❌ Tautulli: Connection error ({})", e); }
+            if emit_text {
+                println!("   ❌ Tautulli: Connection error ({})", e);
+            }
             health_json.push(serde_json::json!({
                 "service": "tautulli", "ok": false, "error": e.to_string(),
             }));
@@ -169,7 +229,9 @@ async fn check_tautulli(cfg: &Config, emit_text: bool, health_json: &mut Vec<ser
 
 async fn check_plex(cfg: &Config, emit_text: bool, health_json: &mut Vec<serde_json::Value>) {
     if !cfg.has_plex() {
-        if emit_text { println!("   ⚪ Plex: Not configured"); }
+        if emit_text {
+            println!("   ⚪ Plex: Not configured");
+        }
         health_json.push(serde_json::json!({ "service": "plex", "configured": false }));
         return;
     }
@@ -177,13 +239,17 @@ async fn check_plex(cfg: &Config, emit_text: bool, health_json: &mut Vec<serde_j
     let plex = PlexClient::new(&cfg.plex.url, &cfg.plex.token);
     match plex.get_sections().await {
         Ok(sections) => {
-            if emit_text { println!("   ✅ Plex: Connected ({} section(s))", sections.len()); }
+            if emit_text {
+                println!("   ✅ Plex: Connected ({} section(s))", sections.len());
+            }
             health_json.push(serde_json::json!({
                 "service": "plex", "ok": true, "sections": sections.len(),
             }));
         }
         Err(e) => {
-            if emit_text { println!("   ❌ Plex: Connection error ({})", e); }
+            if emit_text {
+                println!("   ❌ Plex: Connection error ({})", e);
+            }
             health_json.push(serde_json::json!({
                 "service": "plex", "ok": false, "error": e.to_string(),
             }));

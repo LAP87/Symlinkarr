@@ -20,9 +20,7 @@ use crate::api::prowlarr;
 use crate::config::{Config, ContentType, LibraryConfig};
 use crate::db::Database;
 use crate::models::MediaType;
-use crate::utils::{
-    directory_path_health_with_timeout, fast_path_health, PathHealth,
-};
+use crate::utils::{directory_path_health_with_timeout, fast_path_health, PathHealth};
 
 pub(crate) const DIRECTORY_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -163,17 +161,20 @@ pub(crate) fn prowlarr_categories(media_type: MediaType, content_type: ContentTy
     match (media_type, content_type) {
         (MediaType::Movie, _) => vec![prowlarr::categories::MOVIES],
         (MediaType::Tv, ContentType::Anime) => vec![prowlarr::categories::TV_ANIME],
-        (MediaType::Tv, _) => vec![
-            prowlarr::categories::TV,
-            prowlarr::categories::TV_ANIME,
-        ],
+        (MediaType::Tv, _) => vec![prowlarr::categories::TV, prowlarr::categories::TV_ANIME],
     }
 }
 
-pub(crate) fn decypharr_arr_name(cfg: &Config, media_type: MediaType, content_type: ContentType) -> &str {
+pub(crate) fn decypharr_arr_name(
+    cfg: &Config,
+    media_type: MediaType,
+    content_type: ContentType,
+) -> &str {
     match (media_type, content_type) {
         (MediaType::Movie, _) => &cfg.decypharr.arr_name_movie,
-        (MediaType::Tv, ContentType::Anime) if cfg.has_sonarr_anime() => &cfg.decypharr.arr_name_anime,
+        (MediaType::Tv, ContentType::Anime) if cfg.has_sonarr_anime() => {
+            &cfg.decypharr.arr_name_anime
+        }
         (MediaType::Tv, _) => &cfg.decypharr.arr_name_tv,
     }
 }

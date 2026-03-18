@@ -311,7 +311,11 @@ impl Linker {
             );
             self.log_link_event(
                 db,
-                if is_update { "dry_run_updated" } else { "dry_run_created" },
+                if is_update {
+                    "dry_run_updated"
+                } else {
+                    "dry_run_created"
+                },
                 target_path,
                 Some(&m.source_item.path),
                 Some(media_id.as_str()),
@@ -888,7 +892,8 @@ mod tests {
 
     #[test]
     fn test_custom_naming_template() {
-        let linker = Linker::new_with_options(false, true, "{episode:02}x{season:02} - {title}", true);
+        let linker =
+            Linker::new_with_options(false, true, "{episode:02}x{season:02} - {title}", true);
         let name = linker.format_episode_name("My Show", 1, 5, "Episode Title", "mkv");
         assert_eq!(name, "05x01 - My Show.mkv");
     }
@@ -1031,10 +1036,7 @@ mod tests {
         let linker = Linker::new(false, true, "");
 
         let summary = linker
-            .process_matches(
-                &[sample_movie_match(&lib_path, &source_path)],
-                &db,
-            )
+            .process_matches(&[sample_movie_match(&lib_path, &source_path)], &db)
             .await
             .unwrap();
 
