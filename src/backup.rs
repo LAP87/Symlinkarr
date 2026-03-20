@@ -18,6 +18,12 @@ pub struct BackupEntry {
     pub target_path: PathBuf,
     pub media_id: String,
     pub media_type: MediaType,
+    #[serde(default = "default_db_tracked")]
+    pub db_tracked: bool,
+}
+
+fn default_db_tracked() -> bool {
+    true
 }
 
 /// Type of backup
@@ -115,6 +121,7 @@ impl BackupManager {
                 target_path: link.source_path.clone(),
                 media_id: link.media_id.clone(),
                 media_type: link.media_type,
+                db_tracked: true,
             })
             .collect();
 
@@ -145,19 +152,68 @@ impl BackupManager {
     /// Create a safety snapshot before a destructive operation.
     /// These are NEVER auto-rotated.
     pub async fn create_safety_snapshot(&self, db: &Database, operation: &str) -> Result<PathBuf> {
+        self.create_safety_snapshot_with_extras(db, operation, &[])
+            .await
+    }
+
+    pub async fn create_safety_snapshot_with_extras(
+        &self,
+        db: &Database,
+        operation: &str,
+        extra_symlink_paths: &[PathBuf],
+    ) -> Result<PathBuf> {
         self.ensure_dir()?;
 
         let active_links = db.get_links_by_status(LinkStatus::Active).await?;
 
-        let entries: Vec<BackupEntry> = active_links
+        let mut entries: Vec<BackupEntry> = active_links
             .iter()
             .map(|link| BackupEntry {
                 symlink_path: link.target_path.clone(),
                 target_path: link.source_path.clone(),
                 media_id: link.media_id.clone(),
                 media_type: link.media_type,
+                db_tracked: true,
             })
             .collect();
+
+        let mut seen_paths: std::collections::HashSet<_> = entries
+            .iter()
+            .map(|entry| entry.symlink_path.clone())
+            .collect();
+        for symlink_path in extra_symlink_paths {
+            if seen_paths.contains(symlink_path) {
+                continue;
+            }
+
+            match std::fs::symlink_metadata(symlink_path) {
+                Ok(meta) if meta.file_type().is_symlink() => match std::fs::read_link(symlink_path)
+                {
+                    Ok(target_path) => {
+                        entries.push(BackupEntry {
+                            symlink_path: symlink_path.clone(),
+                            target_path,
+                            media_id: String::new(),
+                            media_type: MediaType::Tv,
+                            db_tracked: false,
+                        });
+                        seen_paths.insert(symlink_path.clone());
+                    }
+                    Err(e) => warn!(
+                        "Skipping extra safety snapshot entry for {:?}: {}",
+                        symlink_path, e
+                    ),
+                },
+                Ok(_) => warn!(
+                    "Skipping extra safety snapshot entry for {:?}: not a symlink",
+                    symlink_path
+                ),
+                Err(e) => warn!(
+                    "Skipping extra safety snapshot entry for {:?}: {}",
+                    symlink_path, e
+                ),
+            }
+        }
 
         let total_count = entries.len();
         let now = Utc::now();
@@ -244,7 +300,7 @@ impl BackupManager {
                         entry.symlink_path, entry.target_path
                     );
                     restored += 1;
-                } else if should_restore_db_record(db, entry).await? {
+                } else if entry.db_tracked && should_restore_db_record(db, entry).await? {
                     info!(
                         "[DRY-RUN] Would restore DB record: {:?} → {:?}",
                         entry.symlink_path, entry.target_path
@@ -259,7 +315,7 @@ impl BackupManager {
             if entry.symlink_path.is_symlink() {
                 match std::fs::read_link(&entry.symlink_path) {
                     Ok(current_target) if current_target == entry.target_path => {
-                        if should_restore_db_record(db, entry).await? {
+                        if entry.db_tracked && should_restore_db_record(db, entry).await? {
                             upsert_restored_link(db, entry).await?;
                             restored += 1;
                         } else {
@@ -302,19 +358,25 @@ impl BackupManager {
             // Create the symlink
             #[cfg(unix)]
             match std::os::unix::fs::symlink(&entry.target_path, &entry.symlink_path) {
-                Ok(()) => match upsert_restored_link(db, entry).await {
-                    Ok(()) => {
+                Ok(()) => {
+                    if entry.db_tracked {
+                        match upsert_restored_link(db, entry).await {
+                            Ok(()) => {
+                                restored += 1;
+                            }
+                            Err(e) => {
+                                let _ = std::fs::remove_file(&entry.symlink_path);
+                                warn!(
+                                    "Failed to restore database state for {:?}: {}",
+                                    entry.symlink_path, e
+                                );
+                                errors += 1;
+                            }
+                        }
+                    } else {
                         restored += 1;
                     }
-                    Err(e) => {
-                        let _ = std::fs::remove_file(&entry.symlink_path);
-                        warn!(
-                            "Failed to restore database state for {:?}: {}",
-                            entry.symlink_path, e
-                        );
-                        errors += 1;
-                    }
-                },
+                }
                 Err(e) => {
                     warn!("Failed to restore {:?}: {}", entry.symlink_path, e);
                     errors += 1;
@@ -567,12 +629,14 @@ mod tests {
                     target_path: dir.path().join("rd/ep1.mkv"),
                     media_id: "tvdb-12345".to_string(),
                     media_type: MediaType::Tv,
+                    db_tracked: true,
                 },
                 BackupEntry {
                     symlink_path: dir.path().join("show/Season 01/ep2.mkv"),
                     target_path: dir.path().join("rd/ep2.mkv"),
                     media_id: "tvdb-12345".to_string(),
                     media_type: MediaType::Tv,
+                    db_tracked: true,
                 },
             ],
             total_count: 2,
@@ -642,6 +706,7 @@ mod tests {
                 target_path: target_path.clone(),
                 media_id: "tvdb-1".to_string(),
                 media_type: MediaType::Tv,
+                db_tracked: true,
             }],
             total_count: 1,
         };
@@ -666,6 +731,94 @@ mod tests {
             .await
             .unwrap()
             .is_some());
+    }
+
+    #[tokio::test]
+    async fn test_create_safety_snapshot_with_extras_captures_disk_only_symlink() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let backup_dir = dir.path().join("backups");
+        std::fs::create_dir_all(&backup_dir).unwrap();
+        let manager = BackupManager::new(&test_config(&backup_dir));
+        let db_path = dir.path().join("symlinkarr.db");
+        let db = Database::new(db_path.to_str().unwrap()).await.unwrap();
+
+        let source_dir = dir.path().join("rd");
+        let library_dir = dir.path().join("library");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        std::fs::create_dir_all(&library_dir).unwrap();
+        let source_file = source_dir.join("episode.mkv");
+        std::fs::write(&source_file, "video").unwrap();
+        let disk_only_symlink = library_dir.join("legacy.mkv");
+        std::os::unix::fs::symlink(&source_file, &disk_only_symlink).unwrap();
+
+        let snapshot_path = manager
+            .create_safety_snapshot_with_extras(
+                &db,
+                "cleanup-prune",
+                std::slice::from_ref(&disk_only_symlink),
+            )
+            .await
+            .unwrap();
+
+        let manifest: BackupManifest =
+            serde_json::from_str(&std::fs::read_to_string(&snapshot_path).unwrap()).unwrap();
+        assert_eq!(manifest.total_count, 1);
+        assert_eq!(manifest.symlinks[0].symlink_path, disk_only_symlink);
+        assert_eq!(manifest.symlinks[0].target_path, source_file);
+        assert!(!manifest.symlinks[0].db_tracked);
+    }
+
+    #[tokio::test]
+    async fn test_restore_disk_only_backup_entry_skips_db_backfill() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let manager = BackupManager::new(&test_config(dir.path()));
+        let db_path = dir.path().join("symlinkarr.db");
+        let db = Database::new(db_path.to_str().unwrap()).await.unwrap();
+
+        let symlink_path = dir.path().join("show/Season 01/legacy.mkv");
+        let target_path = dir.path().join("rd/legacy.mkv");
+        std::fs::create_dir_all(symlink_path.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(target_path.parent().unwrap()).unwrap();
+        std::fs::write(&target_path, "video").unwrap();
+
+        let manifest = BackupManifest {
+            version: 1,
+            timestamp: Utc::now(),
+            backup_type: BackupType::Safety {
+                operation: "cleanup-prune".to_string(),
+            },
+            label: "disk only".to_string(),
+            symlinks: vec![BackupEntry {
+                symlink_path: symlink_path.clone(),
+                target_path: target_path.clone(),
+                media_id: String::new(),
+                media_type: MediaType::Tv,
+                db_tracked: false,
+            }],
+            total_count: 1,
+        };
+        let backup_path = dir.path().join("disk-only-backup.json");
+        std::fs::write(
+            &backup_path,
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let roots = vec![dir.path().to_path_buf()];
+        let (restored, skipped, errors) = manager
+            .restore(&db, &backup_path, false, &roots, &roots, true)
+            .await
+            .unwrap();
+
+        assert_eq!(restored, 1);
+        assert_eq!(skipped, 0);
+        assert_eq!(errors, 0);
+        assert!(symlink_path.is_symlink());
+        assert!(db
+            .get_link_by_target_path(&symlink_path)
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -742,6 +895,7 @@ mod tests {
                 target_path: PathBuf::from("/mnt/rd/ep.mkv"),
                 media_id: "tvdb-1".to_string(),
                 media_type: MediaType::Tv,
+                db_tracked: true,
             }],
             total_count: 1,
         };
@@ -795,6 +949,7 @@ mod tests {
                 target_path: source_root.join("video.mkv"),
                 media_id: "tmdb-123".to_string(),
                 media_type: MediaType::Movie,
+                db_tracked: true,
             }],
             total_count: 1,
         };

@@ -15,7 +15,7 @@ use crate::backup::BackupManager;
 use crate::config::{Config, ContentType, LibraryConfig, MetadataMode};
 use crate::db::Database;
 use crate::library_scanner::LibraryScanner;
-use crate::models::{ContentMetadata, LibraryItem, MediaId, MediaType};
+use crate::models::{ContentMetadata, LibraryItem, LinkStatus, MediaId, MediaType};
 use crate::source_scanner::SourceScanner;
 use crate::utils::{normalize, ProgressLine};
 
@@ -95,6 +95,8 @@ pub struct CleanupFinding {
     pub confidence: f64,
     pub reasons: Vec<FindingReason>,
     pub parsed: ParsedContext,
+    #[serde(default)]
+    pub db_tracked: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -122,6 +124,12 @@ pub struct PruneOutcome {
     pub removed: usize,
     pub skipped: usize,
     pub confirmation_token: String,
+}
+
+#[derive(Debug, Default, Clone)]
+pub(crate) struct SafeDuplicatePrunePlan {
+    pub prune_paths: Vec<PathBuf>,
+    pub managed_paths: HashSet<PathBuf>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -327,9 +335,16 @@ impl<'a> CleanupAuditor<'a> {
                     season: entry.season,
                     episode: entry.episode,
                 },
+                db_tracked: false,
             });
         }
 
+        let tracked_paths = hydrate_db_tracked_flags(self.db, &mut findings).await?;
+        debug!(
+            "Cleanup audit: marked {}/{} findings as DB-tracked",
+            tracked_paths.len(),
+            findings.len()
+        );
         summary.total_findings = findings.len();
 
         Ok(CleanupReport {
@@ -710,7 +725,15 @@ pub async fn run_prune(
     confirmation_token: Option<&str>,
 ) -> Result<PruneOutcome> {
     let json = std::fs::read_to_string(report_path)?;
-    let report: CleanupReport = serde_json::from_str(&json)?;
+    let mut report: CleanupReport = serde_json::from_str(&json)?;
+    hydrate_report_db_tracked_flags(db, &mut report).await?;
+    let tracked_paths: HashSet<_> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.db_tracked)
+        .map(|finding| finding.symlink_path.clone())
+        .collect();
+    let safe_duplicate_plan = collect_safe_duplicate_prune_plan(&report.findings);
 
     let high_or_critical_candidates: Vec<_> = report
         .findings
@@ -721,23 +744,22 @@ pub async fn run_prune(
                 FindingSeverity::Critical | FindingSeverity::High
             )
         })
+        .filter(|f| !safe_duplicate_plan.managed_paths.contains(&f.symlink_path))
         .collect();
-
-    let safe_warning_prunes = collect_safe_warning_duplicate_prunes(&report.findings);
 
     let mut candidate_paths: Vec<PathBuf> = high_or_critical_candidates
         .iter()
         .map(|f| f.symlink_path.clone())
         .collect();
-    candidate_paths.extend(safe_warning_prunes.iter().cloned());
+    candidate_paths.extend(safe_duplicate_plan.prune_paths.iter().cloned());
     candidate_paths.sort();
     candidate_paths.dedup();
     let token = prune_confirmation_token(&report, &candidate_paths);
 
     info!(
-        "Cleanup prune: {} high/critical + {} safe-warning duplicate candidates ({} total unique)",
+        "Cleanup prune: {} high/critical + {} safe duplicate candidates ({} total unique)",
         high_or_critical_candidates.len(),
-        safe_warning_prunes.len(),
+        safe_duplicate_plan.prune_paths.len(),
         candidate_paths.len()
     );
 
@@ -745,7 +767,7 @@ pub async fn run_prune(
         return Ok(PruneOutcome {
             candidates: candidate_paths.len(),
             high_or_critical_candidates: high_or_critical_candidates.len(),
-            safe_warning_duplicate_candidates: safe_warning_prunes.len(),
+            safe_warning_duplicate_candidates: safe_duplicate_plan.prune_paths.len(),
             removed: 0,
             skipped: 0,
             confirmation_token: token,
@@ -789,7 +811,14 @@ pub async fn run_prune(
 
     if cfg.backup.enabled {
         let backup = BackupManager::new(&cfg.backup);
-        backup.create_safety_snapshot(db, "cleanup-prune").await?;
+        let extra_snapshot_paths: Vec<_> = candidate_paths
+            .iter()
+            .filter(|path| !tracked_paths.contains(*path))
+            .cloned()
+            .collect();
+        backup
+            .create_safety_snapshot_with_extras(db, "cleanup-prune", &extra_snapshot_paths)
+            .await?;
     }
 
     let mut removed = 0usize;
@@ -903,7 +932,7 @@ pub async fn run_prune(
     Ok(PruneOutcome {
         candidates: candidate_paths.len(),
         high_or_critical_candidates: high_or_critical_candidates.len(),
-        safe_warning_duplicate_candidates: safe_warning_prunes.len(),
+        safe_warning_duplicate_candidates: safe_duplicate_plan.prune_paths.len(),
         removed,
         skipped,
         confirmation_token: token,
@@ -1090,10 +1119,14 @@ fn is_warning_only_season_count(reasons: &BTreeSet<FindingReason>) -> bool {
     reasons.len() == 1 && reasons.contains(&FindingReason::SeasonCountAnomaly)
 }
 
-fn is_warning_only_duplicate_slot(reasons: &[FindingReason], severity: FindingSeverity) -> bool {
-    severity == FindingSeverity::Warning
-        && reasons.len() == 1
-        && reasons[0] == FindingReason::DuplicateEpisodeSlot
+fn is_safe_duplicate_candidate(reasons: &[FindingReason]) -> bool {
+    reasons.contains(&FindingReason::DuplicateEpisodeSlot)
+        && reasons.iter().all(|reason| {
+            matches!(
+                reason,
+                FindingReason::DuplicateEpisodeSlot | FindingReason::SeasonCountAnomaly
+            )
+        })
 }
 
 fn finding_slot_key(finding: &CleanupFinding) -> Option<(String, u32, u32)> {
@@ -1102,21 +1135,52 @@ fn finding_slot_key(finding: &CleanupFinding) -> Option<(String, u32, u32)> {
     Some((finding.media_id.clone(), season, episode))
 }
 
-pub fn collect_safe_warning_duplicate_prunes(findings: &[CleanupFinding]) -> Vec<PathBuf> {
+async fn hydrate_db_tracked_flags(
+    db: &Database,
+    findings: &mut [CleanupFinding],
+) -> Result<HashSet<PathBuf>> {
+    let target_paths: Vec<_> = findings.iter().map(|f| f.symlink_path.clone()).collect();
+    let tracked_paths: HashSet<_> = db
+        .get_links_by_targets(&target_paths)
+        .await?
+        .into_iter()
+        .filter(|link| link.status == LinkStatus::Active)
+        .map(|link| link.target_path)
+        .collect();
+
+    for finding in findings {
+        finding.db_tracked = tracked_paths.contains(&finding.symlink_path);
+    }
+
+    Ok(tracked_paths)
+}
+
+pub async fn hydrate_report_db_tracked_flags(
+    db: &Database,
+    report: &mut CleanupReport,
+) -> Result<()> {
+    let _ = hydrate_db_tracked_flags(db, &mut report.findings).await?;
+    Ok(())
+}
+
+pub(crate) fn collect_safe_duplicate_prune_plan(
+    findings: &[CleanupFinding],
+) -> SafeDuplicatePrunePlan {
     let mut tainted_slots: HashSet<(String, u32, u32)> = HashSet::new();
     for finding in findings {
         let Some(slot_key) = finding_slot_key(finding) else {
             continue;
         };
 
-        if !is_warning_only_duplicate_slot(&finding.reasons, finding.severity) {
+        if !is_safe_duplicate_candidate(&finding.reasons) {
             tainted_slots.insert(slot_key);
         }
     }
 
-    let mut by_slot_source: HashMap<(String, u32, u32, PathBuf), Vec<PathBuf>> = HashMap::new();
+    let mut by_slot_source: HashMap<(String, u32, u32, PathBuf), Vec<&CleanupFinding>> =
+        HashMap::new();
     for finding in findings {
-        if !is_warning_only_duplicate_slot(&finding.reasons, finding.severity) {
+        if !is_safe_duplicate_candidate(&finding.reasons) {
             continue;
         }
 
@@ -1131,22 +1195,44 @@ pub fn collect_safe_warning_duplicate_prunes(findings: &[CleanupFinding]) -> Vec
         by_slot_source
             .entry((media_id, season, episode, finding.source_path.clone()))
             .or_default()
-            .push(finding.symlink_path.clone());
+            .push(finding);
     }
 
     let mut prune_paths = Vec::new();
-    for (_key, mut symlink_paths) in by_slot_source {
-        if symlink_paths.len() < 2 {
+    let mut managed_paths = HashSet::new();
+    for (_key, findings) in by_slot_source {
+        if findings.len() < 2 {
             continue;
         }
 
-        symlink_paths.sort();
-        prune_paths.extend(symlink_paths.into_iter().skip(1));
+        let mut tracked_paths = Vec::new();
+        let mut untracked_paths = Vec::new();
+        for finding in findings {
+            managed_paths.insert(finding.symlink_path.clone());
+            if finding.db_tracked {
+                tracked_paths.push(finding.symlink_path.clone());
+            } else {
+                untracked_paths.push(finding.symlink_path.clone());
+            }
+        }
+
+        if !untracked_paths.is_empty() {
+            if tracked_paths.is_empty() {
+                untracked_paths.sort();
+                prune_paths.extend(untracked_paths.into_iter().skip(1));
+            } else {
+                prune_paths.extend(untracked_paths);
+            }
+        }
     }
 
     prune_paths.sort();
     prune_paths.dedup();
-    prune_paths
+
+    SafeDuplicatePrunePlan {
+        prune_paths,
+        managed_paths,
+    }
 }
 
 const SEASON_COUNT_ANOMALY_RATIO_THRESHOLD: f64 = 1.2;
@@ -1348,6 +1434,7 @@ mod tests {
                 season: Some(season),
                 episode: Some(episode),
             },
+            db_tracked: false,
         }
     }
 
@@ -1501,7 +1588,7 @@ mod tests {
             ),
         ];
 
-        let prunes = collect_safe_warning_duplicate_prunes(&findings);
+        let prunes = collect_safe_duplicate_prune_plan(&findings).prune_paths;
         assert_eq!(prunes, vec![PathBuf::from("/lib/Show - S01E03 b.mkv")]);
     }
 
@@ -1528,7 +1615,7 @@ mod tests {
             ),
         ];
 
-        let prunes = collect_safe_warning_duplicate_prunes(&findings);
+        let prunes = collect_safe_duplicate_prune_plan(&findings).prune_paths;
         assert!(prunes.is_empty());
     }
 
@@ -1567,7 +1654,68 @@ mod tests {
             ),
         ];
 
-        let prunes = collect_safe_warning_duplicate_prunes(&findings);
+        let prunes = collect_safe_duplicate_prune_plan(&findings).prune_paths;
+        assert!(prunes.is_empty());
+    }
+
+    #[test]
+    fn test_collect_safe_warning_duplicate_prunes_prefers_untracked_over_tracked() {
+        let mut tracked = test_cleanup_finding(
+            "tvdb-1",
+            1,
+            3,
+            FindingSeverity::High,
+            vec![
+                FindingReason::DuplicateEpisodeSlot,
+                FindingReason::SeasonCountAnomaly,
+            ],
+            "/lib/Show - S01E03 canonical.mkv",
+            "/src/show-s01e03.mkv",
+        );
+        tracked.db_tracked = true;
+
+        let legacy = test_cleanup_finding(
+            "tvdb-1",
+            1,
+            3,
+            FindingSeverity::High,
+            vec![
+                FindingReason::DuplicateEpisodeSlot,
+                FindingReason::SeasonCountAnomaly,
+            ],
+            "/lib/Show - S01E03 legacy.mkv",
+            "/src/show-s01e03.mkv",
+        );
+
+        let prunes = collect_safe_duplicate_prune_plan(&[tracked, legacy]).prune_paths;
+        assert_eq!(prunes, vec![PathBuf::from("/lib/Show - S01E03 legacy.mkv")]);
+    }
+
+    #[test]
+    fn test_collect_safe_warning_duplicate_prunes_skips_all_tracked_duplicates() {
+        let mut first = test_cleanup_finding(
+            "tvdb-1",
+            1,
+            3,
+            FindingSeverity::Warning,
+            vec![FindingReason::DuplicateEpisodeSlot],
+            "/lib/Show - S01E03 canonical-a.mkv",
+            "/src/show-s01e03.mkv",
+        );
+        first.db_tracked = true;
+
+        let mut second = test_cleanup_finding(
+            "tvdb-1",
+            1,
+            3,
+            FindingSeverity::Warning,
+            vec![FindingReason::DuplicateEpisodeSlot],
+            "/lib/Show - S01E03 canonical-b.mkv",
+            "/src/show-s01e03.mkv",
+        );
+        second.db_tracked = true;
+
+        let prunes = collect_safe_duplicate_prune_plan(&[first, second]).prune_paths;
         assert!(prunes.is_empty());
     }
 
@@ -1606,6 +1754,7 @@ backup:
                 season: Some(1),
                 episode: Some(1),
             },
+            db_tracked: false,
         }
     }
 
@@ -1689,6 +1838,104 @@ backup:
             .unwrap()
             .unwrap();
         assert_eq!(updated.status, LinkStatus::Removed);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_prune_apply_prefers_removing_disk_only_duplicate_over_tracked() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let library_root = dir.path().join("library");
+        let source_root = dir.path().join("rd");
+        std::fs::create_dir_all(&library_root).unwrap();
+        std::fs::create_dir_all(&source_root).unwrap();
+
+        let source_file = source_root.join("source.mkv");
+        std::fs::write(&source_file, "video").unwrap();
+        let canonical_symlink = library_root.join("Show - S01E01 canonical.mkv");
+        let legacy_symlink = library_root.join("Show - S01E01 legacy.mkv");
+        std::os::unix::fs::symlink(&source_file, &canonical_symlink).unwrap();
+        std::os::unix::fs::symlink(&source_file, &legacy_symlink).unwrap();
+
+        let cfg = test_config(&library_root, &source_root);
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+        db.insert_link(&LinkRecord {
+            id: None,
+            source_path: source_file.clone(),
+            target_path: canonical_symlink.clone(),
+            media_id: "tvdb-1".to_string(),
+            media_type: MediaType::Tv,
+            status: LinkStatus::Active,
+            created_at: None,
+            updated_at: None,
+        })
+        .await
+        .unwrap();
+
+        let report = report_with_findings(
+            Utc::now(),
+            vec![
+                test_cleanup_finding(
+                    "tvdb-1",
+                    1,
+                    1,
+                    FindingSeverity::High,
+                    vec![
+                        FindingReason::DuplicateEpisodeSlot,
+                        FindingReason::SeasonCountAnomaly,
+                    ],
+                    canonical_symlink.to_str().unwrap(),
+                    source_file.to_str().unwrap(),
+                ),
+                test_cleanup_finding(
+                    "tvdb-1",
+                    1,
+                    1,
+                    FindingSeverity::High,
+                    vec![
+                        FindingReason::DuplicateEpisodeSlot,
+                        FindingReason::SeasonCountAnomaly,
+                    ],
+                    legacy_symlink.to_str().unwrap(),
+                    source_file.to_str().unwrap(),
+                ),
+            ],
+        );
+        let report_path = dir.path().join("duplicates-report.json");
+        std::fs::write(&report_path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
+
+        let preview = run_prune(&cfg, &db, &report_path, false, None, None)
+            .await
+            .unwrap();
+        assert_eq!(preview.candidates, 1);
+        assert_eq!(preview.safe_warning_duplicate_candidates, 1);
+
+        let outcome = run_prune(
+            &cfg,
+            &db,
+            &report_path,
+            true,
+            None,
+            Some(&preview.confirmation_token),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.removed, 1);
+        assert!(canonical_symlink.is_symlink());
+        assert!(!legacy_symlink.exists() && !legacy_symlink.is_symlink());
+        let updated = db
+            .get_link_by_target_path(&canonical_symlink)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.status, LinkStatus::Active);
+        assert!(db
+            .get_link_by_target_path(&legacy_symlink)
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

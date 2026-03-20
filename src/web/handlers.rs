@@ -471,7 +471,7 @@ pub async fn get_cleanup_prune(
         }
     };
 
-    let report: cleanup_audit::CleanupReport = match serde_json::from_str(&json) {
+    let mut report: cleanup_audit::CleanupReport = match serde_json::from_str(&json) {
         Ok(r) => r,
         Err(e) => {
             error!("Failed to parse cleanup report: {}", e);
@@ -490,7 +490,14 @@ pub async fn get_cleanup_prune(
         }
     };
 
+    if let Err(e) =
+        cleanup_audit::hydrate_report_db_tracked_flags(&state.database, &mut report).await
+    {
+        error!("Failed to hydrate cleanup report DB state: {}", e);
+    }
+
     // Calculate prune preview data
+    let safe_duplicate_plan = cleanup_audit::collect_safe_duplicate_prune_plan(&report.findings);
     let high_or_critical_candidates: Vec<_> = report
         .findings
         .iter()
@@ -500,16 +507,14 @@ pub async fn get_cleanup_prune(
                 cleanup_audit::FindingSeverity::Critical | cleanup_audit::FindingSeverity::High
             )
         })
+        .filter(|f| !safe_duplicate_plan.managed_paths.contains(&f.symlink_path))
         .collect();
-
-    let safe_warning_prunes =
-        cleanup_audit::collect_safe_warning_duplicate_prunes(&report.findings);
 
     let mut candidate_paths: Vec<PathBuf> = high_or_critical_candidates
         .iter()
         .map(|f| f.symlink_path.clone())
         .collect();
-    candidate_paths.extend(safe_warning_prunes.iter().cloned());
+    candidate_paths.extend(safe_duplicate_plan.prune_paths.iter().cloned());
     candidate_paths.sort();
     candidate_paths.dedup();
 
