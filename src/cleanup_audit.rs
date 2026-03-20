@@ -17,7 +17,7 @@ use crate::db::Database;
 use crate::library_scanner::LibraryScanner;
 use crate::models::{ContentMetadata, LibraryItem, LinkStatus, MediaId, MediaType};
 use crate::source_scanner::SourceScanner;
-use crate::utils::{normalize, ProgressLine};
+use crate::utils::{ProgressLine, normalize};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
@@ -1167,63 +1167,50 @@ pub(crate) fn collect_safe_duplicate_prune_plan(
     findings: &[CleanupFinding],
 ) -> SafeDuplicatePrunePlan {
     let mut tainted_slots: HashSet<(String, u32, u32)> = HashSet::new();
+    let mut slots_with_tracked_safe_candidates: HashSet<(String, u32, u32)> = HashSet::new();
+    let mut managed_paths = HashSet::new();
+    let mut by_slot_source: HashMap<(String, u32, u32, PathBuf), Vec<&CleanupFinding>> =
+        HashMap::new();
+
     for finding in findings {
         let Some(slot_key) = finding_slot_key(finding) else {
             continue;
         };
 
-        if !is_safe_duplicate_candidate(&finding.reasons) {
+        if is_safe_duplicate_candidate(&finding.reasons) {
+            managed_paths.insert(finding.symlink_path.clone());
+            if finding.db_tracked {
+                slots_with_tracked_safe_candidates.insert(slot_key.clone());
+            }
+            let (media_id, season, episode) = slot_key;
+            by_slot_source
+                .entry((media_id, season, episode, finding.source_path.clone()))
+                .or_default()
+                .push(finding);
+        } else {
             tainted_slots.insert(slot_key);
         }
     }
 
-    let mut by_slot_source: HashMap<(String, u32, u32, PathBuf), Vec<&CleanupFinding>> =
-        HashMap::new();
-    for finding in findings {
-        if !is_safe_duplicate_candidate(&finding.reasons) {
-            continue;
-        }
-
-        let Some((media_id, season, episode)) = finding_slot_key(finding) else {
-            continue;
-        };
-
-        if tainted_slots.contains(&(media_id.clone(), season, episode)) {
-            continue;
-        }
-
-        by_slot_source
-            .entry((media_id, season, episode, finding.source_path.clone()))
-            .or_default()
-            .push(finding);
-    }
-
     let mut prune_paths = Vec::new();
-    let mut managed_paths = HashSet::new();
-    for (_key, findings) in by_slot_source {
+    for ((media_id, season, episode, _source_path), findings) in by_slot_source {
         if findings.len() < 2 {
             continue;
         }
 
-        let mut tracked_paths = Vec::new();
-        let mut untracked_paths = Vec::new();
-        for finding in findings {
-            managed_paths.insert(finding.symlink_path.clone());
-            if finding.db_tracked {
-                tracked_paths.push(finding.symlink_path.clone());
-            } else {
-                untracked_paths.push(finding.symlink_path.clone());
-            }
+        let slot_key = (media_id, season, episode);
+        if tainted_slots.contains(&slot_key)
+            || slots_with_tracked_safe_candidates.contains(&slot_key)
+        {
+            continue;
         }
 
-        if !untracked_paths.is_empty() {
-            if tracked_paths.is_empty() {
-                untracked_paths.sort();
-                prune_paths.extend(untracked_paths.into_iter().skip(1));
-            } else {
-                prune_paths.extend(untracked_paths);
-            }
-        }
+        let mut symlink_paths: Vec<_> = findings
+            .into_iter()
+            .map(|finding| finding.symlink_path.clone())
+            .collect();
+        symlink_paths.sort();
+        prune_paths.extend(symlink_paths.into_iter().skip(1));
     }
 
     prune_paths.sort();
@@ -1560,9 +1547,11 @@ mod tests {
         let suppressed = suppress_redundant_season_count_warnings(&mut entries);
         assert_eq!(suppressed, 1);
         assert!(entries[0].reasons.is_empty());
-        assert!(entries[2]
-            .reasons
-            .contains(&FindingReason::SeasonCountAnomaly));
+        assert!(
+            entries[2]
+                .reasons
+                .contains(&FindingReason::SeasonCountAnomaly)
+        );
     }
 
     #[test]
@@ -1659,7 +1648,7 @@ mod tests {
     }
 
     #[test]
-    fn test_collect_safe_warning_duplicate_prunes_prefers_untracked_over_tracked() {
+    fn test_collect_safe_warning_duplicate_prunes_skips_mixed_tracked_and_untracked_slot() {
         let mut tracked = test_cleanup_finding(
             "tvdb-1",
             1,
@@ -1687,8 +1676,16 @@ mod tests {
             "/src/show-s01e03.mkv",
         );
 
-        let prunes = collect_safe_duplicate_prune_plan(&[tracked, legacy]).prune_paths;
-        assert_eq!(prunes, vec![PathBuf::from("/lib/Show - S01E03 legacy.mkv")]);
+        let plan = collect_safe_duplicate_prune_plan(&[tracked, legacy]);
+        assert!(plan.prune_paths.is_empty());
+        assert!(
+            plan.managed_paths
+                .contains(&PathBuf::from("/lib/Show - S01E03 canonical.mkv"))
+        );
+        assert!(
+            plan.managed_paths
+                .contains(&PathBuf::from("/lib/Show - S01E03 legacy.mkv"))
+        );
     }
 
     #[test]
@@ -1842,7 +1839,7 @@ backup:
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn test_prune_apply_prefers_removing_disk_only_duplicate_over_tracked() {
+    async fn test_prune_apply_protects_safe_duplicate_candidate_in_tainted_slot() {
         let dir = tempfile::TempDir::new().unwrap();
         let library_root = dir.path().join("library");
         let source_root = dir.path().join("rd");
@@ -1852,9 +1849,9 @@ backup:
         let source_file = source_root.join("source.mkv");
         std::fs::write(&source_file, "video").unwrap();
         let canonical_symlink = library_root.join("Show - S01E01 canonical.mkv");
-        let legacy_symlink = library_root.join("Show - S01E01 legacy.mkv");
+        let suspicious_symlink = library_root.join("Show - S01E01 suspicious.mkv");
         std::os::unix::fs::symlink(&source_file, &canonical_symlink).unwrap();
-        std::os::unix::fs::symlink(&source_file, &legacy_symlink).unwrap();
+        std::os::unix::fs::symlink(&source_file, &suspicious_symlink).unwrap();
 
         let cfg = test_config(&library_root, &source_root);
         let db = Database::new(dir.path().join("test.db").to_str().unwrap())
@@ -1895,9 +1892,10 @@ backup:
                     FindingSeverity::High,
                     vec![
                         FindingReason::DuplicateEpisodeSlot,
+                        FindingReason::ParserTitleMismatch,
                         FindingReason::SeasonCountAnomaly,
                     ],
-                    legacy_symlink.to_str().unwrap(),
+                    suspicious_symlink.to_str().unwrap(),
                     source_file.to_str().unwrap(),
                 ),
             ],
@@ -1909,7 +1907,7 @@ backup:
             .await
             .unwrap();
         assert_eq!(preview.candidates, 1);
-        assert_eq!(preview.safe_warning_duplicate_candidates, 1);
+        assert_eq!(preview.safe_warning_duplicate_candidates, 0);
 
         let outcome = run_prune(
             &cfg,
@@ -1924,18 +1922,19 @@ backup:
 
         assert_eq!(outcome.removed, 1);
         assert!(canonical_symlink.is_symlink());
-        assert!(!legacy_symlink.exists() && !legacy_symlink.is_symlink());
+        assert!(!suspicious_symlink.exists() && !suspicious_symlink.is_symlink());
         let updated = db
             .get_link_by_target_path(&canonical_symlink)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(updated.status, LinkStatus::Active);
-        assert!(db
-            .get_link_by_target_path(&legacy_symlink)
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            db.get_link_by_target_path(&suspicious_symlink)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -2018,9 +2017,10 @@ backup:
         )
         .await
         .unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("invalid or missing confirmation token"));
+        assert!(
+            err.to_string()
+                .contains("invalid or missing confirmation token")
+        );
     }
 
     #[cfg(unix)]

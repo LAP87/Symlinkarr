@@ -281,10 +281,11 @@ impl BackupManager {
                     skipped += 1;
                     continue;
                 }
-                if !path_is_within_roots(&entry.target_path, allowed_target_roots) {
+                let resolved_target_path = resolve_restore_target_path(entry);
+                if !path_is_within_roots(&resolved_target_path, allowed_target_roots) {
                     warn!(
                         "Skipping restore outside allowed source roots: {:?}",
-                        entry.target_path
+                        resolved_target_path
                     );
                     skipped += 1;
                     continue;
@@ -565,7 +566,7 @@ async fn should_restore_db_record(db: &Database, entry: &BackupEntry) -> Result<
 async fn upsert_restored_link(db: &Database, entry: &BackupEntry) -> Result<()> {
     let record = LinkRecord {
         id: None,
-        source_path: entry.target_path.clone(),
+        source_path: resolve_restore_target_path(entry),
         target_path: entry.symlink_path.clone(),
         media_id: entry.media_id.clone(),
         media_type: entry.media_type,
@@ -575,6 +576,18 @@ async fn upsert_restored_link(db: &Database, entry: &BackupEntry) -> Result<()> 
     };
     db.insert_link(&record).await?;
     Ok(())
+}
+
+fn resolve_restore_target_path(entry: &BackupEntry) -> PathBuf {
+    if entry.target_path.is_absolute() {
+        entry.target_path.clone()
+    } else {
+        entry
+            .symlink_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(&entry.target_path)
+    }
 }
 
 fn normalize_path_for_root_check(path: &Path) -> PathBuf {
@@ -726,11 +739,12 @@ mod tests {
         assert_eq!(restored, 1);
         assert_eq!(skipped, 0);
         assert_eq!(errors, 0);
-        assert!(db
-            .get_link_by_target_path(&symlink_path)
-            .await
-            .unwrap()
-            .is_some());
+        assert!(
+            db.get_link_by_target_path(&symlink_path)
+                .await
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[tokio::test]
@@ -814,11 +828,71 @@ mod tests {
         assert_eq!(skipped, 0);
         assert_eq!(errors, 0);
         assert!(symlink_path.is_symlink());
-        assert!(db
-            .get_link_by_target_path(&symlink_path)
+        assert!(
+            db.get_link_by_target_path(&symlink_path)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_restore_disk_only_relative_target_passes_root_validation() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let manager = BackupManager::new(&test_config(dir.path()));
+        let db_path = dir.path().join("symlinkarr.db");
+        let db = Database::new(db_path.to_str().unwrap()).await.unwrap();
+
+        let symlink_path = dir.path().join("library/show/Season 01/legacy.mkv");
+        let target_path = dir.path().join("rd/legacy.mkv");
+        std::fs::create_dir_all(symlink_path.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(target_path.parent().unwrap()).unwrap();
+        std::fs::write(&target_path, "video").unwrap();
+
+        let relative_target = PathBuf::from("../../../rd/legacy.mkv");
+        let manifest = BackupManifest {
+            version: 1,
+            timestamp: Utc::now(),
+            backup_type: BackupType::Safety {
+                operation: "cleanup-prune".to_string(),
+            },
+            label: "disk only relative".to_string(),
+            symlinks: vec![BackupEntry {
+                symlink_path: symlink_path.clone(),
+                target_path: relative_target.clone(),
+                media_id: String::new(),
+                media_type: MediaType::Tv,
+                db_tracked: false,
+            }],
+            total_count: 1,
+        };
+        let backup_path = dir.path().join("disk-only-relative-backup.json");
+        std::fs::write(
+            &backup_path,
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let library_roots = vec![dir.path().join("library")];
+        let source_roots = vec![dir.path().join("rd")];
+        let (restored, skipped, errors) = manager
+            .restore(
+                &db,
+                &backup_path,
+                false,
+                &library_roots,
+                &source_roots,
+                true,
+            )
             .await
-            .unwrap()
-            .is_none());
+            .unwrap();
+
+        assert_eq!(restored, 1);
+        assert_eq!(skipped, 0);
+        assert_eq!(errors, 0);
+        assert!(symlink_path.is_symlink());
+        assert_eq!(std::fs::read_link(&symlink_path).unwrap(), relative_target);
     }
 
     #[test]
@@ -873,10 +947,11 @@ mod tests {
         assert_eq!(remaining.len(), 3);
 
         // Safety snapshot should still exist
-        assert!(dir
-            .path()
-            .join("safety-repair-20260101-120000.json")
-            .exists());
+        assert!(
+            dir.path()
+                .join("safety-repair-20260101-120000.json")
+                .exists()
+        );
     }
 
     #[test]

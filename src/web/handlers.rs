@@ -20,8 +20,8 @@ use crate::linker::Linker;
 use crate::matcher::Matcher;
 use crate::source_scanner::SourceScanner;
 
-use super::templates::*;
 use super::WebState;
+use super::templates::*;
 
 /// GET / - Dashboard page
 pub async fn get_dashboard(State(state): State<WebState>) -> impl IntoResponse {
@@ -490,35 +490,42 @@ pub async fn get_cleanup_prune(
         }
     };
 
-    if let Err(e) =
-        cleanup_audit::hydrate_report_db_tracked_flags(&state.database, &mut report).await
-    {
-        error!("Failed to hydrate cleanup report DB state: {}", e);
-    }
+    let confirmation_token =
+        match cleanup_audit::hydrate_report_db_tracked_flags(&state.database, &mut report).await {
+            Ok(()) => {
+                let safe_duplicate_plan =
+                    cleanup_audit::collect_safe_duplicate_prune_plan(&report.findings);
+                let high_or_critical_candidates: Vec<_> = report
+                    .findings
+                    .iter()
+                    .filter(|f| {
+                        matches!(
+                            f.severity,
+                            cleanup_audit::FindingSeverity::Critical
+                                | cleanup_audit::FindingSeverity::High
+                        )
+                    })
+                    .filter(|f| !safe_duplicate_plan.managed_paths.contains(&f.symlink_path))
+                    .collect();
 
-    // Calculate prune preview data
-    let safe_duplicate_plan = cleanup_audit::collect_safe_duplicate_prune_plan(&report.findings);
-    let high_or_critical_candidates: Vec<_> = report
-        .findings
-        .iter()
-        .filter(|f| {
-            matches!(
-                f.severity,
-                cleanup_audit::FindingSeverity::Critical | cleanup_audit::FindingSeverity::High
-            )
-        })
-        .filter(|f| !safe_duplicate_plan.managed_paths.contains(&f.symlink_path))
-        .collect();
+                let mut candidate_paths: Vec<PathBuf> = high_or_critical_candidates
+                    .iter()
+                    .map(|f| f.symlink_path.clone())
+                    .collect();
+                candidate_paths.extend(safe_duplicate_plan.prune_paths.iter().cloned());
+                candidate_paths.sort();
+                candidate_paths.dedup();
 
-    let mut candidate_paths: Vec<PathBuf> = high_or_critical_candidates
-        .iter()
-        .map(|f| f.symlink_path.clone())
-        .collect();
-    candidate_paths.extend(safe_duplicate_plan.prune_paths.iter().cloned());
-    candidate_paths.sort();
-    candidate_paths.dedup();
-
-    let token = cleanup_audit::prune_confirmation_token(&report, &candidate_paths);
+                Some(cleanup_audit::prune_confirmation_token(
+                    &report,
+                    &candidate_paths,
+                ))
+            }
+            Err(e) => {
+                error!("Failed to hydrate cleanup report DB state: {}", e);
+                None
+            }
+        };
 
     let template = PrunePreviewTemplate {
         findings: report.findings.clone(),
@@ -526,7 +533,7 @@ pub async fn get_cleanup_prune(
         critical: report.summary.critical,
         high: report.summary.high,
         warning: report.summary.warning,
-        confirmation_token: Some(token),
+        confirmation_token,
     };
 
     Html(template.render().unwrap_or_else(|e| e.to_string()))

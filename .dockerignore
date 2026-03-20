@@ -1,0 +1,12 @@
+.git
+.github
+target
+data
+backups
+secrets
+.env
+.env.*
+config.yaml
+config.docker.yaml
+*.db
+*.sqlite
