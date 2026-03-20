@@ -213,7 +213,7 @@ impl<'a> TorrentCache<'a> {
 
                     // Explicit delay between batches (10 items) to prevent 429 timeouts
                     // even with the token bucket rate limiter, since RD is very strict on long sustained bursts.
-                    if info_fetched.is_multiple_of(10) {
+                    if info_fetched % 10 == 0 {
                         debug!("Fetched 10 infos, pausing 5s to respect RD limits...");
                         tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
                     }
