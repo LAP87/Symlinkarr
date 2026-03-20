@@ -422,7 +422,12 @@ impl Linker {
         db: &Database,
         matches: &[MatchResult],
     ) -> Result<HashMap<PathBuf, LinkRecord>> {
-        preload_existing_links(db, &unique_library_roots(matches)).await
+        let mut target_paths = Vec::with_capacity(matches.len());
+        for m in matches {
+            target_paths.push(self.build_target_path(m)?);
+        }
+
+        preload_existing_links(db, &target_paths).await
     }
 
     /// Build the target path for a symlink based on the naming template.
@@ -673,24 +678,14 @@ impl Linker {
     }
 }
 
-fn unique_library_roots(matches: &[MatchResult]) -> Vec<PathBuf> {
-    let mut roots = matches
-        .iter()
-        .map(|m| m.library_item.path.clone())
-        .collect::<Vec<_>>();
-    roots.sort();
-    roots.dedup();
-    roots
-}
-
 async fn preload_existing_links(
     db: &Database,
-    library_roots: &[PathBuf],
+    target_paths: &[PathBuf],
 ) -> Result<HashMap<PathBuf, LinkRecord>> {
     let mut by_target = HashMap::new();
-    // Chunk to avoid SQLite's "Expression tree too large" (max depth 1000)
-    for chunk in library_roots.chunks(200) {
-        for link in db.get_links_scoped(Some(chunk)).await? {
+    // Chunk to stay comfortably below SQLite's bind limit on large scans.
+    for chunk in target_paths.chunks(500) {
+        for link in db.get_links_by_targets(chunk).await? {
             by_target.insert(link.target_path.clone(), link);
         }
     }

@@ -189,6 +189,22 @@ impl AcquisitionJobCounts {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct MediaTypeStats {
+    pub media_type: String,
+    pub library_items: i64,
+    pub linked: i64,
+    pub broken: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct LibraryStats {
+    pub name: String,
+    pub library_items: i64,
+    pub linked: i64,
+    pub broken: i64,
+}
+
 /// Summary statistics for the web dashboard.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
@@ -810,6 +826,45 @@ impl Database {
         Ok(records)
     }
 
+    pub async fn get_links_by_targets(&self, target_paths: &[PathBuf]) -> Result<Vec<LinkRecord>> {
+        if target_paths.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut normalized = Vec::with_capacity(target_paths.len());
+        for path in target_paths {
+            normalized.push(path_to_db_text(path)?.to_string());
+        }
+        normalized.sort();
+        normalized.dedup();
+
+        let mut records = Vec::new();
+        for chunk in normalized.chunks(500) {
+            let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(
+                "SELECT id, source_path, target_path, media_id, media_type, status, created_at, updated_at
+                 FROM links
+                 WHERE target_path IN (",
+            );
+
+            {
+                let mut separated = qb.separated(", ");
+                for path in chunk {
+                    separated.push_bind(path);
+                }
+            }
+            qb.push(")");
+
+            let rows = qb.build().fetch_all(&self.pool).await?;
+            records.extend(
+                rows.iter()
+                    .map(|row| self.row_to_link_record(row))
+                    .collect::<Result<Vec<_>>>()?,
+            );
+        }
+
+        Ok(records)
+    }
+
     /// Get all active links.
     #[allow(dead_code)] // Kept as a simple compatibility wrapper
     pub async fn get_active_links(&self) -> Result<Vec<LinkRecord>> {
@@ -993,6 +1048,60 @@ impl Database {
         .await?;
 
         Ok((row.get("active"), row.get("dead"), row.get("total")))
+    }
+
+    // --- Stats by category ---
+
+    /// Get statistics about links grouped by media type.
+    pub async fn get_stats_by_media_type(&self) -> Result<Vec<MediaTypeStats>> {
+        let rows = sqlx::query(
+            "SELECT
+                media_type,
+                COUNT(*) as library_items,
+                COALESCE(SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END), 0) as linked,
+                COALESCE(SUM(CASE WHEN status = 'dead' THEN 1 ELSE 0 END), 0) as broken
+             FROM links
+             GROUP BY media_type
+             ORDER BY library_items DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| MediaTypeStats {
+                media_type: row.get("media_type"),
+                library_items: row.get("library_items"),
+                linked: row.get("linked"),
+                broken: row.get("broken"),
+            })
+            .collect())
+    }
+
+    /// Get statistics about links grouped by library (folder name).
+    pub async fn get_stats_by_library(&self) -> Result<Vec<LibraryStats>> {
+        let rows = sqlx::query(
+            "SELECT
+                library_name,
+                COUNT(*) as library_items,
+                COALESCE(SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END), 0) as linked,
+                COALESCE(SUM(CASE WHEN status = 'dead' THEN 1 ELSE 0 END), 0) as broken
+             FROM links
+             GROUP BY library_name
+             ORDER BY library_items DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| LibraryStats {
+                name: row.get("library_name"),
+                library_items: row.get("library_items"),
+                linked: row.get("linked"),
+                broken: row.get("broken"),
+            })
+            .collect())
     }
 
     // --- Acquisition queue ---
@@ -1929,6 +2038,32 @@ mod tests {
 
         let roots = vec![PathBuf::from("/plex/Anime")];
         let scoped = db.get_active_links_scoped(Some(&roots)).await.unwrap();
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(
+            scoped[0].target_path,
+            PathBuf::from("/plex/Anime/Show/S01E01.mkv")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_links_by_targets_returns_only_exact_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        let anime = sample_link("/mnt/rd/anime/ep01.mkv", "/plex/Anime/Show/S01E01.mkv");
+        let series = sample_link("/mnt/rd/series/ep01.mkv", "/plex/Series/Show/S01E01.mkv");
+
+        db.insert_link(&anime).await.unwrap();
+        db.insert_link(&series).await.unwrap();
+
+        let paths = vec![
+            PathBuf::from("/plex/Anime/Show/S01E01.mkv"),
+            PathBuf::from("/plex/Anime/Show/S01E01.mkv"),
+            PathBuf::from("/plex/Missing/Show/S01E01.mkv"),
+        ];
+        let scoped = db.get_links_by_targets(&paths).await.unwrap();
         assert_eq!(scoped.len(), 1);
         assert_eq!(
             scoped[0].target_path,

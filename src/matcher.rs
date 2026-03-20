@@ -603,6 +603,13 @@ fn resolve_source_for_library_item(
     Some(resolved)
 }
 
+fn source_shape_matches_media_type(item: &LibraryItem, parsed: &SourceItem) -> bool {
+    match item.media_type {
+        MediaType::Tv => parsed.season.is_some() && parsed.episode.is_some(),
+        MediaType::Movie => parsed.season.is_none() && parsed.episode.is_none(),
+    }
+}
+
 fn resolve_anime_scene_episode_mapping(
     metadata: Option<&ContentMetadata>,
     parsed_season: u32,
@@ -1005,9 +1012,7 @@ fn match_source_slice(
                 continue;
             };
 
-            if item.media_type == MediaType::Tv
-                && (parsed.season.is_none() || parsed.episode.is_none())
-            {
+            if !source_shape_matches_media_type(item, &parsed) {
                 continue;
             }
 
@@ -1158,7 +1163,7 @@ fn should_reject_ambiguous(mode: MatchingMode, candidates: &[MatchCandidate]) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use tempfile::tempdir;
 
     use crate::db::Database;
@@ -1208,6 +1213,23 @@ mod tests {
         let mut candidate = candidate(path, score);
         candidate.source_item.quality = quality.map(|value| value.to_string());
         candidate
+    }
+
+    fn movie_item(title: &str, tmdb_id: u64) -> LibraryItem {
+        LibraryItem {
+            title: title.to_string(),
+            path: PathBuf::from(format!("/library/{title} {{tmdb-{tmdb_id}}}")),
+            id: MediaId::Tmdb(tmdb_id),
+            library_name: "Movies".to_string(),
+            media_type: MediaType::Movie,
+            content_type: ContentType::Movie,
+        }
+    }
+
+    fn parsed_standard_source(path: &str) -> SourceItem {
+        SourceScanner::new()
+            .parse_filename_with_type(Path::new(path), ContentType::Tv)
+            .expect("expected source to parse")
     }
 
     #[test]
@@ -1373,6 +1395,66 @@ mod tests {
             resolve_anime_scene_episode_mapping(Some(&metadata), 25, 129),
             Some((20, 129))
         );
+    }
+
+    #[test]
+    fn test_movie_source_shape_rejects_episode_like_source() {
+        let item = movie_item("The Avengers", 24428);
+        let source = parsed_standard_source("/rd/Avengers.Assemble.S01E01.mkv");
+        assert!(!source_shape_matches_media_type(&item, &source));
+    }
+
+    #[test]
+    fn test_match_source_slice_skips_movie_candidate_for_episode_source() {
+        let library_items = vec![movie_item("The Avengers", 24428)];
+        let source_items = vec![parsed_standard_source("/rd/Avengers.Assemble.S01E01.mkv")];
+
+        let mut alias_map = HashMap::new();
+        alias_map.insert(0usize, vec!["avengers assemble".to_string()]);
+        let mut metadata_map = HashMap::new();
+        metadata_map.insert(0usize, None);
+        let alias_token_index = build_alias_token_index(&alias_map);
+
+        let chunk = match_source_slice(
+            0,
+            &source_items,
+            &library_items,
+            &alias_map,
+            &metadata_map,
+            &alias_token_index,
+            MatchingMode::Strict,
+            true,
+        );
+
+        assert!(chunk.best_per_source.is_empty());
+    }
+
+    #[test]
+    fn test_exact_id_path_still_overrides_movie_episode_shape_guard() {
+        let library_items = vec![movie_item("The Avengers", 24428)];
+        let source_items = vec![parsed_standard_source(
+            "/rd/tmdb-24428/Avengers.Assemble.S01E01.mkv",
+        )];
+
+        let mut alias_map = HashMap::new();
+        alias_map.insert(0usize, vec!["avengers assemble".to_string()]);
+        let mut metadata_map = HashMap::new();
+        metadata_map.insert(0usize, None);
+        let alias_token_index = build_alias_token_index(&alias_map);
+
+        let chunk = match_source_slice(
+            0,
+            &source_items,
+            &library_items,
+            &alias_map,
+            &metadata_map,
+            &alias_token_index,
+            MatchingMode::Strict,
+            true,
+        );
+
+        assert_eq!(chunk.best_per_source.len(), 1);
+        assert_eq!(chunk.best_per_source[0].media_id, "tmdb-24428");
     }
 
     #[tokio::test]

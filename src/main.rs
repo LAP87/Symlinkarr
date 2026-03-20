@@ -178,6 +178,17 @@ enum Commands {
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         output: OutputFormat,
     },
+    /// Generate a library report
+    Report {
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        output: OutputFormat,
+        /// Filter by media type (movie, series)
+        #[arg(long)]
+        filter: Option<String>,
+        /// Pretty-print JSON output
+        #[arg(long)]
+        pretty: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -370,6 +381,20 @@ async fn main() -> Result<()> {
         Commands::Cache { action } => commands::cache::run_cache(&cfg, &db, action).await?,
         Commands::Config { action } => commands::config::run_config(&cfg, action).await?,
         Commands::Doctor { output } => commands::doctor::run_doctor(&cfg, &db, output).await?,
+        Commands::Report {
+            output,
+            filter,
+            pretty,
+        } => {
+            let media_type_filter = match filter.as_deref() {
+                Some("movie") => Some(crate::models::MediaType::Movie),
+                Some("series") | Some("tv") => Some(crate::models::MediaType::Tv),
+                Some(invalid) => anyhow::bail!("Invalid filter: {}. Must be 'movie' or 'series'.", invalid),
+                None => None,
+            };
+            
+            commands::report::run_report(&cfg, &db, output, media_type_filter, pretty).await?
+        }
     }
 
     Ok(())

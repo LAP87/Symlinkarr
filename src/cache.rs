@@ -287,10 +287,7 @@ impl<'a> TorrentCache<'a> {
                     continue;
                 }
 
-                // Mount structure: /mount_path/Torrent Name/Path inside torrent
-                // RdFile.path usually starts with slash, e.g. "/Folder/Video.mkv"
-                let relative_path = file.path.trim_start_matches('/');
-                let full_path = mount_path.join(&torrent_filename).join(relative_path);
+                let full_path = cached_mount_path(mount_path, &torrent_filename, &file.path);
 
                 all_files.push((full_path, file.bytes as u64));
             }
@@ -298,6 +295,49 @@ impl<'a> TorrentCache<'a> {
 
         Ok(all_files)
     }
+}
+
+fn cached_mount_path(mount_path: &Path, torrent_filename: &str, rd_file_path: &str) -> PathBuf {
+    // Mount structure is usually /mount/TorrentName/path/inside/torrent.
+    // RD can report single-file torrents with filename="Movie.mkv" and
+    // path="/Movie.mkv", while the mount folder is actually /mount/Movie/Movie.mkv.
+    // In that case we need to drop the video extension from the folder segment.
+    let relative_path = rd_file_path.trim_start_matches('/');
+    let relative = Path::new(relative_path);
+
+    let mount_folder = if is_single_file_torrent_path(torrent_filename, relative) {
+        Path::new(torrent_filename)
+            .file_stem()
+            .map(|stem| stem.to_owned())
+            .unwrap_or_else(|| torrent_filename.into())
+    } else {
+        torrent_filename.into()
+    };
+
+    mount_path.join(mount_folder).join(relative)
+}
+
+fn is_single_file_torrent_path(torrent_filename: &str, relative: &Path) -> bool {
+    let Some(file_name) = relative.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+
+    if file_name != torrent_filename {
+        return false;
+    }
+
+    relative
+        .parent()
+        .is_none_or(|parent| parent.as_os_str().is_empty())
+        && Path::new(torrent_filename)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| {
+                matches!(
+                    ext.to_ascii_lowercase().as_str(),
+                    "mkv" | "mp4" | "avi" | "mov" | "wmv" | "m4v" | "ts" | "m2ts" | "webm"
+                )
+            })
 }
 
 #[cfg(test)]
@@ -430,6 +470,44 @@ mod tests {
         assert_eq!(
             results[0].0,
             mount.join("ValidTorrent").join("Valid/File.mkv")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_files_maps_single_file_torrent_without_extension_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        let files = vec![RdFile {
+            id: 1,
+            path: "/Monarch.Legacy.of.Monsters.S02E02.Risonanza.ITA.ENG.2160p.ATVP.WEB-DL.DDP5.1.Atmos.DV.HDR.H.25-MeM.GP.mkv".to_string(),
+            bytes: 1024,
+            selected: 1,
+        }];
+        db.upsert_rd_torrent(
+            "ID_MONARCH",
+            "hash_monarch",
+            "Monarch.Legacy.of.Monsters.S02E02.Risonanza.ITA.ENG.2160p.ATVP.WEB-DL.DDP5.1.Atmos.DV.HDR.H.25-MeM.GP.mkv",
+            "downloaded",
+            &serde_json::to_string(&CachedTorrentFiles { files }).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let rd_client = RealDebridClient::new("dummy");
+        let cache = TorrentCache::new(&db, &rd_client);
+
+        let mount = PathBuf::from("/mnt/decypharr/realdebrid/__all__");
+        let results = cache.get_files(&mount).await.unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].0,
+            mount
+                .join("Monarch.Legacy.of.Monsters.S02E02.Risonanza.ITA.ENG.2160p.ATVP.WEB-DL.DDP5.1.Atmos.DV.HDR.H.25-MeM.GP")
+                .join("Monarch.Legacy.of.Monsters.S02E02.Risonanza.ITA.ENG.2160p.ATVP.WEB-DL.DDP5.1.Atmos.DV.HDR.H.25-MeM.GP.mkv")
         );
     }
 

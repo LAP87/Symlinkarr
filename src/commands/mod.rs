@@ -6,6 +6,7 @@ pub mod daemon;
 pub mod discover;
 pub mod doctor;
 pub mod queue;
+pub mod report;
 pub mod repair;
 pub mod scan;
 pub mod status;
