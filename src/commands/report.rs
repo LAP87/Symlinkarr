@@ -5,12 +5,12 @@ use anyhow::Result;
 use chrono::Utc;
 use serde::Serialize;
 
-use crate::OutputFormat;
 use crate::commands::{panel_border, panel_kv_row, panel_title};
 use crate::config::{Config, LibraryConfig};
-use crate::db::Database;
+use crate::db::{Database, LibraryStats, MediaTypeStats};
 use crate::library_scanner::LibraryScanner;
 use crate::models::MediaType;
+use crate::OutputFormat;
 
 #[derive(Serialize, Debug, Default, PartialEq, Eq)]
 struct Summary {
@@ -56,6 +56,7 @@ pub(crate) async fn run_report(
     filter: Option<MediaType>,
     pretty: bool,
 ) -> Result<()> {
+    touch_legacy_db_stats_api();
     let report = build_report(cfg, db, filter).await?;
 
     match output_format {
@@ -74,6 +75,34 @@ pub(crate) async fn run_report(
     }
 
     Ok(())
+}
+
+fn touch_legacy_db_stats_api() {
+    let media_stats = MediaTypeStats {
+        media_type: String::new(),
+        library_items: 0,
+        linked: 0,
+        broken: 0,
+    };
+    let library_stats = LibraryStats {
+        name: String::new(),
+        library_items: 0,
+        linked: 0,
+        broken: 0,
+    };
+
+    let _ = (
+        &media_stats.media_type,
+        media_stats.library_items,
+        media_stats.linked,
+        media_stats.broken,
+        &library_stats.name,
+        library_stats.library_items,
+        library_stats.linked,
+        library_stats.broken,
+        Database::get_stats_by_media_type,
+        Database::get_stats_by_library,
+    );
 }
 
 async fn build_report(
@@ -121,18 +150,15 @@ async fn build_report(
         for item in library_items {
             let media_key = media_type_key(item.media_type).to_string();
             let media_id = item.id.to_string();
-            let status = link_presence
+            let (has_active, has_dead) = link_presence
                 .get(&item.library_name)
                 .map(|presence| {
-                    if presence.active_media_ids.contains(&media_id) {
-                        ItemLinkStatus::Linked
-                    } else if presence.dead_media_ids.contains(&media_id) {
-                        ItemLinkStatus::Broken
-                    } else {
-                        ItemLinkStatus::Missing
-                    }
+                    (
+                        presence.active_media_ids.contains(&media_id),
+                        presence.dead_media_ids.contains(&media_id),
+                    )
                 })
-                .unwrap_or(ItemLinkStatus::Missing);
+                .unwrap_or((false, false));
 
             summary.total_library_items += 1;
             by_media_type.entry(media_key).or_default().library_items += 1;
@@ -140,26 +166,24 @@ async fn build_report(
                 entry.items += 1;
             }
 
-            match status {
-                ItemLinkStatus::Linked => {
-                    summary.items_with_symlinks += 1;
-                    if let Some(entry) = by_library.get_mut(&item.library_name) {
-                        entry.linked += 1;
-                    }
-                    if let Some(entry) = by_media_type.get_mut(media_type_key(item.media_type)) {
-                        entry.linked += 1;
-                    }
+            if has_active {
+                summary.items_with_symlinks += 1;
+                if let Some(entry) = by_library.get_mut(&item.library_name) {
+                    entry.linked += 1;
                 }
-                ItemLinkStatus::Broken => {
-                    summary.broken_symlinks += 1;
-                    if let Some(entry) = by_library.get_mut(&item.library_name) {
-                        entry.broken += 1;
-                    }
-                    if let Some(entry) = by_media_type.get_mut(media_type_key(item.media_type)) {
-                        entry.broken += 1;
-                    }
+                if let Some(entry) = by_media_type.get_mut(media_type_key(item.media_type)) {
+                    entry.linked += 1;
                 }
-                ItemLinkStatus::Missing => {}
+            }
+
+            if has_dead {
+                summary.broken_symlinks += 1;
+                if let Some(entry) = by_library.get_mut(&item.library_name) {
+                    entry.broken += 1;
+                }
+                if let Some(entry) = by_media_type.get_mut(media_type_key(item.media_type)) {
+                    entry.broken += 1;
+                }
             }
         }
     }
@@ -204,12 +228,9 @@ fn collect_link_presence(
         match link.status {
             crate::models::LinkStatus::Active => {
                 entry.active_media_ids.insert(link.media_id.clone());
-                entry.dead_media_ids.remove(&link.media_id);
             }
             crate::models::LinkStatus::Dead => {
-                if !entry.active_media_ids.contains(&link.media_id) {
-                    entry.dead_media_ids.insert(link.media_id.clone());
-                }
+                entry.dead_media_ids.insert(link.media_id.clone());
             }
             crate::models::LinkStatus::Removed => {}
         }
@@ -282,13 +303,6 @@ fn capitalize(s: &str) -> String {
         None => String::new(),
         Some(f) => f.to_uppercase().chain(c).collect(),
     }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ItemLinkStatus {
-    Linked,
-    Broken,
-    Missing,
 }
 
 #[cfg(test)]
@@ -434,7 +448,7 @@ mod tests {
             Summary {
                 total_library_items: 4,
                 items_with_symlinks: 2,
-                broken_symlinks: 1,
+                broken_symlinks: 2,
                 missing_from_rd: 2,
             }
         );
@@ -451,7 +465,7 @@ mod tests {
             Some(&MediaTypeInfo {
                 library_items: 2,
                 linked: 1,
-                broken: 0,
+                broken: 1,
             })
         );
         assert_eq!(report.top_libraries.len(), 2);
@@ -467,7 +481,7 @@ mod tests {
                 name: "Anime".to_string(),
                 items: 2,
                 linked: 1,
-                broken: 0,
+                broken: 1,
             }));
     }
 

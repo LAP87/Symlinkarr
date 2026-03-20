@@ -20,8 +20,8 @@ use crate::linker::Linker;
 use crate::matcher::Matcher;
 use crate::source_scanner::SourceScanner;
 
-use super::WebState;
 use super::templates::*;
+use super::WebState;
 
 /// GET / - Dashboard page
 pub async fn get_dashboard(State(state): State<WebState>) -> impl IntoResponse {
@@ -427,6 +427,7 @@ pub async fn get_cleanup_prune(
                 critical: 0,
                 high: 0,
                 warning: 0,
+                report_path: None,
                 confirmation_token: None,
             }
             .render()
@@ -444,6 +445,7 @@ pub async fn get_cleanup_prune(
                 critical: 0,
                 high: 0,
                 warning: 0,
+                report_path: None,
                 confirmation_token: None,
             }
             .render()
@@ -463,6 +465,7 @@ pub async fn get_cleanup_prune(
                     critical: 0,
                     high: 0,
                     warning: 0,
+                    report_path: None,
                     confirmation_token: None,
                 }
                 .render()
@@ -482,6 +485,7 @@ pub async fn get_cleanup_prune(
                     critical: 0,
                     high: 0,
                     warning: 0,
+                    report_path: None,
                     confirmation_token: None,
                 }
                 .render()
@@ -533,6 +537,7 @@ pub async fn get_cleanup_prune(
         critical: report.summary.critical,
         high: report.summary.high,
         warning: report.summary.warning,
+        report_path: Some(report_path.to_path_buf()),
         confirmation_token,
     };
 

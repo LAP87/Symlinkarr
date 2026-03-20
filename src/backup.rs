@@ -544,7 +544,7 @@ fn path_is_within_roots(path: &Path, roots: &[PathBuf]) -> bool {
     } else {
         path.to_path_buf()
     };
-    let normalized_abs = normalize_path_for_root_check(&abs);
+    let normalized_abs = normalize_path_for_root_check(&resolve_path_for_root_check(&abs));
 
     roots.iter().any(|root| {
         let normalized_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.clone());
@@ -588,6 +588,23 @@ fn resolve_restore_target_path(entry: &BackupEntry) -> PathBuf {
             .unwrap_or_else(|| Path::new("."))
             .join(&entry.target_path)
     }
+}
+
+fn resolve_path_for_root_check(path: &Path) -> PathBuf {
+    if let Ok(canonical) = std::fs::canonicalize(path) {
+        return canonical;
+    }
+
+    if let Some(parent) = path.parent() {
+        if let Ok(canonical_parent) = std::fs::canonicalize(parent) {
+            if let Some(name) = path.file_name() {
+                return canonical_parent.join(name);
+            }
+            return canonical_parent;
+        }
+    }
+
+    path.to_path_buf()
 }
 
 fn normalize_path_for_root_check(path: &Path) -> PathBuf {
@@ -739,12 +756,11 @@ mod tests {
         assert_eq!(restored, 1);
         assert_eq!(skipped, 0);
         assert_eq!(errors, 0);
-        assert!(
-            db.get_link_by_target_path(&symlink_path)
-                .await
-                .unwrap()
-                .is_some()
-        );
+        assert!(db
+            .get_link_by_target_path(&symlink_path)
+            .await
+            .unwrap()
+            .is_some());
     }
 
     #[tokio::test]
@@ -828,12 +844,11 @@ mod tests {
         assert_eq!(skipped, 0);
         assert_eq!(errors, 0);
         assert!(symlink_path.is_symlink());
-        assert!(
-            db.get_link_by_target_path(&symlink_path)
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert!(db
+            .get_link_by_target_path(&symlink_path)
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[cfg(unix)]
@@ -947,11 +962,10 @@ mod tests {
         assert_eq!(remaining.len(), 3);
 
         // Safety snapshot should still exist
-        assert!(
-            dir.path()
-                .join("safety-repair-20260101-120000.json")
-                .exists()
-        );
+        assert!(dir
+            .path()
+            .join("safety-repair-20260101-120000.json")
+            .exists());
     }
 
     #[test]
@@ -991,6 +1005,27 @@ mod tests {
 
         let escaped = allowed.join("..").join("escaped").join("file.mkv");
         assert!(!path_is_within_roots(&escaped, &[allowed]));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_path_is_within_roots_rejects_symlink_escape() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let allowed = dir.path().join("allowed");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&allowed).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+
+        let outside_file = outside.join("file.mkv");
+        std::fs::write(&outside_file, "video").unwrap();
+
+        let alias_dir = allowed.join("alias");
+        std::os::unix::fs::symlink(&outside, &alias_dir).unwrap();
+
+        assert!(!path_is_within_roots(
+            &alias_dir.join("file.mkv"),
+            &[allowed]
+        ));
     }
 
     #[cfg(unix)]

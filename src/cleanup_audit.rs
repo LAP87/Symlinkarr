@@ -17,7 +17,7 @@ use crate::db::Database;
 use crate::library_scanner::LibraryScanner;
 use crate::models::{ContentMetadata, LibraryItem, LinkStatus, MediaId, MediaType};
 use crate::source_scanner::SourceScanner;
-use crate::utils::{ProgressLine, normalize};
+use crate::utils::{normalize, ProgressLine};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
@@ -1167,7 +1167,6 @@ pub(crate) fn collect_safe_duplicate_prune_plan(
     findings: &[CleanupFinding],
 ) -> SafeDuplicatePrunePlan {
     let mut tainted_slots: HashSet<(String, u32, u32)> = HashSet::new();
-    let mut slots_with_tracked_safe_candidates: HashSet<(String, u32, u32)> = HashSet::new();
     let mut managed_paths = HashSet::new();
     let mut by_slot_source: HashMap<(String, u32, u32, PathBuf), Vec<&CleanupFinding>> =
         HashMap::new();
@@ -1179,9 +1178,6 @@ pub(crate) fn collect_safe_duplicate_prune_plan(
 
         if is_safe_duplicate_candidate(&finding.reasons) {
             managed_paths.insert(finding.symlink_path.clone());
-            if finding.db_tracked {
-                slots_with_tracked_safe_candidates.insert(slot_key.clone());
-            }
             let (media_id, season, episode) = slot_key;
             by_slot_source
                 .entry((media_id, season, episode, finding.source_path.clone()))
@@ -1199,17 +1195,39 @@ pub(crate) fn collect_safe_duplicate_prune_plan(
         }
 
         let slot_key = (media_id, season, episode);
-        if tainted_slots.contains(&slot_key)
-            || slots_with_tracked_safe_candidates.contains(&slot_key)
-        {
+        if tainted_slots.contains(&slot_key) {
             continue;
         }
 
-        let mut symlink_paths: Vec<_> = findings
-            .into_iter()
+        let mut tracked_paths: Vec<_> = findings
+            .iter()
+            .filter(|finding| finding.db_tracked)
             .map(|finding| finding.symlink_path.clone())
             .collect();
+        tracked_paths.sort();
+        tracked_paths.dedup();
+
+        let mut untracked_paths: Vec<_> = findings
+            .iter()
+            .filter(|finding| !finding.db_tracked)
+            .map(|finding| finding.symlink_path.clone())
+            .collect();
+        untracked_paths.sort();
+        untracked_paths.dedup();
+
+        if tracked_paths.len() > 1 {
+            continue;
+        }
+
+        if tracked_paths.len() == 1 {
+            prune_paths.extend(untracked_paths);
+            continue;
+        }
+
+        let mut symlink_paths = tracked_paths;
+        symlink_paths.extend(untracked_paths);
         symlink_paths.sort();
+        symlink_paths.dedup();
         prune_paths.extend(symlink_paths.into_iter().skip(1));
     }
 
@@ -1547,11 +1565,9 @@ mod tests {
         let suppressed = suppress_redundant_season_count_warnings(&mut entries);
         assert_eq!(suppressed, 1);
         assert!(entries[0].reasons.is_empty());
-        assert!(
-            entries[2]
-                .reasons
-                .contains(&FindingReason::SeasonCountAnomaly)
-        );
+        assert!(entries[2]
+            .reasons
+            .contains(&FindingReason::SeasonCountAnomaly));
     }
 
     #[test]
@@ -1648,7 +1664,7 @@ mod tests {
     }
 
     #[test]
-    fn test_collect_safe_warning_duplicate_prunes_skips_mixed_tracked_and_untracked_slot() {
+    fn test_collect_safe_warning_duplicate_prunes_prunes_untracked_in_mixed_slot() {
         let mut tracked = test_cleanup_finding(
             "tvdb-1",
             1,
@@ -1677,15 +1693,16 @@ mod tests {
         );
 
         let plan = collect_safe_duplicate_prune_plan(&[tracked, legacy]);
-        assert!(plan.prune_paths.is_empty());
-        assert!(
-            plan.managed_paths
-                .contains(&PathBuf::from("/lib/Show - S01E03 canonical.mkv"))
+        assert_eq!(
+            plan.prune_paths,
+            vec![PathBuf::from("/lib/Show - S01E03 legacy.mkv")]
         );
-        assert!(
-            plan.managed_paths
-                .contains(&PathBuf::from("/lib/Show - S01E03 legacy.mkv"))
-        );
+        assert!(plan
+            .managed_paths
+            .contains(&PathBuf::from("/lib/Show - S01E03 canonical.mkv")));
+        assert!(plan
+            .managed_paths
+            .contains(&PathBuf::from("/lib/Show - S01E03 legacy.mkv")));
     }
 
     #[test]
@@ -1929,12 +1946,11 @@ backup:
             .unwrap()
             .unwrap();
         assert_eq!(updated.status, LinkStatus::Active);
-        assert!(
-            db.get_link_by_target_path(&suspicious_symlink)
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert!(db
+            .get_link_by_target_path(&suspicious_symlink)
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
@@ -2017,10 +2033,9 @@ backup:
         )
         .await
         .unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("invalid or missing confirmation token")
-        );
+        assert!(err
+            .to_string()
+            .contains("invalid or missing confirmation token"));
     }
 
     #[cfg(unix)]

@@ -103,6 +103,7 @@ pub struct PrunePreviewTemplate {
     pub critical: usize,
     pub high: usize,
     pub warning: usize,
+    pub report_path: Option<PathBuf>,
     pub confirmation_token: Option<String>,
 }
 

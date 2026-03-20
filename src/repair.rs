@@ -693,6 +693,7 @@ impl Repairer {
             {
                 let path = entry.path();
                 scanned_files += 1;
+                #[allow(clippy::manual_is_multiple_of)]
                 if scanned_files % 100_000 == 0 {
                     info!(
                         "Catalog progress ({:?}): {} filesystem entries scanned",
