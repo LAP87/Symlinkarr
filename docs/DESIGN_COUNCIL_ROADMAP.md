@@ -304,3 +304,231 @@ That single change improves:
 3. cleanup safety
 4. future targeted missing-search
 5. future Stremio/Torrentio-style resolution
+
+## Council Round 2 Verdict
+
+Date: 2026-03-21
+
+This round debated the problem from five angles:
+
+1. identity
+2. exact file resolution
+3. performance
+4. safety and provenance
+5. product impact
+
+The council converged harder than expected. The main conclusion is no longer "make the matcher smarter". It is:
+
+1. make the source record truer
+2. make file choice exact
+3. make broad scans exceptional
+4. make low-confidence outputs visible and reversible
+
+### Resolved Debates
+
+#### 1. Smarter Matching vs Better Source Truth
+
+Decision:
+Better source truth wins.
+
+Reason:
+Library-side identity is already relatively strong, because folders carry `tvdb-...` / `tmdb-...`. Source-side identity is still mostly filename-derived. More heuristics on top of weak source identity just creates harder-to-debug false confidence.
+
+#### 2. Torrent Choice vs File Choice
+
+Decision:
+File choice matters more.
+
+Reason:
+Symlinkarr can often land on the right show but still choose the wrong file inside a multi-file torrent or anime pack. Systems like Stremio/Torrentio stay precise because they preserve exact torrent/file identity with `infoHash` plus `fileIdx`, not because they have magical title scoring.
+
+#### 3. Broad Scans vs Event-Driven Deltas
+
+Decision:
+Broad scans should become repair tools, not the steady-state operating mode.
+
+Reason:
+The main runtime cost is repeated whole-library or whole-source work. Public prior art such as [Autoscan](https://github.com/Cloudbox/autoscan) and [PlexNFSWatchdog](https://github.com/LightDestory/PlexNFSWatchdog) both lean toward event-driven invalidation with fallback polling.
+
+#### 4. Cleanup Safety vs Operational Convenience
+
+Decision:
+Fail closed, quarantine uncertain work, and keep destructive actions report-driven.
+
+Reason:
+The user pain is not that Symlinkarr sometimes skips. The real pain is that it sometimes feels random. Wrong confident actions are more expensive than conservative skips.
+
+## Free / Open Levers Still Underused
+
+### Identity Graphs
+
+- [anime-offline-database](https://github.com/manami-project/anime-offline-database): broad anime cross-ID graph across AniDB, MAL, AniList, Kitsu, ANN, LiveChart, TVDB and TMDB.
+- [Fribb/anime-lists](https://github.com/Fribb/anime-lists): pragmatic AniDB-rooted season and provider mappings.
+- [Kometa Anime IDs](https://github.com/Kometa-Team/Anime-IDs): practical free crosswalks used in real Plex ecosystems.
+- [PlexAniBridge-Mappings](https://github.com/eliasbenb/PlexAniBridge-Mappings): another free mapping source worth ingesting as evidence, not truth.
+- [ids.moe](https://ids.moe/): cheap lookup surface for anime provider crosswalks.
+
+### Exact File Resolution
+
+- [Stremio Addon SDK](https://github.com/Stremio/stremio-addon-sdk): stream identity model with exact content id and `fileIdx`.
+- [Torrentio](https://github.com/TheBeastLT/torrentio-scraper): real-world pattern of `imdbId` plus season/episode lookup, then exact torrent/file selection.
+- [Stremio local addon](https://github.com/Stremio/stremio-local-addon): demonstrates grouping recognized video files by media identity before serving them.
+- [ShokoServer](https://github.com/ShokoAnime/ShokoServer) and [Shokofin](https://github.com/ShokoAnime/Shokofin): AniDB-rooted file identity, multi-version handling and VFS ideas.
+
+### Parser / Hint Layers
+
+- [GuessIt](https://guessit.readthedocs.io/): strong filename normalization for TV/movie parsing, useful as a second opinion rather than a truth oracle.
+- [Anitomy](https://github.com/erengy/anitomy): dedicated anime filename parser.
+- [Absolute Series Scanner](https://github.com/ZeroQI/Absolute-Series-Scanner): shows where explicit layout/episode-order knowledge still beats naive parsing.
+- [FileBot Xattr Scanner support in ASS](https://github.com/ZeroQI/Absolute-Series-Scanner): a reminder that filesystem-level extended metadata can carry stable IDs.
+
+### Scan / Refresh / Delta Control
+
+- [Autoscan](https://github.com/Cloudbox/autoscan): path rewrite plus targeted scan triggers.
+- [PlexNFSWatchdog](https://github.com/LightDestory/PlexNFSWatchdog): useful for remote or less reliable watcher substrates.
+- [Plex `.plexmatch`](https://support.plex.tv/articles/plexmatch/): free way to force identity once we are sure.
+
+## What The Council Would Not Build Yet
+
+1. No "AI matcher".
+2. No more fuzzy heuristics before source identity and file identity are first-class.
+3. No giant UI rewrite before ambiguity, quarantine and provenance are visible.
+4. No new free datasets unless they add concrete identity or file-resolution value.
+5. No aggressive cleanup automation without richer provenance on each link.
+
+## Concrete 2-Week Backlog
+
+### Ticket 1: Scan Phase Telemetry
+
+Goal:
+Make every scan explain its own cost.
+
+Modules:
+- `src/commands/scan.rs`
+- `src/cache.rs`
+- `src/matcher.rs`
+- `src/linker.rs`
+- `src/api/plex.rs`
+
+Acceptance:
+- every scan emits phase timings for library scan, source inventory, matcher prep, matching, linking and Plex refresh
+- report or logs show candidate counts, ambiguous counts, cache-hit ratio and refresh batch count
+
+### Ticket 2: Plex Refresh Coalescing
+
+Goal:
+Batch path refreshes by library section/root.
+
+Modules:
+- `src/commands/scan.rs`
+- `src/api/plex.rs`
+
+Acceptance:
+- one scan issues a bounded number of refresh calls per library
+- no loss of correctness versus current path-by-path refresh
+
+### Ticket 3: `ResolvedSourceFile` Skeleton
+
+Goal:
+Introduce a first-class file identity carrier before rewriting the resolver.
+
+Modules:
+- `src/models.rs`
+- `src/cache.rs`
+- `src/source_scanner.rs`
+- `src/commands/scan.rs`
+
+Acceptance:
+- source pipeline can carry `torrent_id`, `info_hash`, `file_index`, `bytes`, parser kind and provenance
+- old matcher still works on top of the new struct
+
+### Ticket 4: DB Persistence For File Identity
+
+Goal:
+Store file identity and provenance separately from plain link rows.
+
+Modules:
+- `src/db.rs`
+- `src/models.rs`
+- `src/linker.rs`
+
+Acceptance:
+- schema stores `info_hash`, `file_index`, resolver kind and confidence/provenance fields
+- link writes persist the richer evidence bundle
+
+### Ticket 5: Hard Resolver Gates
+
+Goal:
+Make wrong confident matches much harder.
+
+Modules:
+- `src/matcher.rs`
+- `src/source_scanner.rs`
+
+Acceptance:
+- hard media-shape gates execute before title scoring
+- multi-file pack conflicts become `ambiguous` or `quarantined`, not active links
+
+### Ticket 6: Anime Identity Graph Importer v1
+
+Goal:
+Import one real anime crosswalk into local state.
+
+Modules:
+- `src/db.rs`
+- `src/anime_scanner.rs`
+- new importer module
+
+Acceptance:
+- local import of `anime-offline-database` plus one mapping source such as `anime-lists`
+- provenance recorded per edge
+- conflicting mappings remain queryable and do not auto-promote to truth
+
+### Ticket 7: Target-Scoped Missing Search
+
+Goal:
+Stop running missing-search at library granularity only.
+
+Modules:
+- `src/commands/scan.rs`
+- `src/anime_scanner.rs`
+- `src/auto_acquire.rs`
+- CLI surface in `src/main.rs`
+
+Acceptance:
+- user can target a specific media id or folder for missing search
+- missing-search only touches affected resolver scope
+
+### Ticket 8: Quarantine Lane
+
+Goal:
+Give uncertain matches a reversible place to live.
+
+Modules:
+- `src/db.rs`
+- `src/linker.rs`
+- `src/cleanup_audit.rs`
+- `src/repair.rs`
+- `src/commands/report.rs`
+
+Acceptance:
+- low-confidence candidates are visible as quarantined instead of silently linked or deleted
+- cleanup and repair flows understand quarantine state
+
+## 30-Day Success Criteria
+
+1. No newly created movie-to-episode false links.
+2. At least 50% lower scan cost on unchanged libraries.
+3. At least 95% of skips and failures are explainable without digging through raw logs.
+4. Exact file identity exists on the majority of newly linked RD-backed files.
+5. Targeted missing-search can operate on a single title without sweeping a whole library.
+
+## Recommended Next Build Sequence
+
+If work resumes immediately, the next three builds should be:
+
+1. `Scan phase telemetry`
+2. `Plex refresh coalescing`
+3. `ResolvedSourceFile skeleton`
+
+That ordering gives immediate operational wins, exposes current bottlenecks honestly, and sets up the file-identity rewrite without another big-bang refactor.
