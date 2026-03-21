@@ -33,7 +33,29 @@ struct MatchCandidate {
 struct MatchChunkResult {
     processed: usize,
     ambiguous_skipped: usize,
+    prefiltered_library_candidates: usize,
+    scored_candidates: usize,
+    exact_id_hits: usize,
     best_per_source: Vec<MatchCandidate>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct MatchTelemetry {
+    pub metadata_alias_prep: Duration,
+    pub candidate_scan: Duration,
+    pub destination_reduce: Duration,
+    pub metadata_errors: usize,
+    pub worker_count: usize,
+    pub prefiltered_library_candidates: usize,
+    pub scored_candidates: usize,
+    pub exact_id_hits: usize,
+    pub ambiguous_skipped: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct MatchRunOutput {
+    pub matches: Vec<MatchResult>,
+    pub telemetry: MatchTelemetry,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -105,6 +127,18 @@ impl Matcher {
         source_items: &[SourceItem],
         db: &Database,
     ) -> Result<Vec<MatchResult>> {
+        Ok(self
+            .find_matches_with_telemetry(library_items, source_items, db)
+            .await?
+            .matches)
+    }
+
+    pub async fn find_matches_with_telemetry(
+        &self,
+        library_items: &[LibraryItem],
+        source_items: &[SourceItem],
+        db: &Database,
+    ) -> Result<MatchRunOutput> {
         info!(
             "Starting matching ({:?}, metadata={:?}): {} library items, {} source files",
             self.mode,
@@ -229,6 +263,7 @@ impl Matcher {
             library_items.len(),
             metadata_started.elapsed().as_secs_f64()
         ));
+        let metadata_alias_prep = metadata_started.elapsed();
         if metadata_errors > 0 {
             warn!(
                 "Metadata lookup failed for {} library item(s); continued with folder-title aliases only",
@@ -238,6 +273,7 @@ impl Matcher {
         let alias_token_index = build_alias_token_index(&alias_map);
 
         // Step 2: Build deterministic best candidate per source
+        let candidate_started = Instant::now();
         let allow_global_fallback = !library_items
             .iter()
             .all(|item| item.content_type == ContentType::Anime);
@@ -250,7 +286,13 @@ impl Matcher {
             1
         };
 
-        let (best_per_source, ambiguous_skipped) = if worker_count <= 1 {
+        let (
+            best_per_source,
+            ambiguous_skipped,
+            prefiltered_library_candidates,
+            scored_candidates,
+            exact_id_hits,
+        ) = if worker_count <= 1 {
             let chunk = match_source_slice(
                 0,
                 source_items,
@@ -261,7 +303,13 @@ impl Matcher {
                 self.mode,
                 allow_global_fallback,
             );
-            (chunk.best_per_source, chunk.ambiguous_skipped)
+            (
+                chunk.best_per_source,
+                chunk.ambiguous_skipped,
+                chunk.prefiltered_library_candidates,
+                chunk.scored_candidates,
+                chunk.exact_id_hits,
+            )
         } else {
             user_println(format!(
                 "   ⚙  Matching candidates using {} worker(s)",
@@ -300,12 +348,18 @@ impl Matcher {
             let mut progress = ProgressLine::new("Matching candidates:");
             let mut processed = 0usize;
             let mut ambiguous_skipped = 0usize;
+            let mut prefiltered_library_candidates = 0usize;
+            let mut scored_candidates = 0usize;
+            let mut exact_id_hits = 0usize;
             let mut best_per_source = Vec::new();
 
             while let Some(result) = workers.join_next().await {
                 let chunk = result?;
                 processed += chunk.processed;
                 ambiguous_skipped += chunk.ambiguous_skipped;
+                prefiltered_library_candidates += chunk.prefiltered_library_candidates;
+                scored_candidates += chunk.scored_candidates;
+                exact_id_hits += chunk.exact_id_hits;
                 best_per_source.extend(chunk.best_per_source);
                 progress.update(format!(
                     "{}/{} ({:.1}%)",
@@ -321,10 +375,18 @@ impl Matcher {
                 source_items.len()
             ));
 
-            (best_per_source, ambiguous_skipped)
+            (
+                best_per_source,
+                ambiguous_skipped,
+                prefiltered_library_candidates,
+                scored_candidates,
+                exact_id_hits,
+            )
         };
+        let candidate_scan = candidate_started.elapsed();
 
         // Step 3: Enforce one link per destination slot (media_id+episode or media_id movie)
+        let destination_started = Instant::now();
         let mut by_destination: HashMap<DestinationKey, MatchCandidate> = HashMap::new();
 
         for candidate in best_per_source {
@@ -363,18 +425,34 @@ impl Matcher {
                 episode_title: None,
             })
             .collect::<Vec<_>>();
+        let destination_reduce = destination_started.elapsed();
+
+        let telemetry = MatchTelemetry {
+            metadata_alias_prep,
+            candidate_scan,
+            destination_reduce,
+            metadata_errors,
+            worker_count,
+            prefiltered_library_candidates,
+            scored_candidates,
+            exact_id_hits,
+            ambiguous_skipped,
+        };
 
         info!(
-            "Matching complete: {} confirmed matches ({:.0}% of source files; {} ambiguous skipped)",
+            "Matching complete: {} confirmed matches ({:.0}% of source files; {} ambiguous skipped, {} candidate slots, {} scored candidates, {} exact-id hits)",
             matches.len(),
             if source_items.is_empty() {
                 0.0
             } else {
                 (matches.len() as f64 / source_items.len() as f64) * 100.0
             },
-            ambiguous_skipped
+            telemetry.ambiguous_skipped,
+            telemetry.prefiltered_library_candidates,
+            telemetry.scored_candidates,
+            telemetry.exact_id_hits,
         );
-        Ok(matches)
+        Ok(MatchRunOutput { matches, telemetry })
     }
 
     /// Fetch content metadata for a library item (for episode renaming, etc.)
@@ -921,6 +999,9 @@ fn match_source_slice(
     let parser = SourceScanner::new();
     let mut best_per_source = Vec::new();
     let mut ambiguous_skipped = 0usize;
+    let mut prefiltered_library_candidates = 0usize;
+    let mut scored_candidates = 0usize;
+    let mut exact_id_hits = 0usize;
 
     for (offset, source) in source_items.iter().enumerate() {
         let source_idx = start_idx + offset;
@@ -939,6 +1020,7 @@ fn match_source_slice(
             library_items.len(),
             allow_global_fallback,
         );
+        prefiltered_library_candidates += candidate_library_indices.len();
 
         // Early-exit: if the source file path contains a library item's exact media ID
         // (e.g. "tvdb-81189" embedded in the RD path), skip scoring and use it directly.
@@ -985,6 +1067,7 @@ fn match_source_slice(
                         alias: matched_alias,
                         source_item: parsed,
                     });
+                    exact_id_hits += 1;
                     continue;
                 }
             }
@@ -1029,6 +1112,7 @@ fn match_source_slice(
             else {
                 continue;
             };
+            scored_candidates += 1;
 
             let candidate = MatchCandidate {
                 source_idx,
@@ -1073,6 +1157,9 @@ fn match_source_slice(
     MatchChunkResult {
         processed: source_items.len(),
         ambiguous_skipped,
+        prefiltered_library_candidates,
+        scored_candidates,
+        exact_id_hits,
         best_per_source,
     }
 }

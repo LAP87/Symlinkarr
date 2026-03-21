@@ -389,10 +389,12 @@ async fn main() -> Result<()> {
             let media_type_filter = match filter.as_deref() {
                 Some("movie") => Some(crate::models::MediaType::Movie),
                 Some("series") | Some("tv") => Some(crate::models::MediaType::Tv),
-                Some(invalid) => anyhow::bail!("Invalid filter: {}. Must be 'movie' or 'series'.", invalid),
+                Some(invalid) => {
+                    anyhow::bail!("Invalid filter: {}. Must be 'movie' or 'series'.", invalid)
+                }
                 None => None,
             };
-            
+
             commands::report::run_report(&cfg, &db, output, media_type_filter, pretty).await?
         }
     }

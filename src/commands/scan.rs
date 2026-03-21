@@ -1,11 +1,12 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use tracing::info;
 
 use crate::api::bazarr::BazarrClient;
-use crate::api::plex::{find_section_for_path, PlexClient};
+use crate::api::plex::{plan_refresh_batches, PlexClient};
 use crate::api::tmdb::TmdbClient;
 use crate::api::tvdb::TvdbClient;
 use crate::auto_acquire::{process_auto_acquire_queue, AutoAcquireRequest, RelinkCheck};
@@ -16,12 +17,61 @@ use crate::commands::{
 use crate::config::{Config, LibraryConfig};
 use crate::db::Database;
 use crate::library_scanner::LibraryScanner;
-use crate::linker::Linker;
-use crate::matcher::Matcher;
-use crate::models::{LibraryItem, MediaId, MediaType};
+use crate::linker::{LinkProcessSummary, Linker};
+use crate::matcher::{MatchRunOutput, MatchTelemetry, Matcher};
+use crate::models::{LibraryItem, MatchResult, MediaId, MediaType, SourceItem};
 use crate::source_scanner::SourceScanner;
 use crate::utils::{directory_path_health_with_timeout, stdout_text_guard, user_println};
 use crate::OutputFormat;
+
+const PLEX_REFRESH_COALESCE_THRESHOLD: usize = 8;
+
+#[derive(Debug, Clone, Default)]
+struct SourceInventoryTelemetry {
+    cache_enabled: bool,
+    cache_downloaded_torrents: Option<usize>,
+    cache_total_torrents: Option<usize>,
+    cache_coverage: Option<f64>,
+    cached_sources: usize,
+    filesystem_sources: usize,
+    cached_items: usize,
+    filesystem_items: usize,
+}
+
+impl SourceInventoryTelemetry {
+    fn cache_hit_ratio(&self) -> Option<f64> {
+        let total_items = self.cached_items + self.filesystem_items;
+        (total_items > 0).then_some(self.cached_items as f64 / total_items as f64)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct PlexRefreshTelemetry {
+    requested_paths: usize,
+    unique_paths: usize,
+    planned_batches: usize,
+    coalesced_batches: usize,
+    coalesced_paths: usize,
+    refreshed_batches: usize,
+    refreshed_paths_covered: usize,
+    skipped_batches: usize,
+    unresolved_paths: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ScanTelemetry {
+    runtime_checks: Duration,
+    library_scan: Duration,
+    source_inventory: Duration,
+    source_inventory_stats: SourceInventoryTelemetry,
+    match_total: Duration,
+    match_stats: MatchTelemetry,
+    episode_title_enrichment: Duration,
+    linking: Duration,
+    plex_refresh: Duration,
+    plex_refresh_stats: PlexRefreshTelemetry,
+    dead_link_sweep: Duration,
+}
 
 /// Run a single scan → match → link cycle.
 pub(crate) async fn run_scan(
@@ -34,97 +84,38 @@ pub(crate) async fn run_scan(
 ) -> Result<(i64, i64)> {
     let _stdout_guard = stdout_text_guard(output != OutputFormat::Json);
     info!("=== Symlinkarr Scan ===");
+    let mut telemetry = ScanTelemetry::default();
 
     let selected_libraries = selected_libraries(cfg, library_filter)?;
-    ensure_runtime_directories_healthy(&selected_libraries, &cfg.sources).await?;
 
-    // Step 1: Scan libraries
+    let runtime_checks_started = Instant::now();
+    ensure_runtime_directories_healthy(&selected_libraries, &cfg.sources).await?;
+    telemetry.runtime_checks = runtime_checks_started.elapsed();
+
+    let library_scan_started = Instant::now();
     let lib_scanner = LibraryScanner::new();
     let mut library_items = Vec::new();
     for lib in &selected_libraries {
         library_items.extend(lib_scanner.scan_library(lib));
     }
     library_items.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
-    info!("Step 1/4: {} library items identified", library_items.len());
+    telemetry.library_scan = library_scan_started.elapsed();
+    info!(
+        "Step 1/4: {} library items identified in {}",
+        library_items.len(),
+        fmt_duration(telemetry.library_scan)
+    );
 
-    // Step 2: Scan sources
-    let src_scanner = SourceScanner::new();
-    let source_items = if !cfg.realdebrid.api_token.is_empty() {
-        use crate::api::realdebrid::RealDebridClient;
-        use crate::cache::TorrentCache;
+    let source_inventory_started = Instant::now();
+    let (source_items, source_inventory_stats) = collect_source_items(cfg, db).await?;
+    telemetry.source_inventory = source_inventory_started.elapsed();
+    telemetry.source_inventory_stats = source_inventory_stats;
+    info!(
+        "Step 2/4: {} source files found in {}",
+        source_items.len(),
+        fmt_duration(telemetry.source_inventory)
+    );
 
-        info!("Initializing Real-Debrid cache...");
-        let rd_client = RealDebridClient::from_config(&cfg.realdebrid);
-        let cache = TorrentCache::new(db, &rd_client);
-
-        match cache.sync().await {
-            Ok(_) => info!("Real-Debrid cache synced successfully"),
-            Err(e) => tracing::error!(
-                "Failed to sync Real-Debrid cache: {}. Using existing cache if available.",
-                e
-            ),
-        }
-
-        const MIN_CACHE_COVERAGE: f64 = 0.80;
-        let cache_available = match db.get_rd_torrent_counts().await {
-            Ok((cached, total)) if total > 0 => {
-                let coverage = cached as f64 / total as f64;
-                if coverage >= MIN_CACHE_COVERAGE {
-                    info!(
-                        "Using cached source data ({}/{} downloaded torrents, {:.0}% coverage)",
-                        cached,
-                        total,
-                        coverage * 100.0
-                    );
-                    true
-                } else {
-                    info!(
-                        "Cache coverage too low ({}/{} = {:.0}%), walking filesystem instead",
-                        cached,
-                        total,
-                        coverage * 100.0
-                    );
-                    false
-                }
-            }
-            Ok(_) => {
-                info!("Cache unavailable (no downloaded torrents), walking filesystem");
-                false
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "Could not query RD torrent count: {}. Walking filesystem.",
-                    e
-                );
-                false
-            }
-        };
-
-        let mut all_items = Vec::new();
-        for source in &cfg.sources {
-            if cache_available {
-                match src_scanner.scan_source_with_cache(source, &cache).await {
-                    Ok(items) => all_items.extend(items),
-                    Err(e) => {
-                        tracing::error!(
-                            "Failed to read cache for source {}: {}. Falling back to filesystem scan.",
-                            source.name,
-                            e
-                        );
-                        all_items.extend(src_scanner.scan_source(source));
-                    }
-                }
-            } else {
-                all_items.extend(src_scanner.scan_source(source));
-            }
-        }
-        all_items
-    } else {
-        src_scanner.scan_all(&cfg.sources)
-    };
-    info!("Step 2/4: {} source files found", source_items.len());
-
-    // Step 3: Match
     let tmdb = if cfg.has_tmdb() {
         Some(TmdbClient::new(
             &cfg.api.tmdb_api_key,
@@ -159,12 +150,22 @@ pub(crate) async fn run_scan(
         cfg.matching.metadata_mode,
         cfg.matching.metadata_concurrency,
     );
-    let mut matches = matcher
-        .find_matches(&library_items, &source_items, db)
-        .await?;
-    info!("Step 3/4: {} matches confirmed", matches.len());
 
-    // Step 4: Create symlinks
+    let matching_started = Instant::now();
+    let MatchRunOutput {
+        mut matches,
+        telemetry: match_telemetry,
+    } = matcher
+        .find_matches_with_telemetry(&library_items, &source_items, db)
+        .await?;
+    telemetry.match_total = matching_started.elapsed();
+    telemetry.match_stats = match_telemetry;
+    info!(
+        "Step 3/4: {} matches confirmed in {}",
+        matches.len(),
+        fmt_duration(telemetry.match_total)
+    );
+
     let effective_dry_run = dry_run || cfg.symlink.dry_run;
     let linker = Linker::new_with_options(
         effective_dry_run,
@@ -172,14 +173,22 @@ pub(crate) async fn run_scan(
         &cfg.symlink.naming_template,
         cfg.features.reconcile_links,
     );
+
+    let title_enrichment_started = Instant::now();
     matcher.enrich_episode_titles(&mut matches, db).await?;
+    telemetry.episode_title_enrichment = title_enrichment_started.elapsed();
+
+    let linking_started = Instant::now();
     let link_summary = linker.process_matches(&matches, db).await?;
+    telemetry.linking = linking_started.elapsed();
     info!(
-        "Step 4/4: symlinks created={}, updated={}, skipped={}",
-        link_summary.created, link_summary.updated, link_summary.skipped
+        "Step 4/4: symlinks created={}, updated={}, skipped={} in {}",
+        link_summary.created,
+        link_summary.updated,
+        link_summary.skipped,
+        fmt_duration(telemetry.linking)
     );
 
-    // Bazarr: trigger subtitle search for newly linked content
     let linked_total = link_summary.created + link_summary.updated;
     if linked_total > 0 && !effective_dry_run && cfg.has_bazarr() {
         let bazarr = BazarrClient::new(&cfg.bazarr);
@@ -190,12 +199,21 @@ pub(crate) async fn run_scan(
     }
 
     if linked_total > 0 && !effective_dry_run && cfg.has_plex() {
-        if let Err(e) = trigger_plex_refresh(cfg, &link_summary.refresh_paths).await {
-            user_println(format!("   ⚠️  Plex refresh failed: {}", e));
+        let plex_refresh_started = Instant::now();
+        match trigger_plex_refresh(cfg, &link_summary.refresh_paths).await {
+            Ok(plex_stats) => {
+                telemetry.plex_refresh = plex_refresh_started.elapsed();
+                telemetry.plex_refresh_stats = plex_stats;
+            }
+            Err(e) => {
+                telemetry.plex_refresh = plex_refresh_started.elapsed();
+                telemetry.plex_refresh_stats.requested_paths = link_summary.refresh_paths.len();
+                telemetry.plex_refresh_stats.skipped_batches = 1;
+                user_println(format!("   ⚠️  Plex refresh failed: {}", e));
+            }
         }
     }
 
-    // Record scan in history
     db.record_scan(
         library_items.len() as i64,
         source_items.len() as i64,
@@ -205,6 +223,7 @@ pub(crate) async fn run_scan(
     .await?;
 
     let dead = if search_missing {
+        let dead_started = Instant::now();
         let library_roots: Vec<_> = selected_libraries
             .iter()
             .map(|lib| lib.path.clone())
@@ -212,6 +231,7 @@ pub(crate) async fn run_scan(
         let dead = linker
             .check_dead_links_scoped(db, Some(&library_roots))
             .await?;
+        telemetry.dead_link_sweep = dead_started.elapsed();
         if dead.dead_marked > 0 {
             info!(
                 "Dead links: marked={}, removed={}, skipped={}",
@@ -224,7 +244,8 @@ pub(crate) async fn run_scan(
         crate::linker::DeadLinkSummary::default()
     };
 
-    // External acquire providers
+    log_scan_telemetry(&telemetry, &matches, &link_summary);
+
     if search_missing && (cfg.has_prowlarr() || cfg.has_dmm()) && cfg.has_decypharr() {
         if !effective_dry_run {
             user_println(
@@ -392,7 +413,7 @@ pub(crate) async fn run_scan(
         dead_marked: dead.dead_marked as i64,
         links_removed: dead.removed as i64,
         links_skipped: (link_summary.skipped + dead.skipped) as i64,
-        ambiguous_skipped: 0,
+        ambiguous_skipped: telemetry.match_stats.ambiguous_skipped as i64,
     })
     .await?;
 
@@ -400,60 +421,259 @@ pub(crate) async fn run_scan(
     Ok((linked_total as i64, dead.removed as i64))
 }
 
+async fn collect_source_items(
+    cfg: &Config,
+    db: &Database,
+) -> Result<(Vec<SourceItem>, SourceInventoryTelemetry)> {
+    let src_scanner = SourceScanner::new();
+    let mut telemetry = SourceInventoryTelemetry::default();
+
+    if !cfg.realdebrid.api_token.is_empty() {
+        use crate::api::realdebrid::RealDebridClient;
+        use crate::cache::TorrentCache;
+
+        info!("Initializing Real-Debrid cache...");
+        let rd_client = RealDebridClient::from_config(&cfg.realdebrid);
+        let cache = TorrentCache::new(db, &rd_client);
+
+        match cache.sync().await {
+            Ok(_) => info!("Real-Debrid cache synced successfully"),
+            Err(e) => tracing::error!(
+                "Failed to sync Real-Debrid cache: {}. Using existing cache if available.",
+                e
+            ),
+        }
+
+        const MIN_CACHE_COVERAGE: f64 = 0.80;
+        let cache_available = match db.get_rd_torrent_counts().await {
+            Ok((cached, total)) if total > 0 => {
+                let coverage = cached as f64 / total as f64;
+                telemetry.cache_downloaded_torrents = Some(cached as usize);
+                telemetry.cache_total_torrents = Some(total as usize);
+                telemetry.cache_coverage = Some(coverage);
+                if coverage >= MIN_CACHE_COVERAGE {
+                    info!(
+                        "Using cached source data ({}/{} downloaded torrents, {:.0}% coverage)",
+                        cached,
+                        total,
+                        coverage * 100.0
+                    );
+                    true
+                } else {
+                    info!(
+                        "Cache coverage too low ({}/{} = {:.0}%), walking filesystem instead",
+                        cached,
+                        total,
+                        coverage * 100.0
+                    );
+                    false
+                }
+            }
+            Ok((cached, total)) => {
+                telemetry.cache_downloaded_torrents = Some(cached as usize);
+                telemetry.cache_total_torrents = Some(total as usize);
+                info!("Cache unavailable (no downloaded torrents), walking filesystem");
+                false
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Could not query RD torrent count: {}. Walking filesystem.",
+                    e
+                );
+                false
+            }
+        };
+        telemetry.cache_enabled = cache_available;
+
+        let mut all_items = Vec::new();
+        for source in &cfg.sources {
+            if cache_available {
+                match src_scanner.scan_source_with_cache(source, &cache).await {
+                    Ok(items) => {
+                        telemetry.cached_sources += 1;
+                        telemetry.cached_items += items.len();
+                        all_items.extend(items);
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "Failed to read cache for source {}: {}. Falling back to filesystem scan.",
+                            source.name,
+                            e
+                        );
+                        let items = src_scanner.scan_source(source);
+                        telemetry.filesystem_sources += 1;
+                        telemetry.filesystem_items += items.len();
+                        all_items.extend(items);
+                    }
+                }
+            } else {
+                let items = src_scanner.scan_source(source);
+                telemetry.filesystem_sources += 1;
+                telemetry.filesystem_items += items.len();
+                all_items.extend(items);
+            }
+        }
+
+        Ok((all_items, telemetry))
+    } else {
+        let mut all_items = Vec::new();
+        for source in &cfg.sources {
+            let items = src_scanner.scan_source(source);
+            telemetry.filesystem_sources += 1;
+            telemetry.filesystem_items += items.len();
+            all_items.extend(items);
+        }
+        Ok((all_items, telemetry))
+    }
+}
+
+fn log_scan_telemetry(
+    telemetry: &ScanTelemetry,
+    matches: &[MatchResult],
+    link_summary: &LinkProcessSummary,
+) {
+    info!(
+        "Scan phase telemetry: runtime_checks={}, library_scan={}, source_inventory={}, matching={}, title_enrichment={}, linking={}, plex_refresh={}, dead_link_sweep={}",
+        fmt_duration(telemetry.runtime_checks),
+        fmt_duration(telemetry.library_scan),
+        fmt_duration(telemetry.source_inventory),
+        fmt_duration(telemetry.match_total),
+        fmt_duration(telemetry.episode_title_enrichment),
+        fmt_duration(telemetry.linking),
+        fmt_duration(telemetry.plex_refresh),
+        fmt_duration(telemetry.dead_link_sweep),
+    );
+
+    info!(
+        "Scan telemetry details: cache_hit_ratio={}, cached_items={}, filesystem_items={}, metadata_alias_prep={}, candidate_scan={}, destination_reduce={}, metadata_errors={}, worker_count={}, candidate_slots={}, scored_candidates={}, exact_id_hits={}, ambiguous_skipped={}, refresh_batches={}, coalesced_batches={}, refreshed_paths_covered={}",
+        telemetry
+            .source_inventory_stats
+            .cache_hit_ratio()
+            .map(|ratio| format!("{:.0}%", ratio * 100.0))
+            .unwrap_or_else(|| "n/a".to_string()),
+        telemetry.source_inventory_stats.cached_items,
+        telemetry.source_inventory_stats.filesystem_items,
+        fmt_duration(telemetry.match_stats.metadata_alias_prep),
+        fmt_duration(telemetry.match_stats.candidate_scan),
+        fmt_duration(telemetry.match_stats.destination_reduce),
+        telemetry.match_stats.metadata_errors,
+        telemetry.match_stats.worker_count,
+        telemetry.match_stats.prefiltered_library_candidates,
+        telemetry.match_stats.scored_candidates,
+        telemetry.match_stats.exact_id_hits,
+        telemetry.match_stats.ambiguous_skipped,
+        telemetry.plex_refresh_stats.planned_batches,
+        telemetry.plex_refresh_stats.coalesced_batches,
+        telemetry.plex_refresh_stats.refreshed_paths_covered,
+    );
+
+    user_println(format!(
+        "   📊 Scan telemetry: checks={} | library={} | source={} | match={} | titles={} | link={} | plex={} | dead={}",
+        fmt_duration(telemetry.runtime_checks),
+        fmt_duration(telemetry.library_scan),
+        fmt_duration(telemetry.source_inventory),
+        fmt_duration(telemetry.match_total),
+        fmt_duration(telemetry.episode_title_enrichment),
+        fmt_duration(telemetry.linking),
+        fmt_duration(telemetry.plex_refresh),
+        fmt_duration(telemetry.dead_link_sweep),
+    ));
+    user_println(format!(
+        "   📊 Scan details: matches={} created={} updated={} skipped={} ambiguous={} candidates={} scored={} exact-id={} cache-hit={} refresh-batches={}",
+        matches.len(),
+        link_summary.created,
+        link_summary.updated,
+        link_summary.skipped,
+        telemetry.match_stats.ambiguous_skipped,
+        telemetry.match_stats.prefiltered_library_candidates,
+        telemetry.match_stats.scored_candidates,
+        telemetry.match_stats.exact_id_hits,
+        telemetry
+            .source_inventory_stats
+            .cache_hit_ratio()
+            .map(|ratio| format!("{:.0}%", ratio * 100.0))
+            .unwrap_or_else(|| "n/a".to_string()),
+        telemetry.plex_refresh_stats.planned_batches,
+    ));
+}
+
+fn fmt_duration(duration: Duration) -> String {
+    format!("{:.1}s", duration.as_secs_f64())
+}
+
 // ─── Scan-specific helpers ─────────────────────────────────────────
 
-async fn trigger_plex_refresh(cfg: &Config, refresh_paths: &[PathBuf]) -> Result<()> {
+async fn trigger_plex_refresh(
+    cfg: &Config,
+    refresh_paths: &[PathBuf],
+) -> Result<PlexRefreshTelemetry> {
+    let mut telemetry = PlexRefreshTelemetry {
+        requested_paths: refresh_paths.len(),
+        ..PlexRefreshTelemetry::default()
+    };
     if refresh_paths.is_empty() || !cfg.has_plex() {
-        return Ok(());
+        return Ok(telemetry);
     }
 
     let plex = PlexClient::new(&cfg.plex.url, &cfg.plex.token);
     let sections = plex.get_sections().await?;
-    let mut unique_paths = refresh_paths.to_vec();
-    unique_paths.sort();
-    unique_paths.dedup();
+    let plan = plan_refresh_batches(&sections, refresh_paths, PLEX_REFRESH_COALESCE_THRESHOLD);
 
-    let mut refreshed = 0usize;
-    let mut skipped = 0usize;
+    telemetry.unique_paths = plan.unique_paths;
+    telemetry.planned_batches = plan.batches.len();
+    telemetry.coalesced_batches = plan.coalesced_batches;
+    telemetry.coalesced_paths = plan.coalesced_paths;
+    telemetry.unresolved_paths = plan.unresolved_paths.len();
 
-    for path in unique_paths {
-        let Some(section) = find_section_for_path(&sections, &path) else {
-            user_println(format!(
-                "   ⚠️  Plex: no matching library section found for {}",
-                path.display()
-            ));
-            skipped += 1;
-            continue;
-        };
+    for path in &plan.unresolved_paths {
+        user_println(format!(
+            "   ⚠️  Plex: no matching library section found for {}",
+            path.display()
+        ));
+    }
+    telemetry.skipped_batches += plan.unresolved_paths.len();
 
-        match plex.refresh_path(&section.key, &path).await {
-            Ok(_) => refreshed += 1,
+    for batch in plan.batches {
+        match plex
+            .refresh_path(&batch.section_key, &batch.refresh_path)
+            .await
+        {
+            Ok(_) => {
+                telemetry.refreshed_batches += 1;
+                telemetry.refreshed_paths_covered += batch.covered_paths;
+            }
             Err(err) => {
                 user_println(format!(
                     "   ⚠️  Plex: refresh failed for {} (section '{}'): {}",
-                    path.display(),
-                    section.title,
+                    batch.refresh_path.display(),
+                    batch.section_title,
                     err
                 ));
-                skipped += 1;
+                telemetry.skipped_batches += 1;
             }
         }
     }
 
-    if refreshed > 0 {
+    if telemetry.refreshed_batches > 0 {
         user_println(format!(
-            "   📺 Plex: targeted refresh queued for {} path(s)",
-            refreshed
+            "   📺 Plex: targeted refresh queued for {} request(s) covering {} path(s)",
+            telemetry.refreshed_batches, telemetry.refreshed_paths_covered
         ));
     }
-    if skipped > 0 {
+    if telemetry.coalesced_batches > 0 {
         user_println(format!(
-            "   ⚠️  Plex: {} path(s) were not refreshed",
-            skipped
+            "   📺 Plex: coalesced {} path(s) into {} library-root refresh(es)",
+            telemetry.coalesced_paths, telemetry.coalesced_batches
+        ));
+    }
+    if telemetry.skipped_batches > 0 {
+        user_println(format!(
+            "   ⚠️  Plex: {} refresh request(s) were not queued",
+            telemetry.skipped_batches
         ));
     }
 
-    Ok(())
+    Ok(telemetry)
 }
 
 async fn ensure_runtime_directories_healthy(
@@ -539,5 +759,16 @@ mod tests {
             build_missing_search_query(&movie),
             Some("The Matrix 1999".to_string())
         );
+    }
+
+    #[test]
+    fn cache_hit_ratio_is_based_on_item_mix() {
+        let telemetry = SourceInventoryTelemetry {
+            cached_items: 8,
+            filesystem_items: 2,
+            ..SourceInventoryTelemetry::default()
+        };
+
+        assert_eq!(telemetry.cache_hit_ratio(), Some(0.8));
     }
 }
