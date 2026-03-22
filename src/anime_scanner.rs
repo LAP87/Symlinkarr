@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use anyhow::Result;
 use chrono::Utc;
 
+use crate::anime_identity::AnimeIdentityGraph;
 use crate::api::prowlarr;
 use crate::api::sonarr::{SonarrClient, SonarrSeries, SonarrWantedMissingRecord};
 use crate::api::tmdb::TmdbClient;
@@ -14,6 +15,14 @@ use crate::models::{LibraryItem, MediaId, MediaType};
 pub(crate) enum AnimeEpisodeKind {
     Missing,
     CutoffUpgrade,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct AnimeAcquireContext<'a> {
+    pub cfg: &'a Config,
+    pub db: &'a Database,
+    pub tmdb: Option<&'a TmdbClient>,
+    pub anime_identity: Option<&'a AnimeIdentityGraph>,
 }
 
 pub(crate) async fn lookup_anime_series_imdb_id(
@@ -37,13 +46,17 @@ pub(crate) async fn lookup_anime_series_imdb_id(
 
 pub(crate) async fn build_anime_episode_requests(
     kind: AnimeEpisodeKind,
-    cfg: &Config,
-    db: &Database,
-    tmdb: Option<&TmdbClient>,
+    ctx: AnimeAcquireContext<'_>,
     library_items: &[LibraryItem],
     matched_media_ids: &HashSet<String>,
     limit: usize,
 ) -> Result<Vec<AutoAcquireRequest>> {
+    let AnimeAcquireContext {
+        cfg,
+        db,
+        tmdb,
+        anime_identity,
+    } = ctx;
     if limit == 0 || !cfg.has_sonarr_anime() {
         return Ok(Vec::new());
     }
@@ -148,7 +161,7 @@ pub(crate) async fn build_anime_episode_requests(
             let Some(series) = series_by_id.get(&record.series_id) else {
                 continue;
             };
-            if record.season_number == 0 || record.episode_number == 0 {
+            if !wanted_episode_has_supported_numbering(&record) {
                 continue;
             }
 
@@ -209,6 +222,9 @@ pub(crate) async fn build_anime_episode_requests(
             requests.push(AutoAcquireRequest {
                 label,
                 query,
+                query_hints: anime_identity
+                    .map(|graph| graph.build_query_hints(item, &record))
+                    .unwrap_or_default(),
                 imdb_id,
                 categories: vec![prowlarr::categories::TV_ANIME],
                 arr: "sonarr-anime".to_string(),
@@ -236,6 +252,10 @@ fn wanted_episode_is_searchable(record: &SonarrWantedMissingRecord) -> bool {
     true
 }
 
+fn wanted_episode_has_supported_numbering(record: &SonarrWantedMissingRecord) -> bool {
+    record.episode_number > 0
+}
+
 fn build_anime_missing_search_query(
     series: &SonarrSeries,
     record: &SonarrWantedMissingRecord,
@@ -245,9 +265,13 @@ fn build_anime_missing_search_query(
         (record.scene_season_number, record.scene_episode_number)
     {
         format!("{} S{:02}E{:02}", title, scene_season, scene_episode)
-    } else if let Some(absolute_episode) = record
-        .scene_absolute_episode_number
-        .or(record.absolute_episode_number)
+    } else if let Some(absolute_episode) = (record.season_number > 0)
+        .then(|| {
+            record
+                .scene_absolute_episode_number
+                .or(record.absolute_episode_number)
+        })
+        .flatten()
     {
         format!("{} {}", title, absolute_episode)
     } else {
@@ -419,6 +443,38 @@ mod tests {
     }
 
     #[test]
+    fn anime_missing_query_keeps_specials_in_s00_form() {
+        let series = SonarrSeries {
+            id: 3,
+            title: "Attack on Titan OAD".to_string(),
+            alternate_titles: Vec::new(),
+            tvdb_id: 0,
+            tmdb_id: 0,
+            use_scene_numbering: false,
+        };
+        let record = SonarrWantedMissingRecord {
+            series_id: 3,
+            tvdb_id: 0,
+            season_number: 0,
+            episode_number: 2,
+            absolute_episode_number: Some(2),
+            scene_season_number: None,
+            scene_episode_number: None,
+            scene_absolute_episode_number: None,
+            title: "Sudden Visitor".to_string(),
+            has_file: false,
+            episode_file_id: None,
+            air_date_utc: None,
+            monitored: true,
+        };
+
+        assert_eq!(
+            build_anime_missing_search_query(&series, &record),
+            Some("Attack on Titan OAD S00E02".to_string())
+        );
+    }
+
+    #[test]
     fn wanted_episode_searchable_skips_future_airings() {
         let future = SonarrWantedMissingRecord {
             series_id: 2,
@@ -442,5 +498,31 @@ mod tests {
 
         assert!(!wanted_episode_is_searchable(&future));
         assert!(wanted_episode_is_searchable(&past));
+    }
+
+    #[test]
+    fn wanted_episode_supported_numbering_allows_specials() {
+        let special = SonarrWantedMissingRecord {
+            series_id: 2,
+            tvdb_id: 0,
+            season_number: 0,
+            episode_number: 3,
+            absolute_episode_number: None,
+            scene_season_number: None,
+            scene_episode_number: None,
+            scene_absolute_episode_number: None,
+            title: "Special".to_string(),
+            has_file: false,
+            episode_file_id: None,
+            air_date_utc: None,
+            monitored: true,
+        };
+        let invalid = SonarrWantedMissingRecord {
+            episode_number: 0,
+            ..special.clone()
+        };
+
+        assert!(wanted_episode_has_supported_numbering(&special));
+        assert!(!wanted_episode_has_supported_numbering(&invalid));
     }
 }

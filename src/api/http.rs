@@ -24,8 +24,9 @@ const RATE_LIMIT_TVDB_GAP_MS: u64 = 220;
 const RATE_LIMIT_RD_GAP_MS: u64 = 400;
 
 // Debrid Media Manager (DMM) is a community API and can be strict.
-// 1000ms provides a gentle pace during auto-acquire search bursts.
-const RATE_LIMIT_DMM_GAP_MS: u64 = 1000;
+// Real anime search-missing runs were still hitting repeated 429s at 1000ms.
+// 2000ms is gentler and tends to outperform repeated backoff/retry churn.
+const RATE_LIMIT_DMM_GAP_MS: u64 = 2000;
 
 struct RateLimiter {
     sender: mpsc::Sender<oneshot::Sender<()>>,

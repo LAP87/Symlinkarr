@@ -6,75 +6,145 @@
 {% block content %}
 <div class="page-header">
     <h1>&#129529; Cleanup &amp; Maintenance</h1>
-    <p>Audit and maintain your symlink library by identifying and removing problematic links.</p>
+    <p class="page-lead">Cleanup is intentionally two-step: run an audit to produce a report, review that report in prune preview, then apply prune only if the preview still looks correct.</p>
 </div>
 
 {% if libraries|length > 0 %}
 <div class="card">
-    <h2 class="section-title">Select Libraries to Audit</h2>
-    <form action="/cleanup/audit" method="post">
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Audit</p>
+            <h2 class="section-title">Select libraries and scope</h2>
+            <p class="text-muted">This audit will only inspect the checked libraries and write a report you can review before any deletion happens.</p>
+        </div>
+    </div>
+    <form action="/cleanup/audit" method="post" class="stack-form">
         <div class="form-group">
+            <p class="text-muted mb-1">Checked libraries define where the audit runs. Leave everything checked for a full pass, or narrow it down when you are chasing a specific folder or legacy cleanup problem.</p>
             {% for lib in libraries %}
-            <label class="checkbox-item" style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.5rem;">
-                <input type="checkbox" name="library" value="{{ lib.name }}" checked>
-                <span>{{ lib.name }}</span>
-                <small class="text-muted">{{ lib.path.display() }}</small>
+            <label class="toggle-row">
+                <input type="checkbox" name="libraries" value="{{ lib.name }}" checked>
+                <div>
+                    <strong>{{ lib.name }}</strong>
+                    <p class="text-muted mono">{{ lib.path.display() }}</p>
+                </div>
             </label>
             {% endfor %}
         </div>
 
         <div class="form-group">
             <label class="form-label" for="scope">Audit Scope:</label>
-            <select id="scope" name="scope" class="form-control" style="max-width:300px;">
+            <select id="scope" name="scope" class="form-control field-max-sm">
                 <option value="anime">Anime (Recommended)</option>
+                <option value="tv">TV Series</option>
+                <option value="movie">Movies</option>
+                <option value="all">All Libraries</option>
             </select>
-            <small class="text-muted">Currently only anime scope is supported</small>
+            <small class="text-muted">Use a narrower scope when you want lower-noise reports. Use <code class="mono">all</code> for a broad legacy cleanup pass.</small>
         </div>
 
-        <button type="submit" class="btn btn-primary">
-            &#128269; Start Audit
-        </button>
+        <div class="actions">
+            <button type="submit" class="btn btn-primary">
+                &#128269; Start Audit and Build Report
+            </button>
+            <a href="/links/dead" class="btn btn-secondary">&#128683; Review Dead Links</a>
+        </div>
     </form>
 </div>
 {% endif %}
 
 {% match last_report %}
 {% when Some with (report) %}
+<div class="split-grid">
+    <section class="card hero-card hero-card--accent">
+        <p class="hero-label">Last Report</p>
+        <div class="hero-value">{{ report.total_findings }}</div>
+        <p class="hero-copy">This report is a snapshot from the most recent audit. Use it as the single source of truth for the preview step, then apply prune only from that same report.</p>
+        <div class="hero-inline-stats">
+            <span>{{ report.scope_label }} <strong>{{ report.created_at }}</strong></span>
+        </div>
+    </section>
+
+    <section class="card">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Next Action</p>
+                <h2 class="section-title">Preview first, then apply</h2>
+            </div>
+        </div>
+        <ol class="steps-list text-muted">
+            <li>Open the preview for this exact report and review the findings.</li>
+            <li>If the report still looks right, paste the preview token into the apply form.</li>
+            <li>Only then remove the links listed in the report.</li>
+        </ol>
+        <div class="metric-grid metric-grid--compact mt-2">
+            <div class="metric-card"><span class="metric-label">Critical</span><strong class="text-error">{{ report.critical }}</strong></div>
+            <div class="metric-card"><span class="metric-label">High</span><strong class="text-warning">{{ report.high }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Warning</span><strong class="text-info">{{ report.warning }}</strong></div>
+        </div>
+        <div class="actions mt-2">
+            <a href="/cleanup/prune?report={{ report.path.display() }}" class="btn btn-secondary">
+                &#128064; Open Prune Preview
+            </a>
+        </div>
+    </section>
+</div>
+
 <div class="card">
-    <h2 class="section-title">Last Audit Report</h2>
-    <p>Report file: <code class="mono">{{ report.display() }}</code></p>
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Apply Gate</p>
+            <h2 class="section-title">Use the same report and token</h2>
+            <p class="text-muted">If you rerun the audit, the preview token changes. Treat the report path below as the exact input to the prune page.</p>
+        </div>
+    </div>
+    <p class="mb-1">Report file: <code class="mono">{{ report.path.display() }}</code></p>
     <div class="actions mt-2">
-        <a href="/cleanup/prune?report={{ report.display() }}" class="btn btn-secondary">
+        <a href="/cleanup/prune?report={{ report.path.display() }}" class="btn btn-secondary">
             &#128064; Preview Prune Actions
         </a>
-        <form action="/cleanup/prune" method="post" style="display:inline;">
-            <input type="hidden" name="report" value="{{ report.display() }}">
-            <input type="password" name="token" placeholder="Confirmation token" required style="padding:0.75rem;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:6px;color:var(--text-primary);margin-right:0.5rem;">
-            <button type="submit" class="btn btn-danger" style="background:var(--error);">
+        <form action="/cleanup/prune" method="post" class="inline-token-form">
+            <input type="hidden" name="report" value="{{ report.path.display() }}">
+            <input type="password" name="token" class="form-control field-max-md" placeholder="Confirmation token" required>
+            <button type="submit" class="btn btn-danger">
                 &#9888;&#65039; Apply Cleanup
             </button>
         </form>
     </div>
-    <small class="text-muted mt-1" style="display:block;">
-        &#9888;&#65039; Warning: Prune operations will permanently remove symlinks. Always review the preview first.
+    <small class="text-muted mt-1">
+        &#9888;&#65039; Prune is permanent. The preview is the gate, not the report list itself.
     </small>
 </div>
 {% when None %}
+    {% match last_report_path %}
+    {% when Some with (path) %}
+    <div class="card">
+        <h2 class="section-title">Last Audit Report</h2>
+        <p>Report file: <code class="mono">{{ path.display() }}</code></p>
+        <p class="text-muted mt-1">The report exists on disk but could not be parsed into a summary. Open the preview before applying prune.</p>
+        <div class="actions mt-2">
+            <a href="/cleanup/prune?report={{ path.display() }}" class="btn btn-secondary">
+                &#128064; Open Prune Preview
+            </a>
+        </div>
+    </div>
+    {% when None %}
+    {% endmatch %}
 {% endmatch %}
 
 <div class="card">
     <h2 class="section-title">How Cleanup Works</h2>
-    <ol style="padding-left:1.5rem;line-height:2;">
-        <li><strong>Audit:</strong> Scans your libraries and identifies problematic symlinks based on various criteria</li>
-        <li><strong>Review:</strong> Examine the audit report to understand what will be removed</li>
-        <li><strong>Confirm:</strong> Apply the cleanup with a confirmation token for safety</li>
+    <ol class="steps-list">
+        <li><strong>Audit:</strong> Scan the selected libraries and write a report with candidate findings.</li>
+        <li><strong>Preview:</strong> Open prune preview to review that report and inspect the exact rows that would be removed.</li>
+        <li><strong>Apply:</strong> Paste the report-specific confirmation token only after the preview matches what you expect.</li>
     </ol>
 
     <h3 class="section-title mt-2">Finding Severities</h3>
-    <ul style="list-style:none;">
-        <li style="margin-bottom:0.5rem;"><span class="badge badge-danger">Critical</span> Definitely problematic links (broken sources, episode out of range, etc.)</li>
-        <li style="margin-bottom:0.5rem;"><span class="badge badge-warning">High</span> Likely problematic (title mismatches, untracked in Sonarr, etc.)</li>
-        <li style="margin-bottom:0.5rem;"><span class="badge badge-info">Warning</span> Potentially problematic (season count anomalies, duplicate episodes)</li>
+    <ul class="severity-list">
+        <li><span class="badge badge-danger">Critical</span> Definitely problematic links, such as broken sources or out-of-range episodes.</li>
+        <li><span class="badge badge-warning">High</span> Likely problematic links that should be reviewed closely before pruning.</li>
+        <li><span class="badge badge-info">Warning</span> Context-only anomalies that may be worth checking, but are not automatic prune targets.</li>
     </ul>
 </div>
 {% endblock %}

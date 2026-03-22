@@ -11,6 +11,7 @@ use tokio::sync::{Mutex, Semaphore};
 use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
+use crate::anime_identity::{AnimeIdentityGraph, ANIME_LISTS_CACHE_TTL_HOURS};
 use crate::api::tmdb::TmdbClient;
 use crate::api::tvdb::TvdbClient;
 use crate::config::{ContentType, MatchingMode, MetadataMode};
@@ -271,6 +272,8 @@ impl Matcher {
             );
         }
         let alias_token_index = build_alias_token_index(&alias_map);
+        let anime_identity =
+            AnimeIdentityGraph::load_with_ttl(db, ANIME_LISTS_CACHE_TTL_HOURS).await;
 
         // Step 2: Build deterministic best candidate per source
         let candidate_started = Instant::now();
@@ -302,6 +305,7 @@ impl Matcher {
                 &alias_token_index,
                 self.mode,
                 allow_global_fallback,
+                anime_identity.as_ref(),
             );
             (
                 chunk.best_per_source,
@@ -319,6 +323,7 @@ impl Matcher {
             let alias_map = Arc::new(alias_map);
             let metadata_map = Arc::new(metadata_map);
             let alias_token_index = Arc::new(alias_token_index);
+            let anime_identity = anime_identity.map(Arc::new);
             let chunk_size = source_items.len().div_ceil(worker_count);
             let mut workers = JoinSet::new();
 
@@ -329,6 +334,7 @@ impl Matcher {
                 let alias_map = Arc::clone(&alias_map);
                 let metadata_map = Arc::clone(&metadata_map);
                 let alias_token_index = Arc::clone(&alias_token_index);
+                let anime_identity = anime_identity.clone();
                 let mode = self.mode;
 
                 workers.spawn_blocking(move || {
@@ -341,6 +347,7 @@ impl Matcher {
                         alias_token_index.as_ref(),
                         mode,
                         allow_global_fallback,
+                        anime_identity.as_deref(),
                     )
                 });
             }
@@ -540,7 +547,7 @@ impl Matcher {
 // Free (non-self) metadata helpers — used by parallel task spawns
 // ---------------------------------------------------------------------------
 
-async fn fetch_metadata_static(
+pub(crate) async fn fetch_metadata_static(
     tmdb: &Option<TmdbClient>,
     tvdb: Option<&Arc<Mutex<TvdbClient>>>,
     metadata_mode: MetadataMode,
@@ -645,6 +652,7 @@ fn resolve_source_for_library_item(
     item: &LibraryItem,
     parsed: &SourceItem,
     metadata: Option<&ContentMetadata>,
+    anime_identity: Option<&AnimeIdentityGraph>,
 ) -> Option<SourceItem> {
     if item.media_type != MediaType::Tv {
         return Some(parsed.clone());
@@ -660,7 +668,7 @@ fn resolve_source_for_library_item(
     if let (Some(season), Some(episode)) = (parsed.season, parsed.episode) {
         let mut resolved = parsed.clone();
         if let Some((mapped_season, mapped_episode)) =
-            resolve_anime_scene_episode_mapping(metadata, season, episode)
+            resolve_anime_scene_episode_mapping(item, metadata, anime_identity, season, episode)
         {
             resolved.season = Some(mapped_season);
             resolved.episode = Some(mapped_episode);
@@ -673,7 +681,9 @@ fn resolve_source_for_library_item(
     }
 
     let absolute_episode = parsed.episode?;
-    let (season, episode) = resolve_anime_episode_mapping(metadata, absolute_episode)?;
+    let (season, episode) = anime_identity
+        .and_then(|graph| graph.resolve_absolute_episode(item, absolute_episode))
+        .or_else(|| resolve_anime_episode_mapping(metadata, absolute_episode))?;
 
     let mut resolved = parsed.clone();
     resolved.season = Some(season);
@@ -689,12 +699,20 @@ fn source_shape_matches_media_type(item: &LibraryItem, parsed: &SourceItem) -> b
 }
 
 fn resolve_anime_scene_episode_mapping(
+    item: &LibraryItem,
     metadata: Option<&ContentMetadata>,
+    anime_identity: Option<&AnimeIdentityGraph>,
     parsed_season: u32,
     parsed_episode: u32,
 ) -> Option<(u32, u32)> {
     if parsed_episode == 0 {
         return None;
+    }
+
+    if let Some(resolved) = anime_identity
+        .and_then(|graph| graph.resolve_scene_episode(item, parsed_season, parsed_episode))
+    {
+        return Some(resolved);
     }
 
     let metadata = metadata?;
@@ -712,7 +730,9 @@ fn resolve_anime_scene_episode_mapping(
         }
     }
 
-    resolve_anime_episode_mapping(Some(metadata), parsed_episode)
+    anime_identity
+        .and_then(|graph| graph.resolve_absolute_episode(item, parsed_episode))
+        .or_else(|| resolve_anime_episode_mapping(Some(metadata), parsed_episode))
 }
 
 fn resolve_anime_episode_mapping(
@@ -810,7 +830,7 @@ fn should_replace_destination(existing: &MatchCandidate, challenger: &MatchCandi
     candidate_cmp(challenger, existing).is_gt()
 }
 
-fn best_alias_score(
+pub(crate) fn best_alias_score(
     mode: MatchingMode,
     aliases: &[String],
     normalized_source: &str,
@@ -995,6 +1015,7 @@ fn match_source_slice(
     alias_token_index: &HashMap<String, Vec<usize>>,
     mode: MatchingMode,
     allow_global_fallback: bool,
+    anime_identity: Option<&AnimeIdentityGraph>,
 ) -> MatchChunkResult {
     let parser = SourceScanner::new();
     let mut best_per_source = Vec::new();
@@ -1040,6 +1061,7 @@ fn match_source_slice(
                     item,
                     parsed,
                     metadata_map.get(&exact_idx).and_then(|meta| meta.as_ref()),
+                    anime_identity,
                 );
                 if let Some(parsed) = parsed {
                     let media_id = item.id.to_string();
@@ -1090,6 +1112,7 @@ fn match_source_slice(
                 metadata_map
                     .get(&library_idx)
                     .and_then(|meta| meta.as_ref()),
+                anime_identity,
             );
             let Some(parsed) = parsed else {
                 continue;
@@ -1253,6 +1276,7 @@ mod tests {
     use std::path::{Path, PathBuf};
     use tempfile::tempdir;
 
+    use crate::anime_identity::AnimeIdentityGraph;
     use crate::db::Database;
     use crate::models::{EpisodeInfo, SeasonInfo};
 
@@ -1310,6 +1334,17 @@ mod tests {
             library_name: "Movies".to_string(),
             media_type: MediaType::Movie,
             content_type: ContentType::Movie,
+        }
+    }
+
+    fn anime_item(title: &str, tvdb_id: u64) -> LibraryItem {
+        LibraryItem {
+            title: title.to_string(),
+            path: PathBuf::from(format!("/library/{title} {{tvdb-{tvdb_id}}}")),
+            id: MediaId::Tvdb(tvdb_id),
+            library_name: "Anime".to_string(),
+            media_type: MediaType::Tv,
+            content_type: ContentType::Anime,
         }
     }
 
@@ -1478,10 +1513,79 @@ mod tests {
     #[test]
     fn test_resolve_anime_scene_episode_mapping_falls_back_to_absolute_episode() {
         let metadata = metadata_with_seasons(&[(1, 12), (20, 130)]);
+        let item = anime_item("Example Anime", 456);
         assert_eq!(
-            resolve_anime_scene_episode_mapping(Some(&metadata), 25, 129),
+            resolve_anime_scene_episode_mapping(&item, Some(&metadata), None, 25, 129),
             Some((20, 129))
         );
+    }
+
+    #[test]
+    fn test_resolve_source_for_library_item_uses_anime_identity_for_absolute_numbering() {
+        let metadata = metadata_with_seasons(&[(1, 12), (2, 12)]);
+        let item = anime_item("Example Anime", 22222);
+        let parsed = SourceItem {
+            path: PathBuf::from("/rd/[SubsPlease] Example Anime - 15.mkv"),
+            parsed_title: "Example Anime".to_string(),
+            season: None,
+            episode: Some(15),
+            episode_end: None,
+            quality: None,
+            extension: "mkv".to_string(),
+            year: None,
+        };
+        let graph = AnimeIdentityGraph::from_xml(
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<anime-list>
+  <anime anidbid="101" tvdbid="22222" defaulttvdbseason="2">
+    <name>Example Anime</name>
+    <mapping-list>
+      <mapping anidbseason="1" tvdbseason="2">;13-1;14-2;15-3;</mapping>
+    </mapping-list>
+  </anime>
+</anime-list>
+"#,
+        )
+        .unwrap();
+
+        let resolved =
+            resolve_source_for_library_item(&item, &parsed, Some(&metadata), Some(&graph)).unwrap();
+        assert_eq!(resolved.season, Some(2));
+        assert_eq!(resolved.episode, Some(3));
+    }
+
+    #[test]
+    fn test_resolve_source_for_library_item_prefers_anime_identity_scene_mapping_over_metadata() {
+        let metadata = metadata_with_seasons(&[(1, 24), (2, 12)]);
+        let item = anime_item("Example Anime", 33333);
+        let parsed = SourceItem {
+            path: PathBuf::from("/rd/[SubsPlease] Example Anime S01E15.mkv"),
+            parsed_title: "Example Anime".to_string(),
+            season: Some(1),
+            episode: Some(15),
+            episode_end: None,
+            quality: None,
+            extension: "mkv".to_string(),
+            year: None,
+        };
+        let graph = AnimeIdentityGraph::from_xml(
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<anime-list>
+  <anime anidbid="102" tvdbid="33333" defaulttvdbseason="1">
+    <name>Example Anime</name>
+    <mapping-list>
+      <mapping anidbseason="1" tvdbseason="2">;15-3;</mapping>
+    </mapping-list>
+  </anime>
+</anime-list>
+"#,
+        )
+        .unwrap();
+
+        let resolved =
+            resolve_source_for_library_item(&item, &parsed, Some(&metadata), Some(&graph)).unwrap();
+        assert_eq!(resolved.season, Some(2));
+        assert_eq!(resolved.episode, Some(3));
     }
 
     #[test]
@@ -1511,6 +1615,7 @@ mod tests {
             &alias_token_index,
             MatchingMode::Strict,
             true,
+            None,
         );
 
         assert!(chunk.best_per_source.is_empty());
@@ -1538,6 +1643,7 @@ mod tests {
             &alias_token_index,
             MatchingMode::Strict,
             true,
+            None,
         );
 
         assert_eq!(chunk.best_per_source.len(), 1);

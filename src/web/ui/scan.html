@@ -4,71 +4,246 @@
 {% block nav_scan %}active{% endblock %}
 
 {% block content %}
-<div class="page-header">
-    <h1>&#128269; Scan</h1>
-    <p>Scan your libraries and create symlinks for matched content.</p>
+<div class="page-header page-header--split">
+    <div>
+        <p class="page-kicker">Pipeline</p>
+        <h1>&#128269; Scan</h1>
+        <p class="page-lead">Run the real scan path, inspect phase timings, and verify auto-acquire outcomes without leaving the browser.</p>
+    </div>
+    <div class="header-badges">
+        <span class="badge {% if queue.active_total > 0 %}badge-warning{% else %}badge-success{% endif %}">
+            Queue {{ queue.active_total }}
+        </span>
+    </div>
 </div>
 
-<div class="card">
-    <h2 class="section-title">Trigger Scan</h2>
-    <form action="/scan/trigger" method="post">
-        <div class="form-group">
-            <label class="form-label" for="library">Library (optional):</label>
-            <select id="library" name="library" class="form-control" style="max-width:350px;">
-                <option value="">All Libraries</option>
-                {% for lib in libraries %}
-                <option value="{{ lib.name }}">{{ lib.name }}</option>
-                {% endfor %}
-            </select>
+<div class="split-grid">
+    <section class="card">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Trigger</p>
+                <h2 class="section-title">Run a scan</h2>
+            </div>
         </div>
 
-        <div class="form-group">
-            <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
-                <input type="checkbox" name="dry_run" value="true">
-                <span>Dry Run (preview only, no symlinks created)</span>
+        <form action="/scan/trigger" method="post" class="stack-form">
+            <div class="form-group">
+                <label class="form-label" for="library">Library scope</label>
+                <select id="library" name="library" class="form-control field-max-sm">
+                    <option value="">All Libraries</option>
+                    {% for lib in libraries %}
+                    <option value="{{ lib.name }}">{{ lib.name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <label class="toggle-row">
+                <input type="checkbox" name="dry_run" value="true" checked>
+                <div>
+                    <strong>Dry run</strong>
+                    <p class="text-muted">Preview links and acquisitions without writing symlinks or submitting downloads.</p>
+                </div>
             </label>
+
+            <label class="toggle-row">
+                <input type="checkbox" name="search_missing" value="true">
+                <div>
+                    <strong>Search missing</strong>
+                    <p class="text-muted">Build auto-acquire requests for unmatched movies and anime episode gaps.</p>
+                </div>
+            </label>
+
+            <div class="actions mt-2">
+                <button type="submit" class="btn btn-primary">
+                    &#128269; Start Real Scan
+                    <span class="htmx-indicator">&#8987;</span>
+                </button>
+                <a href="/scan/history" class="btn btn-secondary">&#128340; Full History</a>
+            </div>
+        </form>
+    </section>
+
+    <section class="card">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Queue Snapshot</p>
+                <h2 class="section-title">Auto-acquire pressure</h2>
+            </div>
         </div>
 
-        <button type="submit" class="btn btn-primary">
-            &#128269; Start Scan
-            <span class="htmx-indicator">&#8987;</span>
-        </button>
-    </form>
+        <div class="metric-grid metric-grid--compact">
+            <div class="metric-card"><span class="metric-label">Queued</span><strong>{{ queue.queued }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Downloading</span><strong>{{ queue.downloading }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Relinking</span><strong>{{ queue.relinking }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Blocked</span><strong>{{ queue.blocked }}</strong></div>
+            <div class="metric-card"><span class="metric-label">No Result</span><strong>{{ queue.no_result }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Failed</span><strong>{{ queue.failed }}</strong></div>
+        </div>
+    </section>
 </div>
 
-<div class="card">
-    <h2 class="section-title">Recent Scan History</h2>
+{% match latest_run %}
+{% when Some with (run) %}
+<section class="card">
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Latest Run</p>
+            <h2 class="section-title"><a href="/scan/history/{{ run.id }}">{{ run.scope_label }}</a></h2>
+        </div>
+        <div class="header-badges">
+            {% if run.dry_run %}
+            <span class="badge badge-info">Dry Run</span>
+            {% else %}
+            <span class="badge badge-success">Live</span>
+            {% endif %}
+            {% if run.search_missing %}
+            <span class="badge badge-warning">Search Missing</span>
+            {% endif %}
+            <span class="badge badge-info mono">#{{ run.id }}</span>
+        </div>
+    </div>
+
+    <p class="text-muted mono mb-2">{{ run.started_at }}</p>
+
+    <div class="metric-grid">
+        <div class="metric-card"><span class="metric-label">Runtime</span><strong>{{ run.total_runtime }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Source Files</span><strong>{{ run.source_items_found }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Matches</span><strong>{{ run.matches_found }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Created</span><strong class="text-success">{{ run.links_created }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Updated</span><strong>{{ run.links_updated }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Skipped</span><strong>{{ run.links_skipped }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Ambiguous</span><strong>{{ run.ambiguous_skipped }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Cache Hit</span><strong>{{ run.cache_hit_ratio }}</strong></div>
+    </div>
+
+    <div class="telemetry-grid">
+        <div class="telemetry-item"><span>Checks</span><strong>{{ run.runtime_checks }}</strong></div>
+        <div class="telemetry-item"><span>Library</span><strong>{{ run.library_scan }}</strong></div>
+        <div class="telemetry-item"><span>Source Inventory</span><strong>{{ run.source_inventory }}</strong></div>
+        <div class="telemetry-item"><span>Matching</span><strong>{{ run.matching }}</strong></div>
+        <div class="telemetry-item"><span>Title Enrichment</span><strong>{{ run.title_enrichment }}</strong></div>
+        <div class="telemetry-item"><span>Linking</span><strong>{{ run.linking }}</strong></div>
+        <div class="telemetry-item"><span>Plex Refresh</span><strong>{{ run.plex_refresh }}</strong></div>
+        <div class="telemetry-item"><span>Dead Sweep</span><strong>{{ run.dead_link_sweep }}</strong></div>
+    </div>
+
+    <div class="split-grid split-grid--tight mt-2">
+        <div class="card card--nested">
+            <h3 class="subsection-title">Matcher Signals</h3>
+            <div class="metric-grid metric-grid--compact">
+                <div class="metric-card"><span class="metric-label">Candidate Slots</span><strong>{{ run.candidate_slots }}</strong></div>
+                <div class="metric-card"><span class="metric-label">Scored</span><strong>{{ run.scored_candidates }}</strong></div>
+                <div class="metric-card"><span class="metric-label">Exact ID</span><strong>{{ run.exact_id_hits }}</strong></div>
+            </div>
+        </div>
+
+        <div class="card card--nested">
+            <h3 class="subsection-title">Auto-Acquire</h3>
+            {% if run.auto_acquire_requests > 0 %}
+            <div class="metric-grid metric-grid--compact">
+                <div class="metric-card"><span class="metric-label">Requests</span><strong>{{ run.auto_acquire_requests }}</strong></div>
+                <div class="metric-card"><span class="metric-label">Missing</span><strong>{{ run.auto_acquire_missing_requests }}</strong></div>
+                <div class="metric-card"><span class="metric-label">Cutoff</span><strong>{{ run.auto_acquire_cutoff_requests }}</strong></div>
+                <div class="metric-card"><span class="metric-label">Hits</span><strong class="text-success">{{ run.auto_acquire_successes }}</strong></div>
+                <div class="metric-card"><span class="metric-label">No Result</span><strong>{{ run.auto_acquire_no_result }}</strong></div>
+                <div class="metric-card"><span class="metric-label">Blocked / Failed</span><strong>{{ run.auto_acquire_blocked + run.auto_acquire_failed }}</strong></div>
+            </div>
+            {% else %}
+            <p class="text-muted">No auto-acquire requests were recorded for this run.</p>
+            {% endif %}
+        </div>
+    </div>
+</section>
+{% when None %}{% endmatch %}
+
+<section class="card">
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Recent Runs</p>
+            <h2 class="section-title">History</h2>
+        </div>
+    </div>
+
+    <form action="/scan" method="get" class="stack-form mb-2">
+        <div class="split-grid split-grid--tight">
+            <div class="form-group">
+                <label class="form-label" for="history_mode">Mode</label>
+                <select id="history_mode" name="mode" class="form-control">
+                    <option value="any" {% if filters.mode == "any" %}selected{% endif %}>Any</option>
+                    <option value="live" {% if filters.mode == "live" %}selected{% endif %}>Live only</option>
+                    <option value="dry" {% if filters.mode == "dry" %}selected{% endif %}>Dry run only</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label" for="history_search_missing">Missing Search</label>
+                <select id="history_search_missing" name="search_missing" class="form-control">
+                    <option value="any" {% if filters.search_missing == "any" %}selected{% endif %}>Any</option>
+                    <option value="only" {% if filters.search_missing == "only" %}selected{% endif %}>Only with search-missing</option>
+                    <option value="exclude" {% if filters.search_missing == "exclude" %}selected{% endif %}>Exclude search-missing</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label" for="history_limit">Rows</label>
+                <select id="history_limit" name="limit" class="form-control">
+                    <option value="5" {% if filters.limit == 5 %}selected{% endif %}>5</option>
+                    <option value="10" {% if filters.limit == 10 %}selected{% endif %}>10</option>
+                    <option value="25" {% if filters.limit == 25 %}selected{% endif %}>25</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="actions">
+            <button type="submit" class="btn btn-secondary">Filter Recent Runs</button>
+            <a href="/scan/history" class="btn btn-primary">&#128340; Open Full History</a>
+        </div>
+    </form>
+
     {% if history|length > 0 %}
-    <table class="data-table">
+    <table class="data-table dense-table">
         <thead>
             <tr>
-                <th>Dry Run</th>
-                <th>Library Items</th>
-                <th>Source Items</th>
+                <th>Started</th>
+                <th>Scope</th>
+                <th>Mode</th>
+                <th>Runtime</th>
                 <th>Matches</th>
                 <th>Created</th>
                 <th>Updated</th>
+                <th>Acquire</th>
                 <th>Dead</th>
-                <th>Skipped</th>
             </tr>
         </thead>
         <tbody>
             {% for run in history %}
             <tr>
+                <td class="mono"><a href="/scan/history/{{ run.id }}">{{ run.started_at }}</a></td>
+                <td><a href="/scan/history/{{ run.id }}">{{ run.scope_label }}</a></td>
                 <td>
                     {% if run.dry_run %}
                     <span class="badge badge-info">Dry</span>
                     {% else %}
                     <span class="badge badge-success">Live</span>
                     {% endif %}
+                    {% if run.search_missing %}
+                    <span class="badge badge-warning">Missing</span>
+                    {% endif %}
                 </td>
-                <td>{{ run.library_items_found }}</td>
-                <td>{{ run.source_items_found }}</td>
+                <td>{{ run.total_runtime }}</td>
                 <td>{{ run.matches_found }}</td>
                 <td class="text-success">{{ run.links_created }}</td>
                 <td>{{ run.links_updated }}</td>
-                <td class="{% if run.dead_marked > 0 %}text-error{% endif %}">{{ run.dead_marked }}</td>
-                <td class="text-muted">{{ run.links_skipped }}</td>
+                <td>
+                    {% if run.auto_acquire_requests > 0 %}
+                    {{ run.auto_acquire_successes }}/{{ run.auto_acquire_requests }}
+                    {% else %}
+                    <span class="text-muted">n/a</span>
+                    {% endif %}
+                </td>
+                <td class="{% if run.dead_marked > 0 || run.links_removed > 0 %}text-error{% endif %}">
+                    {{ run.dead_marked + run.links_removed }}
+                </td>
             </tr>
             {% endfor %}
         </tbody>
@@ -76,5 +251,5 @@
     {% else %}
     <p class="text-muted">No scan history yet. Run your first scan above.</p>
     {% endif %}
-</div>
+</section>
 {% endblock %}

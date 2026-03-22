@@ -224,6 +224,7 @@ pub(crate) async fn run_repair(
                         let request = AutoAcquireRequest {
                             label: dead_link.meta.title.clone(),
                             query: query.clone(),
+                            query_hints: Vec::new(),
                             imdb_id: None,
                             categories: cats,
                             arr: decypharr_arr_name(

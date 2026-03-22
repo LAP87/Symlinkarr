@@ -128,8 +128,14 @@ impl Default for MatchingConfig {
 pub struct WebConfig {
     #[serde(default)]
     pub enabled: bool,
+    #[serde(default = "default_web_bind_address")]
+    pub bind_address: String,
     #[serde(default = "default_web_port")]
     pub port: u16,
+}
+
+fn default_web_bind_address() -> String {
+    "127.0.0.1".to_string()
 }
 
 fn default_web_port() -> u16 {
@@ -140,7 +146,19 @@ impl Default for WebConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            bind_address: default_web_bind_address(),
             port: default_web_port(),
+        }
+    }
+}
+
+impl WebConfig {
+    pub fn normalized_bind_address(&self) -> String {
+        let bind_address = self.bind_address.trim();
+        if bind_address.is_empty() {
+            default_web_bind_address()
+        } else {
+            bind_address.to_string()
         }
     }
 }
@@ -841,6 +859,20 @@ impl Config {
             report
                 .errors
                 .push("api.cache_ttl_hours must be greater than 0".to_string());
+        }
+
+        if self.web.enabled {
+            let bind_address = self.web.bind_address.trim();
+            if bind_address.is_empty() {
+                report
+                    .errors
+                    .push("web.bind_address must not be empty when web.enabled=true".to_string());
+            } else if matches!(bind_address, "0.0.0.0" | "::") {
+                report.warnings.push(format!(
+                    "web.bind_address={} exposes the web UI to the network; prefer 127.0.0.1 unless remote access is intentional",
+                    bind_address
+                ));
+            }
         }
 
         if self.has_decypharr() {
@@ -1930,6 +1962,69 @@ realdebrid:
                     .iter()
                     .any(|warning| warning.contains("api.cache_ttl_hours"))
         );
+    }
+
+    #[test]
+    fn web_config_defaults_to_loopback_bind_address() {
+        let web = WebConfig::default();
+        assert_eq!(web.bind_address, "127.0.0.1");
+        assert_eq!(web.port, 8726);
+    }
+
+    #[test]
+    fn config_load_parses_web_bind_address() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.yaml");
+
+        std::fs::write(
+            &config_path,
+            r#"
+libraries:
+  - name: Movies
+    path: "/tmp/library"
+    media_type: movie
+sources:
+  - name: RD
+    path: "/tmp/source"
+    media_type: auto
+web:
+  enabled: true
+  bind_address: "0.0.0.0"
+  port: 9999
+"#,
+        )
+        .unwrap();
+
+        let cfg = Config::load(Some(config_path.display().to_string())).unwrap();
+        assert!(cfg.web.enabled);
+        assert_eq!(cfg.web.bind_address, "0.0.0.0");
+        assert_eq!(cfg.web.port, 9999);
+    }
+
+    #[test]
+    fn validate_rejects_empty_web_bind_address_when_enabled() {
+        let mut cfg = runtime_config_fixture();
+        cfg.web.enabled = true;
+        cfg.web.bind_address.clear();
+
+        let report = cfg.validate_runtime_settings();
+        assert!(report
+            .errors
+            .iter()
+            .any(|err| err.contains("web.bind_address")));
+    }
+
+    #[test]
+    fn validate_warns_when_web_binds_publicly() {
+        let mut cfg = runtime_config_fixture();
+        cfg.web.enabled = true;
+        cfg.web.bind_address = "0.0.0.0".to_string();
+
+        let report = cfg.validate_runtime_settings();
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("web.bind_address=0.0.0.0 exposes the web UI")));
     }
 
     #[test]

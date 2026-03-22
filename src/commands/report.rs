@@ -1,15 +1,17 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use chrono::Utc;
 use serde::Serialize;
+use walkdir::WalkDir;
 
 use crate::commands::{panel_border, panel_kv_row, panel_title};
 use crate::config::{Config, LibraryConfig};
 use crate::db::{Database, LibraryStats, MediaTypeStats};
 use crate::library_scanner::LibraryScanner;
 use crate::models::MediaType;
+use crate::plex_db;
 use crate::OutputFormat;
 
 #[derive(Serialize, Debug, Default, PartialEq, Eq)]
@@ -41,6 +43,29 @@ struct ReportOutput {
     summary: Summary,
     by_media_type: BTreeMap<String, MediaTypeInfo>,
     top_libraries: Vec<LibraryInfo>,
+    path_compare: PathCompareOutput,
+}
+
+#[derive(Serialize, Debug, Default, PartialEq, Eq)]
+struct PathSample {
+    count: usize,
+    samples: Vec<PathBuf>,
+}
+
+#[derive(Serialize, Debug, Default, PartialEq, Eq)]
+struct PathCompareOutput {
+    filesystem_symlinks: usize,
+    db_active_links: usize,
+    plex_indexed_files: Option<usize>,
+    plex_deleted_paths: Option<usize>,
+    fs_not_in_db: PathSample,
+    db_not_on_fs: PathSample,
+    fs_not_in_plex: Option<PathSample>,
+    db_not_in_plex: Option<PathSample>,
+    plex_not_on_fs: Option<PathSample>,
+    plex_deleted_and_known_missing_source: Option<PathSample>,
+    plex_deleted_without_known_missing_source: Option<PathSample>,
+    all_three: Option<usize>,
 }
 
 #[derive(Default)]
@@ -54,10 +79,11 @@ pub(crate) async fn run_report(
     db: &Database,
     output_format: OutputFormat,
     filter: Option<MediaType>,
+    plex_db_path: Option<&Path>,
     pretty: bool,
 ) -> Result<()> {
     touch_legacy_db_stats_api();
-    let report = build_report(cfg, db, filter).await?;
+    let report = build_report(cfg, db, filter, plex_db_path).await?;
 
     match output_format {
         OutputFormat::Json => {
@@ -109,6 +135,7 @@ async fn build_report(
     cfg: &Config,
     db: &Database,
     filter: Option<MediaType>,
+    plex_db_path: Option<&Path>,
 ) -> Result<ReportOutput> {
     let selected_libraries = selected_report_libraries(cfg, filter);
     let generated_at = Utc::now().to_rfc3339();
@@ -119,6 +146,7 @@ async fn build_report(
             summary: Summary::default(),
             by_media_type: BTreeMap::new(),
             top_libraries: Vec::new(),
+            path_compare: PathCompareOutput::default(),
         });
     }
 
@@ -199,11 +227,20 @@ async fn build_report(
     top_libraries.sort_by(|a, b| b.items.cmp(&a.items).then_with(|| a.name.cmp(&b.name)));
     top_libraries.truncate(10);
 
+    let path_compare = build_path_compare(
+        &selected_libraries,
+        &selected_roots,
+        &link_records,
+        plex_db_path,
+    )
+    .await?;
+
     Ok(ReportOutput {
         generated_at,
         summary,
         by_media_type,
         top_libraries,
+        path_compare,
     })
 }
 
@@ -253,6 +290,152 @@ fn media_type_key(media_type: MediaType) -> &'static str {
     }
 }
 
+async fn build_path_compare(
+    libraries: &[&LibraryConfig],
+    roots: &[PathBuf],
+    link_records: &[crate::models::LinkRecord],
+    plex_db_path: Option<&Path>,
+) -> Result<PathCompareOutput> {
+    let filesystem_scan = collect_filesystem_symlink_paths(libraries);
+    let filesystem_symlinks = filesystem_scan.paths;
+    let db_active_links: HashSet<PathBuf> = link_records
+        .iter()
+        .filter(|link| link.status == crate::models::LinkStatus::Active)
+        .map(|link| link.target_path.clone())
+        .collect();
+    let mut known_missing_source_paths = filesystem_scan.missing_source_paths;
+    for link in link_records
+        .iter()
+        .filter(|link| link.status == crate::models::LinkStatus::Active)
+    {
+        if !link.source_path.exists() {
+            known_missing_source_paths.insert(link.target_path.clone());
+        }
+    }
+
+    let plex_path_records = match plex_db_path {
+        Some(path) => Some(plex_db::load_path_records(path, roots).await?),
+        None => None,
+    };
+    let plex_indexed_files = plex_path_records.as_ref().map(|records| {
+        records
+            .iter()
+            .map(|record| record.path.clone())
+            .collect::<HashSet<_>>()
+    });
+    let plex_deleted_paths = plex_path_records.as_ref().map(|records| {
+        records
+            .iter()
+            .filter(|record| record.deleted_only)
+            .map(|record| record.path.clone())
+            .collect::<HashSet<_>>()
+    });
+
+    let all_three = plex_indexed_files.as_ref().map(|plex_paths| {
+        filesystem_symlinks
+            .iter()
+            .filter(|path| db_active_links.contains(*path) && plex_paths.contains(*path))
+            .count()
+    });
+
+    Ok(PathCompareOutput {
+        filesystem_symlinks: filesystem_symlinks.len(),
+        db_active_links: db_active_links.len(),
+        plex_indexed_files: plex_indexed_files.as_ref().map(HashSet::len),
+        plex_deleted_paths: plex_deleted_paths.as_ref().map(HashSet::len),
+        fs_not_in_db: sample_difference(&filesystem_symlinks, &db_active_links),
+        db_not_on_fs: sample_difference(&db_active_links, &filesystem_symlinks),
+        fs_not_in_plex: plex_indexed_files
+            .as_ref()
+            .map(|plex_paths| sample_difference(&filesystem_symlinks, plex_paths)),
+        db_not_in_plex: plex_indexed_files
+            .as_ref()
+            .map(|plex_paths| sample_difference(&db_active_links, plex_paths)),
+        plex_not_on_fs: plex_indexed_files
+            .as_ref()
+            .map(|plex_paths| sample_difference(plex_paths, &filesystem_symlinks)),
+        plex_deleted_and_known_missing_source: plex_deleted_paths
+            .as_ref()
+            .map(|plex_paths| sample_intersection(plex_paths, &known_missing_source_paths)),
+        plex_deleted_without_known_missing_source: plex_deleted_paths
+            .as_ref()
+            .map(|plex_paths| sample_difference(plex_paths, &known_missing_source_paths)),
+        all_three,
+    })
+}
+
+struct FilesystemSymlinkScan {
+    paths: HashSet<PathBuf>,
+    missing_source_paths: HashSet<PathBuf>,
+}
+
+fn collect_filesystem_symlink_paths(libraries: &[&LibraryConfig]) -> FilesystemSymlinkScan {
+    let mut paths = HashSet::new();
+    let mut missing_source_paths = HashSet::new();
+
+    for lib in libraries {
+        for entry in WalkDir::new(&lib.path).follow_links(false) {
+            let Ok(entry) = entry else {
+                continue;
+            };
+            if entry.file_type().is_symlink() {
+                let path = entry.path().to_path_buf();
+                if symlink_source_missing(&path) {
+                    missing_source_paths.insert(path.clone());
+                }
+                paths.insert(path);
+            }
+        }
+    }
+
+    FilesystemSymlinkScan {
+        paths,
+        missing_source_paths,
+    }
+}
+
+const PATH_SAMPLE_LIMIT: usize = 10;
+
+fn sample_difference(left: &HashSet<PathBuf>, right: &HashSet<PathBuf>) -> PathSample {
+    let mut diff: Vec<PathBuf> = left
+        .iter()
+        .filter(|path| !right.contains(*path))
+        .cloned()
+        .collect();
+    diff.sort();
+    PathSample {
+        count: diff.len(),
+        samples: diff.into_iter().take(PATH_SAMPLE_LIMIT).collect(),
+    }
+}
+
+fn sample_intersection(left: &HashSet<PathBuf>, right: &HashSet<PathBuf>) -> PathSample {
+    let mut paths: Vec<PathBuf> = left
+        .iter()
+        .filter(|path| right.contains(*path))
+        .cloned()
+        .collect();
+    paths.sort();
+    PathSample {
+        count: paths.len(),
+        samples: paths.into_iter().take(PATH_SAMPLE_LIMIT).collect(),
+    }
+}
+
+fn symlink_source_missing(path: &Path) -> bool {
+    let Ok(target) = std::fs::read_link(path) else {
+        return false;
+    };
+    let resolved = if target.is_absolute() {
+        target
+    } else {
+        path.parent()
+            .map(|parent| parent.join(&target))
+            .unwrap_or(target)
+    };
+    !resolved.exists()
+}
+
 fn emit_text_report(report: &ReportOutput) {
     println!();
     panel_border('╔', '═', '╗');
@@ -293,6 +476,44 @@ fn emit_text_report(report: &ReportOutput) {
         }
     }
 
+    panel_border('╠', '═', '╣');
+    panel_title("Path Compare");
+    panel_border('╠', '═', '╣');
+    panel_kv_row(
+        "  Filesystem symlinks:",
+        report.path_compare.filesystem_symlinks,
+    );
+    panel_kv_row("  DB active links:", report.path_compare.db_active_links);
+    if let Some(plex_count) = report.path_compare.plex_indexed_files {
+        panel_kv_row("  Plex indexed files:", plex_count);
+    }
+    if let Some(plex_deleted) = report.path_compare.plex_deleted_paths {
+        panel_kv_row("  Plex deleted-only paths:", plex_deleted);
+    }
+    panel_kv_row("  FS not in DB:", report.path_compare.fs_not_in_db.count);
+    panel_kv_row("  DB not on FS:", report.path_compare.db_not_on_fs.count);
+    if let Some(sample) = &report.path_compare.fs_not_in_plex {
+        panel_kv_row("  FS not in Plex:", sample.count);
+    }
+    if let Some(sample) = &report.path_compare.db_not_in_plex {
+        panel_kv_row("  DB not in Plex:", sample.count);
+    }
+    if let Some(sample) = &report.path_compare.plex_not_on_fs {
+        panel_kv_row("  Plex not on FS:", sample.count);
+    }
+    if let Some(sample) = &report.path_compare.plex_deleted_and_known_missing_source {
+        panel_kv_row("  Plex deleted + known missing source:", sample.count);
+    }
+    if let Some(sample) = &report
+        .path_compare
+        .plex_deleted_without_known_missing_source
+    {
+        panel_kv_row("  Plex deleted w/o known missing source:", sample.count);
+    }
+    if let Some(all_three) = report.path_compare.all_three {
+        panel_kv_row("  In all three:", all_three);
+    }
+
     panel_border('╚', '═', '╝');
     println!();
 }
@@ -308,7 +529,8 @@ fn capitalize(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use std::os::unix::fs::symlink;
+    use std::path::{Path, PathBuf};
 
     use crate::config::{
         ApiConfig, BackupConfig, BazarrConfig, CleanupPolicyConfig, ContentType, DaemonConfig,
@@ -318,6 +540,7 @@ mod tests {
     };
     use crate::db::Database;
     use crate::models::{LinkRecord, LinkStatus, MediaType};
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
     fn test_config(movies: PathBuf, anime: PathBuf, source: PathBuf, db_path: String) -> Config {
         Config {
@@ -366,6 +589,94 @@ mod tests {
             loaded_from: None,
             secret_files: Vec::new(),
         }
+    }
+
+    async fn create_test_plex_db(
+        db_path: &Path,
+        movie_root: &Path,
+        anime_root: &Path,
+        indexed_paths: &[PathBuf],
+    ) {
+        let options = SqliteConnectOptions::new()
+            .filename(db_path)
+            .create_if_missing(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap();
+
+        for statement in [
+            "CREATE TABLE section_locations (id INTEGER PRIMARY KEY, library_section_id INTEGER, root_path TEXT, available BOOLEAN, scanned_at INTEGER, created_at INTEGER, updated_at INTEGER)",
+            "CREATE TABLE metadata_items (id INTEGER PRIMARY KEY, library_section_id INTEGER, deleted_at INTEGER)",
+            "CREATE TABLE media_items (id INTEGER PRIMARY KEY, library_section_id INTEGER, section_location_id INTEGER, metadata_item_id INTEGER, deleted_at INTEGER)",
+            "CREATE TABLE media_parts (id INTEGER PRIMARY KEY, media_item_id INTEGER, file TEXT, deleted_at INTEGER)",
+        ] {
+            sqlx::query(statement).execute(&pool).await.unwrap();
+        }
+
+        sqlx::query("INSERT INTO section_locations (id, library_section_id, root_path) VALUES (1, 1, ?), (2, 2, ?)")
+            .bind(movie_root.to_string_lossy().to_string())
+            .bind(anime_root.to_string_lossy().to_string())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        for (idx, path) in indexed_paths.iter().enumerate() {
+            let media_item_id = (idx + 1) as i64;
+            let metadata_item_id = media_item_id;
+            let section_location_id = if path.starts_with(movie_root) { 1 } else { 2 };
+            let library_section_id = section_location_id;
+            sqlx::query(
+                "INSERT INTO metadata_items (id, library_section_id, deleted_at) VALUES (?, ?, NULL)",
+            )
+            .bind(metadata_item_id)
+            .bind(library_section_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO media_items (id, library_section_id, section_location_id, metadata_item_id, deleted_at) VALUES (?, ?, ?, ?, NULL)",
+            )
+            .bind(media_item_id)
+            .bind(library_section_id)
+            .bind(section_location_id)
+            .bind(metadata_item_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            sqlx::query(
+                "INSERT INTO media_parts (id, media_item_id, file, deleted_at) VALUES (?, ?, ?, NULL)",
+            )
+            .bind(media_item_id)
+            .bind(media_item_id)
+            .bind(path.to_string_lossy().to_string())
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        pool.close().await;
+    }
+
+    async fn mark_test_plex_path_deleted(db_path: &Path, path: &Path) {
+        let options = SqliteConnectOptions::new()
+            .filename(db_path)
+            .create_if_missing(false);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap();
+
+        sqlx::query("UPDATE media_parts SET deleted_at = 1 WHERE file = ?")
+            .bind(path.to_string_lossy().to_string())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        pool.close().await;
     }
 
     #[tokio::test]
@@ -441,7 +752,7 @@ mod tests {
         .await
         .unwrap();
 
-        let report = build_report(&cfg, &db, None).await.unwrap();
+        let report = build_report(&cfg, &db, None, None).await.unwrap();
 
         assert_eq!(
             report.summary,
@@ -532,7 +843,7 @@ mod tests {
         .await
         .unwrap();
 
-        let report = build_report(&cfg, &db, Some(MediaType::Movie))
+        let report = build_report(&cfg, &db, Some(MediaType::Movie), None)
             .await
             .unwrap();
 
@@ -548,5 +859,214 @@ mod tests {
         assert_eq!(report.by_media_type.len(), 1);
         assert_eq!(report.top_libraries.len(), 1);
         assert_eq!(report.top_libraries[0].name, "Movies");
+    }
+
+    #[tokio::test]
+    async fn test_build_report_path_compare_tracks_fs_db_and_plex_drift() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let movies = dir.path().join("movies");
+        let anime = dir.path().join("anime");
+        let source = dir.path().join("rd");
+        std::fs::create_dir_all(&movies).unwrap();
+        std::fs::create_dir_all(&anime).unwrap();
+        std::fs::create_dir_all(&source).unwrap();
+
+        let movie_a_dir = movies.join("Movie A {tmdb-1}");
+        let movie_b_dir = movies.join("Movie B {tmdb-2}");
+        let show_a_dir = anime.join("Show A {tvdb-10}/Season 01");
+        let show_b_dir = anime.join("Show B {tvdb-11}/Season 01");
+        std::fs::create_dir_all(&movie_a_dir).unwrap();
+        std::fs::create_dir_all(&movie_b_dir).unwrap();
+        std::fs::create_dir_all(&show_a_dir).unwrap();
+        std::fs::create_dir_all(&show_b_dir).unwrap();
+
+        let source_a = source.join("movie-a-source.mkv");
+        let source_b = source.join("movie-b-source.mkv");
+        std::fs::write(&source_a, b"a").unwrap();
+        std::fs::write(&source_b, b"b").unwrap();
+
+        let movie_a_link = movie_a_dir.join("Movie A.mkv");
+        let movie_b_link = movie_b_dir.join("Movie B.mkv");
+        symlink(&source_a, &movie_a_link).unwrap();
+        symlink(&source_b, &movie_b_link).unwrap();
+
+        let db_path = dir.path().join("test.db");
+        let plex_db_path = dir.path().join("plex.db");
+        let cfg = test_config(
+            movies.clone(),
+            anime.clone(),
+            source.clone(),
+            db_path.to_string_lossy().into_owned(),
+        );
+        let db = Database::new(db_path.to_str().unwrap()).await.unwrap();
+
+        let db_only_path = show_a_dir.join("Show A - S01E01.mkv");
+        db.insert_link(&LinkRecord {
+            id: None,
+            source_path: source_a.clone(),
+            target_path: movie_a_link.clone(),
+            media_id: "tmdb-1".to_string(),
+            media_type: MediaType::Movie,
+            status: LinkStatus::Active,
+            created_at: None,
+            updated_at: None,
+        })
+        .await
+        .unwrap();
+        db.insert_link(&LinkRecord {
+            id: None,
+            source_path: source.join("show-a-source.mkv"),
+            target_path: db_only_path.clone(),
+            media_id: "tvdb-10".to_string(),
+            media_type: MediaType::Tv,
+            status: LinkStatus::Active,
+            created_at: None,
+            updated_at: None,
+        })
+        .await
+        .unwrap();
+
+        let plex_only_path = show_b_dir.join("Show B - S01E01.mkv");
+        create_test_plex_db(
+            &plex_db_path,
+            &movies,
+            &anime,
+            &[movie_a_link.clone(), plex_only_path.clone()],
+        )
+        .await;
+
+        let report = build_report(&cfg, &db, None, Some(&plex_db_path))
+            .await
+            .unwrap();
+
+        assert_eq!(report.path_compare.filesystem_symlinks, 2);
+        assert_eq!(report.path_compare.db_active_links, 2);
+        assert_eq!(report.path_compare.plex_indexed_files, Some(2));
+        assert_eq!(report.path_compare.plex_deleted_paths, Some(0));
+        assert_eq!(report.path_compare.fs_not_in_db.count, 1);
+        assert_eq!(report.path_compare.db_not_on_fs.count, 1);
+        assert_eq!(
+            report.path_compare.fs_not_in_plex.as_ref().unwrap().count,
+            1
+        );
+        assert_eq!(
+            report.path_compare.db_not_in_plex.as_ref().unwrap().count,
+            1
+        );
+        assert_eq!(
+            report.path_compare.plex_not_on_fs.as_ref().unwrap().count,
+            1
+        );
+        assert_eq!(
+            report
+                .path_compare
+                .plex_deleted_and_known_missing_source
+                .as_ref()
+                .unwrap()
+                .count,
+            0
+        );
+        assert_eq!(
+            report
+                .path_compare
+                .plex_deleted_without_known_missing_source
+                .as_ref()
+                .unwrap()
+                .count,
+            0
+        );
+        assert_eq!(report.path_compare.all_three, Some(1));
+
+        assert_eq!(report.path_compare.fs_not_in_db.samples, vec![movie_b_link]);
+        assert_eq!(report.path_compare.db_not_on_fs.samples, vec![db_only_path]);
+        assert_eq!(
+            report.path_compare.plex_not_on_fs.as_ref().unwrap().samples,
+            vec![plex_only_path]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_build_report_path_compare_does_not_treat_plex_deleted_as_truth_without_missing_source(
+    ) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let movies = dir.path().join("movies");
+        let anime = dir.path().join("anime");
+        let source = dir.path().join("rd");
+        std::fs::create_dir_all(&movies).unwrap();
+        std::fs::create_dir_all(&anime).unwrap();
+        std::fs::create_dir_all(&source).unwrap();
+
+        let movie_a_dir = movies.join("Movie A {tmdb-1}");
+        std::fs::create_dir_all(&movie_a_dir).unwrap();
+        let source_a = source.join("movie-a-source.mkv");
+        std::fs::write(&source_a, b"a").unwrap();
+        let movie_a_link = movie_a_dir.join("Movie A.mkv");
+        symlink(&source_a, &movie_a_link).unwrap();
+
+        let db_path = dir.path().join("test.db");
+        let plex_db_path = dir.path().join("plex.db");
+        let cfg = test_config(
+            movies.clone(),
+            anime.clone(),
+            source.clone(),
+            db_path.to_string_lossy().into_owned(),
+        );
+        let db = Database::new(db_path.to_str().unwrap()).await.unwrap();
+
+        db.insert_link(&LinkRecord {
+            id: None,
+            source_path: source_a.clone(),
+            target_path: movie_a_link.clone(),
+            media_id: "tmdb-1".to_string(),
+            media_type: MediaType::Movie,
+            status: LinkStatus::Active,
+            created_at: None,
+            updated_at: None,
+        })
+        .await
+        .unwrap();
+
+        create_test_plex_db(
+            &plex_db_path,
+            &movies,
+            &anime,
+            std::slice::from_ref(&movie_a_link),
+        )
+        .await;
+        mark_test_plex_path_deleted(&plex_db_path, &movie_a_link).await;
+
+        let report = build_report(&cfg, &db, None, Some(&plex_db_path))
+            .await
+            .unwrap();
+
+        assert_eq!(report.path_compare.plex_indexed_files, Some(1));
+        assert_eq!(report.path_compare.plex_deleted_paths, Some(1));
+        assert_eq!(
+            report
+                .path_compare
+                .plex_deleted_and_known_missing_source
+                .as_ref()
+                .unwrap()
+                .count,
+            0
+        );
+        assert_eq!(
+            report
+                .path_compare
+                .plex_deleted_without_known_missing_source
+                .as_ref()
+                .unwrap()
+                .count,
+            1
+        );
+        assert_eq!(
+            report
+                .path_compare
+                .plex_deleted_without_known_missing_source
+                .as_ref()
+                .unwrap()
+                .samples,
+            vec![movie_a_link]
+        );
     }
 }

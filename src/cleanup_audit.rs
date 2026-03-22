@@ -1,10 +1,13 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use tokio::sync::{Mutex, Semaphore};
+use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 use walkdir::WalkDir;
 
@@ -15,6 +18,7 @@ use crate::backup::BackupManager;
 use crate::config::{Config, ContentType, LibraryConfig, MetadataMode};
 use crate::db::Database;
 use crate::library_scanner::LibraryScanner;
+use crate::matcher::{best_alias_score, fetch_metadata_static};
 use crate::models::{ContentMetadata, LibraryItem, LinkStatus, MediaId, MediaType};
 use crate::source_scanner::SourceScanner;
 use crate::utils::{normalize, ProgressLine};
@@ -23,13 +27,22 @@ use crate::utils::{normalize, ProgressLine};
 #[serde(rename_all = "lowercase")]
 pub enum CleanupScope {
     Anime,
+    Tv,
+    Movie,
+    All,
 }
 
 impl CleanupScope {
     pub fn parse(input: &str) -> Result<Self> {
         match input.to_lowercase().as_str() {
             "anime" => Ok(Self::Anime),
-            _ => anyhow::bail!("Unsupported scope '{}'. Supported: anime", input),
+            "tv" | "series" | "shows" => Ok(Self::Tv),
+            "movie" | "movies" | "film" | "films" => Ok(Self::Movie),
+            "all" => Ok(Self::All),
+            _ => anyhow::bail!(
+                "Unsupported scope '{}'. Supported: anime, tv, movie, all",
+                input
+            ),
         }
     }
 }
@@ -57,6 +70,8 @@ impl std::fmt::Display for FindingSeverity {
 pub enum FindingReason {
     BrokenSource,
     ParserTitleMismatch,
+    AlternateLibraryMatch,
+    MovieEpisodeSource,
     ArrUntracked,
     EpisodeOutOfRange,
     DuplicateEpisodeSlot,
@@ -69,6 +84,8 @@ impl std::fmt::Display for FindingReason {
         match self {
             FindingReason::BrokenSource => write!(f, "broken_source"),
             FindingReason::ParserTitleMismatch => write!(f, "parser_title_mismatch"),
+            FindingReason::AlternateLibraryMatch => write!(f, "alternate_library_match"),
+            FindingReason::MovieEpisodeSource => write!(f, "movie_episode_source"),
             FindingReason::ArrUntracked => write!(f, "arr_untracked"),
             FindingReason::EpisodeOutOfRange => write!(f, "episode_out_of_range"),
             FindingReason::DuplicateEpisodeSlot => write!(f, "duplicate_episode_slot"),
@@ -86,6 +103,13 @@ pub struct ParsedContext {
     pub episode: Option<u32>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AlternateMatchContext {
+    pub media_id: String,
+    pub title: String,
+    pub score: f64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CleanupFinding {
     pub symlink_path: PathBuf,
@@ -95,6 +119,8 @@ pub struct CleanupFinding {
     pub confidence: f64,
     pub reasons: Vec<FindingReason>,
     pub parsed: ParsedContext,
+    #[serde(default)]
+    pub alternate_match: Option<AlternateMatchContext>,
     #[serde(default)]
     pub db_tracked: bool,
 }
@@ -143,10 +169,13 @@ struct WorkingEntry {
     symlink_path: PathBuf,
     source_path: PathBuf,
     media_id: String,
+    media_type: MediaType,
+    content_type: ContentType,
     parsed_title: String,
     season: Option<u32>,
     episode: Option<u32>,
     library_title: String,
+    alternate_match: Option<AlternateMatchContext>,
     reasons: BTreeSet<FindingReason>,
 }
 
@@ -200,8 +229,52 @@ impl<'a> CleanupAuditor<'a> {
         Ok(out_path)
     }
 
+    pub async fn run_audit_filtered(
+        &self,
+        scope: CleanupScope,
+        selected_libraries: Option<&[String]>,
+        output_path: Option<&Path>,
+    ) -> Result<PathBuf> {
+        let report = self
+            .build_report_filtered(scope, selected_libraries)
+            .await?;
+        let out_path = output_path
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| default_report_path(scope));
+
+        if let Some(parent) = out_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+
+        std::fs::write(&out_path, serde_json::to_string_pretty(&report)?)?;
+        if self.cfg.security.enforce_secure_permissions {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let perm = std::fs::Permissions::from_mode(0o600);
+                std::fs::set_permissions(&out_path, perm)?;
+            }
+        }
+        info!(
+            "Cleanup audit written: {:?} ({} findings)",
+            out_path, report.summary.total_findings
+        );
+
+        Ok(out_path)
+    }
+
     pub async fn build_report(&self, scope: CleanupScope) -> Result<CleanupReport> {
-        let libraries = self.libraries_for_scope(scope);
+        self.build_report_filtered(scope, None).await
+    }
+
+    pub async fn build_report_filtered(
+        &self,
+        scope: CleanupScope,
+        selected_libraries: Option<&[String]>,
+    ) -> Result<CleanupReport> {
+        let libraries = self.libraries_for_scope_filtered(scope, selected_libraries)?;
         if libraries.is_empty() {
             anyhow::bail!("No libraries found for scope {:?}", scope);
         }
@@ -211,36 +284,20 @@ impl<'a> CleanupAuditor<'a> {
         for lib in &libraries {
             library_items.extend(scanner.scan_library(lib));
         }
-
-        if self.emit_progress {
-            println!(
-                "   🧠 Cleanup audit: loading metadata for {} library item(s)...",
-                library_items.len()
-            );
-        }
-        let metadata_started = Instant::now();
-        let metadata_map = self.load_metadata(&library_items).await;
-        if self.emit_progress {
-            println!(
-                "   ✅ Cleanup audit metadata ready in {:.1}s",
-                metadata_started.elapsed().as_secs_f64()
-            );
-            println!("   📚 Cleanup audit: loading Sonarr cross-check snapshots...");
-        }
-        let arr_started = Instant::now();
-        let arr_map = self.load_sonarr_snapshots(&library_items).await;
-        if self.emit_progress {
-            println!(
-                "   ✅ Cleanup audit Sonarr snapshots ready in {:.1}s",
-                arr_started.elapsed().as_secs_f64()
-            );
-        }
+        let library_indices_by_path = build_library_indices_by_path(&library_items);
+        let library_indices_by_id = build_library_indices_by_id(&library_items);
 
         if self.emit_progress {
             println!("   🔗 Cleanup audit: collecting symlink entries...");
         }
         let entries_started = Instant::now();
-        let mut entries = self.collect_symlink_entries(&libraries, &library_items);
+        let mut entries =
+            self.collect_symlink_entries(&libraries, &library_items, &library_indices_by_path);
+        info!(
+            "Cleanup audit: collected {} symlink entries in {:.1}s",
+            entries.len(),
+            entries_started.elapsed().as_secs_f64()
+        );
         if self.emit_progress {
             println!(
                 "   ✅ Cleanup audit collected {} symlink entries in {:.1}s",
@@ -249,6 +306,56 @@ impl<'a> CleanupAuditor<'a> {
             );
         }
 
+        let referenced_media_ids: HashSet<String> = entries
+            .iter()
+            .filter(|entry| !entry.media_id.is_empty())
+            .map(|entry| entry.media_id.clone())
+            .collect();
+        let referenced_library_items: Vec<LibraryItem> = library_items
+            .iter()
+            .filter(|item| referenced_media_ids.contains(&item.id.to_string()))
+            .cloned()
+            .collect();
+
+        if self.emit_progress {
+            println!(
+                "   🧠 Cleanup audit: loading metadata for {} referenced item(s) ({} library items in scope)...",
+                referenced_library_items.len(),
+                library_items.len()
+            );
+        }
+        let metadata_started = Instant::now();
+        let metadata_map = self.load_metadata(&referenced_library_items).await;
+        let alias_map_by_index = build_aliases_by_index(&library_items, &metadata_map);
+        let alias_token_index = build_alias_token_index(&alias_map_by_index);
+        info!(
+            "Cleanup audit: metadata loaded for {} referenced items ({} library items in scope) in {:.1}s",
+            referenced_library_items.len(),
+            library_items.len(),
+            metadata_started.elapsed().as_secs_f64()
+        );
+        if self.emit_progress {
+            println!(
+                "   ✅ Cleanup audit metadata ready in {:.1}s",
+                metadata_started.elapsed().as_secs_f64()
+            );
+            println!("   📚 Cleanup audit: loading Sonarr cross-check snapshots...");
+        }
+        let arr_started = Instant::now();
+        let arr_map = self.load_sonarr_snapshots(&referenced_library_items).await;
+        info!(
+            "Cleanup audit: Arr snapshots loaded for {} referenced items in {:.1}s",
+            arr_map.len(),
+            arr_started.elapsed().as_secs_f64()
+        );
+        if self.emit_progress {
+            println!(
+                "   ✅ Cleanup audit Sonarr snapshots ready in {:.1}s",
+                arr_started.elapsed().as_secs_f64()
+            );
+        }
+
+        let evaluate_started = Instant::now();
         for entry in &mut entries {
             if !entry.source_path.exists() {
                 entry.reasons.insert(FindingReason::BrokenSource);
@@ -258,22 +365,43 @@ impl<'a> CleanupAuditor<'a> {
                 entry.reasons.insert(FindingReason::NonRdSourcePath);
             }
 
+            if entry.media_type == MediaType::Movie
+                && (entry.season.is_some() || entry.episode.is_some())
+            {
+                entry.reasons.insert(FindingReason::MovieEpisodeSource);
+            }
+
             if entry.media_id.is_empty() {
                 continue;
             }
 
-            if let Some(item) = library_items
-                .iter()
-                .find(|li| li.id.to_string() == entry.media_id)
+            if library_indices_by_id
+                .get(&entry.media_id)
+                .and_then(|idx| library_items.get(*idx))
+                .is_some()
             {
-                let aliases = build_aliases(item, metadata_map.get(&entry.media_id));
+                let owner_idx = *library_indices_by_id
+                    .get(&entry.media_id)
+                    .expect("owner index should exist when item exists");
+                let aliases = alias_map_by_index
+                    .get(owner_idx)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
                 if !entry.parsed_title.is_empty() {
                     let normalized_parsed = normalize(&entry.parsed_title);
-                    if !aliases
-                        .iter()
-                        .any(|alias| tokenized_title_match(alias, &normalized_parsed))
-                    {
+                    if !owner_title_matches(entry.content_type, aliases, &normalized_parsed) {
                         entry.reasons.insert(FindingReason::ParserTitleMismatch);
+                        if let Some(alternate_match) = find_alternate_library_match(
+                            owner_idx,
+                            entry,
+                            &normalized_parsed,
+                            &library_items,
+                            &alias_map_by_index,
+                            &alias_token_index,
+                        ) {
+                            entry.reasons.insert(FindingReason::AlternateLibraryMatch);
+                            entry.alternate_match = Some(alternate_match);
+                        }
                     }
                 }
 
@@ -294,9 +422,19 @@ impl<'a> CleanupAuditor<'a> {
                 }
             }
         }
+        info!(
+            "Cleanup audit: evaluated {} entries in {:.1}s",
+            entries.len(),
+            evaluate_started.elapsed().as_secs_f64()
+        );
 
+        let duplicate_started = Instant::now();
         apply_duplicate_and_count_signals(&mut entries, &metadata_map, &arr_map);
         let suppressed_count = suppress_redundant_season_count_warnings(&mut entries);
+        info!(
+            "Cleanup audit: duplicate/count signals applied in {:.1}s",
+            duplicate_started.elapsed().as_secs_f64()
+        );
         if suppressed_count > 0 {
             info!(
                 "Cleanup audit: suppressed {} season_count_anomaly warnings in seasons with stronger signals",
@@ -304,6 +442,7 @@ impl<'a> CleanupAuditor<'a> {
             );
         }
 
+        let findings_started = Instant::now();
         let mut findings = Vec::new();
         let mut summary = CleanupSummary::default();
 
@@ -335,15 +474,27 @@ impl<'a> CleanupAuditor<'a> {
                     season: entry.season,
                     episode: entry.episode,
                 },
+                alternate_match: entry.alternate_match,
                 db_tracked: false,
             });
         }
+        info!(
+            "Cleanup audit: materialized {} findings in {:.1}s",
+            findings.len(),
+            findings_started.elapsed().as_secs_f64()
+        );
 
+        let tracked_started = Instant::now();
         let tracked_paths = hydrate_db_tracked_flags(self.db, &mut findings).await?;
         debug!(
             "Cleanup audit: marked {}/{} findings as DB-tracked",
             tracked_paths.len(),
             findings.len()
+        );
+        info!(
+            "Cleanup audit: hydrated DB tracked flags for {} findings in {:.1}s",
+            findings.len(),
+            tracked_started.elapsed().as_secs_f64()
         );
         summary.total_findings = findings.len();
 
@@ -356,20 +507,56 @@ impl<'a> CleanupAuditor<'a> {
         })
     }
 
-    fn libraries_for_scope(&self, scope: CleanupScope) -> Vec<&LibraryConfig> {
-        self.cfg
+    fn libraries_for_scope_filtered(
+        &self,
+        scope: CleanupScope,
+        selected_libraries: Option<&[String]>,
+    ) -> Result<Vec<&LibraryConfig>> {
+        let selected_names = selected_libraries.and_then(|names| {
+            let names = names
+                .iter()
+                .map(|name| name.trim())
+                .filter(|name| !name.is_empty())
+                .collect::<HashSet<_>>();
+            (!names.is_empty()).then_some(names)
+        });
+
+        let libraries: Vec<&LibraryConfig> = self
+            .cfg
             .libraries
             .iter()
             .filter(|lib| match scope {
                 CleanupScope::Anime => effective_content_type(lib) == ContentType::Anime,
+                CleanupScope::Tv => effective_content_type(lib) == ContentType::Tv,
+                CleanupScope::Movie => effective_content_type(lib) == ContentType::Movie,
+                CleanupScope::All => true,
             })
-            .collect()
+            .filter(|lib| {
+                selected_names
+                    .as_ref()
+                    .map(|names| names.contains(lib.name.as_str()))
+                    .unwrap_or(true)
+            })
+            .collect();
+
+        if let Some(names) = selected_names {
+            if libraries.is_empty() {
+                anyhow::bail!(
+                    "No libraries matched scope {:?} for selection: {}",
+                    scope,
+                    names.into_iter().collect::<Vec<_>>().join(", ")
+                );
+            }
+        }
+
+        Ok(libraries)
     }
 
     fn collect_symlink_entries(
         &self,
         libraries: &[&LibraryConfig],
         library_items: &[LibraryItem],
+        library_indices_by_path: &HashMap<PathBuf, usize>,
     ) -> Vec<WorkingEntry> {
         let mut entries = Vec::new();
         let mut symlink_count = 0usize;
@@ -408,15 +595,20 @@ impl<'a> CleanupAuditor<'a> {
 
                 let source_path = resolve_link_target(&symlink_path, &target);
 
+                let owner =
+                    find_owner_library_item(&symlink_path, library_items, library_indices_by_path);
+
+                let owner_content_type = owner
+                    .map(|o| o.content_type)
+                    .unwrap_or_else(|| effective_content_type(lib));
+                let owner_media_type = owner.map(|o| o.media_type).unwrap_or(lib.media_type);
                 let parsed_source = self
                     .source_scanner
-                    .parse_filename_with_type(&source_path, ContentType::Anime)
+                    .parse_filename_with_type(&source_path, owner_content_type)
                     .or_else(|| {
                         self.source_scanner
-                            .parse_filename_with_type(&symlink_path, ContentType::Anime)
+                            .parse_filename_with_type(&symlink_path, owner_content_type)
                     });
-
-                let owner = find_owner_library_item(&symlink_path, library_items);
 
                 let (media_id, library_title) = owner
                     .map(|o| (o.id.to_string(), o.title.clone()))
@@ -426,6 +618,8 @@ impl<'a> CleanupAuditor<'a> {
                     symlink_path,
                     source_path,
                     media_id,
+                    media_type: owner_media_type,
+                    content_type: owner_content_type,
                     parsed_title: parsed_source
                         .as_ref()
                         .map(|s| s.parsed_title.clone())
@@ -433,6 +627,7 @@ impl<'a> CleanupAuditor<'a> {
                     season: parsed_source.as_ref().and_then(|s| s.season),
                     episode: parsed_source.as_ref().and_then(|s| s.episode),
                     library_title,
+                    alternate_match: None,
                     reasons: BTreeSet::new(),
                 });
             }
@@ -459,7 +654,7 @@ impl<'a> CleanupAuditor<'a> {
         let mut map = HashMap::new();
         let metadata_mode = self.cfg.matching.metadata_mode;
 
-        let tmdb = if self.cfg.has_tmdb() && metadata_mode.allows_network() {
+        let tmdb = if self.cfg.has_tmdb() {
             Some(TmdbClient::new(
                 &self.cfg.api.tmdb_api_key,
                 Some(&self.cfg.api.tmdb_read_access_token),
@@ -469,119 +664,90 @@ impl<'a> CleanupAuditor<'a> {
             None
         };
 
-        let mut tvdb = if self.cfg.has_tvdb() && metadata_mode.allows_network() {
-            Some(TvdbClient::new(
+        let tvdb = if self.cfg.has_tvdb() {
+            Some(Arc::new(Mutex::new(TvdbClient::new(
                 &self.cfg.api.tvdb_api_key,
                 self.cfg.api.cache_ttl_hours,
-            ))
+            ))))
         } else {
             None
         };
 
         if metadata_mode == MetadataMode::Off {
             info!("Cleanup audit: metadata lookups disabled (matching.metadata_mode=off)");
+            return map;
         }
 
-        let total = library_items.len();
+        let mut unique_items = Vec::new();
+        let mut seen_ids = HashSet::new();
+        for item in library_items {
+            let key = item.id.to_string();
+            if seen_ids.insert(key.clone()) {
+                unique_items.push((key, item.clone()));
+            }
+        }
+
+        let total = unique_items.len();
         let mut last_progress = Instant::now();
         let mut progress = self
             .emit_progress
             .then(|| ProgressLine::new("Cleanup metadata:"));
-        for (idx, item) in library_items.iter().enumerate() {
+        let concurrency = self.cfg.matching.metadata_concurrency.max(1);
+        let semaphore = Arc::new(Semaphore::new(concurrency));
+        let mut join_set: JoinSet<(String, Result<Option<ContentMetadata>>)> = JoinSet::new();
+
+        for (key, item) in unique_items {
+            let sem = Arc::clone(&semaphore);
+            let tmdb = tmdb.clone();
+            let tvdb = tvdb.clone();
+            let db = self.db.clone();
+
+            join_set.spawn(async move {
+                let _permit = sem
+                    .acquire_owned()
+                    .await
+                    .expect("cleanup metadata semaphore should stay alive");
+                let result =
+                    fetch_metadata_static(&tmdb, tvdb.as_ref(), metadata_mode, &item, &db).await;
+                (key, result)
+            });
+        }
+
+        let mut completed = 0usize;
+        while let Some(join_result) = join_set.join_next().await {
+            completed += 1;
             if let Some(progress) = progress.as_mut() {
-                if idx > 0 && last_progress.elapsed() >= Duration::from_secs(5) {
-                    let pct = (idx as f64 / total.max(1) as f64) * 100.0;
+                if completed > 0 && last_progress.elapsed() >= Duration::from_secs(5) {
+                    let pct = (completed as f64 / total.max(1) as f64) * 100.0;
                     if !progress.is_tty() {
                         info!(
                             "Cleanup audit metadata progress: {}/{} ({:.1}%)",
-                            idx, total, pct
+                            completed, total, pct
                         );
                     }
-                    progress.update(format!("{}/{} ({:.1}%)", idx, total, pct));
+                    progress.update(format!("{}/{} ({:.1}%)", completed, total, pct));
                     last_progress = Instant::now();
                 }
             }
-            let key = item.id.to_string();
-            if map.contains_key(&key) {
-                continue;
+
+            match join_result {
+                Ok((key, Ok(metadata))) => {
+                    map.insert(key, metadata);
+                }
+                Ok((key, Err(err))) => {
+                    warn!("Cleanup audit metadata fetch failed for {}: {}", key, err);
+                    map.insert(key, None);
+                }
+                Err(err) => {
+                    warn!("Cleanup audit metadata task panicked: {}", err);
+                }
             }
-
-            let metadata = match metadata_mode {
-                MetadataMode::Off => None,
-                MetadataMode::CacheOnly => self.load_cached_metadata(item).await,
-                MetadataMode::Full => match item.id {
-                    MediaId::Tmdb(id) => {
-                        if let Some(client) = &tmdb {
-                            match client.get_tv_metadata(id, self.db).await {
-                                Ok(meta) => Some(meta),
-                                Err(e) => {
-                                    warn!("TMDB metadata fetch failed for {}: {}", key, e);
-                                    None
-                                }
-                            }
-                        } else {
-                            None
-                        }
-                    }
-                    MediaId::Tvdb(id) => {
-                        if let Some(client) = tvdb.as_mut() {
-                            match client.get_series_metadata(id, self.db).await {
-                                Ok(meta) => Some(meta),
-                                Err(e) => {
-                                    warn!("TVDB metadata fetch failed for {}: {}", key, e);
-                                    None
-                                }
-                            }
-                        } else {
-                            None
-                        }
-                    }
-                },
-            };
-
-            map.insert(key, metadata);
         }
 
         if let Some(progress) = progress.as_mut() {
-            progress.finish(format!(
-                "{}/{} (100.0%)",
-                library_items.len(),
-                library_items.len()
-            ));
+            progress.finish(format!("{}/{} (100.0%)", total, total));
         }
         map
-    }
-
-    async fn load_cached_metadata(&self, item: &LibraryItem) -> Option<ContentMetadata> {
-        let cache_key = match item.id {
-            MediaId::Tmdb(id) => {
-                if item.media_type == MediaType::Movie {
-                    format!("tmdb:movie:{}", id)
-                } else {
-                    format!("tmdb:tv:{}", id)
-                }
-            }
-            MediaId::Tvdb(id) => format!("tvdb:series:{}", id),
-        };
-
-        let cached = match self.db.get_cached(&cache_key).await {
-            Ok(v) => v,
-            Err(e) => {
-                warn!("Cleanup audit: cache read failed for {}: {}", cache_key, e);
-                return None;
-            }
-        }?;
-
-        match serde_json::from_str::<ContentMetadata>(&cached) {
-            Ok(meta) => Some(meta),
-            Err(e) => {
-                warn!(
-                    "Cleanup audit: cache decode failed for {}: {}",
-                    cache_key, e
-                );
-                None
-            }
-        }
     }
 
     async fn load_sonarr_snapshots(
@@ -988,14 +1154,36 @@ fn resolve_link_target(symlink_path: &Path, target: &Path) -> PathBuf {
     }
 }
 
+fn build_library_indices_by_path(library_items: &[LibraryItem]) -> HashMap<PathBuf, usize> {
+    library_items
+        .iter()
+        .enumerate()
+        .map(|(idx, item)| (item.path.clone(), idx))
+        .collect()
+}
+
+fn build_library_indices_by_id(library_items: &[LibraryItem]) -> HashMap<String, usize> {
+    library_items
+        .iter()
+        .enumerate()
+        .map(|(idx, item)| (item.id.to_string(), idx))
+        .collect()
+}
+
 fn find_owner_library_item<'a>(
     symlink_path: &Path,
     library_items: &'a [LibraryItem],
+    library_indices_by_path: &HashMap<PathBuf, usize>,
 ) -> Option<&'a LibraryItem> {
-    library_items
-        .iter()
-        .filter(|item| symlink_path.starts_with(&item.path))
-        .max_by_key(|item| item.path.components().count())
+    let mut current = symlink_path.parent();
+    while let Some(path) = current {
+        if let Some(idx) = library_indices_by_path.get(path) {
+            return library_items.get(*idx);
+        }
+        current = path.parent();
+    }
+
+    None
 }
 
 fn build_aliases(item: &LibraryItem, metadata: Option<&Option<ContentMetadata>>) -> Vec<String> {
@@ -1009,6 +1197,317 @@ fn build_aliases(item: &LibraryItem, metadata: Option<&Option<ContentMetadata>>)
     aliases.sort();
     aliases.dedup();
     aliases
+}
+
+fn build_aliases_by_index(
+    library_items: &[LibraryItem],
+    metadata_map: &HashMap<String, Option<ContentMetadata>>,
+) -> Vec<Vec<String>> {
+    library_items
+        .iter()
+        .map(|item| build_aliases(item, metadata_map.get(&item.id.to_string())))
+        .collect()
+}
+
+fn build_alias_token_index(alias_map_by_index: &[Vec<String>]) -> HashMap<String, Vec<usize>> {
+    let mut index: HashMap<String, Vec<usize>> = HashMap::new();
+
+    for (idx, aliases) in alias_map_by_index.iter().enumerate() {
+        let mut seen = HashSet::new();
+        for alias in aliases {
+            for token in title_lookup_tokens(alias) {
+                if seen.insert(token.clone()) {
+                    index.entry(token).or_default().push(idx);
+                }
+            }
+        }
+    }
+
+    for indices in index.values_mut() {
+        indices.sort_unstable();
+        indices.dedup();
+    }
+
+    index
+}
+
+fn owner_title_matches(
+    content_type: ContentType,
+    aliases: &[String],
+    normalized_parsed: &str,
+) -> bool {
+    if normalized_parsed.is_empty() {
+        return true;
+    }
+
+    match content_type {
+        ContentType::Anime => aliases
+            .iter()
+            .any(|alias| tokenized_title_match(alias, normalized_parsed)),
+        ContentType::Tv | ContentType::Movie => {
+            let parsed_variants = title_match_variants(normalized_parsed);
+            aliases.iter().any(|alias| {
+                let alias_variants = title_match_variants(alias);
+                alias_variants.iter().any(|alias_variant| {
+                    parsed_variants.iter().any(|parsed_variant| {
+                        strict_owner_alias_match(alias_variant, parsed_variant)
+                            || (content_type == ContentType::Tv
+                                && tv_alias_with_embedded_episode_marker(
+                                    alias_variant,
+                                    parsed_variant,
+                                ))
+                    })
+                })
+            })
+        }
+    }
+}
+
+const MAX_ALTERNATE_MATCH_CANDIDATES: usize = 50;
+
+fn title_lookup_tokens(title: &str) -> Vec<String> {
+    title
+        .split_whitespace()
+        .filter(|token| token.len() >= 2)
+        .map(|token| token.to_string())
+        .collect()
+}
+
+fn candidate_library_indices_for_title(
+    normalized_title: &str,
+    alias_token_index: &HashMap<String, Vec<usize>>,
+) -> Vec<usize> {
+    let tokens = title_lookup_tokens(normalized_title);
+    if tokens.is_empty() {
+        return Vec::new();
+    }
+
+    let mut overlap_counts: HashMap<usize, usize> = HashMap::new();
+    for token in tokens {
+        if let Some(indices) = alias_token_index.get(&token) {
+            for idx in indices {
+                *overlap_counts.entry(*idx).or_insert(0) += 1;
+            }
+        }
+    }
+
+    let mut ranked: Vec<(usize, usize)> = overlap_counts.into_iter().collect();
+    ranked.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    ranked.truncate(MAX_ALTERNATE_MATCH_CANDIDATES);
+    ranked.into_iter().map(|(idx, _)| idx).collect()
+}
+
+fn find_alternate_library_match(
+    owner_idx: usize,
+    entry: &WorkingEntry,
+    normalized_parsed: &str,
+    library_items: &[LibraryItem],
+    alias_map_by_index: &[Vec<String>],
+    alias_token_index: &HashMap<String, Vec<usize>>,
+) -> Option<AlternateMatchContext> {
+    if normalized_parsed.is_empty() {
+        return None;
+    }
+
+    let parsed_variants = title_match_variants(normalized_parsed);
+    let mut best: Option<(usize, f64)> = None;
+
+    for idx in candidate_library_indices_for_title(normalized_parsed, alias_token_index) {
+        if idx == owner_idx {
+            continue;
+        }
+
+        let Some(candidate) = library_items.get(idx) else {
+            continue;
+        };
+        if candidate.media_type != entry.media_type || candidate.content_type != entry.content_type
+        {
+            continue;
+        }
+
+        let aliases = alias_map_by_index
+            .get(idx)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let Some(score) = best_variant_alias_score(aliases, &parsed_variants) else {
+            continue;
+        };
+        if score < 0.70 {
+            continue;
+        }
+
+        match best {
+            None => best = Some((idx, score)),
+            Some((best_idx, best_score)) => {
+                let replace = score > best_score
+                    || (score == best_score
+                        && candidate.title.len() > library_items[best_idx].title.len())
+                    || (score == best_score
+                        && candidate.title.len() == library_items[best_idx].title.len()
+                        && candidate.title < library_items[best_idx].title);
+                if replace {
+                    best = Some((idx, score));
+                }
+            }
+        }
+    }
+
+    best.and_then(|(idx, score)| {
+        library_items.get(idx).map(|item| AlternateMatchContext {
+            media_id: item.id.to_string(),
+            title: item.title.clone(),
+            score,
+        })
+    })
+}
+
+fn best_variant_alias_score(aliases: &[String], parsed_variants: &[String]) -> Option<f64> {
+    let mut best: Option<f64> = None;
+
+    for alias in aliases {
+        for alias_variant in title_match_variants(alias) {
+            for parsed_variant in parsed_variants {
+                let Some((score, _)) = best_alias_score(
+                    crate::config::MatchingMode::Strict,
+                    std::slice::from_ref(&alias_variant),
+                    parsed_variant,
+                ) else {
+                    continue;
+                };
+                if best.is_none_or(|current| score > current) {
+                    best = Some(score);
+                }
+            }
+        }
+    }
+
+    best
+}
+
+fn strict_owner_alias_match(alias: &str, normalized_parsed: &str) -> bool {
+    if alias.is_empty() || normalized_parsed.is_empty() {
+        return false;
+    }
+
+    let alias = alias.trim();
+    let normalized_parsed = normalized_parsed.trim();
+    if alias.is_empty() || normalized_parsed.is_empty() {
+        return false;
+    }
+
+    best_alias_score(
+        crate::config::MatchingMode::Strict,
+        &[alias.to_string()],
+        normalized_parsed,
+    )
+    .is_some()
+}
+
+fn tv_alias_with_embedded_episode_marker(alias: &str, normalized_parsed: &str) -> bool {
+    if alias.is_empty() || normalized_parsed.is_empty() {
+        return false;
+    }
+
+    let alias = alias.trim();
+    let normalized_parsed = normalized_parsed.trim();
+    let Some(rest) = normalized_parsed.strip_prefix(alias) else {
+        return false;
+    };
+    if !rest.starts_with(' ') {
+        return false;
+    }
+
+    let Some(marker) = rest.split_whitespace().next() else {
+        return false;
+    };
+
+    is_episode_marker_token(marker)
+}
+
+fn is_episode_marker_token(token: &str) -> bool {
+    let token = token.trim();
+    if token.is_empty() {
+        return false;
+    }
+
+    if let Some(rest) = token.strip_prefix('s') {
+        return is_numeric_episode_pair(rest, 'e') || is_numeric_episode_pair(rest, 'x');
+    }
+
+    is_numeric_episode_pair(token, 'x')
+}
+
+fn is_numeric_episode_pair(value: &str, separator: char) -> bool {
+    let Some((left, right)) = value.split_once(separator) else {
+        return false;
+    };
+
+    !left.is_empty()
+        && !right.is_empty()
+        && left.chars().all(|c| c.is_ascii_digit())
+        && right.chars().all(|c| c.is_ascii_digit())
+}
+
+fn strip_leading_article(value: &str) -> String {
+    for article in ["the ", "a ", "an "] {
+        if let Some(stripped) = value.strip_prefix(article) {
+            return stripped.trim().to_string();
+        }
+    }
+
+    value.trim().to_string()
+}
+
+fn strip_trailing_year(value: &str) -> String {
+    let tokens: Vec<&str> = value.split_whitespace().collect();
+    if tokens.is_empty() {
+        return String::new();
+    }
+
+    let mut end = tokens.len();
+    while end > 0 {
+        let token = tokens[end - 1];
+        let Some(year) = token.parse::<u32>().ok() else {
+            break;
+        };
+        if !(1900..=2099).contains(&year) {
+            break;
+        }
+        end -= 1;
+    }
+
+    if end == 0 {
+        return value.trim().to_string();
+    }
+
+    tokens[..end].join(" ")
+}
+
+fn title_match_variants(value: &str) -> Vec<String> {
+    let base = value.trim();
+    if base.is_empty() {
+        return Vec::new();
+    }
+
+    let mut variants = vec![base.to_string()];
+    let no_article = strip_leading_article(base);
+    if !no_article.is_empty() {
+        variants.push(no_article.clone());
+    }
+
+    let no_year = strip_trailing_year(base);
+    if !no_year.is_empty() {
+        variants.push(no_year.clone());
+    }
+
+    let no_article_no_year = strip_trailing_year(&no_article);
+    if !no_article_no_year.is_empty() {
+        variants.push(no_article_no_year);
+    }
+
+    variants.sort();
+    variants.dedup();
+    variants
 }
 
 fn apply_duplicate_and_count_signals(
@@ -1288,7 +1787,10 @@ fn expected_count_for_season(
 
 fn classify_severity(reasons: &BTreeSet<FindingReason>) -> FindingSeverity {
     if reasons.contains(&FindingReason::BrokenSource)
+        || reasons.contains(&FindingReason::MovieEpisodeSource)
         || reasons.contains(&FindingReason::EpisodeOutOfRange)
+        || (reasons.contains(&FindingReason::AlternateLibraryMatch)
+            && reasons.contains(&FindingReason::ParserTitleMismatch))
         || (reasons.contains(&FindingReason::ArrUntracked)
             && reasons.contains(&FindingReason::ParserTitleMismatch))
     {
@@ -1297,6 +1799,7 @@ fn classify_severity(reasons: &BTreeSet<FindingReason>) -> FindingSeverity {
 
     if reasons.contains(&FindingReason::NonRdSourcePath)
         || reasons.contains(&FindingReason::ArrUntracked)
+        || reasons.contains(&FindingReason::AlternateLibraryMatch)
         || reasons.contains(&FindingReason::ParserTitleMismatch)
         || (reasons.contains(&FindingReason::DuplicateEpisodeSlot) && reasons.len() > 1)
     {
@@ -1312,6 +1815,8 @@ fn classify_confidence(reasons: &BTreeSet<FindingReason>) -> f64 {
     for reason in reasons {
         let weight = match reason {
             FindingReason::BrokenSource => 1.0,
+            FindingReason::AlternateLibraryMatch => 0.98,
+            FindingReason::MovieEpisodeSource => 0.95,
             FindingReason::EpisodeOutOfRange => 0.9,
             FindingReason::NonRdSourcePath => 0.8,
             FindingReason::ArrUntracked => 0.7,
@@ -1380,6 +1885,9 @@ fn effective_content_type(lib: &LibraryConfig) -> ContentType {
 fn default_report_path(scope: CleanupScope) -> PathBuf {
     let scope_name = match scope {
         CleanupScope::Anime => "anime",
+        CleanupScope::Tv => "tv",
+        CleanupScope::Movie => "movie",
+        CleanupScope::All => "all",
     };
 
     let ts = Utc::now().format("%Y%m%d-%H%M%S");
@@ -1409,10 +1917,13 @@ mod tests {
             symlink_path: PathBuf::from("/lib/test.mkv"),
             source_path: PathBuf::from("/src/test.mkv"),
             media_id: media_id.to_string(),
+            media_type: MediaType::Tv,
+            content_type: ContentType::Anime,
             parsed_title: String::new(),
             season,
             episode,
             library_title: String::new(),
+            alternate_match: None,
             reasons: reason_set,
         }
     }
@@ -1439,6 +1950,7 @@ mod tests {
                 season: Some(season),
                 episode: Some(episode),
             },
+            alternate_match: None,
             db_tracked: false,
         }
     }
@@ -1457,6 +1969,169 @@ mod tests {
     }
 
     #[test]
+    fn test_owner_title_matches_standard_rejects_one_word_collision() {
+        assert!(!owner_title_matches(
+            ContentType::Tv,
+            &[normalize("you")],
+            &normalize("i love you man")
+        ));
+        assert!(!owner_title_matches(
+            ContentType::Tv,
+            &[normalize("chuck")],
+            &normalize("chucky")
+        ));
+        assert!(owner_title_matches(
+            ContentType::Tv,
+            &[normalize("you")],
+            &normalize("you")
+        ));
+    }
+
+    #[test]
+    fn test_owner_title_matches_standard_allows_leading_article_drop() {
+        assert!(owner_title_matches(
+            ContentType::Movie,
+            &[normalize("the matrix")],
+            &normalize("matrix")
+        ));
+    }
+
+    #[test]
+    fn test_owner_title_matches_standard_allows_trailing_year_drop() {
+        assert!(owner_title_matches(
+            ContentType::Movie,
+            &[normalize("leon the professional 1994")],
+            &normalize("leon the professional")
+        ));
+        assert!(owner_title_matches(
+            ContentType::Movie,
+            &[normalize("sam morril youve changed 2024")],
+            &normalize("sam morril youve changed")
+        ));
+    }
+
+    #[test]
+    fn test_owner_title_matches_tv_allows_embedded_episode_marker_after_title() {
+        assert!(owner_title_matches(
+            ContentType::Tv,
+            &[normalize("dexter 2006")],
+            &normalize("dexter 3x01 nuestro padre")
+        ));
+        assert!(owner_title_matches(
+            ContentType::Tv,
+            &[normalize("stranger things 2016")],
+            &normalize("stranger things s05x07 il ponte")
+        ));
+    }
+
+    #[test]
+    fn test_owner_title_matches_standard_does_not_merge_near_titles_after_year_drop() {
+        assert!(!owner_title_matches(
+            ContentType::Movie,
+            &[normalize("freakier friday 2025")],
+            &normalize("freaky friday 2003")
+        ));
+        assert!(!owner_title_matches(
+            ContentType::Movie,
+            &[normalize("hellbound hellraiser ii 1988")],
+            &normalize("hellraiser 2022")
+        ));
+    }
+
+    #[test]
+    fn test_find_alternate_library_match_picks_exact_other_title() {
+        let library_items = vec![
+            LibraryItem {
+                id: MediaId::Tvdb(1),
+                path: PathBuf::from("/library/Chuck (2007) {tvdb-1}"),
+                title: "Chuck (2007)".to_string(),
+                library_name: "Series".to_string(),
+                media_type: MediaType::Tv,
+                content_type: ContentType::Tv,
+            },
+            LibraryItem {
+                id: MediaId::Tvdb(2),
+                path: PathBuf::from("/library/Chucky (2021) {tvdb-2}"),
+                title: "Chucky (2021)".to_string(),
+                library_name: "Series".to_string(),
+                media_type: MediaType::Tv,
+                content_type: ContentType::Tv,
+            },
+        ];
+        let metadata_map = HashMap::new();
+        let alias_map_by_index = build_aliases_by_index(&library_items, &metadata_map);
+        let alias_token_index = build_alias_token_index(&alias_map_by_index);
+        let entry = WorkingEntry {
+            symlink_path: PathBuf::from(
+                "/library/Chuck (2007) {tvdb-1}/Season 01/Chuck - S01E01.mkv",
+            ),
+            source_path: PathBuf::from("/src/Chucky.S01E01.mkv"),
+            media_id: "tvdb-1".to_string(),
+            media_type: MediaType::Tv,
+            content_type: ContentType::Tv,
+            parsed_title: "Chucky".to_string(),
+            season: Some(1),
+            episode: Some(1),
+            library_title: "Chuck (2007)".to_string(),
+            alternate_match: None,
+            reasons: BTreeSet::new(),
+        };
+
+        let alt = find_alternate_library_match(
+            0,
+            &entry,
+            &normalize("Chucky"),
+            &library_items,
+            &alias_map_by_index,
+            &alias_token_index,
+        );
+
+        assert_eq!(
+            alt,
+            Some(AlternateMatchContext {
+                media_id: "tvdb-2".to_string(),
+                title: "Chucky (2021)".to_string(),
+                score: 1.0,
+            })
+        );
+    }
+
+    #[test]
+    fn test_classify_severity_treats_alternate_library_match_as_critical_with_mismatch() {
+        let mut reasons = BTreeSet::new();
+        reasons.insert(FindingReason::ParserTitleMismatch);
+        reasons.insert(FindingReason::AlternateLibraryMatch);
+
+        assert_eq!(classify_severity(&reasons), FindingSeverity::Critical);
+        assert_eq!(classify_confidence(&reasons), 0.98);
+    }
+
+    #[test]
+    fn test_cleanup_scope_parse_accepts_general_scopes() {
+        assert_eq!(CleanupScope::parse("tv").unwrap(), CleanupScope::Tv);
+        assert_eq!(CleanupScope::parse("movies").unwrap(), CleanupScope::Movie);
+        assert_eq!(CleanupScope::parse("all").unwrap(), CleanupScope::All);
+    }
+
+    #[test]
+    fn test_find_owner_library_item_walks_up_to_show_root() {
+        let library_items = vec![LibraryItem {
+            id: MediaId::Tvdb(42),
+            path: PathBuf::from("/library/Show (2025) {tvdb-42}"),
+            title: "Show".to_string(),
+            library_name: "Series".to_string(),
+            media_type: MediaType::Tv,
+            content_type: ContentType::Tv,
+        }];
+        let by_path = build_library_indices_by_path(&library_items);
+        let symlink_path =
+            PathBuf::from("/library/Show (2025) {tvdb-42}/Season 01/Show - S01E01.mkv");
+
+        let owner = find_owner_library_item(&symlink_path, &library_items, &by_path).unwrap();
+        assert_eq!(owner.id, MediaId::Tvdb(42));
+    }
+
+    #[test]
     fn test_classify_severity_critical_combo() {
         let mut reasons = BTreeSet::new();
         reasons.insert(FindingReason::ArrUntracked);
@@ -1469,6 +2144,13 @@ mod tests {
         let mut reasons = BTreeSet::new();
         reasons.insert(FindingReason::SeasonCountAnomaly);
         assert_eq!(classify_severity(&reasons), FindingSeverity::Warning);
+    }
+
+    #[test]
+    fn test_classify_severity_treats_movie_episode_source_as_critical() {
+        let mut reasons = BTreeSet::new();
+        reasons.insert(FindingReason::MovieEpisodeSource);
+        assert_eq!(classify_severity(&reasons), FindingSeverity::Critical);
     }
 
     #[test]
@@ -1754,6 +2436,42 @@ backup:
         serde_yaml::from_str(&yaml).unwrap()
     }
 
+    fn test_config_multi_scope(
+        anime_a_root: &Path,
+        anime_b_root: &Path,
+        movie_root: &Path,
+        source_root: &Path,
+    ) -> Config {
+        let yaml = format!(
+            r#"
+libraries:
+  - name: Anime A
+    path: "{}"
+    media_type: tv
+    content_type: anime
+  - name: Anime B
+    path: "{}"
+    media_type: tv
+    content_type: anime
+  - name: Movies
+    path: "{}"
+    media_type: movie
+    content_type: movie
+sources:
+  - name: RD
+    path: "{}"
+    media_type: auto
+backup:
+  enabled: false
+"#,
+            anime_a_root.display(),
+            anime_b_root.display(),
+            movie_root.display(),
+            source_root.display()
+        );
+        serde_yaml::from_str(&yaml).unwrap()
+    }
+
     fn high_finding(path: &Path, source: &Path) -> CleanupFinding {
         CleanupFinding {
             symlink_path: path.to_path_buf(),
@@ -1768,6 +2486,7 @@ backup:
                 season: Some(1),
                 episode: Some(1),
             },
+            alternate_match: None,
             db_tracked: false,
         }
     }
@@ -1791,6 +2510,59 @@ backup:
             findings,
             summary,
         }
+    }
+
+    #[tokio::test]
+    async fn test_libraries_for_scope_filtered_respects_selected_library_names() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let anime_a_root = dir.path().join("anime-a");
+        let anime_b_root = dir.path().join("anime-b");
+        let movie_root = dir.path().join("movies");
+        let source_root = dir.path().join("rd");
+        std::fs::create_dir_all(&anime_a_root).unwrap();
+        std::fs::create_dir_all(&anime_b_root).unwrap();
+        std::fs::create_dir_all(&movie_root).unwrap();
+        std::fs::create_dir_all(&source_root).unwrap();
+
+        let cfg = test_config_multi_scope(&anime_a_root, &anime_b_root, &movie_root, &source_root);
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+        let auditor = CleanupAuditor::new_with_progress(&cfg, &db, false);
+
+        let selected = vec!["Anime B".to_string()];
+        let libraries = auditor
+            .libraries_for_scope_filtered(CleanupScope::Anime, Some(&selected))
+            .unwrap();
+
+        assert_eq!(libraries.len(), 1);
+        assert_eq!(libraries[0].name, "Anime B");
+    }
+
+    #[tokio::test]
+    async fn test_libraries_for_scope_filtered_rejects_selection_outside_scope() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let anime_a_root = dir.path().join("anime-a");
+        let anime_b_root = dir.path().join("anime-b");
+        let movie_root = dir.path().join("movies");
+        let source_root = dir.path().join("rd");
+        std::fs::create_dir_all(&anime_a_root).unwrap();
+        std::fs::create_dir_all(&anime_b_root).unwrap();
+        std::fs::create_dir_all(&movie_root).unwrap();
+        std::fs::create_dir_all(&source_root).unwrap();
+
+        let cfg = test_config_multi_scope(&anime_a_root, &anime_b_root, &movie_root, &source_root);
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+        let auditor = CleanupAuditor::new_with_progress(&cfg, &db, false);
+
+        let selected = vec!["Movies".to_string()];
+        let err = auditor
+            .libraries_for_scope_filtered(CleanupScope::Anime, Some(&selected))
+            .unwrap_err();
+
+        assert!(err.to_string().contains("No libraries matched scope"));
     }
 
     #[cfg(unix)]

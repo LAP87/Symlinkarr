@@ -22,6 +22,8 @@ pub struct HousekeepingStats {
 #[derive(Debug, Clone, Default)]
 pub struct ScanRunRecord {
     pub dry_run: bool,
+    pub library_filter: Option<String>,
+    pub search_missing: bool,
     pub library_items_found: i64,
     pub source_items_found: i64,
     pub matches_found: i64,
@@ -31,6 +33,28 @@ pub struct ScanRunRecord {
     pub links_removed: i64,
     pub links_skipped: i64,
     pub ambiguous_skipped: i64,
+    pub runtime_checks_ms: i64,
+    pub library_scan_ms: i64,
+    pub source_inventory_ms: i64,
+    pub matching_ms: i64,
+    pub title_enrichment_ms: i64,
+    pub linking_ms: i64,
+    pub plex_refresh_ms: i64,
+    pub dead_link_sweep_ms: i64,
+    pub cache_hit_ratio: Option<f64>,
+    pub candidate_slots: i64,
+    pub scored_candidates: i64,
+    pub exact_id_hits: i64,
+    pub auto_acquire_requests: i64,
+    pub auto_acquire_missing_requests: i64,
+    pub auto_acquire_cutoff_requests: i64,
+    pub auto_acquire_dry_run_hits: i64,
+    pub auto_acquire_submitted: i64,
+    pub auto_acquire_no_result: i64,
+    pub auto_acquire_blocked: i64,
+    pub auto_acquire_failed: i64,
+    pub auto_acquire_completed_linked: i64,
+    pub auto_acquire_completed_unlinked: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -123,6 +147,7 @@ pub struct AcquisitionJobSeed {
     pub request_key: String,
     pub label: String,
     pub query: String,
+    pub query_hints: Vec<String>,
     pub imdb_id: Option<String>,
     pub categories: Vec<i32>,
     pub arr: String,
@@ -138,6 +163,7 @@ pub struct AcquisitionJobRecord {
     pub request_key: String,
     pub label: String,
     pub query: String,
+    pub query_hints: Vec<String>,
     pub imdb_id: Option<String>,
     pub categories: Vec<i32>,
     pub arr: String,
@@ -222,6 +248,8 @@ pub struct ScanHistoryRecord {
     pub id: i64,
     pub started_at: String,
     pub dry_run: bool,
+    pub library_filter: Option<String>,
+    pub search_missing: bool,
     pub library_items_found: i64,
     pub source_items_found: i64,
     pub matches_found: i64,
@@ -231,6 +259,28 @@ pub struct ScanHistoryRecord {
     pub links_removed: i64,
     pub links_skipped: i64,
     pub ambiguous_skipped: i64,
+    pub runtime_checks_ms: i64,
+    pub library_scan_ms: i64,
+    pub source_inventory_ms: i64,
+    pub matching_ms: i64,
+    pub title_enrichment_ms: i64,
+    pub linking_ms: i64,
+    pub plex_refresh_ms: i64,
+    pub dead_link_sweep_ms: i64,
+    pub cache_hit_ratio: Option<f64>,
+    pub candidate_slots: i64,
+    pub scored_candidates: i64,
+    pub exact_id_hits: i64,
+    pub auto_acquire_requests: i64,
+    pub auto_acquire_missing_requests: i64,
+    pub auto_acquire_cutoff_requests: i64,
+    pub auto_acquire_dry_run_hits: i64,
+    pub auto_acquire_submitted: i64,
+    pub auto_acquire_no_result: i64,
+    pub auto_acquire_blocked: i64,
+    pub auto_acquire_failed: i64,
+    pub auto_acquire_completed_linked: i64,
+    pub auto_acquire_completed_unlinked: i64,
 }
 
 /// Database manager for Symlinkarr state.
@@ -240,7 +290,7 @@ pub struct Database {
     pool: SqlitePool,
 }
 
-const LATEST_SCHEMA_VERSION: i64 = 6;
+const LATEST_SCHEMA_VERSION: i64 = 8;
 
 impl Database {
     /// Create a new database connection and run migrations.
@@ -342,6 +392,20 @@ impl Database {
     async fn infer_legacy_schema_version(&self) -> Result<i64> {
         if self.table_exists("acquisition_jobs").await? {
             if self
+                .column_exists("scan_runs", "auto_acquire_requests")
+                .await
+                .unwrap_or(false)
+            {
+                return Ok(8);
+            }
+            if self
+                .column_exists("acquisition_jobs", "query_hints_json")
+                .await
+                .unwrap_or(false)
+            {
+                return Ok(7);
+            }
+            if self
                 .column_exists("acquisition_jobs", "imdb_id")
                 .await
                 .unwrap_or(false)
@@ -396,6 +460,8 @@ impl Database {
             4 => self.migration_v4_tx(tx).await,
             5 => self.migration_v5_tx(tx).await,
             6 => self.migration_v6_tx(tx).await,
+            7 => self.migration_v7_tx(tx).await,
+            8 => self.migration_v8_tx(tx).await,
             _ => anyhow::bail!("Unknown migration version {}", version),
         }
     }
@@ -490,6 +556,8 @@ impl Database {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 run_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 dry_run INTEGER NOT NULL DEFAULT 0,
+                library_filter TEXT,
+                search_missing INTEGER NOT NULL DEFAULT 0,
                 library_items_found INTEGER NOT NULL DEFAULT 0,
                 source_items_found INTEGER NOT NULL DEFAULT 0,
                 matches_found INTEGER NOT NULL DEFAULT 0,
@@ -498,7 +566,29 @@ impl Database {
                 dead_marked INTEGER NOT NULL DEFAULT 0,
                 links_removed INTEGER NOT NULL DEFAULT 0,
                 links_skipped INTEGER NOT NULL DEFAULT 0,
-                ambiguous_skipped INTEGER NOT NULL DEFAULT 0
+                ambiguous_skipped INTEGER NOT NULL DEFAULT 0,
+                runtime_checks_ms INTEGER NOT NULL DEFAULT 0,
+                library_scan_ms INTEGER NOT NULL DEFAULT 0,
+                source_inventory_ms INTEGER NOT NULL DEFAULT 0,
+                matching_ms INTEGER NOT NULL DEFAULT 0,
+                title_enrichment_ms INTEGER NOT NULL DEFAULT 0,
+                linking_ms INTEGER NOT NULL DEFAULT 0,
+                plex_refresh_ms INTEGER NOT NULL DEFAULT 0,
+                dead_link_sweep_ms INTEGER NOT NULL DEFAULT 0,
+                cache_hit_ratio REAL,
+                candidate_slots INTEGER NOT NULL DEFAULT 0,
+                scored_candidates INTEGER NOT NULL DEFAULT 0,
+                exact_id_hits INTEGER NOT NULL DEFAULT 0,
+                auto_acquire_requests INTEGER NOT NULL DEFAULT 0,
+                auto_acquire_missing_requests INTEGER NOT NULL DEFAULT 0,
+                auto_acquire_cutoff_requests INTEGER NOT NULL DEFAULT 0,
+                auto_acquire_dry_run_hits INTEGER NOT NULL DEFAULT 0,
+                auto_acquire_submitted INTEGER NOT NULL DEFAULT 0,
+                auto_acquire_no_result INTEGER NOT NULL DEFAULT 0,
+                auto_acquire_blocked INTEGER NOT NULL DEFAULT 0,
+                auto_acquire_failed INTEGER NOT NULL DEFAULT 0,
+                auto_acquire_completed_linked INTEGER NOT NULL DEFAULT 0,
+                auto_acquire_completed_unlinked INTEGER NOT NULL DEFAULT 0
             )",
         )
         .execute(&mut **tx)
@@ -590,9 +680,111 @@ impl Database {
         Ok(())
     }
 
+    async fn migration_v7_tx(&self, tx: &mut sqlx::Transaction<'_, Sqlite>) -> Result<()> {
+        match sqlx::query(
+            "ALTER TABLE acquisition_jobs ADD COLUMN query_hints_json TEXT NOT NULL DEFAULT '[]'",
+        )
+        .execute(&mut **tx)
+        .await
+        {
+            Ok(_) => {}
+            Err(err)
+                if err
+                    .to_string()
+                    .contains("duplicate column name: query_hints_json") => {}
+            Err(err) => return Err(err.into()),
+        }
+        Ok(())
+    }
+
+    async fn migration_v8_tx(&self, tx: &mut sqlx::Transaction<'_, Sqlite>) -> Result<()> {
+        let alter_statements = [
+            "ALTER TABLE scan_runs ADD COLUMN library_filter TEXT",
+            "ALTER TABLE scan_runs ADD COLUMN search_missing INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE scan_runs ADD COLUMN runtime_checks_ms INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE scan_runs ADD COLUMN library_scan_ms INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE scan_runs ADD COLUMN source_inventory_ms INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE scan_runs ADD COLUMN matching_ms INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE scan_runs ADD COLUMN title_enrichment_ms INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE scan_runs ADD COLUMN linking_ms INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE scan_runs ADD COLUMN plex_refresh_ms INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE scan_runs ADD COLUMN dead_link_sweep_ms INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE scan_runs ADD COLUMN cache_hit_ratio REAL",
+            "ALTER TABLE scan_runs ADD COLUMN candidate_slots INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE scan_runs ADD COLUMN scored_candidates INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE scan_runs ADD COLUMN exact_id_hits INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE scan_runs ADD COLUMN auto_acquire_requests INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE scan_runs ADD COLUMN auto_acquire_missing_requests INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE scan_runs ADD COLUMN auto_acquire_cutoff_requests INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE scan_runs ADD COLUMN auto_acquire_dry_run_hits INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE scan_runs ADD COLUMN auto_acquire_submitted INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE scan_runs ADD COLUMN auto_acquire_no_result INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE scan_runs ADD COLUMN auto_acquire_blocked INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE scan_runs ADD COLUMN auto_acquire_failed INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE scan_runs ADD COLUMN auto_acquire_completed_linked INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE scan_runs ADD COLUMN auto_acquire_completed_unlinked INTEGER NOT NULL DEFAULT 0",
+        ];
+
+        for statement in alter_statements {
+            match sqlx::query(statement).execute(&mut **tx).await {
+                Ok(_) => {}
+                Err(err) if err.to_string().contains("duplicate column name") => {}
+                Err(err) => return Err(err.into()),
+            }
+        }
+
+        Ok(())
+    }
+
     #[cfg(test)]
     async fn migrate_down_one(&self, current_version: i64) -> Result<()> {
         match current_version {
+            8 => {
+                let columns = [
+                    "auto_acquire_completed_unlinked",
+                    "auto_acquire_completed_linked",
+                    "auto_acquire_failed",
+                    "auto_acquire_blocked",
+                    "auto_acquire_no_result",
+                    "auto_acquire_submitted",
+                    "auto_acquire_dry_run_hits",
+                    "auto_acquire_cutoff_requests",
+                    "auto_acquire_missing_requests",
+                    "auto_acquire_requests",
+                    "exact_id_hits",
+                    "scored_candidates",
+                    "candidate_slots",
+                    "cache_hit_ratio",
+                    "dead_link_sweep_ms",
+                    "plex_refresh_ms",
+                    "linking_ms",
+                    "title_enrichment_ms",
+                    "matching_ms",
+                    "source_inventory_ms",
+                    "library_scan_ms",
+                    "runtime_checks_ms",
+                    "search_missing",
+                    "library_filter",
+                ];
+
+                for column in columns {
+                    if self.column_exists("scan_runs", column).await? {
+                        sqlx::query(&format!("ALTER TABLE scan_runs DROP COLUMN {}", column))
+                            .execute(&self.pool)
+                            .await?;
+                    }
+                }
+            }
+            7 => {
+                if self
+                    .column_exists("acquisition_jobs", "query_hints_json")
+                    .await?
+                {
+                    sqlx::query("ALTER TABLE acquisition_jobs DROP COLUMN query_hints_json")
+                        .execute(&self.pool)
+                        .await?;
+                }
+            }
             6 => {
                 if self.column_exists("acquisition_jobs", "imdb_id").await? {
                     sqlx::query("ALTER TABLE acquisition_jobs DROP COLUMN imdb_id")
@@ -1120,6 +1312,7 @@ impl Database {
         now: DateTime<Utc>,
     ) -> Result<i64> {
         let categories_json = serde_json::to_string(&seed.categories)?;
+        let query_hints_json = serde_json::to_string(&seed.query_hints)?;
         let now_str = now.to_rfc3339();
         let existing = self
             .get_acquisition_job_by_request_key(&seed.request_key)
@@ -1131,6 +1324,7 @@ impl Database {
                 "UPDATE acquisition_jobs
                  SET label = ?,
                      query = ?,
+                     query_hints_json = ?,
                      imdb_id = ?,
                      categories_json = ?,
                      arr = ?,
@@ -1149,6 +1343,7 @@ impl Database {
             )
             .bind(&seed.label)
             .bind(&seed.query)
+            .bind(query_hints_json)
             .bind(seed.imdb_id.as_deref())
             .bind(categories_json)
             .bind(&seed.arr)
@@ -1174,6 +1369,7 @@ impl Database {
                 request_key,
                 label,
                 query,
+                query_hints_json,
                 imdb_id,
                 categories_json,
                 arr,
@@ -1183,11 +1379,12 @@ impl Database {
                 status,
                 created_at,
                 updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
         )
         .bind(&seed.request_key)
         .bind(&seed.label)
         .bind(&seed.query)
+        .bind(serde_json::to_string(&seed.query_hints)?)
         .bind(seed.imdb_id.as_deref())
         .bind(categories_json)
         .bind(&seed.arr)
@@ -1229,6 +1426,7 @@ impl Database {
                 request_key,
                 label,
                 query,
+                query_hints_json,
                 imdb_id,
                 categories_json,
                 arr,
@@ -1281,6 +1479,7 @@ impl Database {
                 request_key,
                 label,
                 query,
+                query_hints_json,
                 imdb_id,
                 categories_json,
                 arr,
@@ -1470,6 +1669,8 @@ impl Database {
         sqlx::query(
             "INSERT INTO scan_runs (
                 dry_run,
+                library_filter,
+                search_missing,
                 library_items_found,
                 source_items_found,
                 matches_found,
@@ -1478,10 +1679,34 @@ impl Database {
                 dead_marked,
                 links_removed,
                 links_skipped,
-                ambiguous_skipped
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ambiguous_skipped,
+                runtime_checks_ms,
+                library_scan_ms,
+                source_inventory_ms,
+                matching_ms,
+                title_enrichment_ms,
+                linking_ms,
+                plex_refresh_ms,
+                dead_link_sweep_ms,
+                cache_hit_ratio,
+                candidate_slots,
+                scored_candidates,
+                exact_id_hits,
+                auto_acquire_requests,
+                auto_acquire_missing_requests,
+                auto_acquire_cutoff_requests,
+                auto_acquire_dry_run_hits,
+                auto_acquire_submitted,
+                auto_acquire_no_result,
+                auto_acquire_blocked,
+                auto_acquire_failed,
+                auto_acquire_completed_linked,
+                auto_acquire_completed_unlinked
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(if run.dry_run { 1 } else { 0 })
+        .bind(run.library_filter.as_deref())
+        .bind(if run.search_missing { 1 } else { 0 })
         .bind(run.library_items_found)
         .bind(run.source_items_found)
         .bind(run.matches_found)
@@ -1491,6 +1716,28 @@ impl Database {
         .bind(run.links_removed)
         .bind(run.links_skipped)
         .bind(run.ambiguous_skipped)
+        .bind(run.runtime_checks_ms)
+        .bind(run.library_scan_ms)
+        .bind(run.source_inventory_ms)
+        .bind(run.matching_ms)
+        .bind(run.title_enrichment_ms)
+        .bind(run.linking_ms)
+        .bind(run.plex_refresh_ms)
+        .bind(run.dead_link_sweep_ms)
+        .bind(run.cache_hit_ratio)
+        .bind(run.candidate_slots)
+        .bind(run.scored_candidates)
+        .bind(run.exact_id_hits)
+        .bind(run.auto_acquire_requests)
+        .bind(run.auto_acquire_missing_requests)
+        .bind(run.auto_acquire_cutoff_requests)
+        .bind(run.auto_acquire_dry_run_hits)
+        .bind(run.auto_acquire_submitted)
+        .bind(run.auto_acquire_no_result)
+        .bind(run.auto_acquire_blocked)
+        .bind(run.auto_acquire_failed)
+        .bind(run.auto_acquire_completed_linked)
+        .bind(run.auto_acquire_completed_unlinked)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -1790,9 +2037,17 @@ impl Database {
     #[allow(dead_code)]
     pub async fn get_scan_history(&self, limit: i64) -> Result<Vec<ScanHistoryRecord>> {
         let rows = sqlx::query(
-            "SELECT id, run_at, dry_run, library_items_found, source_items_found,
+            "SELECT id, run_at, dry_run, library_filter, search_missing, library_items_found, source_items_found,
                     matches_found, links_created, links_updated, dead_marked,
-                    links_removed, links_skipped, ambiguous_skipped
+                    links_removed, links_skipped, ambiguous_skipped,
+                    runtime_checks_ms, library_scan_ms, source_inventory_ms,
+                    matching_ms, title_enrichment_ms, linking_ms, plex_refresh_ms,
+                    dead_link_sweep_ms, cache_hit_ratio, candidate_slots,
+                    scored_candidates, exact_id_hits, auto_acquire_requests,
+                    auto_acquire_missing_requests, auto_acquire_cutoff_requests,
+                    auto_acquire_dry_run_hits, auto_acquire_submitted,
+                    auto_acquire_no_result, auto_acquire_blocked, auto_acquire_failed,
+                    auto_acquire_completed_linked, auto_acquire_completed_unlinked
              FROM scan_runs ORDER BY run_at DESC LIMIT ?",
         )
         .bind(limit)
@@ -1801,22 +2056,31 @@ impl Database {
 
         let mut records = Vec::with_capacity(rows.len());
         for row in rows {
-            records.push(ScanHistoryRecord {
-                id: row.get("id"),
-                started_at: row.get("run_at"),
-                dry_run: row.get::<i64, _>("dry_run") != 0,
-                library_items_found: row.get("library_items_found"),
-                source_items_found: row.get("source_items_found"),
-                matches_found: row.get("matches_found"),
-                links_created: row.get("links_created"),
-                links_updated: row.get("links_updated"),
-                dead_marked: row.get("dead_marked"),
-                links_removed: row.get("links_removed"),
-                links_skipped: row.get("links_skipped"),
-                ambiguous_skipped: row.get("ambiguous_skipped"),
-            });
+            records.push(self.row_to_scan_history_record(&row));
         }
         Ok(records)
+    }
+
+    pub async fn get_scan_run(&self, id: i64) -> Result<Option<ScanHistoryRecord>> {
+        let row = sqlx::query(
+            "SELECT id, run_at, dry_run, library_filter, search_missing, library_items_found, source_items_found,
+                    matches_found, links_created, links_updated, dead_marked,
+                    links_removed, links_skipped, ambiguous_skipped,
+                    runtime_checks_ms, library_scan_ms, source_inventory_ms,
+                    matching_ms, title_enrichment_ms, linking_ms, plex_refresh_ms,
+                    dead_link_sweep_ms, cache_hit_ratio, candidate_slots,
+                    scored_candidates, exact_id_hits, auto_acquire_requests,
+                    auto_acquire_missing_requests, auto_acquire_cutoff_requests,
+                    auto_acquire_dry_run_hits, auto_acquire_submitted,
+                    auto_acquire_no_result, auto_acquire_blocked, auto_acquire_failed,
+                    auto_acquire_completed_linked, auto_acquire_completed_unlinked
+             FROM scan_runs WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|row| self.row_to_scan_history_record(&row)))
     }
 
     // --- Helpers ---
@@ -1848,6 +2112,47 @@ impl Database {
         })
     }
 
+    fn row_to_scan_history_record(&self, row: &sqlx::sqlite::SqliteRow) -> ScanHistoryRecord {
+        ScanHistoryRecord {
+            id: row.get("id"),
+            started_at: row.get("run_at"),
+            dry_run: row.get::<i64, _>("dry_run") != 0,
+            library_filter: row.get("library_filter"),
+            search_missing: row.get::<i64, _>("search_missing") != 0,
+            library_items_found: row.get("library_items_found"),
+            source_items_found: row.get("source_items_found"),
+            matches_found: row.get("matches_found"),
+            links_created: row.get("links_created"),
+            links_updated: row.get("links_updated"),
+            dead_marked: row.get("dead_marked"),
+            links_removed: row.get("links_removed"),
+            links_skipped: row.get("links_skipped"),
+            ambiguous_skipped: row.get("ambiguous_skipped"),
+            runtime_checks_ms: row.get("runtime_checks_ms"),
+            library_scan_ms: row.get("library_scan_ms"),
+            source_inventory_ms: row.get("source_inventory_ms"),
+            matching_ms: row.get("matching_ms"),
+            title_enrichment_ms: row.get("title_enrichment_ms"),
+            linking_ms: row.get("linking_ms"),
+            plex_refresh_ms: row.get("plex_refresh_ms"),
+            dead_link_sweep_ms: row.get("dead_link_sweep_ms"),
+            cache_hit_ratio: row.get("cache_hit_ratio"),
+            candidate_slots: row.get("candidate_slots"),
+            scored_candidates: row.get("scored_candidates"),
+            exact_id_hits: row.get("exact_id_hits"),
+            auto_acquire_requests: row.get("auto_acquire_requests"),
+            auto_acquire_missing_requests: row.get("auto_acquire_missing_requests"),
+            auto_acquire_cutoff_requests: row.get("auto_acquire_cutoff_requests"),
+            auto_acquire_dry_run_hits: row.get("auto_acquire_dry_run_hits"),
+            auto_acquire_submitted: row.get("auto_acquire_submitted"),
+            auto_acquire_no_result: row.get("auto_acquire_no_result"),
+            auto_acquire_blocked: row.get("auto_acquire_blocked"),
+            auto_acquire_failed: row.get("auto_acquire_failed"),
+            auto_acquire_completed_linked: row.get("auto_acquire_completed_linked"),
+            auto_acquire_completed_unlinked: row.get("auto_acquire_completed_unlinked"),
+        }
+    }
+
     async fn get_acquisition_job_by_request_key(
         &self,
         request_key: &str,
@@ -1858,6 +2163,7 @@ impl Database {
                 request_key,
                 label,
                 query,
+                query_hints_json,
                 imdb_id,
                 categories_json,
                 arr,
@@ -1887,6 +2193,7 @@ impl Database {
         row: &sqlx::sqlite::SqliteRow,
     ) -> Result<AcquisitionJobRecord> {
         let categories_json: String = row.get("categories_json");
+        let query_hints_json: String = row.get("query_hints_json");
         let relink_kind: String = row.get("relink_kind");
         let status: String = row.get("status");
 
@@ -1895,6 +2202,7 @@ impl Database {
             request_key: row.get("request_key"),
             label: row.get("label"),
             query: row.get("query"),
+            query_hints: serde_json::from_str(&query_hints_json)?,
             imdb_id: row.get("imdb_id"),
             categories: serde_json::from_str(&categories_json)?,
             arr: row.get("arr"),
@@ -2291,6 +2599,7 @@ mod tests {
             request_key: "media:tvdb-12345".to_string(),
             label: "Test Show".to_string(),
             query: "Test Show S01E01".to_string(),
+            query_hints: vec!["Example Alt 1".to_string()],
             imdb_id: None,
             categories: vec![5000],
             arr: "sonarr".to_string(),
@@ -2310,6 +2619,7 @@ mod tests {
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].status, AcquisitionJobStatus::Queued);
         assert_eq!(active[0].categories, vec![5000]);
+        assert_eq!(active[0].query_hints, vec!["Example Alt 1".to_string()]);
         let counts = db.get_acquisition_job_counts().await.unwrap();
         assert_eq!(counts.queued, 1);
         assert_eq!(counts.active_total(), 1);
@@ -2388,6 +2698,7 @@ mod tests {
             request_key: "episode:tvdb-12345:1:1".to_string(),
             label: "Test Show S01E01".to_string(),
             query: "Test Show S01E01".to_string(),
+            query_hints: vec!["Alt Title 1".to_string()],
             imdb_id: None,
             categories: vec![5070],
             arr: "sonarr-anime".to_string(),
@@ -2567,6 +2878,7 @@ mod tests {
             request_key: request_key.to_string(),
             label: label.to_string(),
             query: "some query".to_string(),
+            query_hints: Vec::new(),
             imdb_id: None,
             categories: vec![5000],
             arr: "sonarr".to_string(),
@@ -3049,14 +3361,40 @@ mod tests {
             links_removed: 1,
             links_skipped: 3,
             ambiguous_skipped: 7,
+            library_filter: Some("Anime".to_string()),
+            search_missing: true,
+            runtime_checks_ms: 11,
+            library_scan_ms: 22,
+            source_inventory_ms: 33,
+            matching_ms: 44,
+            title_enrichment_ms: 55,
+            linking_ms: 66,
+            plex_refresh_ms: 77,
+            dead_link_sweep_ms: 88,
+            cache_hit_ratio: Some(1.0),
+            candidate_slots: 1234,
+            scored_candidates: 56,
+            exact_id_hits: 7,
+            auto_acquire_requests: 10,
+            auto_acquire_missing_requests: 5,
+            auto_acquire_cutoff_requests: 5,
+            auto_acquire_dry_run_hits: 8,
+            auto_acquire_submitted: 0,
+            auto_acquire_no_result: 2,
+            auto_acquire_blocked: 0,
+            auto_acquire_failed: 0,
+            auto_acquire_completed_linked: 0,
+            auto_acquire_completed_unlinked: 0,
         };
 
         db.record_scan_run(&run).await.unwrap();
 
         let row = sqlx::query(
-            "SELECT dry_run, library_items_found, source_items_found, matches_found, \
+            "SELECT dry_run, library_filter, search_missing, library_items_found, source_items_found, matches_found, \
              links_created, links_updated, dead_marked, links_removed, links_skipped, \
-             ambiguous_skipped FROM scan_runs ORDER BY id DESC LIMIT 1",
+             ambiguous_skipped, runtime_checks_ms, cache_hit_ratio, candidate_slots, \
+             auto_acquire_requests, auto_acquire_dry_run_hits, auto_acquire_no_result \
+             FROM scan_runs ORDER BY id DESC LIMIT 1",
         )
         .fetch_one(&db.pool)
         .await
@@ -3064,6 +3402,10 @@ mod tests {
 
         let dry_run: i64 = row.get("dry_run");
         assert_eq!(dry_run, 1, "dry_run stored as 1");
+        let library_filter: Option<String> = row.get("library_filter");
+        assert_eq!(library_filter.as_deref(), Some("Anime"));
+        let search_missing: i64 = row.get("search_missing");
+        assert_eq!(search_missing, 1);
         let lib: i64 = row.get("library_items_found");
         assert_eq!(lib, 42);
         let src: i64 = row.get("source_items_found");
@@ -3082,6 +3424,18 @@ mod tests {
         assert_eq!(skipped, 3);
         let ambiguous: i64 = row.get("ambiguous_skipped");
         assert_eq!(ambiguous, 7);
+        let runtime_checks_ms: i64 = row.get("runtime_checks_ms");
+        assert_eq!(runtime_checks_ms, 11);
+        let cache_hit_ratio: f64 = row.get("cache_hit_ratio");
+        assert_eq!(cache_hit_ratio, 1.0);
+        let candidate_slots: i64 = row.get("candidate_slots");
+        assert_eq!(candidate_slots, 1234);
+        let auto_acquire_requests: i64 = row.get("auto_acquire_requests");
+        assert_eq!(auto_acquire_requests, 10);
+        let auto_acquire_dry_run_hits: i64 = row.get("auto_acquire_dry_run_hits");
+        assert_eq!(auto_acquire_dry_run_hits, 8);
+        let auto_acquire_no_result: i64 = row.get("auto_acquire_no_result");
+        assert_eq!(auto_acquire_no_result, 2);
     }
 
     // ── Test 9: mark_removed and get_link_by_target ────────────────────────────
@@ -3343,6 +3697,7 @@ mod tests {
                 links_removed: 0,
                 links_skipped: 0,
                 ambiguous_skipped: 0,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -3358,5 +3713,48 @@ mod tests {
         // Full history returns all 3
         let all = db.get_scan_history(10).await.unwrap();
         assert_eq!(all.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_get_scan_run_returns_specific_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        db.record_scan_run(&ScanRunRecord {
+            dry_run: true,
+            library_filter: Some("Anime".to_string()),
+            search_missing: true,
+            library_items_found: 10,
+            source_items_found: 20,
+            matches_found: 5,
+            links_created: 1,
+            links_updated: 2,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        db.record_scan_run(&ScanRunRecord {
+            dry_run: false,
+            library_filter: Some("Movies".to_string()),
+            search_missing: false,
+            library_items_found: 30,
+            source_items_found: 40,
+            matches_found: 15,
+            links_created: 3,
+            links_updated: 4,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let latest = db.get_scan_history(1).await.unwrap();
+        let run = db.get_scan_run(latest[0].id).await.unwrap().unwrap();
+
+        assert_eq!(run.id, latest[0].id);
+        assert_eq!(run.library_filter.as_deref(), Some("Movies"));
+        assert_eq!(run.matches_found, 15);
+        assert_eq!(run.links_created, 3);
     }
 }

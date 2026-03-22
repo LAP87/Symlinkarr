@@ -4,26 +4,79 @@
 {% block nav_links %}active{% endblock %}
 
 {% block content %}
-<div class="page-header">
-    <h1>&#128683; Dead Links</h1>
-    <p>Symlinks whose source files are no longer accessible.</p>
+<div class="page-header page-header--split">
+    <div>
+        <p class="page-kicker">Recovery</p>
+        <h1>&#128683; Dead Links</h1>
+        <p class="page-lead">These symlinks currently point at missing source files. Repair first, prune only when replacement is impossible.</p>
+    </div>
+    <div class="header-badges">
+        <span class="badge badge-danger">{{ links|length }} dead</span>
+        <span class="badge badge-info">Repair queue</span>
+    </div>
 </div>
 
 {% if links|length > 0 %}
-<div class="alert alert-warning">
-    <strong>&#9888;&#65039; {{ links|length }} dead link(s) detected.</strong>
-    Use auto-repair to attempt replacement, or run cleanup to prune unrepairable links.
+<div class="split-grid">
+    <section class="card">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Snapshot</p>
+                <h2 class="section-title">Operational summary</h2>
+            </div>
+        </div>
+
+        <div class="metric-grid metric-grid--compact">
+            <div class="metric-card">
+                <span class="metric-label">Total Dead Links</span>
+                <strong>{{ links|length }}</strong>
+            </div>
+            <div class="metric-card">
+                <span class="metric-label">Affected Media Types</span>
+                <strong>tv / movie</strong>
+                <span class="text-muted">Exact type is shown on each row.</span>
+            </div>
+            <div class="metric-card">
+                <span class="metric-label">Triage Order</span>
+                <strong>Repair first</strong>
+                <span class="text-muted">Only prune once no replacement exists.</span>
+            </div>
+        </div>
+
+        <div class="alert alert-warning mt-2">
+            <strong>&#9888;&#65039; {{ links|length }} dead link(s) detected.</strong>
+            Use auto-repair to attempt replacement, or run cleanup to prune unrepairable links.
+        </div>
+    </section>
+
+    <section class="card">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Actions</p>
+                <h2 class="section-title">What to do next</h2>
+            </div>
+        </div>
+
+        <div class="actions">
+            <form action="/links/repair" method="post">
+                <button type="submit" class="btn btn-primary">&#128296; Auto-Repair All</button>
+            </form>
+            <a href="/cleanup" class="btn btn-secondary">&#129529; Cleanup</a>
+            <a href="/links" class="btn btn-secondary">&#128279; All Links</a>
+            <a href="/" class="btn">&#127968; Dashboard</a>
+        </div>
+    </section>
 </div>
 
-<div class="card" style="margin-bottom:1rem;">
-    <div class="actions mb-2">
-        <form action="/links/repair" method="post">
-            <button type="submit" class="btn btn-primary">&#128296; Auto-Repair All</button>
-        </form>
-        <a href="/cleanup" class="btn btn-secondary">&#129529; Cleanup</a>
+<div class="card">
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Inventory</p>
+            <h2 class="section-title">Dead-link records</h2>
+        </div>
     </div>
 
-    <table class="data-table">
+    <table class="data-table dense-table">
         <thead>
             <tr>
                 <th>Media ID</th>
@@ -37,7 +90,7 @@
             {% for link in links %}
             <tr>
                 <td>{{ link.media_id }}</td>
-                <td>{{ link.media_type }}</td>
+                <td><span class="badge badge-info">{{ link.media_type }}</span></td>
                 <td><code class="mono">{{ link.target_path.display() }}</code></td>
                 <td><code class="mono text-error">{{ link.source_path.display() }}</code></td>
                 <td>

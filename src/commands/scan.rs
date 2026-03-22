@@ -9,7 +9,9 @@ use crate::api::bazarr::BazarrClient;
 use crate::api::plex::{plan_refresh_batches, PlexClient};
 use crate::api::tmdb::TmdbClient;
 use crate::api::tvdb::TvdbClient;
-use crate::auto_acquire::{process_auto_acquire_queue, AutoAcquireRequest, RelinkCheck};
+use crate::auto_acquire::{
+    process_auto_acquire_queue, AutoAcquireBatchSummary, AutoAcquireRequest, RelinkCheck,
+};
 use crate::commands::{
     decypharr_arr_name, is_safe_auto_acquire_query, prowlarr_categories, runtime_source_health,
     runtime_source_probe_path, selected_libraries, DIRECTORY_PROBE_TIMEOUT,
@@ -85,6 +87,9 @@ pub(crate) async fn run_scan(
     let _stdout_guard = stdout_text_guard(output != OutputFormat::Json);
     info!("=== Symlinkarr Scan ===");
     let mut telemetry = ScanTelemetry::default();
+    let mut auto_acquire_summary = AutoAcquireBatchSummary::default();
+    let mut auto_acquire_missing_requests = 0usize;
+    let mut auto_acquire_cutoff_requests = 0usize;
 
     let selected_libraries = selected_libraries(cfg, library_filter)?;
 
@@ -298,6 +303,7 @@ pub(crate) async fn run_scan(
                 let request = AutoAcquireRequest {
                     label: item.title.clone(),
                     query: query.clone(),
+                    query_hints: Vec::new(),
                     imdb_id: lookup_item_imdb_id(tmdb.as_ref(), db, item).await,
                     categories: cats,
                     arr: decypharr_arr_name(cfg, item.media_type, item.content_type).to_string(),
@@ -312,12 +318,17 @@ pub(crate) async fn run_scan(
             let remaining = max_grabs - requests.len();
             let cutoff_budget = if remaining >= 4 { remaining / 2 } else { 0 };
             let missing_budget = remaining.saturating_sub(cutoff_budget);
+            let anime_identity = crate::anime_identity::AnimeIdentityGraph::load(cfg, db).await;
+            let anime_ctx = crate::anime_scanner::AnimeAcquireContext {
+                cfg,
+                db,
+                tmdb: tmdb.as_ref(),
+                anime_identity: anime_identity.as_ref(),
+            };
 
             let anime_missing_requests = match crate::anime_scanner::build_anime_episode_requests(
                 crate::anime_scanner::AnimeEpisodeKind::Missing,
-                cfg,
-                db,
-                tmdb.as_ref(),
+                anime_ctx,
                 &library_items,
                 &matched_media_ids,
                 missing_budget,
@@ -333,6 +344,7 @@ pub(crate) async fn run_scan(
                     Vec::new()
                 }
             };
+            auto_acquire_missing_requests = anime_missing_requests.len();
             if !anime_missing_requests.is_empty() {
                 user_println(format!(
                     "   🎌 Sonarr Anime: queued {} episode-specific missing request(s)",
@@ -346,9 +358,7 @@ pub(crate) async fn run_scan(
                 let anime_cutoff_requests =
                     match crate::anime_scanner::build_anime_episode_requests(
                         crate::anime_scanner::AnimeEpisodeKind::CutoffUpgrade,
-                        cfg,
-                        db,
-                        tmdb.as_ref(),
+                        anime_ctx,
                         &library_items,
                         &matched_media_ids,
                         remaining,
@@ -364,6 +374,7 @@ pub(crate) async fn run_scan(
                             Vec::new()
                         }
                     };
+                auto_acquire_cutoff_requests = anime_cutoff_requests.len();
                 if !anime_cutoff_requests.is_empty() {
                     user_println(format!(
                         "   🎌 Sonarr Anime: queued {} cutoff-upgrade request(s)",
@@ -376,6 +387,7 @@ pub(crate) async fn run_scan(
 
         match process_auto_acquire_queue(cfg, db, requests, effective_dry_run).await {
             Ok(summary) => {
+                auto_acquire_summary = summary.clone();
                 if summary.total > 0 {
                     user_println(format!(
                         "\n   📡 Auto-acquire summary: submitted={}, linked={}, completed_unlinked={}, no_result={}, blocked={}, failed={}",
@@ -405,6 +417,8 @@ pub(crate) async fn run_scan(
 
     db.record_scan_run(&crate::db::ScanRunRecord {
         dry_run: effective_dry_run,
+        library_filter: library_filter.map(str::to_string),
+        search_missing,
         library_items_found: library_items.len() as i64,
         source_items_found: source_items.len() as i64,
         matches_found: matches.len() as i64,
@@ -414,6 +428,28 @@ pub(crate) async fn run_scan(
         links_removed: dead.removed as i64,
         links_skipped: (link_summary.skipped + dead.skipped) as i64,
         ambiguous_skipped: telemetry.match_stats.ambiguous_skipped as i64,
+        runtime_checks_ms: duration_ms_i64(telemetry.runtime_checks),
+        library_scan_ms: duration_ms_i64(telemetry.library_scan),
+        source_inventory_ms: duration_ms_i64(telemetry.source_inventory),
+        matching_ms: duration_ms_i64(telemetry.match_total),
+        title_enrichment_ms: duration_ms_i64(telemetry.episode_title_enrichment),
+        linking_ms: duration_ms_i64(telemetry.linking),
+        plex_refresh_ms: duration_ms_i64(telemetry.plex_refresh),
+        dead_link_sweep_ms: duration_ms_i64(telemetry.dead_link_sweep),
+        cache_hit_ratio: telemetry.source_inventory_stats.cache_hit_ratio(),
+        candidate_slots: telemetry.match_stats.prefiltered_library_candidates as i64,
+        scored_candidates: telemetry.match_stats.scored_candidates as i64,
+        exact_id_hits: telemetry.match_stats.exact_id_hits as i64,
+        auto_acquire_requests: auto_acquire_summary.total as i64,
+        auto_acquire_missing_requests: auto_acquire_missing_requests as i64,
+        auto_acquire_cutoff_requests: auto_acquire_cutoff_requests as i64,
+        auto_acquire_dry_run_hits: auto_acquire_summary.dry_run as i64,
+        auto_acquire_submitted: auto_acquire_summary.submitted as i64,
+        auto_acquire_no_result: auto_acquire_summary.no_result as i64,
+        auto_acquire_blocked: auto_acquire_summary.blocked as i64,
+        auto_acquire_failed: auto_acquire_summary.failed as i64,
+        auto_acquire_completed_linked: auto_acquire_summary.completed_linked as i64,
+        auto_acquire_completed_unlinked: auto_acquire_summary.completed_unlinked as i64,
     })
     .await?;
 
@@ -599,6 +635,14 @@ fn log_scan_telemetry(
 
 fn fmt_duration(duration: Duration) -> String {
     format!("{:.1}s", duration.as_secs_f64())
+}
+
+fn duration_ms_i64(duration: Duration) -> i64 {
+    duration
+        .as_millis()
+        .min(i64::MAX as u128)
+        .try_into()
+        .unwrap_or(i64::MAX)
 }
 
 // ─── Scan-specific helpers ─────────────────────────────────────────

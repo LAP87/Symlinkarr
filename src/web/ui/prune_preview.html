@@ -4,49 +4,105 @@
 {% block nav_cleanup %}active{% endblock %}
 
 {% block content %}
-<div class="page-header">
-    <h1>&#128064; Prune Preview</h1>
-    <p>Review the symlinks that would be removed during cleanup prune operation.</p>
+<div class="page-header page-header--split">
+    <div>
+        <p class="page-kicker">Cleanup</p>
+        <h1>&#128064; Prune Preview</h1>
+        <p class="page-lead">Read-only review of the exact report that prune will use. If this page looks wrong, stop and rerun the audit before applying anything.</p>
+    </div>
+    <div class="header-badges">
+        <span class="badge badge-danger">{{ total }} findings</span>
+        <span class="badge badge-info">Preview only</span>
+    </div>
 </div>
 
 {% if findings|length > 0 %}
-<div class="card-grid">
-    <div class="card" style="text-align:center;">
-        <div class="card-value">{{ total }}</div>
-        <div class="card-label">Total Findings</div>
-    </div>
-    <div class="card" style="text-align:center;">
-        <div class="card-value text-error">{{ critical }}</div>
-        <div class="card-label">Critical</div>
-    </div>
-    <div class="card" style="text-align:center;">
-        <div class="card-value text-warning">{{ high }}</div>
-        <div class="card-label">High</div>
-    </div>
-    <div class="card" style="text-align:center;">
-        <div class="card-value text-info">{{ warning }}</div>
-        <div class="card-label">Warning</div>
-    </div>
+<div class="split-grid">
+    <section class="card hero-card hero-card--accent">
+        <p class="hero-label">Report Summary</p>
+        <div class="hero-value">{{ total }}</div>
+        <p class="hero-copy">This report is the exact input to prune. Review the counts below first, then check the rows before you paste the token.</p>
+        <div class="hero-inline-stats">
+            <span>Critical <strong class="text-error">{{ critical }}</strong></span>
+            <span>High <strong class="text-warning">{{ high }}</strong></span>
+            <span>Warning <strong class="text-info">{{ warning }}</strong></span>
+        </div>
+    </section>
+
+    <section class="card">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Review Gate</p>
+                <h2 class="section-title">What to check before apply</h2>
+            </div>
+        </div>
+
+        <div class="alert alert-warning">
+            <strong>&#9888;&#65039; This preview is not destructive.</strong>
+            Use the confirmation token only after you have reviewed the rows below. The token is tied to this report and should not be reused on a different preview.
+        </div>
+
+        <div class="metric-grid metric-grid--compact">
+            <div class="metric-card">
+                <span class="metric-label">Safe to prune</span>
+                <strong>{{ critical + high }}</strong>
+            </div>
+            <div class="metric-card">
+                <span class="metric-label">Warnings only</span>
+                <strong>{{ warning }}</strong>
+            </div>
+            <div class="metric-card">
+                <span class="metric-label">Token required</span>
+                <strong>Yes</strong>
+            </div>
+        </div>
+
+        {% match report_path %}
+        {% when Some with (path) %}
+        <p class="text-muted mt-1">Report file: <code class="mono">{{ path.display() }}</code></p>
+        {% when None %}
+        <p class="text-muted mt-1">The report path could not be preserved, so preview is view-only until you rerun the audit.</p>
+        {% endmatch %}
+    </section>
 </div>
 
 {% match confirmation_token %}
 {% when Some with (token) %}
 <div class="alert alert-warning">
-    <h3>&#9888;&#65039; Safety Information</h3>
+    <h3>&#9888;&#65039; Apply Gate</h3>
     <p>
         <strong>Confirmation Token:</strong> <code class="mono">{{ token }}</code><br>
-        This token is required to apply the prune operation. Copy it for use in the confirmation step.
+        This token applies only to this report. If anything changed in the library since the audit, rerun the audit and get a fresh token.
     </p>
     <p class="mt-1">
-        Only high/critical findings and safe duplicate warnings will be pruned.
-        Pure warning-only findings (like season count anomalies alone) are excluded for safety.
+        Prune removes only the entries listed in this report. Warning-only anomalies are shown for context, but they are not the primary prune target unless they also appear in a safer duplicate or broken-source path.
     </p>
 </div>
 {% match report_path %}
 {% when Some with (path) %}
 <div class="card">
-    <h2 class="section-title">&#128203; Findings Details</h2>
-    <table class="data-table">
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Findings</p>
+            <h2 class="section-title">Row-by-row review</h2>
+            <p class="text-muted">Scan by severity first, then by path and reason tags. The list is ordered by the audit output, so the most urgent findings stay near the top.</p>
+        </div>
+    </div>
+    <div class="metric-grid metric-grid--compact mb-2">
+        <div class="metric-card">
+            <span class="metric-label">Critical + High</span>
+            <strong>{{ critical + high }}</strong>
+        </div>
+        <div class="metric-card">
+            <span class="metric-label">Warnings</span>
+            <strong>{{ warning }}</strong>
+        </div>
+        <div class="metric-card">
+            <span class="metric-label">Report file</span>
+            <strong class="mono">{{ path.display() }}</strong>
+        </div>
+    </div>
+    <table class="data-table dense-table">
         <thead>
             <tr>
                 <th>Severity</th>
@@ -54,6 +110,7 @@
                 <th>Source Path</th>
                 <th>Media ID</th>
                 <th>Season/Episode</th>
+                <th>Better Match</th>
                 <th>Reasons</th>
             </tr>
         </thead>
@@ -61,7 +118,14 @@
             {% for finding in findings %}
             <tr>
                 <td>
-                    <span class="badge badge-danger">{{ finding.severity }}</span>
+                    {% match finding.severity %}
+                    {% when crate::cleanup_audit::FindingSeverity::Critical %}
+                    <span class="badge badge-danger">Critical</span>
+                    {% when crate::cleanup_audit::FindingSeverity::High %}
+                    <span class="badge badge-warning">High</span>
+                    {% when crate::cleanup_audit::FindingSeverity::Warning %}
+                    <span class="badge badge-info">Warning</span>
+                    {% endmatch %}
                 </td>
                 <td><code class="mono">{{ finding.symlink_path.display() }}</code></td>
                 <td><code class="mono">{{ finding.source_path.display() }}</code></td>
@@ -74,9 +138,23 @@
                     {% when None %}N/A{% endmatch %}
                 </td>
                 <td>
-                    {% for reason in finding.reasons %}
-                    <span class="badge badge-info" style="margin:1px;">{{ reason }}</span>
-                    {% endfor %}
+                    {% match finding.alternate_match %}
+                    {% when Some with (alt) %}
+                    <div class="badge-stack">
+                        <strong>{{ alt.title }}</strong>
+                        <span class="text-muted mono">{{ alt.media_id }}</span>
+                        <span class="badge badge-warning">score {{ "{:.2}"|format(alt.score) }}</span>
+                    </div>
+                    {% when None %}
+                    <span class="text-muted">N/A</span>
+                    {% endmatch %}
+                </td>
+                <td>
+                    <span class="badge-stack">
+                        {% for reason in finding.reasons %}
+                        <span class="badge badge-info">{{ reason }}</span>
+                        {% endfor %}
+                    </span>
                 </td>
             </tr>
             {% endfor %}
@@ -89,13 +167,13 @@
         <input type="hidden" name="report" value="{{ path.display() }}">
         <div class="form-group">
             <label class="form-label" for="token">Confirmation Token:</label>
-            <input type="password" id="token" name="token" class="form-control" style="max-width:400px;" placeholder="Enter confirmation token from above" required>
+            <input type="password" id="token" name="token" class="form-control field-max-md" placeholder="Paste the token from this report only" required>
             <small class="text-muted">
-                Get the token from the audit results or preview step above
+                The token is report-specific. If you rerun the audit, fetch a fresh token before applying prune.
             </small>
         </div>
         <div class="actions mt-2">
-            <button type="submit" class="btn btn-danger" style="background:var(--error);">
+            <button type="submit" class="btn btn-danger">
                 &#9888;&#65039; Apply Prune
             </button>
             <a href="/cleanup" class="btn btn-secondary">&#8592; Back to Cleanup</a>
@@ -105,7 +183,7 @@
 {% when None %}
 <div class="alert alert-warning">
     <h3>&#9888;&#65039; Preview Unavailable</h3>
-    <p>The prune preview could not preserve the report path, so applying prune from this page is disabled.</p>
+    <p>The prune preview could not preserve the report path, so apply is disabled from this page. Rerun the audit to get a fresh preview and token pair.</p>
 </div>
 {% endmatch %}
 {% when None %}
@@ -117,7 +195,7 @@
 {% else %}
 <div class="alert alert-success">
     <h2>&#9989; No Issues Found</h2>
-    <p>Your symlink library appears to be in good condition! No problematic links were detected during the audit.</p>
+    <p>No prune candidates were found. The audit did not identify any links that should be removed, so there is nothing to preview or apply.</p>
 </div>
 
 <div class="actions mt-2">

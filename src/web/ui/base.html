@@ -75,18 +75,19 @@
 
         <!-- Main content -->
         <main class="main-content">
-            {% block content %}{% endblock %}
+            <div class="main-shell">
+                {% block content %}{% endblock %}
+
+                <footer class="footer">
+                    <div>
+                        Symlinkarr v0.1.0 |
+                        <a href="https://github.com/LAP87/Symlinkarr" target="_blank">GitHub</a>
+                    </div>
+                    <div class="status-indicator healthy"></div>
+                </footer>
+            </div>
         </main>
     </div>
-
-    <!-- Footer -->
-    <footer class="footer">
-        <div>
-            Symlinkarr v0.1.0 |
-            <a href="https://github.com/anthropics/claude-code" target="_blank">GitHub</a>
-        </div>
-        <div class="status-indicator healthy"></div>
-    </footer>
 
     {% block scripts %}{% endblock %}
 </body>

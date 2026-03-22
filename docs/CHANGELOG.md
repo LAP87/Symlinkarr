@@ -1,5 +1,99 @@
 # Symlinkarr Changelog
 
+## Release Target
+
+- package version for this push: `0.2.0-beta.1`
+- posture: `stable core, evolving ops`
+- intended use: local-first host or Docker installs, with Windows 11 users running through WSL2 or a Linux container
+
+## 2026-03-22 - Web Exposure Hardening + Cleanup Audit API Summary
+
+### Code Changes
+
+- web UI bind address is now configurable through `web.bind_address`, with loopback default for host installs.
+  - files: `src/config.rs`, `src/web/mod.rs`, `config.example.yaml`, `config.docker.yaml`
+- the bundled web/API server no longer enables permissive cross-origin access by default.
+  - file: `src/web/mod.rs`
+- `POST /api/v1/cleanup/audit` now returns the real report summary instead of placeholder zeroes.
+  - files: `src/web/api/mod.rs`, `src/web/mod.rs`
+
+### Docs
+
+- documented `web.bind_address`, safer web exposure defaults, and the WSL2/Linux-container requirement for Windows 11 users.
+  - files: `README.md`, `docs/CLI_MANUAL.md`, `docs/API_SCHEMA.md`
+
+### Validation
+
+- `cargo test web::tests::cleanup_audit_api_returns_report_summary -- --nocapture`
+- `cargo test config::tests::config_load_parses_web_bind_address -- --nocapture`
+
+## 2026-03-22 - Cleanup Audit Throughput + Plex Path Compare
+
+### Code Changes
+
+- cleanup audit now collects symlink entries before metadata/Arr loading and scopes metadata work to referenced media IDs only.
+  - files: `src/cleanup_audit.rs`
+- cleanup audit metadata fetch now reuses the matcher's cache-first metadata path, fixing TMDB movie-vs-TV dispatch and collapsing full-library audit runtime from a near-stalled metadata crawl to a practical run.
+  - files: `src/cleanup_audit.rs`, `src/matcher.rs`
+- cleanup prune preview now carries optional `alternate_match` context through to the UI so alternate-owner findings show the better candidate directly.
+  - files: `src/cleanup_audit.rs`, `src/web/templates.rs`, `src/web/ui/prune_preview.html`
+- report command now supports optional Plex DB path comparison via `--plex-db`.
+  - compares actual filesystem symlink paths, active Symlinkarr DB link targets, and Plex-indexed `media_parts.file` paths under the selected library roots
+  - files: `src/main.rs`, `src/commands/report.rs`, `src/plex_db.rs`
+- Plex path compare now treats `deleted_at` as advisory only.
+  - `plex_deleted_and_known_missing_source` is the strong signal; `plex_deleted_without_known_missing_source` is explicitly separated so transient RD-mount outages do not become false cleanup truth
+  - files: `src/commands/report.rs`, `src/plex_db.rs`
+
+### Validation
+
+- `cargo test -- --nocapture`
+  - result: `298 passed; 0 failed`
+- `cargo clippy --all-targets --all-features -- -D warnings`
+  - result: passed
+- `target/debug/symlinkarr cleanup audit --scope all --out backups/cleanup-audit-all-altcontext-20260322-185300.json`
+  - result:
+    - findings: `194812`
+    - critical: `7907`
+    - high: `176547`
+    - warning: `10358`
+    - active symlinks: `62253`
+    - dead links: `211`
+- `cargo run -- report --output json --plex-db "/var/lib/plex/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db"`
+  - result:
+    - filesystem symlinks: `221924`
+    - DB active links: `62253`
+    - Plex indexed files: `203903`
+    - Plex deleted-only paths: `110`
+    - Plex deleted + known missing source: `0`
+    - in all three: `7523`
+
+## 2026-03-21 - Web CLI + Documentation Refresh
+
+### Code Changes
+
+- added a dedicated `symlinkarr web` subcommand so the web UI can run without starting daemon mode.
+  - file: `src/main.rs`
+- added CLI parsing coverage for the new `web` command.
+  - file: `src/main.rs`
+
+### Docs
+
+- added a full CLI manual covering current top-level commands, subcommands, flags, and examples.
+  - file: `docs/CLI_MANUAL.md`
+- added a hand-maintained web/API schema for `/api/v1`.
+  - file: `docs/API_SCHEMA.md`
+- updated `README.md` to reflect the actual current command surface, web startup path, and live docs.
+  - file: `README.md`
+
+### Validation
+
+- `cargo run -- --help`
+  - result: includes `web`
+- `cargo run -- web --help`
+  - result: passed
+- `cargo test cli_accepts_web_subcommand -- --nocapture`
+  - result: passed
+
 ## 2026-03-15 - RD 429 Fix + Cache Management
 
 ### Problem

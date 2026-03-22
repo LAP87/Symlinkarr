@@ -1,0 +1,103 @@
+{% extends "web/ui/base.html" %}
+
+{% block title %}Scan Run - Symlinkarr{% endblock %}
+{% block nav_scan %}active{% endblock %}
+
+{% block content %}
+<div class="page-header page-header--split">
+    <div>
+        <p class="page-kicker">Detail</p>
+        <h1>Scan Run Detail</h1>
+        <p class="page-lead">A single recorded run, with phase timings, matcher signals, and acquisition outcomes.</p>
+    </div>
+    <div class="header-badges">
+        {% if run.dry_run %}
+        <span class="badge badge-info">Dry Run</span>
+        {% else %}
+        <span class="badge badge-success">Live</span>
+        {% endif %}
+        {% if run.search_missing %}
+        <span class="badge badge-warning">Search Missing</span>
+        {% endif %}
+        <span class="badge badge-info mono">#{{ run.id }}</span>
+    </div>
+</div>
+
+<section class="card">
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Overview</p>
+            <h2 class="section-title">{{ run.scope_label }}</h2>
+        </div>
+    </div>
+
+    <p class="text-muted mono mb-2">{{ run.started_at }}</p>
+
+    <div class="metric-grid">
+        <div class="metric-card"><span class="metric-label">Runtime</span><strong>{{ run.total_runtime }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Library Items</span><strong>{{ run.library_items_found }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Source Items</span><strong>{{ run.source_items_found }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Matches</span><strong>{{ run.matches_found }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Created</span><strong class="text-success">{{ run.links_created }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Updated</span><strong>{{ run.links_updated }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Skipped</span><strong>{{ run.links_skipped }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Ambiguous</span><strong>{{ run.ambiguous_skipped }}</strong></div>
+    </div>
+</section>
+
+<div class="split-grid">
+    <section class="card card--nested">
+        <h3 class="subsection-title">Phase Telemetry</h3>
+        <div class="telemetry-grid">
+            <div class="telemetry-item"><span>Runtime Checks</span><strong>{{ run.runtime_checks }}</strong></div>
+            <div class="telemetry-item"><span>Library Scan</span><strong>{{ run.library_scan }}</strong></div>
+            <div class="telemetry-item"><span>Source Inventory</span><strong>{{ run.source_inventory }}</strong></div>
+            <div class="telemetry-item"><span>Matching</span><strong>{{ run.matching }}</strong></div>
+            <div class="telemetry-item"><span>Title Enrichment</span><strong>{{ run.title_enrichment }}</strong></div>
+            <div class="telemetry-item"><span>Linking</span><strong>{{ run.linking }}</strong></div>
+            <div class="telemetry-item"><span>Plex Refresh</span><strong>{{ run.plex_refresh }}</strong></div>
+            <div class="telemetry-item"><span>Dead Sweep</span><strong>{{ run.dead_link_sweep }}</strong></div>
+        </div>
+    </section>
+
+    <section class="card card--nested">
+        <h3 class="subsection-title">Matcher Signals</h3>
+        <div class="metric-grid metric-grid--compact">
+            <div class="metric-card"><span class="metric-label">Candidate Slots</span><strong>{{ run.candidate_slots }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Scored</span><strong>{{ run.scored_candidates }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Exact ID Hits</span><strong>{{ run.exact_id_hits }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Cache Hit</span><strong>{{ run.cache_hit_ratio }}</strong></div>
+        </div>
+    </section>
+</div>
+
+<section class="card">
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Auto-Acquire</p>
+            <h2 class="section-title">Outcome summary</h2>
+        </div>
+    </div>
+
+    {% if run.auto_acquire_requests > 0 %}
+    <div class="metric-grid metric-grid--compact">
+        <div class="metric-card"><span class="metric-label">Requests</span><strong>{{ run.auto_acquire_requests }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Missing</span><strong>{{ run.auto_acquire_missing_requests }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Cutoff</span><strong>{{ run.auto_acquire_cutoff_requests }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Dry Run Hits</span><strong>{{ run.auto_acquire_dry_run_hits }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Submitted</span><strong>{{ run.auto_acquire_submitted }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Successes</span><strong class="text-success">{{ run.auto_acquire_successes }}</strong></div>
+        <div class="metric-card"><span class="metric-label">No Result</span><strong>{{ run.auto_acquire_no_result }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Blocked / Failed</span><strong>{{ run.auto_acquire_blocked + run.auto_acquire_failed }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Linked / Unlinked</span><strong>{{ run.auto_acquire_completed_linked }} / {{ run.auto_acquire_completed_unlinked }}</strong></div>
+    </div>
+    {% else %}
+    <p class="text-muted">No auto-acquire requests were recorded for this run.</p>
+    {% endif %}
+</section>
+
+<div class="actions mt-2">
+    <a href="/scan/history" class="btn btn-secondary">&#8592; Back to Scan History</a>
+    <a href="/scan" class="btn">&#128269; Open Scan</a>
+</div>
+{% endblock %}

@@ -1,6 +1,6 @@
 [package]
 name = "symlinkarr"
-version = "0.1.0"
+version = "0.2.0-beta.1"
 edition = "2021"
 authors = ["Lenny", "Gemini CLI", "Antigravity"]
 description = "Intelligent symlink manager for Real-Debrid ↔ Plex"
@@ -26,8 +26,9 @@ unicode-normalization = "0.1"
 axum = "0.7"
 askama = "0.12"
 askama_axum = "0.4"
-tower-http = { version = "0.5", features = ["fs", "cors", "trace"] }
+tower-http = { version = "0.5", features = ["fs", "trace"] }
 tokio-util = { version = "0.7", features = ["io"] }
 
 [dev-dependencies]
 tempfile = "3.10"
+tower = { version = "0.5", features = ["util"] }

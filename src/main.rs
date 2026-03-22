@@ -1,6 +1,7 @@
 #[cfg(not(unix))]
 compile_error!("Symlinkarr requires a Unix platform (symlink support).");
 
+mod anime_identity;
 mod anime_scanner;
 mod api;
 mod auto_acquire;
@@ -15,6 +16,7 @@ mod library_scanner;
 mod linker;
 mod matcher;
 mod models;
+mod plex_db;
 mod repair;
 mod source_scanner;
 mod utils;
@@ -131,6 +133,11 @@ enum Commands {
     },
     /// Run continuously as a daemon
     Daemon,
+    /// Run only the web UI
+    Web {
+        #[arg(long)]
+        port: Option<u16>,
+    },
     /// Cleanup workflows: dead links, audit, and prune
     Cleanup {
         #[command(subcommand)]
@@ -185,6 +192,9 @@ enum Commands {
         /// Filter by media type (movie, series)
         #[arg(long)]
         filter: Option<String>,
+        /// Optional path to Plex's library database for path-set drift compare
+        #[arg(long)]
+        plex_db: Option<String>,
         /// Pretty-print JSON output
         #[arg(long)]
         pretty: bool,
@@ -353,6 +363,10 @@ async fn main() -> Result<()> {
             commands::queue::run_queue(&db, action, output).await?
         }
         Commands::Daemon => commands::daemon::run_daemon(&cfg, &db).await?,
+        Commands::Web { port } => {
+            let port = port.unwrap_or(cfg.web.port);
+            crate::web::serve(cfg, db, port).await?
+        }
         Commands::Cleanup {
             action,
             library,
@@ -384,6 +398,7 @@ async fn main() -> Result<()> {
         Commands::Report {
             output,
             filter,
+            plex_db,
             pretty,
         } => {
             let media_type_filter = match filter.as_deref() {
@@ -395,7 +410,15 @@ async fn main() -> Result<()> {
                 None => None,
             };
 
-            commands::report::run_report(&cfg, &db, output, media_type_filter, pretty).await?
+            commands::report::run_report(
+                &cfg,
+                &db,
+                output,
+                media_type_filter,
+                plex_db.as_deref().map(std::path::Path::new),
+                pretty,
+            )
+            .await?
         }
     }
 
@@ -423,6 +446,41 @@ mod tests {
     fn cli_accepts_json_output_for_config_validate() {
         let cli = Cli::try_parse_from(["symlinkarr", "config", "validate", "--output", "json"]);
         assert!(cli.is_ok());
+    }
+
+    #[test]
+    fn cli_accepts_web_subcommand() {
+        let cli = Cli::try_parse_from(["symlinkarr", "web", "--port", "9999"]).unwrap();
+        match cli.command {
+            Commands::Web { port } => assert_eq!(port, Some(9999)),
+            _ => panic!("expected web command"),
+        }
+    }
+
+    #[test]
+    fn cli_accepts_report_with_plex_db() {
+        let cli = Cli::try_parse_from([
+            "symlinkarr",
+            "report",
+            "--plex-db",
+            "/var/lib/plex/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db",
+            "--pretty",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Report {
+                plex_db, pretty, ..
+            } => {
+                assert_eq!(
+                    plex_db.as_deref(),
+                    Some(
+                        "/var/lib/plex/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db"
+                    )
+                );
+                assert!(pretty);
+            }
+            _ => panic!("expected report command"),
+        }
     }
 
     #[test]

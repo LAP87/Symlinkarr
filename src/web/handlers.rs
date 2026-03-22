@@ -2,46 +2,150 @@
 
 use askama::Template;
 use axum::{
-    extract::{Form, Query, State},
+    extract::{Form, Path, Query, State},
+    http::StatusCode,
     response::{Html, IntoResponse},
 };
 use chrono::Utc;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path as StdPath, PathBuf};
 use tracing::{error, info};
 
-use crate::api::tmdb::TmdbClient;
-use crate::api::tvdb::TvdbClient;
 use crate::backup::BackupManager;
 use crate::cleanup_audit::{self, CleanupAuditor, CleanupScope};
-use crate::library_scanner::LibraryScanner;
-use crate::linker::Linker;
-use crate::matcher::Matcher;
-use crate::source_scanner::SourceScanner;
+use crate::commands::scan::run_scan;
+use crate::db::{AcquisitionJobCounts, ScanHistoryRecord};
+use crate::OutputFormat;
 
 use super::templates::*;
 use super::WebState;
+
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct ScanHistoryQuery {
+    pub library: Option<String>,
+    pub mode: Option<String>,
+    pub search_missing: Option<String>,
+    pub limit: Option<i64>,
+}
+
+fn dashboard_stats_from_web_stats(stats: crate::db::WebStats) -> DashboardStats {
+    DashboardStats {
+        active_links: stats.active_links,
+        dead_links: stats.dead_links,
+        total_scans: stats.total_scans,
+        last_scan: stats.last_scan,
+    }
+}
+
+fn queue_overview_from_counts(counts: AcquisitionJobCounts) -> QueueOverview {
+    counts.into()
+}
+
+fn scan_run_views(history: Vec<ScanHistoryRecord>) -> Vec<ScanRunView> {
+    history.into_iter().map(ScanRunView::from_record).collect()
+}
+
+fn scan_history_filters_from_query(query: &ScanHistoryQuery) -> ScanHistoryFilters {
+    ScanHistoryFilters {
+        library: query.library.clone().unwrap_or_default(),
+        mode: query.mode.clone().unwrap_or_else(|| "any".to_string()),
+        search_missing: query
+            .search_missing
+            .clone()
+            .unwrap_or_else(|| "any".to_string()),
+        limit: query.limit.unwrap_or(25).clamp(1, 200),
+    }
+}
+
+fn cleanup_report_summary_from_path(path: &StdPath) -> Option<CleanupReportSummaryView> {
+    let json = std::fs::read_to_string(path).ok()?;
+    let report: cleanup_audit::CleanupReport = serde_json::from_str(&json).ok()?;
+    Some(CleanupReportSummaryView::from_report(
+        path.to_path_buf(),
+        report,
+    ))
+}
+
+async fn filtered_scan_history(
+    state: &WebState,
+    query: &ScanHistoryQuery,
+) -> (ScanHistoryFilters, Vec<ScanRunView>) {
+    let filters = scan_history_filters_from_query(query);
+    let fetch_limit = (filters.limit * 5).clamp(50, 500);
+    let history = match state.database.get_scan_history(fetch_limit).await {
+        Ok(history) => history,
+        Err(e) => {
+            error!("Failed to get scan history: {}", e);
+            Vec::new()
+        }
+    };
+
+    let filtered = history
+        .into_iter()
+        .filter(|run| {
+            if !filters.library.trim().is_empty()
+                && run.library_filter.as_deref().unwrap_or_default() != filters.library
+            {
+                return false;
+            }
+
+            match filters.mode.as_str() {
+                "dry" if !run.dry_run => return false,
+                "live" if run.dry_run => return false,
+                _ => {}
+            }
+
+            match filters.search_missing.as_str() {
+                "only" if !run.search_missing => return false,
+                "exclude" if run.search_missing => return false,
+                _ => {}
+            }
+
+            true
+        })
+        .take(filters.limit as usize)
+        .map(ScanRunView::from_record)
+        .collect::<Vec<_>>();
+
+    (filters, filtered)
+}
 
 /// GET / - Dashboard page
 pub async fn get_dashboard(State(state): State<WebState>) -> impl IntoResponse {
     info!("Serving dashboard");
 
-    // Fetch database stats
     let stats = match state.database.get_web_stats().await {
-        Ok(s) => DashboardStats {
-            active_links: s.active_links,
-            dead_links: s.dead_links,
-            total_scans: s.total_scans,
-            last_scan: None,
-        },
+        Ok(s) => dashboard_stats_from_web_stats(s),
         Err(e) => {
             error!("Failed to get stats: {}", e);
             DashboardStats::default()
         }
     };
 
-    let template = DashboardTemplate { stats };
+    let recent_runs = match state.database.get_scan_history(5).await {
+        Ok(history) => scan_run_views(history),
+        Err(e) => {
+            error!("Failed to get scan history: {}", e);
+            Vec::new()
+        }
+    };
+    let latest_run = recent_runs.first().cloned();
+
+    let queue = match state.database.get_acquisition_job_counts().await {
+        Ok(counts) => queue_overview_from_counts(counts),
+        Err(e) => {
+            error!("Failed to get acquisition queue counts: {}", e);
+            QueueOverview::default()
+        }
+    };
+
+    let template = DashboardTemplate {
+        stats,
+        latest_run,
+        recent_runs,
+        queue,
+    };
     Html(template.render().unwrap_or_else(|e| e.to_string()))
 }
 
@@ -50,12 +154,7 @@ pub async fn get_status(State(state): State<WebState>) -> impl IntoResponse {
     info!("Serving status page");
 
     let stats = match state.database.get_web_stats().await {
-        Ok(s) => DashboardStats {
-            active_links: s.active_links,
-            dead_links: s.dead_links,
-            total_scans: s.total_scans,
-            last_scan: None,
-        },
+        Ok(s) => dashboard_stats_from_web_stats(s),
         Err(e) => {
             error!("Failed to get stats: {}", e);
             DashboardStats::default()
@@ -71,9 +170,18 @@ pub async fn get_status(State(state): State<WebState>) -> impl IntoResponse {
         }
     };
 
+    let queue = match state.database.get_acquisition_job_counts().await {
+        Ok(counts) => queue_overview_from_counts(counts),
+        Err(e) => {
+            error!("Failed to get acquisition queue counts: {}", e);
+            QueueOverview::default()
+        }
+    };
+
     let template = StatusTemplate {
         stats,
         recent_links,
+        queue,
     };
     Html(template.render().unwrap_or_else(|e| e.to_string()))
 }
@@ -144,20 +252,32 @@ pub async fn get_health(State(state): State<WebState>) -> impl IntoResponse {
 }
 
 /// GET /scan - Scan page
-pub async fn get_scan(State(state): State<WebState>) -> impl IntoResponse {
+pub async fn get_scan(
+    State(state): State<WebState>,
+    Query(query): Query<ScanHistoryQuery>,
+) -> impl IntoResponse {
     info!("Serving scan page");
 
-    let history = match state.database.get_scan_history(10).await {
-        Ok(h) => h,
+    let mut scan_query = query;
+    if scan_query.limit.is_none() {
+        scan_query.limit = Some(10);
+    }
+    let (filters, history) = filtered_scan_history(&state, &scan_query).await;
+    let latest_run = history.first().cloned();
+    let queue = match state.database.get_acquisition_job_counts().await {
+        Ok(counts) => queue_overview_from_counts(counts),
         Err(e) => {
-            error!("Failed to get scan history: {}", e);
-            vec![]
+            error!("Failed to get acquisition queue counts: {}", e);
+            QueueOverview::default()
         }
     };
 
     let template = ScanTemplate {
         libraries: state.config.libraries.clone(),
+        latest_run,
         history,
+        queue,
+        filters,
     };
     Html(template.render().unwrap_or_else(|e| e.to_string()))
 }
@@ -167,116 +287,54 @@ pub async fn post_scan_trigger(
     State(state): State<WebState>,
     Form(form): Form<ScanTriggerForm>,
 ) -> impl IntoResponse {
-    info!("Triggering scan (dry_run={})", form.dry_run);
-
-    let library_name = form.library.filter(|l| !l.is_empty());
-
-    // Run the scan
-    let scanner = LibraryScanner::new();
-    let source_scanner = SourceScanner::new();
-
-    let library_items = if let Some(ref name) = library_name {
-        if let Some(lib) = state.config.libraries.iter().find(|l| &l.name == name) {
-            scanner.scan_library(lib)
-        } else {
-            vec![]
-        }
-    } else {
-        state
-            .config
-            .libraries
-            .iter()
-            .flat_map(|lib| scanner.scan_library(lib))
-            .collect()
-    };
-
-    let source_items = source_scanner.scan_all(&state.config.sources);
-
-    // Create matcher and linker
-    let cfg = &state.config;
-    let tmdb = if cfg.has_tmdb() {
-        let rat = if cfg.api.tmdb_read_access_token.is_empty() {
-            None
-        } else {
-            Some(cfg.api.tmdb_read_access_token.as_str())
-        };
-        Some(TmdbClient::new(
-            &cfg.api.tmdb_api_key,
-            rat,
-            cfg.api.cache_ttl_hours,
-        ))
-    } else {
-        None
-    };
-
-    let tvdb = if cfg.has_tvdb() {
-        Some(TvdbClient::new(
-            &cfg.api.tvdb_api_key,
-            cfg.api.cache_ttl_hours,
-        ))
-    } else {
-        None
-    };
-
-    let matcher = Matcher::new(
-        tmdb,
-        tvdb,
-        state.config.matching.mode,
-        state.config.matching.metadata_mode,
-        state.config.matching.metadata_concurrency,
+    info!(
+        "Triggering scan (dry_run={}, search_missing={})",
+        form.dry_run, form.search_missing
     );
 
-    let matches = match matcher
-        .find_matches(&library_items, &source_items, &state.database)
-        .await
-    {
-        Ok(m) => m,
-        Err(e) => {
-            error!("Match failed: {}", e);
-            return Html(
-                ScanResultTemplate {
-                    success: false,
-                    message: format!("Match failed: {}", e),
-                    matches: vec![],
-                    dry_run: form.dry_run,
-                }
-                .render()
-                .unwrap_or_else(|e| e.to_string()),
-            );
-        }
-    };
+    let library_name = form.library.as_deref().filter(|l| !l.is_empty());
 
-    let linker = Linker::new_with_options(
+    let (added, removed) = match run_scan(
+        &state.config,
+        &state.database,
         form.dry_run,
-        state.config.matching.mode.is_strict(),
-        &state.config.symlink.naming_template,
-        true,
-    );
-
-    let link_result = match linker.process_matches(&matches, &state.database).await {
-        Ok(r) => r,
+        form.search_missing,
+        OutputFormat::Text,
+        library_name,
+    )
+    .await
+    {
+        Ok(result) => result,
         Err(e) => {
-            error!("Link failed: {}", e);
+            error!("Scan failed: {}", e);
             return Html(
                 ScanResultTemplate {
                     success: false,
-                    message: format!("Link failed: {}", e),
-                    matches: vec![],
+                    message: format!("Scan failed: {}", e),
+                    latest_run: None,
                     dry_run: form.dry_run,
                 }
                 .render()
                 .unwrap_or_else(|e| e.to_string()),
             );
+        }
+    };
+
+    let latest_run = match state.database.get_scan_history(1).await {
+        Ok(mut history) => history.drain(..).next().map(ScanRunView::from_record),
+        Err(e) => {
+            error!("Failed to load latest scan history after scan: {}", e);
+            None
         }
     };
 
     let template = ScanResultTemplate {
         success: true,
         message: format!(
-            "Scan complete: {} created, {} updated, {} skipped",
-            link_result.created, link_result.updated, link_result.skipped
+            "Scan complete: {} added/updated, {} removed",
+            added, removed
         ),
-        matches,
+        latest_run,
         dry_run: form.dry_run,
     };
 
@@ -284,17 +342,42 @@ pub async fn post_scan_trigger(
 }
 
 /// GET /scan/history - Scan history
-pub async fn get_scan_history(State(state): State<WebState>) -> impl IntoResponse {
-    let history = match state.database.get_scan_history(50).await {
-        Ok(h) => h,
-        Err(e) => {
-            error!("Failed to get scan history: {}", e);
-            vec![]
-        }
-    };
+pub async fn get_scan_history(
+    State(state): State<WebState>,
+    Query(query): Query<ScanHistoryQuery>,
+) -> impl IntoResponse {
+    let (filters, history) = filtered_scan_history(&state, &query).await;
 
-    let template = ScanHistoryTemplate { history };
+    let template = ScanHistoryTemplate {
+        libraries: state.config.libraries.clone(),
+        history,
+        filters,
+    };
     Html(template.render().unwrap_or_else(|e| e.to_string()))
+}
+
+/// GET /scan/history/:id - Scan run detail
+pub async fn get_scan_run_detail(
+    State(state): State<WebState>,
+    Path(id): Path<i64>,
+) -> impl IntoResponse {
+    match state.database.get_scan_run(id).await {
+        Ok(Some(run)) => {
+            let template = ScanRunDetailTemplate {
+                run: ScanRunView::from_record(run),
+            };
+            Html(template.render().unwrap_or_else(|e| e.to_string())).into_response()
+        }
+        Ok(None) => (StatusCode::NOT_FOUND, format!("Scan run {} not found", id)).into_response(),
+        Err(e) => {
+            error!("Failed to load scan run {}: {}", id, e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to load scan run {}: {}", id, e),
+            )
+                .into_response()
+        }
+    }
 }
 
 /// GET /cleanup - Cleanup page
@@ -326,9 +409,14 @@ pub async fn get_cleanup(State(state): State<WebState>) -> impl IntoResponse {
         Err(_) => None,
     };
 
+    let last_report_summary = last_report
+        .as_deref()
+        .and_then(cleanup_report_summary_from_path);
+
     let template = CleanupTemplate {
         libraries: state.config.libraries.clone(),
-        last_report,
+        last_report: last_report_summary,
+        last_report_path: last_report,
     };
 
     Html(template.render().unwrap_or_else(|e| e.to_string()))
@@ -339,9 +427,10 @@ pub async fn post_cleanup_audit(
     State(state): State<WebState>,
     Form(form): Form<CleanupAuditForm>,
 ) -> impl IntoResponse {
+    let selected_libraries = form.selected_libraries();
     info!(
-        "Running cleanup audit (scope={}, library={:?})",
-        form.scope, form.library
+        "Running cleanup audit (scope={}, libraries={:?})",
+        form.scope, selected_libraries
     );
 
     let scope = match CleanupScope::parse(&form.scope) {
@@ -352,6 +441,7 @@ pub async fn post_cleanup_audit(
                     success: false,
                     message: format!("Invalid scope: {}", e),
                     report_path: None,
+                    report_summary: None,
                 }
                 .render()
                 .unwrap_or_else(|e| e.to_string()),
@@ -361,13 +451,19 @@ pub async fn post_cleanup_audit(
 
     let auditor = CleanupAuditor::new_with_progress(&state.config, &state.database, true);
 
-    // Use custom output path if library is specified, otherwise use default
+    // Use a scoped output path when a subset of libraries was selected.
     let ts = Utc::now().format("%Y%m%d-%H%M%S");
-    let output_path = if let Some(library_name) = &form.library {
-        // Create a library-specific report path
+    let output_path = if selected_libraries.len() == 1 {
         state.config.backup.path.join(format!(
             "cleanup-audit-{}-{}-{}.json",
-            form.scope, library_name, ts
+            form.scope, selected_libraries[0], ts
+        ))
+    } else if !selected_libraries.is_empty() {
+        state.config.backup.path.join(format!(
+            "cleanup-audit-{}-multi-{}-{}.json",
+            form.scope,
+            selected_libraries.len(),
+            ts
         ))
     } else {
         state
@@ -377,7 +473,14 @@ pub async fn post_cleanup_audit(
             .join(format!("cleanup-audit-{}-{}.json", form.scope, ts))
     };
 
-    let report_path = match auditor.run_audit(scope, Some(&output_path)).await {
+    let report_path = match auditor
+        .run_audit_filtered(
+            scope,
+            (!selected_libraries.is_empty()).then_some(selected_libraries.as_slice()),
+            Some(&output_path),
+        )
+        .await
+    {
         Ok(p) => p,
         Err(e) => {
             error!("Audit failed: {}", e);
@@ -386,6 +489,7 @@ pub async fn post_cleanup_audit(
                     success: false,
                     message: format!("Audit failed: {}", e),
                     report_path: None,
+                    report_summary: None,
                 }
                 .render()
                 .unwrap_or_else(|e| e.to_string()),
@@ -393,10 +497,17 @@ pub async fn post_cleanup_audit(
         }
     };
 
-    let message = if let Some(library_name) = &form.library {
+    let message = if selected_libraries.len() == 1 {
         format!(
             "Audit complete for library '{}': {}",
-            library_name,
+            selected_libraries[0],
+            report_path.display()
+        )
+    } else if !selected_libraries.is_empty() {
+        format!(
+            "Audit complete for {} libraries ({}): {}",
+            selected_libraries.len(),
+            selected_libraries.join(", "),
             report_path.display()
         )
     } else {
@@ -406,6 +517,7 @@ pub async fn post_cleanup_audit(
     let template = CleanupResultTemplate {
         success: true,
         message,
+        report_summary: cleanup_report_summary_from_path(&report_path),
         report_path: Some(report_path),
     };
 
@@ -558,6 +670,7 @@ pub async fn post_cleanup_prune(
                 success: false,
                 message: "Report path is required".to_string(),
                 report_path: None,
+                report_summary: None,
             }
             .render()
             .unwrap_or_else(|e| e.to_string()),
@@ -570,6 +683,7 @@ pub async fn post_cleanup_prune(
                 success: false,
                 message: "Confirmation token is required".to_string(),
                 report_path: None,
+                report_summary: None,
             }
             .render()
             .unwrap_or_else(|e| e.to_string()),
@@ -584,6 +698,7 @@ pub async fn post_cleanup_prune(
                 success: false,
                 message: format!("Report not found: {}", form.report),
                 report_path: None,
+                report_summary: None,
             }
             .render()
             .unwrap_or_else(|e| e.to_string()),
@@ -599,6 +714,7 @@ pub async fn post_cleanup_prune(
                     success: false,
                     message: format!("Failed to read report: {}", e),
                     report_path: None,
+                    report_summary: None,
                 }
                 .render()
                 .unwrap_or_else(|e| e.to_string()),
@@ -615,6 +731,7 @@ pub async fn post_cleanup_prune(
                     success: false,
                     message: format!("Failed to parse report: {}", e),
                     report_path: None,
+                    report_summary: None,
                 }
                 .render()
                 .unwrap_or_else(|e| e.to_string()),
@@ -641,6 +758,7 @@ pub async fn post_cleanup_prune(
                     success: false,
                     message: format!("Prune failed: {}", e),
                     report_path: None,
+                    report_summary: None,
                 }
                 .render()
                 .unwrap_or_else(|e| e.to_string()),
@@ -660,6 +778,7 @@ pub async fn post_cleanup_prune(
     let template = CleanupResultTemplate {
         success: true,
         message,
+        report_summary: cleanup_report_summary_from_path(report_path),
         report_path: Some(report_path.to_path_buf()),
     };
 
@@ -989,7 +1108,10 @@ pub async fn post_backup_restore(
 
 #[derive(Debug, Deserialize)]
 pub struct ScanTriggerForm {
+    #[serde(default)]
     pub dry_run: bool,
+    #[serde(default)]
+    pub search_missing: bool,
     pub library: Option<String>,
 }
 
@@ -997,6 +1119,28 @@ pub struct ScanTriggerForm {
 pub struct CleanupAuditForm {
     pub scope: String,
     pub library: Option<String>,
+    #[serde(default)]
+    pub libraries: Vec<String>,
+}
+
+impl CleanupAuditForm {
+    fn selected_libraries(&self) -> Vec<String> {
+        let mut libraries = self
+            .libraries
+            .iter()
+            .map(|name| name.trim())
+            .filter(|name| !name.is_empty())
+            .map(|name| name.to_string())
+            .collect::<Vec<_>>();
+
+        if let Some(single) = self.library.as_deref().map(str::trim) {
+            if !single.is_empty() && !libraries.iter().any(|name| name == single) {
+                libraries.push(single.to_string());
+            }
+        }
+
+        libraries
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1019,4 +1163,316 @@ pub struct BackupCreateForm {
 #[derive(Debug, Deserialize)]
 pub struct BackupRestoreForm {
     pub backup_file: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::to_bytes;
+    use tempfile::TempDir;
+
+    use crate::cleanup_audit::{CleanupReport, CleanupSummary};
+    use crate::config::{
+        ApiConfig, BackupConfig, BazarrConfig, CleanupPolicyConfig, Config, ContentType,
+        DaemonConfig, DecypharrConfig, DmmConfig, FeaturesConfig, LibraryConfig, MatchingConfig,
+        PlexConfig, ProwlarrConfig, RadarrConfig, RealDebridConfig, SecurityConfig, SonarrConfig,
+        SourceConfig, SymlinkConfig, TautulliConfig, WebConfig,
+    };
+    use crate::db::{AcquisitionJobSeed, AcquisitionRelinkKind, Database, ScanRunRecord};
+    use crate::models::{LinkRecord, LinkStatus, MediaType};
+
+    struct TestWebContext {
+        _dir: TempDir,
+        state: WebState,
+    }
+
+    fn test_config(root: &std::path::Path) -> Config {
+        let library = root.join("anime");
+        let source = root.join("rd");
+        let backups = root.join("backups");
+        std::fs::create_dir_all(&library).unwrap();
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&backups).unwrap();
+
+        Config {
+            libraries: vec![LibraryConfig {
+                name: "Anime".to_string(),
+                path: library,
+                media_type: MediaType::Tv,
+                content_type: Some(ContentType::Anime),
+                depth: 1,
+            }],
+            sources: vec![SourceConfig {
+                name: "RD".to_string(),
+                path: source,
+                media_type: "auto".to_string(),
+            }],
+            api: ApiConfig::default(),
+            realdebrid: RealDebridConfig::default(),
+            decypharr: DecypharrConfig::default(),
+            dmm: DmmConfig::default(),
+            backup: BackupConfig {
+                path: backups,
+                ..BackupConfig::default()
+            },
+            db_path: root.join("test.db").display().to_string(),
+            log_level: "info".to_string(),
+            daemon: DaemonConfig::default(),
+            symlink: SymlinkConfig::default(),
+            matching: MatchingConfig::default(),
+            prowlarr: ProwlarrConfig::default(),
+            bazarr: BazarrConfig::default(),
+            tautulli: TautulliConfig::default(),
+            plex: PlexConfig::default(),
+            radarr: RadarrConfig::default(),
+            sonarr: SonarrConfig::default(),
+            sonarr_anime: SonarrConfig::default(),
+            features: FeaturesConfig::default(),
+            security: SecurityConfig::default(),
+            cleanup: CleanupPolicyConfig::default(),
+            web: WebConfig::default(),
+            loaded_from: None,
+            secret_files: Vec::new(),
+        }
+    }
+
+    async fn test_context() -> TestWebContext {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = test_config(dir.path());
+        let db = Database::new(&cfg.db_path).await.unwrap();
+
+        db.insert_link(&LinkRecord {
+            id: None,
+            source_path: dir.path().join("rd").join("Show.S01E01.mkv"),
+            target_path: dir
+                .path()
+                .join("anime")
+                .join("Show (2024) {tvdb-1}")
+                .join("Season 01")
+                .join("S01E01.mkv"),
+            media_id: "tvdb-1".to_string(),
+            media_type: MediaType::Tv,
+            status: LinkStatus::Active,
+            created_at: None,
+            updated_at: None,
+        })
+        .await
+        .unwrap();
+
+        db.record_scan_run(&ScanRunRecord {
+            dry_run: true,
+            library_filter: Some("Anime".to_string()),
+            search_missing: true,
+            library_items_found: 1,
+            source_items_found: 42,
+            matches_found: 11,
+            links_created: 3,
+            links_updated: 1,
+            dead_marked: 2,
+            links_removed: 0,
+            links_skipped: 7,
+            ambiguous_skipped: 1,
+            runtime_checks_ms: 10,
+            library_scan_ms: 20,
+            source_inventory_ms: 30,
+            matching_ms: 40,
+            title_enrichment_ms: 50,
+            linking_ms: 60,
+            plex_refresh_ms: 70,
+            dead_link_sweep_ms: 80,
+            cache_hit_ratio: Some(0.85),
+            candidate_slots: 1024,
+            scored_candidates: 24,
+            exact_id_hits: 2,
+            auto_acquire_requests: 6,
+            auto_acquire_missing_requests: 4,
+            auto_acquire_cutoff_requests: 2,
+            auto_acquire_dry_run_hits: 4,
+            auto_acquire_submitted: 0,
+            auto_acquire_no_result: 1,
+            auto_acquire_blocked: 1,
+            auto_acquire_failed: 0,
+            auto_acquire_completed_linked: 0,
+            auto_acquire_completed_unlinked: 0,
+        })
+        .await
+        .unwrap();
+
+        db.enqueue_acquisition_jobs(&[AcquisitionJobSeed {
+            request_key: "anime-queued-1".to_string(),
+            label: "Queued Anime".to_string(),
+            query: "Queued Anime S01E01".to_string(),
+            query_hints: vec![],
+            imdb_id: Some("tt1234567".to_string()),
+            categories: vec![5070],
+            arr: "sonarr".to_string(),
+            library_filter: Some("Anime".to_string()),
+            relink_kind: AcquisitionRelinkKind::MediaId,
+            relink_value: "tvdb-1".to_string(),
+        }])
+        .await
+        .unwrap();
+
+        TestWebContext {
+            _dir: dir,
+            state: WebState::new(cfg, db),
+        }
+    }
+
+    async fn render_body(response: impl IntoResponse) -> String {
+        let response = response.into_response();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn dashboard_renders_latest_run_and_queue_summary() {
+        let ctx = test_context().await;
+        let body = render_body(get_dashboard(State(ctx.state.clone())).await).await;
+
+        assert!(body.contains("Current baseline"));
+        assert!(body.contains("Anime"));
+        assert!(body.contains("Auto-Acquire Queue"));
+        assert!(body.contains("Queue 1"));
+        assert!(body.contains("Cache Hit"));
+    }
+
+    #[tokio::test]
+    async fn scan_page_renders_phase_telemetry_and_acquire_summary() {
+        let ctx = test_context().await;
+        let body = render_body(
+            get_scan(State(ctx.state.clone()), Query(ScanHistoryQuery::default())).await,
+        )
+        .await;
+
+        assert!(body.contains("Start Real Scan"));
+        assert!(body.contains("Search Missing"));
+        assert!(body.contains("Candidate Slots"));
+        assert!(body.contains("1024"));
+        assert!(body.contains("4/6"));
+    }
+
+    #[tokio::test]
+    async fn scan_run_detail_renders_specific_run() {
+        let ctx = test_context().await;
+        let run = ctx
+            .state
+            .database
+            .get_scan_history(1)
+            .await
+            .unwrap()
+            .remove(0);
+        let body =
+            render_body(get_scan_run_detail(State(ctx.state.clone()), Path(run.id)).await).await;
+
+        assert!(body.contains("Scan Run Detail"));
+        assert!(body.contains("Outcome summary"));
+        assert!(body.contains("#1") || body.contains(&format!("#{}", run.id)));
+        assert!(body.contains("1024"));
+    }
+
+    #[tokio::test]
+    async fn scan_history_applies_mode_and_missing_filters() {
+        let ctx = test_context().await;
+        ctx.state
+            .database
+            .record_scan_run(&ScanRunRecord {
+                dry_run: false,
+                library_filter: Some("Movies".to_string()),
+                search_missing: false,
+                library_items_found: 2,
+                source_items_found: 8,
+                matches_found: 4,
+                links_created: 1,
+                links_updated: 0,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let runs = ctx.state.database.get_scan_history(5).await.unwrap();
+        let movie_run_id = runs
+            .iter()
+            .find(|run| run.library_filter.as_deref() == Some("Movies"))
+            .map(|run| run.id)
+            .unwrap();
+        let anime_run_id = runs
+            .iter()
+            .find(|run| run.library_filter.as_deref() == Some("Anime"))
+            .map(|run| run.id)
+            .unwrap();
+
+        let body = render_body(
+            get_scan_history(
+                State(ctx.state.clone()),
+                Query(ScanHistoryQuery {
+                    mode: Some("live".to_string()),
+                    search_missing: Some("exclude".to_string()),
+                    limit: Some(25),
+                    ..ScanHistoryQuery::default()
+                }),
+            )
+            .await,
+        )
+        .await;
+
+        assert!(body.contains(&format!("/scan/history/{}", movie_run_id)));
+        assert!(!body.contains(&format!("/scan/history/{}", anime_run_id)));
+    }
+
+    #[tokio::test]
+    async fn status_page_renders_queue_pressure_and_recent_links() {
+        let ctx = test_context().await;
+        let body = render_body(get_status(State(ctx.state.clone())).await).await;
+
+        assert!(body.contains("Queue pressure"));
+        assert!(body.contains("Recent Links"));
+        assert!(body.contains("tvdb-1"));
+        assert!(body.contains("Queued"));
+    }
+
+    #[tokio::test]
+    async fn cleanup_page_renders_latest_report_summary() {
+        let ctx = test_context().await;
+        let report_path = ctx
+            .state
+            .config
+            .backup
+            .path
+            .join("cleanup-audit-anime-20260321.json");
+        let report = CleanupReport {
+            version: 1,
+            created_at: Utc::now(),
+            scope: CleanupScope::Anime,
+            findings: vec![],
+            summary: CleanupSummary {
+                total_findings: 12,
+                critical: 3,
+                high: 5,
+                warning: 4,
+            },
+        };
+        std::fs::write(&report_path, serde_json::to_vec(&report).unwrap()).unwrap();
+
+        let body = render_body(get_cleanup(State(ctx.state.clone())).await).await;
+
+        assert!(body.contains("Last Report"));
+        assert!(body.contains("12"));
+        assert!(body.contains("Open Prune Preview"));
+        assert!(body.contains("Apply Cleanup"));
+    }
+
+    #[test]
+    fn cleanup_audit_form_selected_libraries_dedupes_legacy_and_multi_select_fields() {
+        let form = CleanupAuditForm {
+            scope: "anime".to_string(),
+            library: Some("Anime".to_string()),
+            libraries: vec!["Anime".to_string(), "Anime 2".to_string()],
+        };
+
+        assert_eq!(
+            form.selected_libraries(),
+            vec!["Anime".to_string(), "Anime 2".to_string()]
+        );
+    }
 }

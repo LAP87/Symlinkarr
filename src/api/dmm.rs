@@ -11,7 +11,7 @@ use crate::config::DmmConfig;
 
 const DMM_SALT: &str = "debridmediamanager.com%%fe7#td00rA3vHz%VmI";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DmmMediaKind {
     Movie,
     Show,

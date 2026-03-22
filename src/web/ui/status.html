@@ -4,37 +4,83 @@
 {% block nav_status %}active{% endblock %}
 
 {% block content %}
-<div class="page-header">
-    <h1>&#128200; Status</h1>
-    <p>Detailed system status and recent symlink activity.</p>
+<div class="page-header page-header--split">
+    <div>
+        <p class="page-kicker">Operations</p>
+        <h1>&#128200; Status</h1>
+        <p class="page-lead">Live link health, queue pressure, and recent link churn.</p>
+    </div>
+    <div class="header-badges">
+        <span class="badge {% if queue.active_total > 0 %}badge-warning{% else %}badge-success{% endif %}">
+            Queue {{ queue.active_total }}
+        </span>
+        <span class="badge {% if stats.dead_links > 0 %}badge-danger{% else %}badge-success{% endif %}">
+            Dead {{ stats.dead_links }}
+        </span>
+    </div>
 </div>
 
-<div class="card-grid">
-    <div class="card" style="text-align:center;">
-        <div class="card-value text-success">{{ stats.active_links }}</div>
-        <div class="card-label">Active Links</div>
-    </div>
-    <div class="card" style="text-align:center;">
-        <div class="card-value {% if stats.dead_links > 0 %}text-error{% else %}text-success{% endif %}">{{ stats.dead_links }}</div>
-        <div class="card-label">Dead Links</div>
-    </div>
-    <div class="card" style="text-align:center;">
-        <div class="card-value">{{ stats.total_scans }}</div>
-        <div class="card-label">Total Scans</div>
-    </div>
-    <div class="card" style="text-align:center;">
-        <div class="card-label" style="font-size:0.875rem;margin-bottom:0.25rem;">Last Scan</div>
-        <div style="font-size:0.9rem;">
-            {% match stats.last_scan %}
-            {% when Some with (ts) %}{{ ts }}{% when None %}<span class="text-muted">Never</span>{% endmatch %}
+<div class="split-grid">
+    <section class="card">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">System Snapshot</p>
+                <h2 class="section-title">Library health</h2>
+            </div>
+        </div>
+
+        <div class="metric-grid">
+            <div class="metric-card">
+                <span class="metric-label">Active Links</span>
+                <strong class="text-success">{{ stats.active_links }}</strong>
+            </div>
+            <div class="metric-card">
+                <span class="metric-label">Dead Links</span>
+                <strong class="{% if stats.dead_links > 0 %}text-error{% else %}text-success{% endif %}">{{ stats.dead_links }}</strong>
+            </div>
+            <div class="metric-card">
+                <span class="metric-label">Total Scans</span>
+                <strong>{{ stats.total_scans }}</strong>
+            </div>
+            <div class="metric-card">
+                <span class="metric-label">Last Scan</span>
+                <strong>
+                    {% match stats.last_scan %}
+                    {% when Some with (ts) %}{{ ts }}{% when None %}<span class="text-muted">Never</span>{% endmatch %}
+                </strong>
+            </div>
+        </div>
+    </section>
+
+    <section class="card">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Auto-Acquire</p>
+                <h2 class="section-title">Queue pressure</h2>
+            </div>
+        </div>
+
+        <div class="metric-grid metric-grid--compact">
+            <div class="metric-card"><span class="metric-label">Queued</span><strong>{{ queue.queued }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Downloading</span><strong>{{ queue.downloading }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Relinking</span><strong>{{ queue.relinking }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Blocked</span><strong>{{ queue.blocked }}</strong></div>
+            <div class="metric-card"><span class="metric-label">No Result</span><strong>{{ queue.no_result }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Failed</span><strong>{{ queue.failed }}</strong></div>
+        </div>
+    </section>
+</div>
+
+<section class="card">
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Recent Links</p>
+            <h2 class="section-title">Last 50 records</h2>
         </div>
     </div>
-</div>
 
-<div class="card">
-    <h2 class="section-title">Recent Links (last 50)</h2>
     {% if recent_links|length > 0 %}
-    <table class="data-table">
+    <table class="data-table dense-table">
         <thead>
             <tr>
                 <th>Media ID</th>
@@ -70,5 +116,5 @@
     {% else %}
     <p class="text-muted">No links found.</p>
     {% endif %}
-</div>
+</section>
 {% endblock %}

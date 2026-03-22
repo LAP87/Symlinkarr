@@ -5,46 +5,112 @@
 
 {% block content %}
 <div class="page-header">
+    <p class="page-kicker">History</p>
     <h1>&#128269; Scan History</h1>
-    <p>All recorded scan runs.</p>
+    <p class="page-lead">Every recorded run, including phase timings and acquisition outcomes.</p>
 </div>
 
-<div class="card">
+<section class="card">
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Filters</p>
+            <h2 class="section-title">Find the run you want</h2>
+        </div>
+    </div>
+
+    <form action="/scan/history" method="get" class="stack-form">
+        <div class="split-grid split-grid--tight">
+            <div class="form-group">
+                <label class="form-label" for="library">Library</label>
+                <select id="library" name="library" class="form-control">
+                    <option value="">All libraries</option>
+                    {% for lib in libraries %}
+                    <option value="{{ lib.name }}" {% if filters.library == lib.name %}selected{% endif %}>{{ lib.name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label" for="mode">Mode</label>
+                <select id="mode" name="mode" class="form-control">
+                    <option value="any" {% if filters.mode == "any" %}selected{% endif %}>Any</option>
+                    <option value="live" {% if filters.mode == "live" %}selected{% endif %}>Live only</option>
+                    <option value="dry" {% if filters.mode == "dry" %}selected{% endif %}>Dry run only</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label" for="search_missing">Missing Search</label>
+                <select id="search_missing" name="search_missing" class="form-control">
+                    <option value="any" {% if filters.search_missing == "any" %}selected{% endif %}>Any</option>
+                    <option value="only" {% if filters.search_missing == "only" %}selected{% endif %}>Only with search-missing</option>
+                    <option value="exclude" {% if filters.search_missing == "exclude" %}selected{% endif %}>Exclude search-missing</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label" for="limit">Rows</label>
+                <select id="limit" name="limit" class="form-control">
+                    <option value="10" {% if filters.limit == 10 %}selected{% endif %}>10</option>
+                    <option value="25" {% if filters.limit == 25 %}selected{% endif %}>25</option>
+                    <option value="50" {% if filters.limit == 50 %}selected{% endif %}>50</option>
+                    <option value="100" {% if filters.limit == 100 %}selected{% endif %}>100</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="actions">
+            <button type="submit" class="btn btn-primary">&#128269; Apply Filters</button>
+            <a href="/scan/history" class="btn btn-secondary">Reset</a>
+        </div>
+    </form>
+</section>
+
+<section class="card">
     {% if history|length > 0 %}
-    <table class="data-table">
+    <table class="data-table dense-table">
         <thead>
             <tr>
+                <th>Started</th>
+                <th>Scope</th>
                 <th>Mode</th>
-                <th>Library Items</th>
-                <th>Source Items</th>
+                <th>Runtime</th>
                 <th>Matches</th>
-                <th>Created</th>
-                <th>Updated</th>
+                <th>Links</th>
+                <th>Cache</th>
+                <th>Acquire</th>
                 <th>Dead</th>
-                <th>Removed</th>
-                <th>Skipped</th>
-                <th>Ambiguous</th>
             </tr>
         </thead>
         <tbody>
             {% for run in history %}
             <tr>
+                <td class="mono"><a href="/scan/history/{{ run.id }}">{{ run.started_at }}</a></td>
+                <td><a href="/scan/history/{{ run.id }}">{{ run.scope_label }}</a></td>
                 <td>
                     {% if run.dry_run %}
                     <span class="badge badge-info">Dry</span>
                     {% else %}
                     <span class="badge badge-success">Live</span>
                     {% endif %}
+                    {% if run.search_missing %}
+                    <span class="badge badge-warning">Missing</span>
+                    {% endif %}
                 </td>
-                <td>{{ run.library_items_found }}</td>
-                <td>{{ run.source_items_found }}</td>
+                <td>{{ run.total_runtime }}</td>
                 <td>{{ run.matches_found }}</td>
-                <td class="text-success">{{ run.links_created }}</td>
-                <td>{{ run.links_updated }}</td>
-                <td class="{% if run.dead_marked > 0 %}text-error{% endif %}">{{ run.dead_marked }}</td>
-                <td class="{% if run.links_removed > 0 %}text-warning{% endif %}">{{ run.links_removed }}</td>
-                <td class="text-muted">{{ run.links_skipped }}</td>
-                <td class="text-muted">{{ run.ambiguous_skipped }}</td>
+                <td class="text-success">{{ run.links_created + run.links_updated }}</td>
+                <td>{{ run.cache_hit_ratio }}</td>
+                <td>
+                    {% if run.auto_acquire_requests > 0 %}
+                    {{ run.auto_acquire_successes }}/{{ run.auto_acquire_requests }}
+                    {% else %}
+                    <span class="text-muted">n/a</span>
+                    {% endif %}
+                </td>
+                <td class="{% if run.dead_marked > 0 || run.links_removed > 0 %}text-error{% endif %}">
+                    {{ run.dead_marked + run.links_removed }}
+                </td>
             </tr>
             {% endfor %}
         </tbody>
@@ -52,7 +118,7 @@
     {% else %}
     <p class="text-muted">No scan history yet.</p>
     {% endif %}
-</div>
+</section>
 
 <div class="actions mt-2">
     <a href="/scan" class="btn btn-secondary">&#8592; Back to Scan</a>

@@ -19,10 +19,23 @@
 <div class="card">
     <h2 class="section-title">&#128196; Audit Report Generated</h2>
     <p><strong>Report Location:</strong> <code class="mono">{{ path.display() }}</code></p>
+
+    {% match report_summary %}
+    {% when Some with (report) %}
+    <div class="metric-grid metric-grid--compact mt-2">
+        <div class="metric-card"><span class="metric-label">Scope</span><strong>{{ report.scope_label }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Generated</span><strong>{{ report.created_at }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Findings</span><strong>{{ report.total_findings }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Critical / High</span><strong>{{ report.critical }} / {{ report.high }}</strong></div>
+    </div>
+    {% when None %}
+    {% endmatch %}
+
     <div class="actions mt-2">
         <a href="/cleanup/prune?report={{ path.display() }}" class="btn btn-secondary">
             &#128064; Preview Prune Actions
         </a>
+        <a href="/cleanup" class="btn btn-secondary">&#129529; Back to Cleanup</a>
     </div>
 </div>
 {% when None %}

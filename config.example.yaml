@@ -105,4 +105,5 @@ backup:
 # Web UI (optional, for dashboard access)
 web:
   enabled: false
+  bind_address: "127.0.0.1"
   port: 8726

@@ -55,6 +55,7 @@ pub enum RelinkCheck {
 pub struct AutoAcquireRequest {
     pub label: String,
     pub query: String,
+    pub query_hints: Vec<String>,
     pub imdb_id: Option<String>,
     pub categories: Vec<i32>,
     pub arr: String,
@@ -148,6 +149,7 @@ struct AnimeRequestContext {
     query_season: Option<u32>,
     query_episode: Option<u32>,
     absolute_query_episode: Option<u32>,
+    acceptable_episode_slots: Vec<(u32, u32)>,
     title_tokens: Vec<String>,
     upgrade: bool,
 }
@@ -177,6 +179,84 @@ struct DmmLookupPlan {
     search_queries: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct DmmLookupCacheKey {
+    kind: DmmMediaKind,
+    imdb_id: String,
+    season: Option<u32>,
+}
+
+#[derive(Debug, Default)]
+struct DmmSearchSession {
+    imdb_lookups: HashMap<DmmLookupCacheKey, DmmTorrentLookup>,
+}
+
+impl DmmSearchSession {
+    fn cache_key(
+        kind: DmmMediaKind,
+        imdb_id: &str,
+        season: Option<u32>,
+    ) -> Option<DmmLookupCacheKey> {
+        match kind {
+            DmmMediaKind::Movie => Some(DmmLookupCacheKey {
+                kind,
+                imdb_id: imdb_id.to_string(),
+                season: None,
+            }),
+            DmmMediaKind::Show => Some(DmmLookupCacheKey {
+                kind,
+                imdb_id: imdb_id.to_string(),
+                season: Some(season?),
+            }),
+        }
+    }
+
+    fn get_cached_lookup(
+        &self,
+        kind: DmmMediaKind,
+        imdb_id: &str,
+        season: Option<u32>,
+    ) -> Option<DmmTorrentLookup> {
+        let key = Self::cache_key(kind, imdb_id, season)?;
+        self.imdb_lookups.get(&key).cloned()
+    }
+
+    fn cache_lookup(
+        &mut self,
+        kind: DmmMediaKind,
+        imdb_id: &str,
+        season: Option<u32>,
+        lookup: DmmTorrentLookup,
+    ) {
+        let Some(key) = Self::cache_key(kind, imdb_id, season) else {
+            return;
+        };
+        self.imdb_lookups.insert(key, lookup);
+    }
+
+    async fn fetch_lookup(
+        &mut self,
+        dmm: &DmmClient,
+        kind: DmmMediaKind,
+        imdb_id: &str,
+        season: Option<u32>,
+    ) -> Result<Option<DmmTorrentLookup>> {
+        if let Some(cached) = self.get_cached_lookup(kind, imdb_id, season) {
+            debug!(
+                "DMM: reusing cached lookup for imdb={} kind={:?} season={:?}",
+                imdb_id, kind, season
+            );
+            return Ok(Some(cached));
+        }
+
+        let lookup = fetch_dmm_by_kind(dmm, kind, imdb_id, season).await?;
+        if let Some(ref cachedable) = lookup {
+            self.cache_lookup(kind, imdb_id, season, cachedable.clone());
+        }
+        Ok(lookup)
+    }
+}
+
 pub async fn process_auto_acquire_queue(
     cfg: &Config,
     db: &Database,
@@ -184,6 +264,8 @@ pub async fn process_auto_acquire_queue(
     dry_run: bool,
 ) -> Result<AutoAcquireBatchSummary> {
     let decypharr = DecypharrClient::from_config(&cfg.decypharr);
+    let dmm = cfg.has_dmm().then(|| DmmClient::from_config(&cfg.dmm));
+    let mut dmm_session = DmmSearchSession::default();
     let poll_interval = Duration::from_secs(cfg.decypharr.poll_interval_seconds.max(1));
     let (mut pending, mut downloading, mut relinking) = if dry_run {
         (
@@ -221,7 +303,16 @@ pub async fn process_auto_acquire_queue(
 
         while downloading.len() < cfg.decypharr.max_in_flight && !pending.is_empty() {
             let queued = pending.pop_front().unwrap();
-            match submit_request(cfg, &decypharr, &queued.request, dry_run).await? {
+            match submit_request(
+                cfg,
+                &decypharr,
+                dmm.as_ref(),
+                &mut dmm_session,
+                &queued.request,
+                dry_run,
+            )
+            .await?
+            {
                 SubmitAttempt::Immediate(outcome) => {
                     if !dry_run {
                         persist_terminal_outcome(db, queued.job_id, queued.attempts, &outcome)
@@ -294,7 +385,16 @@ pub async fn process_auto_acquire_queue(
 
         if dry_run {
             while let Some(queued) = pending.pop_front() {
-                match submit_request(cfg, &decypharr, &queued.request, true).await? {
+                match submit_request(
+                    cfg,
+                    &decypharr,
+                    dmm.as_ref(),
+                    &mut dmm_session,
+                    &queued.request,
+                    true,
+                )
+                .await?
+                {
                     SubmitAttempt::Immediate(outcome) => {
                         print_terminal_outcome(&queued.request, &outcome);
                         record_terminal_outcome(&mut summary, &outcome);
@@ -539,6 +639,7 @@ fn request_to_seed(request: &AutoAcquireRequest) -> Result<AcquisitionJobSeed> {
         request_key: request_key(&request.relink_check)?,
         label: request.label.clone(),
         query: request.query.clone(),
+        query_hints: request.query_hints.clone(),
         imdb_id: request.imdb_id.clone(),
         categories: request.categories.clone(),
         arr: request.arr.clone(),
@@ -584,6 +685,7 @@ fn job_to_request(job: &AcquisitionJobRecord) -> AutoAcquireRequest {
     AutoAcquireRequest {
         label: job.label.clone(),
         query: job.query.clone(),
+        query_hints: job.query_hints.clone(),
         imdb_id: job.imdb_id.clone(),
         categories: job.categories.clone(),
         arr: job.arr.clone(),
@@ -722,6 +824,8 @@ async fn persist_terminal_outcome(
 async fn submit_request(
     cfg: &Config,
     decypharr: &DecypharrClient,
+    dmm: Option<&DmmClient>,
+    dmm_session: &mut DmmSearchSession,
     request: &AutoAcquireRequest,
     dry_run: bool,
 ) -> Result<SubmitAttempt> {
@@ -743,8 +847,15 @@ async fn submit_request(
     }
 
     let candidate_queries = build_candidate_queries(request);
-    let lookup =
-        search_download_candidates(cfg, prowlarr.as_ref(), request, &candidate_queries).await?;
+    let lookup = search_download_candidates(
+        cfg,
+        prowlarr.as_ref(),
+        dmm,
+        dmm_session,
+        request,
+        &candidate_queries,
+    )
+    .await?;
 
     let (search_query, source, candidates) = match lookup {
         CandidateLookup::Hits {
@@ -851,6 +962,8 @@ async fn submit_request(
 async fn search_download_candidates(
     cfg: &Config,
     prowlarr: Option<&ProwlarrClient>,
+    dmm: Option<&DmmClient>,
+    dmm_session: &mut DmmSearchSession,
     request: &AutoAcquireRequest,
     candidate_queries: &[String],
 ) -> Result<CandidateLookup> {
@@ -884,22 +997,26 @@ async fn search_download_candidates(
         }
     }
 
-    if !cfg.has_dmm() {
+    let Some(dmm) = dmm else {
+        if !cfg.has_dmm() {
+            return Ok(CandidateLookup::Empty);
+        }
         return Ok(CandidateLookup::Empty);
-    }
+    };
 
-    search_dmm_candidates(cfg, request).await
+    search_dmm_candidates(cfg, dmm, dmm_session, request).await
 }
 
 async fn search_dmm_candidates(
     cfg: &Config,
+    dmm: &DmmClient,
+    dmm_session: &mut DmmSearchSession,
     request: &AutoAcquireRequest,
 ) -> Result<CandidateLookup> {
     let Some(plan) = build_dmm_lookup_plan(request) else {
         return Ok(CandidateLookup::Empty);
     };
 
-    let dmm = DmmClient::from_config(&cfg.dmm);
     let mut pending_reason = None::<String>;
 
     if let Some(imdb_id) = request.imdb_id.as_deref() {
@@ -907,7 +1024,7 @@ async fn search_dmm_candidates(
             "DMM: trying direct IMDb lookup {} for '{}'",
             imdb_id, request.label
         );
-        match fetch_dmm_candidates_for_imdb(cfg, request, &plan, &dmm, imdb_id).await? {
+        match fetch_dmm_candidates_for_imdb(cfg, request, &plan, dmm, dmm_session, imdb_id).await? {
             DmmImdbLookup::Hits(candidates) => {
                 return Ok(CandidateLookup::Hits {
                     query: format!("imdb:{}", imdb_id),
@@ -923,8 +1040,9 @@ async fn search_dmm_candidates(
     for query in &plan.search_queries {
         let title_hits = dmm.search_title(query, plan.kind).await?;
         for title_hit in title_hits.into_iter().take(cfg.dmm.max_search_results) {
-            let Some(lookup) =
-                fetch_dmm_by_kind(&dmm, plan.kind, &title_hit.imdb_id, plan.season).await?
+            let Some(lookup) = dmm_session
+                .fetch_lookup(dmm, plan.kind, &title_hit.imdb_id, plan.season)
+                .await?
             else {
                 continue;
             };
@@ -990,9 +1108,13 @@ async fn fetch_dmm_candidates_for_imdb(
     request: &AutoAcquireRequest,
     plan: &DmmLookupPlan,
     dmm: &DmmClient,
+    dmm_session: &mut DmmSearchSession,
     imdb_id: &str,
 ) -> Result<DmmImdbLookup> {
-    let Some(lookup) = fetch_dmm_by_kind(dmm, plan.kind, imdb_id, plan.season).await? else {
+    let Some(lookup) = dmm_session
+        .fetch_lookup(dmm, plan.kind, imdb_id, plan.season)
+        .await?
+    else {
         return Ok(DmmImdbLookup::Empty);
     };
 
@@ -1058,6 +1180,17 @@ fn build_dmm_search_queries(request: &AutoAcquireRequest, kind: DmmMediaKind) ->
 
     for candidate in [request.query.as_str(), cleaned_label.as_str()] {
         for (_, parsed) in scanner.parse_release_title_variants(candidate) {
+            let title = strip_year_tokens(&parsed.parsed_title);
+            push_candidate_query(&mut titles, &title);
+            if let Some(year) = parsed.year {
+                if !years.contains(&year) {
+                    years.push(year);
+                }
+            }
+        }
+    }
+    for hint in &request.query_hints {
+        for (_, parsed) in scanner.parse_release_title_variants(hint) {
             let title = strip_year_tokens(&parsed.parsed_title);
             push_candidate_query(&mut titles, &title);
             if let Some(year) = parsed.year {
@@ -1254,7 +1387,7 @@ fn rank_dmm_anime_results(
                 }
             }
 
-            if let Some(score) = anime_pack_score(&context, &result.title) {
+            if let Some(score) = anime_pack_score(&context, &result.title, title_matches) {
                 best_score = Some(best_score.map_or(score, |best| best.max(score)));
             }
 
@@ -1318,6 +1451,13 @@ fn dmm_requested_year(request: &AutoAcquireRequest) -> Option<u32> {
             }
         }
     }
+    for hint in &request.query_hints {
+        for (_, parsed) in scanner.parse_release_title_variants(hint) {
+            if parsed.year.is_some() {
+                return parsed.year;
+            }
+        }
+    }
     None
 }
 
@@ -1334,6 +1474,9 @@ fn size_score(file_size: i64) -> i64 {
 fn build_candidate_queries(request: &AutoAcquireRequest) -> Vec<String> {
     let mut queries = Vec::new();
     push_candidate_query(&mut queries, request.query.trim());
+    for hint in &request.query_hints {
+        push_candidate_query(&mut queries, hint);
+    }
 
     let cleaned_label = clean_request_label(&request.label);
     push_candidate_query(&mut queries, &cleaned_label);
@@ -1343,6 +1486,10 @@ fn build_candidate_queries(request: &AutoAcquireRequest) -> Vec<String> {
 
     let query_without_year = strip_year_tokens(&request.query);
     push_candidate_query(&mut queries, &query_without_year);
+    for hint in &request.query_hints {
+        let hint_without_year = strip_year_tokens(hint);
+        push_candidate_query(&mut queries, &hint_without_year);
+    }
 
     if normalize_arr_name(&request.arr) == "sonarranime" {
         for fallback in anime_batch_fallbacks(&cleaned_label) {
@@ -1356,6 +1503,11 @@ fn build_candidate_queries(request: &AutoAcquireRequest) -> Vec<String> {
         }
         for fallback in anime_batch_fallbacks(&query_without_year) {
             push_candidate_query(&mut queries, &fallback);
+        }
+        for hint in &request.query_hints {
+            for fallback in anime_batch_fallbacks(hint) {
+                push_candidate_query(&mut queries, &fallback);
+            }
         }
     }
 
@@ -1504,12 +1656,18 @@ fn build_anime_request_context(request: &AutoAcquireRequest) -> Option<AnimeRequ
     let mut query_season = None;
     let mut query_episode = None;
     let mut absolute_query_episode = None;
+    let mut acceptable_episode_slots = Vec::new();
+    push_episode_slot(&mut acceptable_episode_slots, (*season, *episode));
 
     for (kind, parsed) in query_variants {
         match (parsed.season, parsed.episode, kind) {
             (Some(parsed_season), Some(parsed_episode), _) => {
                 query_season = Some(parsed_season);
                 query_episode = Some(parsed_episode);
+                push_episode_slot(
+                    &mut acceptable_episode_slots,
+                    (parsed_season, parsed_episode),
+                );
             }
             (None, Some(parsed_episode), ParserKind::Anime) => {
                 absolute_query_episode = Some(parsed_episode);
@@ -1518,10 +1676,36 @@ fn build_anime_request_context(request: &AutoAcquireRequest) -> Option<AnimeRequ
         }
     }
 
-    if absolute_query_episode.is_none() && query_season.is_none() {
-        if let Some(last) = request.query.split_whitespace().last() {
-            if is_episode_number_token(last) {
-                absolute_query_episode = last.parse().ok();
+    for hint in &request.query_hints {
+        for (kind, parsed) in scanner.parse_release_title_variants(hint) {
+            match (parsed.season, parsed.episode, kind) {
+                (Some(parsed_season), Some(parsed_episode), _) => {
+                    push_episode_slot(
+                        &mut acceptable_episode_slots,
+                        (parsed_season, parsed_episode),
+                    );
+                }
+                (None, Some(parsed_episode), ParserKind::Anime) => {
+                    if absolute_query_episode.is_none() {
+                        absolute_query_episode = Some(parsed_episode);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if absolute_query_episode.is_none() {
+        for candidate in std::iter::once(request.query.as_str())
+            .chain(request.query_hints.iter().map(String::as_str))
+        {
+            if let Some(last) = candidate.split_whitespace().last() {
+                if is_episode_number_token(last) {
+                    absolute_query_episode = last.parse().ok();
+                    if absolute_query_episode.is_some() {
+                        break;
+                    }
+                }
             }
         }
     }
@@ -1532,19 +1716,34 @@ fn build_anime_request_context(request: &AutoAcquireRequest) -> Option<AnimeRequ
         query_season,
         query_episode,
         absolute_query_episode,
+        acceptable_episode_slots,
         title_tokens: request_title_tokens(&scanner, request),
         upgrade: request.label.contains("upgrade"),
     })
 }
 
+fn push_episode_slot(slots: &mut Vec<(u32, u32)>, slot: (u32, u32)) {
+    if slot.0 == 0 && slot.1 == 0 {
+        return;
+    }
+
+    if !slots.contains(&slot) {
+        slots.push(slot);
+    }
+}
+
 fn request_title_tokens(scanner: &SourceScanner, request: &AutoAcquireRequest) -> Vec<String> {
-    let cleaned_label = clean_request_label(&request.label);
     let mut best_tokens = Vec::new();
 
-    for (_, parsed) in scanner.parse_release_title_variants(&cleaned_label) {
-        let tokens = normalized_tokens(&parsed.parsed_title);
-        if tokens.len() > best_tokens.len() {
-            best_tokens = tokens;
+    for candidate in std::iter::once(clean_request_label(&request.label))
+        .chain(std::iter::once(request.query.clone()))
+        .chain(request.query_hints.iter().cloned())
+    {
+        for (_, parsed) in scanner.parse_release_title_variants(&candidate) {
+            let tokens = normalized_tokens(&parsed.parsed_title);
+            if tokens.len() > best_tokens.len() {
+                best_tokens = tokens;
+            }
         }
     }
 
@@ -1552,6 +1751,7 @@ fn request_title_tokens(scanner: &SourceScanner, request: &AutoAcquireRequest) -
         return best_tokens;
     }
 
+    let cleaned_label = clean_request_label(&request.label);
     strip_year_tokens(&cleaned_label)
         .split_whitespace()
         .filter(|token| !is_numbering_token(token))
@@ -1588,7 +1788,7 @@ fn anime_hit_score(
         }
     }
 
-    if let Some(score) = anime_pack_score(context, &hit.title) {
+    if let Some(score) = anime_pack_score(context, &hit.title, title_matches) {
         best_score = Some(best_score.map_or(score, |best| best.max(score)));
     }
 
@@ -1646,6 +1846,12 @@ fn anime_parsed_variant_score(
         if season == context.desired_season && episode == context.desired_episode {
             return Some(2_500 + quality_bonus);
         }
+        if context
+            .acceptable_episode_slots
+            .contains(&(season, episode))
+        {
+            return Some(2_460 + quality_bonus);
+        }
         return None;
     }
 
@@ -1684,7 +1890,7 @@ fn anime_quality_bonus(quality: Option<&str>, upgrade: bool) -> i64 {
     }
 }
 
-fn anime_pack_score(context: &AnimeRequestContext, title: &str) -> Option<i64> {
+fn anime_pack_score(context: &AnimeRequestContext, title: &str, title_matches: i64) -> Option<i64> {
     let normalized = crate::utils::normalize(title);
     let tokens: HashSet<_> = normalized.split_whitespace().collect();
     let desired_number = context
@@ -1692,6 +1898,10 @@ fn anime_pack_score(context: &AnimeRequestContext, title: &str) -> Option<i64> {
         .unwrap_or(context.desired_episode);
 
     let matches_desired_season = season_token_matches(&tokens, &normalized, context.desired_season);
+    if has_conflicting_explicit_season(&tokens, &normalized, context.desired_season) {
+        return None;
+    }
+
     let contains_desired_range = episode_ranges(title)
         .into_iter()
         .any(|(start, end)| (start..=end).contains(&desired_number));
@@ -1708,7 +1918,30 @@ fn anime_pack_score(context: &AnimeRequestContext, title: &str) -> Option<i64> {
         return Some(1_240 + if context.upgrade { 60 } else { 0 });
     }
 
+    if !matches_desired_season
+        && context.absolute_query_episode.is_some()
+        && contains_desired_range
+        && title_matches >= minimum_pack_title_matches(context)
+    {
+        return Some(1_320 + if context.upgrade { 70 } else { 0 });
+    }
+
     None
+}
+
+fn has_conflicting_explicit_season(
+    tokens: &HashSet<&str>,
+    normalized_title: &str,
+    desired_season: u32,
+) -> bool {
+    (1..=10).any(|season| {
+        season != desired_season && season_token_matches(tokens, normalized_title, season)
+    })
+}
+
+fn minimum_pack_title_matches(context: &AnimeRequestContext) -> i64 {
+    let _ = context;
+    1
 }
 
 fn season_token_matches(tokens: &HashSet<&str>, normalized_title: &str, season: u32) -> bool {
@@ -2391,6 +2624,7 @@ mod tests {
         let request = AutoAcquireRequest {
             label: "The Darwin Incident (2026) S01E10 upgrade".to_string(),
             query: "Darwins Incident 10".to_string(),
+            query_hints: vec!["The Darwin Incident 10".to_string()],
             imdb_id: None,
             categories: vec![5070],
             arr: "sonarr-anime".to_string(),
@@ -2404,6 +2638,7 @@ mod tests {
 
         let queries = build_candidate_queries(&request);
         assert_eq!(queries[0], "Darwins Incident 10");
+        assert!(queries.contains(&"The Darwin Incident 10".to_string()));
         assert!(queries.contains(&"The Darwin Incident (2026) S01E10".to_string()));
         assert!(queries.contains(&"The Darwin Incident S01E10".to_string()));
         assert!(queries.contains(&"The Darwin Incident S01".to_string()));
@@ -2416,6 +2651,7 @@ mod tests {
         let request = AutoAcquireRequest {
             label: "1917".to_string(),
             query: "1917".to_string(),
+            query_hints: Vec::new(),
             imdb_id: Some("tt8579674".to_string()),
             categories: vec![2000],
             arr: "radarr".to_string(),
@@ -2494,6 +2730,7 @@ mod tests {
         let request = AutoAcquireRequest {
             label: "Frieren S01E15".to_string(),
             query: "Frieren S01E15".to_string(),
+            query_hints: vec!["Sousou no Frieren 15".to_string()],
             imdb_id: None,
             categories: vec![5070],
             arr: "sonarr-anime".to_string(),
@@ -2522,6 +2759,7 @@ mod tests {
         let request = AutoAcquireRequest {
             label: "Frieren S01E15".to_string(),
             query: "Sousou no Frieren 15".to_string(),
+            query_hints: Vec::new(),
             imdb_id: None,
             categories: vec![5070],
             arr: "sonarr-anime".to_string(),
@@ -2551,6 +2789,7 @@ mod tests {
         let request = AutoAcquireRequest {
             label: "Tales of Wedding Rings S02E13 upgrade".to_string(),
             query: "Tales of Wedding Rings S02E13".to_string(),
+            query_hints: Vec::new(),
             imdb_id: None,
             categories: vec![5070],
             arr: "sonarr-anime".to_string(),
@@ -2576,5 +2815,154 @@ mod tests {
             ranked[0].title,
             "Tales of Wedding Rings S02 01-13 Complete 1080p"
         );
+    }
+
+    #[test]
+    fn anime_ranking_keeps_absolute_pack_for_later_tvdb_season() {
+        let request = AutoAcquireRequest {
+            label: "Example Show S02E03".to_string(),
+            query: "Example Show S02E03".to_string(),
+            query_hints: vec![
+                "Example Show S01E15".to_string(),
+                "Example Show 15".to_string(),
+            ],
+            imdb_id: None,
+            categories: vec![5070],
+            arr: "sonarr-anime".to_string(),
+            library_filter: Some("Anime".to_string()),
+            relink_check: RelinkCheck::MediaEpisode {
+                media_id: "tvdb-555".to_string(),
+                season: 2,
+                episode: 3,
+            },
+        };
+        let context = build_anime_request_context(&request).unwrap();
+        assert_eq!(context.absolute_query_episode, Some(15));
+        assert!(context.acceptable_episode_slots.contains(&(2, 3)));
+        assert!(context.acceptable_episode_slots.contains(&(1, 15)));
+
+        let hit_tokens_vec = normalized_tokens("Example Show 13-24 Complete 1080p");
+        let hit_tokens: HashSet<_> = hit_tokens_vec.iter().map(String::as_str).collect();
+        let title_matches = context
+            .title_tokens
+            .iter()
+            .filter(|token| hit_tokens.contains(token.as_str()))
+            .count() as i64;
+        assert!(title_matches > 0);
+        assert!(
+            anime_pack_score(&context, "Example Show 13-24 Complete 1080p", title_matches)
+                .is_some()
+        );
+
+        let ranked = rank_candidate_hits(
+            &request,
+            "Example Show",
+            vec![
+                fake_hit("Example Show 13-24 Complete 1080p", 80, 20),
+                fake_hit("Example Show S01 01-12 Complete 1080p", 200, 20),
+            ],
+        );
+
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].title, "Example Show 13-24 Complete 1080p");
+    }
+
+    #[test]
+    fn anime_ranking_accepts_scene_numbered_episode_from_query_hints() {
+        let request = AutoAcquireRequest {
+            label: "Example Show S02E03".to_string(),
+            query: "Example Show S02E03".to_string(),
+            query_hints: vec![
+                "Example Show S01E15".to_string(),
+                "Example Show 15".to_string(),
+            ],
+            imdb_id: None,
+            categories: vec![5070],
+            arr: "sonarr-anime".to_string(),
+            library_filter: Some("Anime".to_string()),
+            relink_check: RelinkCheck::MediaEpisode {
+                media_id: "tvdb-555".to_string(),
+                season: 2,
+                episode: 3,
+            },
+        };
+
+        let ranked = rank_candidate_hits(
+            &request,
+            "Example Show",
+            vec![
+                fake_hit("Example Show S01E15 1080p", 40, 2),
+                fake_hit("Example Show S01E14 1080p", 200, 2),
+            ],
+        );
+
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].title, "Example Show S01E15 1080p");
+    }
+
+    #[test]
+    fn anime_ranking_rejects_seasonless_absolute_pack_without_title_overlap() {
+        let request = AutoAcquireRequest {
+            label: "Example Show S02E03".to_string(),
+            query: "Example Show S02E03".to_string(),
+            query_hints: vec![
+                "Example Show S01E15".to_string(),
+                "Example Show 15".to_string(),
+            ],
+            imdb_id: None,
+            categories: vec![5070],
+            arr: "sonarr-anime".to_string(),
+            library_filter: Some("Anime".to_string()),
+            relink_check: RelinkCheck::MediaEpisode {
+                media_id: "tvdb-555".to_string(),
+                season: 2,
+                episode: 3,
+            },
+        };
+
+        let ranked = rank_candidate_hits(
+            &request,
+            "Example Show",
+            vec![fake_hit("Different Series 13-24 Complete 1080p", 300, 20)],
+        );
+
+        assert!(ranked.is_empty());
+    }
+
+    #[test]
+    fn dmm_search_session_cache_key_uses_season_for_shows() {
+        assert_eq!(
+            DmmSearchSession::cache_key(DmmMediaKind::Show, "tt123", Some(2)),
+            Some(DmmLookupCacheKey {
+                kind: DmmMediaKind::Show,
+                imdb_id: "tt123".to_string(),
+                season: Some(2),
+            })
+        );
+        assert_eq!(
+            DmmSearchSession::cache_key(DmmMediaKind::Show, "tt123", None),
+            None
+        );
+    }
+
+    #[test]
+    fn dmm_search_session_reuses_cached_lookup() {
+        let mut session = DmmSearchSession::default();
+        session.cache_lookup(
+            DmmMediaKind::Show,
+            "tt123",
+            Some(1),
+            DmmTorrentLookup::Results(vec![DmmTorrentResult {
+                title: "Example".to_string(),
+                hash: "abc123".to_string(),
+                file_size: 42,
+            }]),
+        );
+
+        let cached = session.get_cached_lookup(DmmMediaKind::Show, "tt123", Some(1));
+        let other_season = session.get_cached_lookup(DmmMediaKind::Show, "tt123", Some(2));
+
+        assert!(matches!(cached, Some(DmmTorrentLookup::Results(results)) if results.len() == 1));
+        assert!(other_season.is_none());
     }
 }

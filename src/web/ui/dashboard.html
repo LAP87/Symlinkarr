@@ -4,55 +4,242 @@
 {% block nav_dashboard %}active{% endblock %}
 
 {% block content %}
-<div class="page-header">
-    <h1>&#128202; Dashboard</h1>
-    <p>Overview of your Symlinkarr symlink manager.</p>
+<div class="page-header page-header--split">
+    <div>
+        <p class="page-kicker">Operations</p>
+        <h1>&#128202; Dashboard</h1>
+        <p class="page-lead">Latest scan health, acquisition pressure, and cleanup risk in one place.</p>
+    </div>
+    <div class="header-badges">
+        <span class="badge badge-info">Scans {{ stats.total_scans }}</span>
+        <span class="badge {% if queue.active_total > 0 %}badge-warning{% else %}badge-success{% endif %}">
+            Queue {{ queue.active_total }}
+        </span>
+        <span class="badge {% if stats.dead_links > 0 %}badge-danger{% else %}badge-success{% endif %}">
+            Dead {{ stats.dead_links }}
+        </span>
+    </div>
 </div>
 
-<div class="card-grid">
-    <div class="card" style="text-align:center;">
-        <div class="card-icon">&#128279;</div>
-        <div class="card-value text-success">{{ stats.active_links }}</div>
-        <div class="card-label">Active Links</div>
-    </div>
-    <div class="card" style="text-align:center;">
-        <div class="card-icon">&#128683;</div>
-        <div class="card-value {% if stats.dead_links > 0 %}text-error{% else %}text-success{% endif %}">{{ stats.dead_links }}</div>
-        <div class="card-label">Dead Links</div>
-    </div>
-    <div class="card" style="text-align:center;">
-        <div class="card-icon">&#128269;</div>
-        <div class="card-value">{{ stats.total_scans }}</div>
-        <div class="card-label">Total Scans</div>
-    </div>
-    <div class="card" style="text-align:center;">
-        <div class="card-icon">&#128336;</div>
-        <div class="card-value" style="font-size:1.25rem;">
-            {% match stats.last_scan %}
-            {% when Some with (ts) %}{{ ts }}{% when None %}Never{% endmatch %}
+<div class="hero-grid">
+    <section class="hero-card hero-card--accent">
+        <p class="hero-label">Link Health</p>
+        <div class="hero-value">{{ stats.active_links }}</div>
+        <p class="hero-copy">Tracked active symlinks across all libraries.</p>
+        <div class="hero-inline-stats">
+            <span>Dead: <strong class="{% if stats.dead_links > 0 %}text-error{% else %}text-success{% endif %}">{{ stats.dead_links }}</strong></span>
+            <span>Last scan:
+                <strong>
+                    {% match stats.last_scan %}
+                    {% when Some with (ts) %}{{ ts }}{% when None %}Never{% endmatch %}
+                </strong>
+            </span>
         </div>
-        <div class="card-label">Last Scan</div>
-    </div>
+    </section>
+
+    <section class="hero-card">
+        <p class="hero-label">Auto-Acquire Queue</p>
+        <div class="hero-value">{{ queue.active_total }}</div>
+        <p class="hero-copy">Jobs currently waiting, downloading, relinking, or retrying.</p>
+        <div class="hero-inline-stats">
+            <span>Queued <strong>{{ queue.queued }}</strong></span>
+            <span>Downloading <strong>{{ queue.downloading }}</strong></span>
+            <span>Blocked <strong>{{ queue.blocked }}</strong></span>
+        </div>
+    </section>
 </div>
 
-<div class="card">
-    <h2 class="section-title">Quick Actions</h2>
-    <div class="actions">
-        <a href="/scan" class="btn btn-primary">&#128269; Run Scan</a>
-        <a href="/links/dead" class="btn btn-secondary">&#128683; View Dead Links</a>
-        <a href="/cleanup" class="btn btn-secondary">&#129529; Cleanup</a>
-        <a href="/doctor" class="btn btn-secondary">&#129658; Doctor</a>
-    </div>
+<div class="split-grid">
+    <section class="card">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Latest Run</p>
+                <h2 class="section-title">Current baseline</h2>
+            </div>
+            <div class="actions">
+                <a href="/scan" class="btn btn-primary">&#128269; Open Scan</a>
+            </div>
+        </div>
+
+        {% match latest_run %}
+        {% when Some with (run) %}
+        <div class="run-summary">
+            <div class="run-summary__header">
+                <div>
+                    <h3><a href="/scan/history/{{ run.id }}">{{ run.scope_label }}</a></h3>
+                    <p class="text-muted mono">{{ run.started_at }}</p>
+                </div>
+                <div class="header-badges">
+                    {% if run.dry_run %}
+                    <span class="badge badge-info">Dry Run</span>
+                    {% else %}
+                    <span class="badge badge-success">Live</span>
+                    {% endif %}
+                    {% if run.search_missing %}
+                    <span class="badge badge-warning">Search Missing</span>
+                    {% endif %}
+                </div>
+            </div>
+
+            <div class="metric-grid">
+                <div class="metric-card">
+                    <span class="metric-label">Runtime</span>
+                    <strong>{{ run.total_runtime }}</strong>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-label">Matches</span>
+                    <strong>{{ run.matches_found }}</strong>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-label">Created + Updated</span>
+                    <strong>{{ run.links_created + run.links_updated }}</strong>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-label">Dead Marked</span>
+                    <strong class="{% if run.dead_marked > 0 %}text-error{% endif %}">{{ run.dead_marked }}</strong>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-label">Cache Hit</span>
+                    <strong>{{ run.cache_hit_ratio }}</strong>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-label">Auto-Acquire Wins</span>
+                    <strong>{{ run.auto_acquire_successes }}</strong>
+                </div>
+            </div>
+
+            <div class="telemetry-grid">
+                <div class="telemetry-item"><span>Checks</span><strong>{{ run.runtime_checks }}</strong></div>
+                <div class="telemetry-item"><span>Library</span><strong>{{ run.library_scan }}</strong></div>
+                <div class="telemetry-item"><span>Source</span><strong>{{ run.source_inventory }}</strong></div>
+                <div class="telemetry-item"><span>Match</span><strong>{{ run.matching }}</strong></div>
+                <div class="telemetry-item"><span>Titles</span><strong>{{ run.title_enrichment }}</strong></div>
+                <div class="telemetry-item"><span>Link</span><strong>{{ run.linking }}</strong></div>
+                <div class="telemetry-item"><span>Plex</span><strong>{{ run.plex_refresh }}</strong></div>
+                <div class="telemetry-item"><span>Dead Sweep</span><strong>{{ run.dead_link_sweep }}</strong></div>
+            </div>
+        </div>
+        {% when None %}
+        <p class="text-muted">No scan runs recorded yet.</p>
+        {% endmatch %}
+    </section>
+
+    <section class="card">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Queue Pressure</p>
+                <h2 class="section-title">Acquisition backlog</h2>
+            </div>
+            <div class="actions">
+                <a href="/status" class="btn btn-secondary">&#128200; Status</a>
+            </div>
+        </div>
+
+        <div class="metric-grid metric-grid--compact">
+            <div class="metric-card">
+                <span class="metric-label">Queued</span>
+                <strong>{{ queue.queued }}</strong>
+            </div>
+            <div class="metric-card">
+                <span class="metric-label">Downloading</span>
+                <strong>{{ queue.downloading }}</strong>
+            </div>
+            <div class="metric-card">
+                <span class="metric-label">Relinking</span>
+                <strong>{{ queue.relinking }}</strong>
+            </div>
+            <div class="metric-card">
+                <span class="metric-label">No Result</span>
+                <strong>{{ queue.no_result }}</strong>
+            </div>
+            <div class="metric-card">
+                <span class="metric-label">Blocked</span>
+                <strong>{{ queue.blocked }}</strong>
+            </div>
+            <div class="metric-card">
+                <span class="metric-label">Failed</span>
+                <strong>{{ queue.failed }}</strong>
+            </div>
+        </div>
+
+        {% if stats.dead_links > 0 %}
+        <div class="alert alert-warning mt-2">
+            <strong>&#9888;&#65039; Cleanup still matters.</strong>
+            {{ stats.dead_links }} dead links are tracked right now.
+        </div>
+        {% else %}
+        <div class="alert alert-success mt-2">
+            <strong>&#9989; No dead links are currently tracked.</strong>
+        </div>
+        {% endif %}
+
+        <div class="actions mt-2">
+            <a href="/links/dead" class="btn btn-secondary">&#128683; Dead Links</a>
+            <a href="/cleanup" class="btn btn-secondary">&#129529; Cleanup</a>
+            <a href="/doctor" class="btn btn-secondary">&#129658; Doctor</a>
+        </div>
+    </section>
 </div>
 
-{% if stats.dead_links > 0 %}
-<div class="alert alert-warning">
-    <strong>&#9888;&#65039; Action Required:</strong>
-    You have {{ stats.dead_links }} dead link(s).
-    <a href="/links/dead" style="color:inherit;font-weight:600;">View dead links</a> or
-    <form action="/links/repair" method="post" style="display:inline;">
-        <button type="submit" class="btn" style="padding:0.25rem 0.75rem;font-size:0.875rem;">Auto-repair</button>
-    </form>
-</div>
-{% endif %}
+<section class="card">
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Recent Runs</p>
+            <h2 class="section-title">Trend snapshot</h2>
+        </div>
+        <div class="actions">
+            <a href="/scan/history" class="btn btn-secondary">&#128340; Full History</a>
+        </div>
+    </div>
+
+    {% if recent_runs|length > 0 %}
+    <table class="data-table dense-table">
+        <thead>
+            <tr>
+                <th>Started</th>
+                <th>Scope</th>
+                <th>Mode</th>
+                <th>Runtime</th>
+                <th>Matches</th>
+                <th>Links</th>
+                <th>Acquire</th>
+                <th>Dead</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for run in recent_runs %}
+            <tr>
+                <td class="mono"><a href="/scan/history/{{ run.id }}">{{ run.started_at }}</a></td>
+                <td><a href="/scan/history/{{ run.id }}">{{ run.scope_label }}</a></td>
+                <td>
+                    {% if run.dry_run %}
+                    <span class="badge badge-info">Dry</span>
+                    {% else %}
+                    <span class="badge badge-success">Live</span>
+                    {% endif %}
+                    {% if run.search_missing %}
+                    <span class="badge badge-warning">Missing</span>
+                    {% endif %}
+                </td>
+                <td>{{ run.total_runtime }}</td>
+                <td>{{ run.matches_found }}</td>
+                <td class="text-success">{{ run.links_created + run.links_updated }}</td>
+                <td>
+                    {% if run.auto_acquire_requests > 0 %}
+                    <span>{{ run.auto_acquire_successes }}/{{ run.auto_acquire_requests }}</span>
+                    {% else %}
+                    <span class="text-muted">n/a</span>
+                    {% endif %}
+                </td>
+                <td class="{% if run.dead_marked > 0 || run.links_removed > 0 %}text-error{% endif %}">
+                    {{ run.dead_marked + run.links_removed }}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="text-muted">No scan history yet.</p>
+    {% endif %}
+</section>
 {% endblock %}
