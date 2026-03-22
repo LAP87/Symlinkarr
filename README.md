@@ -136,6 +136,35 @@ http://127.0.0.1:8726
 
 Native Windows is not currently supported. On Windows 11, run Symlinkarr through WSL2 or a Linux container.
 
+### Windows 11 Development via WSL2
+
+If you want to keep developing on a Windows 11 laptop, use `WSL2` as the actual Symlinkarr environment.
+
+Recommended setup:
+
+- install Ubuntu under `WSL2`
+- keep the repo on the Linux side, for example `~/apps/Symlinkarr`
+- do not develop from `/mnt/c/...`; symlink and file-watch behavior is worse there
+- run Rust, SQLite, Docker, and Symlinkarr commands inside WSL
+- optionally use VS Code with Remote WSL as the editor
+
+Fast path:
+
+```bash
+sudo apt update
+sudo apt install -y build-essential pkg-config libssl-dev sqlite3 git curl
+curl https://sh.rustup.rs -sSf | sh
+source "$HOME/.cargo/env"
+mkdir -p ~/apps
+cd ~/apps
+git clone <YOUR-REPO-URL> Symlinkarr
+cd Symlinkarr
+cargo test --quiet
+cargo run -- web
+```
+
+There is a fuller checklist in [docs/DEV_SETUP_WSL.md](docs/DEV_SETUP_WSL.md).
+
 ### Minimal First Run
 
 Validate config:
@@ -340,5 +369,6 @@ If you want the deeper implementation or operator docs, start here:
 - [API_SCHEMA.md](docs/API_SCHEMA.md)
 - [RD_DMM_FILE_RESOLUTION_SPEC.md](docs/RD_DMM_FILE_RESOLUTION_SPEC.md)
 - [ANIME_LISTS_INTEGRATION_SPEC.md](docs/ANIME_LISTS_INTEGRATION_SPEC.md)
+- [DEV_SETUP_WSL.md](docs/DEV_SETUP_WSL.md)
 - [DESIGN_COUNCIL_ROADMAP.md](docs/DESIGN_COUNCIL_ROADMAP.md)
 - [CHANGELOG.md](docs/CHANGELOG.md)

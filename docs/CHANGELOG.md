@@ -6,6 +6,13 @@
 - posture: `stable core, evolving ops`
 - intended use: local-first host or Docker installs, with Windows 11 users running through WSL2 or a Linux container
 
+## 2026-03-22 - WSL2 Development Guide
+
+### Docs
+
+- added a dedicated Windows 11 `WSL2` development guide so host development can stay Unix-correct without pretending native Windows runtime is supported.
+  - files: `README.md`, `docs/DEV_SETUP_WSL.md`
+
 ## 2026-03-22 - Web Exposure Hardening + Cleanup Audit API Summary
 
 ### Code Changes
