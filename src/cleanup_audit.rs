@@ -2114,6 +2114,31 @@ mod tests {
     }
 
     #[test]
+    fn test_cleanup_scope_parse_all_variants() {
+        assert_eq!(CleanupScope::parse("anime").unwrap(), CleanupScope::Anime);
+        assert_eq!(CleanupScope::parse("series").unwrap(), CleanupScope::Tv);
+        assert_eq!(CleanupScope::parse("shows").unwrap(), CleanupScope::Tv);
+        assert_eq!(CleanupScope::parse("movie").unwrap(), CleanupScope::Movie);
+        assert_eq!(CleanupScope::parse("films").unwrap(), CleanupScope::Movie);
+        assert_eq!(CleanupScope::parse("film").unwrap(), CleanupScope::Movie);
+        assert!(CleanupScope::parse("tv").unwrap() == CleanupScope::Tv);
+    }
+
+    #[test]
+    fn test_cleanup_scope_parse_rejects_invalid() {
+        assert!(CleanupScope::parse("invalid").is_err());
+        assert!(CleanupScope::parse("").is_err());
+        assert_eq!(CleanupScope::parse("ANIME").unwrap(), CleanupScope::Anime); // case-insensitive
+    }
+
+    #[test]
+    fn test_finding_severity_display() {
+        assert_eq!(FindingSeverity::Critical.to_string(), "critical");
+        assert_eq!(FindingSeverity::High.to_string(), "high");
+        assert_eq!(FindingSeverity::Warning.to_string(), "warning");
+    }
+
+    #[test]
     fn test_find_owner_library_item_walks_up_to_show_root() {
         let library_items = vec![LibraryItem {
             id: MediaId::Tvdb(42),
