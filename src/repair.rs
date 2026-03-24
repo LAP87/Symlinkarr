@@ -1958,4 +1958,47 @@ mod tests {
         assert_eq!(removed.len(), 1);
         assert_eq!(removed[0].target_path, target);
     }
+
+    // ── Pure function unit tests ──────────────────────────────────────────────
+
+    #[test]
+    fn test_normalize_title_removes_punctuation() {
+        assert_eq!(normalize_title("Breaking.Bad.S01E01"), "breaking bad s01e01");
+        assert_eq!(normalize_title("Movie_Name_2024"), "movie name 2024");
+    }
+
+    #[test]
+    fn test_normalize_title_filters_non_alphanumeric() {
+        assert_eq!(normalize_title("The@#$%Matrix"), "thematrix");
+    }
+
+    #[test]
+    fn test_normalize_title_trims_whitespace() {
+        assert_eq!(normalize_title("  Hello   World  "), "hello world");
+    }
+
+    #[test]
+    fn test_extract_quality_more_formats() {
+        assert_eq!(extract_quality("Movie.2160p.WEB-DL"), Some("2160p".to_string()));
+        assert_eq!(extract_quality("Show.1080p.BluRay"), Some("1080p".to_string()));
+        assert_eq!(extract_quality("Video.720p.x264"), Some("720p".to_string()));
+        assert_eq!(extract_quality("Video.480p.XviD"), Some("480p".to_string()));
+    }
+
+    #[test]
+    fn test_extract_quality_none_for_no_quality() {
+        assert_eq!(extract_quality("Movie.NoQualityTag"), None);
+    }
+
+    #[test]
+    fn test_extract_year() {
+        assert_eq!(extract_year("Movie (2008).mkv"), Some(2008));
+        assert_eq!(extract_year("Film (1999).mkv"), Some(1999));
+    }
+
+    #[test]
+    fn test_extract_year_none_for_invalid() {
+        assert_eq!(extract_year("No Year Here.mkv"), None);
+    }
+
 }
