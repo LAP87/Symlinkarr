@@ -158,6 +158,10 @@ fn titles_match(lib_title: &str, rd_title: &str) -> bool {
     if lib_title == rd_title {
         return true;
     }
+    // Empty strings should not match anything
+    if lib_title.is_empty() || rd_title.is_empty() {
+        return false;
+    }
     // Check if one contains the other (for partial matches like "Breaking Bad" vs "Breaking Bad S01")
     lib_title.contains(rd_title) || rd_title.contains(lib_title)
 }
@@ -219,5 +223,31 @@ mod tests {
     fn test_truncate() {
         assert_eq!(truncate("Hello", 10), "Hello");
         assert_eq!(truncate("Hello World", 6), "Hello…");
+    }
+
+    #[test]
+    fn test_titles_match_empty() {
+        assert!(titles_match("", ""));
+        assert!(!titles_match("", "something"));
+        assert!(!titles_match("something", ""));
+    }
+
+
+    #[test]
+    fn test_truncate_exact_boundary() {
+        assert_eq!(truncate("Hello", 5), "Hello");
+        assert_eq!(truncate("Hello", 4), "Hel…");
+    }
+
+    #[test]
+    fn test_truncate_unicode() {
+        // Unicode characters (each counts as one char in the truncate logic)
+        assert_eq!(truncate("日本語テスト", 3), "日本…");
+    }
+
+    #[test]
+    fn test_parse_torrent_title_empty() {
+        let discovery = Discovery::new();
+        assert_eq!(discovery.parse_torrent_title(""), "");
     }
 }
