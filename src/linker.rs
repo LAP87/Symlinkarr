@@ -872,6 +872,20 @@ mod tests {
     }
 
     #[test]
+    fn test_sanitize_filename_all_special_chars() {
+        // All Windows-incompatible filename characters replaced with underscore
+        assert_eq!(sanitize_filename("a/b\\c:d*e?f\"g<h>i|j"), "a_b_c_d_e_f_g_h_i_j");
+        // Unicode characters preserved
+        assert_eq!(sanitize_filename("日本語タイトル"), "日本語タイトル");
+    }
+
+    #[test]
+    fn test_sanitize_filename_trims_whitespace() {
+        assert_eq!(sanitize_filename("  Title  "), "Title");
+        assert_eq!(sanitize_filename("  Movie (2024)  "), "Movie (2024)");
+    }
+
+    #[test]
     fn test_format_episode_name() {
         let linker = Linker::new(false, true, DEFAULT_TEMPLATE);
         let name = linker.format_episode_name("Breaking Bad", 1, 1, "Pilot", "mkv");
