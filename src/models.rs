@@ -181,3 +181,53 @@ pub struct EpisodeInfo {
     /// Episode title
     pub title: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_media_type_display() {
+        assert_eq!(MediaType::Movie.to_string(), "movie");
+        assert_eq!(MediaType::Tv.to_string(), "tv");
+    }
+
+    #[test]
+    fn test_media_id_display() {
+        assert_eq!(MediaId::Tmdb(123).to_string(), "tmdb-123");
+        assert_eq!(MediaId::Tvdb(456).to_string(), "tvdb-456");
+    }
+
+    #[test]
+    fn test_media_id_id_value() {
+        assert_eq!(MediaId::Tmdb(123).id_value(), 123);
+        assert_eq!(MediaId::Tvdb(456).id_value(), 456);
+    }
+
+    #[test]
+    fn test_media_id_provider() {
+        assert_eq!(MediaId::Tmdb(123).provider(), "tmdb");
+        assert_eq!(MediaId::Tvdb(456).provider(), "tvdb");
+    }
+
+    #[test]
+    fn test_media_id_eq() {
+        assert_eq!(MediaId::Tmdb(123), MediaId::Tmdb(123));
+        assert_ne!(MediaId::Tmdb(123), MediaId::Tmdb(124));
+        assert_ne!(MediaId::Tmdb(123), MediaId::Tvdb(123));
+    }
+
+    #[test]
+    fn test_media_type_eq() {
+        assert_eq!(MediaType::Movie, MediaType::Movie);
+        assert_ne!(MediaType::Movie, MediaType::Tv);
+    }
+
+    #[test]
+    fn test_link_status_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<LinkStatus>();
+        assert_send_sync::<MediaType>();
+        assert_send_sync::<MediaId>();
+    }
+}
