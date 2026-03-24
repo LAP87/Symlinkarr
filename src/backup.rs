@@ -1029,6 +1029,27 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn test_path_is_within_roots_accepts_nested_paths() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        let nested = root.join("a/b/c");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        assert!(path_is_within_roots(&nested, &[root.to_path_buf()]));
+        assert!(path_is_within_roots(&nested.join("file.mkv"), &[root.to_path_buf()]));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_path_is_within_roots_rejects_empty_roots() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file = dir.path().join("file.mkv");
+        std::fs::write(&file, "video").unwrap();
+        assert!(!path_is_within_roots(&file, &[]));
+    }
+
+    #[cfg(unix)]
     #[tokio::test]
     async fn test_restore_skips_symlink_path_escape_even_with_lexical_prefix_match() {
         let dir = tempfile::TempDir::new().unwrap();
