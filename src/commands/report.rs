@@ -290,16 +290,10 @@ async fn build_path_compare(
 ) -> Result<PathCompareOutput> {
     let filesystem_scan = collect_filesystem_symlink_paths(libraries);
     let filesystem_symlinks = filesystem_scan.paths;
-    let db_active_links: HashSet<PathBuf> = link_records
-        .iter()
-        .filter(|link| link.status == crate::models::LinkStatus::Active)
-        .map(|link| link.target_path.clone())
-        .collect();
+    let mut db_active_links: HashSet<PathBuf> = HashSet::new();
     let mut known_missing_source_paths = filesystem_scan.missing_source_paths;
-    for link in link_records
-        .iter()
-        .filter(|link| link.status == crate::models::LinkStatus::Active)
-    {
+    for link in link_records.iter().filter(|link| link.status == crate::models::LinkStatus::Active) {
+        db_active_links.insert(link.target_path.clone());
         if !link.source_path.exists() {
             known_missing_source_paths.insert(link.target_path.clone());
         }
