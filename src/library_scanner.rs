@@ -1,3 +1,4 @@
+use std::sync::LazyLock;
 use regex::Regex;
 use tracing::{info, warn};
 use walkdir::WalkDir;
@@ -7,23 +8,19 @@ use crate::config::{ContentType, LibraryConfig};
 use crate::models::MediaType;
 use crate::models::{LibraryItem, MediaId};
 
+/// Static regexes compiled once at program start.
+static ID_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\{(tvdb|tmdb)-([0-9]+)\}").unwrap());
+static TITLE_CLEANUP_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\s*\{(?:tvdb|tmdb)-[0-9]+\}\s*").unwrap());
+
 /// Scans Plex/Jellyfin library directories for folders tagged with
 /// `{tvdb-XXXXX}` or `{tmdb-XXXXX}` metadata IDs.
-pub struct LibraryScanner {
-    id_regex: Regex,
-    title_cleanup_regex: Regex,
-}
+pub struct LibraryScanner;
 
 impl LibraryScanner {
     pub fn new() -> Self {
-        // Matches {tvdb-123456} or {tmdb-123456} in folder names
-        let id_regex = Regex::new(r"\{(tvdb|tmdb)-([0-9]+)\}").unwrap();
-        // Removes the ID tag and surrounding whitespace from the folder name
-        let title_cleanup_regex = Regex::new(r"\s*\{(?:tvdb|tmdb)-[0-9]+\}\s*").unwrap();
-        Self {
-            id_regex,
-            title_cleanup_regex,
-        }
+        Self
     }
 
     /// Scan a single library directory and return all ID-tagged folders found.
@@ -62,7 +59,7 @@ impl LibraryScanner {
         path: &std::path::Path,
         lib: &LibraryConfig,
     ) -> Option<LibraryItem> {
-        let caps = self.id_regex.captures(folder_name)?;
+        let caps = ID_REGEX.captures(folder_name)?;
 
         let id_type = caps.get(1)?.as_str();
         let id_val: u64 = caps.get(2)?.as_str().parse().ok()?;
@@ -74,8 +71,7 @@ impl LibraryScanner {
         };
 
         // Extract the clean title by removing the ID tag
-        let title = self
-            .title_cleanup_regex
+        let title = TITLE_CLEANUP_REGEX
             .replace(folder_name, "")
             .trim()
             .to_string();
