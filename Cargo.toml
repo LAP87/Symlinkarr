@@ -22,6 +22,8 @@ clap = { version = "4", features = ["derive"] }
 chrono = { version = "0.4", features = ["serde"] }
 unicode-normalization = "0.1"
 
+rayon = "1.8"
+
 # Web UI dependencies
 axum = "0.7"
 askama = "0.12"

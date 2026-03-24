@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use chrono::Utc;
+use rayon::prelude::*;
 use serde::Serialize;
 use walkdir::WalkDir;
 
@@ -370,27 +371,37 @@ struct FilesystemSymlinkScan {
 }
 
 fn collect_filesystem_symlink_paths(libraries: &[&LibraryConfig]) -> FilesystemSymlinkScan {
-    let mut paths = HashSet::new();
-    let mut missing_source_paths = HashSet::new();
-
-    for lib in libraries {
-        for entry in WalkDir::new(&lib.path).follow_links(false) {
-            let Ok(entry) = entry else {
-                continue;
-            };
-            if entry.file_type().is_symlink() {
-                let path = entry.path().to_path_buf();
-                if symlink_source_missing(&path) {
-                    missing_source_paths.insert(path.clone());
+    let results: Vec<_> = libraries
+        .par_iter()
+        .map(|lib| {
+            let mut paths = HashSet::new();
+            let mut missing_source_paths = HashSet::new();
+            for entry in WalkDir::new(&lib.path).follow_links(false) {
+                let Ok(entry) = entry else {
+                    continue;
+                };
+                if entry.file_type().is_symlink() {
+                    let path = entry.path().to_path_buf();
+                    if symlink_source_missing(&path) {
+                        missing_source_paths.insert(path.clone());
+                    }
+                    paths.insert(path);
                 }
-                paths.insert(path);
             }
-        }
+            (paths, missing_source_paths)
+        })
+        .collect();
+
+    let mut all_paths = HashSet::new();
+    let mut all_missing = HashSet::new();
+    for (paths, missing) in results {
+        all_paths.extend(paths);
+        all_missing.extend(missing);
     }
 
     FilesystemSymlinkScan {
-        paths,
-        missing_source_paths,
+        paths: all_paths,
+        missing_source_paths: all_missing,
     }
 }
 
