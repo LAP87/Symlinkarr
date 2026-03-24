@@ -2139,6 +2139,14 @@ mod tests {
     }
 
     #[test]
+    fn test_finding_reason_display() {
+        assert_eq!(FindingReason::BrokenSource.to_string(), "broken_source");
+        assert_eq!(FindingReason::ParserTitleMismatch.to_string(), "parser_title_mismatch");
+        assert_eq!(FindingReason::DuplicateEpisodeSlot.to_string(), "duplicate_episode_slot");
+        assert_eq!(FindingReason::NonRdSourcePath.to_string(), "non_rd_source_path");
+    }
+
+    #[test]
     fn test_find_owner_library_item_walks_up_to_show_root() {
         let library_items = vec![LibraryItem {
             id: MediaId::Tvdb(42),
