@@ -462,6 +462,7 @@ impl Database {
             6 => self.migration_v6_tx(tx).await,
             7 => self.migration_v7_tx(tx).await,
             8 => self.migration_v8_tx(tx).await,
+            9 => self.migration_v9_tx(tx).await,
             _ => anyhow::bail!("Unknown migration version {}", version),
         }
     }
@@ -733,6 +734,14 @@ impl Database {
             }
         }
 
+        Ok(())
+    }
+
+    async fn migration_v9_tx(&self, tx: &mut sqlx::Transaction<'_, Sqlite>) -> Result<()> {
+        // Composite index on links(status, target_path) speeds up get_links_scoped queries
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_links_status_target ON links(status, target_path)")
+            .execute(&mut **tx)
+            .await?;
         Ok(())
     }
 
