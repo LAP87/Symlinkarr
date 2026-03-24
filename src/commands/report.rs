@@ -275,14 +275,6 @@ fn collect_link_presence(
     presence_by_library
 }
 
-fn library_name_for_path(libraries: &[&LibraryConfig], path: &Path) -> Option<String> {
-    libraries
-        .iter()
-        .filter(|lib| path.starts_with(&lib.path))
-        .max_by_key(|lib| lib.path.components().count())
-        .map(|lib| lib.name.clone())
-}
-
 fn media_type_key(media_type: MediaType) -> &'static str {
     match media_type {
         MediaType::Movie => "movie",
