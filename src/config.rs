@@ -2151,4 +2151,45 @@ tautulli:
             .iter()
             .any(|err| err.contains("secretfile must not be group/world accessible")));
     }
+
+    #[test]
+    fn test_content_type_display() {
+        assert_eq!(ContentType::Tv.to_string(), "tv");
+        assert_eq!(ContentType::Anime.to_string(), "anime");
+        assert_eq!(ContentType::Movie.to_string(), "movie");
+    }
+
+    #[test]
+    fn test_content_type_from_media_type() {
+        assert_eq!(ContentType::from_media_type(MediaType::Tv), ContentType::Tv);
+        assert_eq!(ContentType::from_media_type(MediaType::Movie), ContentType::Movie);
+    }
+
+    #[test]
+    fn test_matching_mode_display() {
+        assert_eq!(MatchingMode::Strict.to_string(), "strict");
+        assert_eq!(MatchingMode::Balanced.to_string(), "balanced");
+        assert_eq!(MatchingMode::Aggressive.to_string(), "aggressive");
+    }
+
+    #[test]
+    fn test_matching_mode_is_strict() {
+        assert!(MatchingMode::Strict.is_strict());
+        assert!(!MatchingMode::Balanced.is_strict());
+        assert!(!MatchingMode::Aggressive.is_strict());
+    }
+
+    #[test]
+    fn test_metadata_mode_display() {
+        assert_eq!(MetadataMode::Full.to_string(), "full");
+        assert_eq!(MetadataMode::CacheOnly.to_string(), "cache_only");
+        assert_eq!(MetadataMode::Off.to_string(), "off");
+    }
+
+    #[test]
+    fn test_metadata_mode_allows_network() {
+        assert!(MetadataMode::Full.allows_network());
+        assert!(!MetadataMode::CacheOnly.allows_network());
+        assert!(!MetadataMode::Off.allows_network());
+    }
 }
