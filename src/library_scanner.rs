@@ -178,4 +178,53 @@ mod tests {
 
         assert!(results.is_empty());
     }
+
+    #[test]
+    fn test_multiple_folders_in_library() {
+        let scanner = LibraryScanner::new();
+        let dir = TempDir::new().unwrap();
+        fs::create_dir(dir.path().join("Breaking Bad {tvdb-81189}")).unwrap();
+        fs::create_dir(dir.path().join("The Matrix {tmdb-603}")).unwrap();
+        fs::create_dir(dir.path().join("Unknown {imdb-tt123}")).unwrap(); // Unknown type, should be skipped
+
+        let lib = test_lib(dir.path(), MediaType::Tv);
+        let results = scanner.scan_library(&lib);
+
+        // Scanner picks up all valid tvdb/tmdb folders regardless of library type
+        assert_eq!(results.len(), 2);
+        let ids: Vec<_> = results.iter().map(|r| r.id.clone()).collect();
+        assert!(ids.contains(&MediaId::Tvdb(81189)));
+        assert!(ids.contains(&MediaId::Tmdb(603)));
+    }
+
+    #[test]
+    fn test_title_cleanup_removes_id_tag() {
+        let scanner = LibraryScanner::new();
+        let dir = TempDir::new().unwrap();
+        // Folder with extra whitespace around the ID tag
+        fs::create_dir(dir.path().join("  Movie Title  {tmdb-999}  ")).unwrap();
+
+        let lib = test_lib(dir.path(), MediaType::Movie);
+        let results = scanner.scan_library(&lib);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Movie Title");
+    }
+
+    #[test]
+    fn test_tvdb_and_tmdb_in_same_directory() {
+        let scanner = LibraryScanner::new();
+        let dir = TempDir::new().unwrap();
+        // Scanner picks up both tvdb and tmdb regardless of library type
+        fs::create_dir(dir.path().join("Movie {tmdb-100}")).unwrap();
+        fs::create_dir(dir.path().join("Show {tvdb-200}")).unwrap();
+
+        let lib = test_lib(dir.path(), MediaType::Movie);
+        let results = scanner.scan_library(&lib);
+
+        assert_eq!(results.len(), 2);
+        let ids: Vec<_> = results.iter().map(|r| r.id.clone()).collect();
+        assert!(ids.contains(&MediaId::Tmdb(100)));
+        assert!(ids.contains(&MediaId::Tvdb(200)));
+    }
 }
