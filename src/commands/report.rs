@@ -538,6 +538,206 @@ mod tests {
     use crate::models::{LinkRecord, LinkStatus, MediaType};
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
+    // === Unit tests for pure helper functions ===
+
+    #[test]
+    fn test_media_type_key_movie() {
+        assert_eq!(media_type_key(MediaType::Movie), "movie");
+    }
+
+    #[test]
+    fn test_media_type_key_tv() {
+        assert_eq!(media_type_key(MediaType::Tv), "series");
+    }
+
+    #[test]
+    fn test_sample_difference_left_only() {
+        let left: HashSet<PathBuf> = vec![
+            PathBuf::from("/a"),
+            PathBuf::from("/b"),
+            PathBuf::from("/c"),
+        ]
+        .into_iter()
+        .collect();
+        let right: HashSet<PathBuf> = vec![PathBuf::from("/b")].into_iter().collect();
+        let result = sample_difference(&left, &right);
+        assert_eq!(result.count, 2);
+        assert!(result.samples.contains(&PathBuf::from("/a")));
+        assert!(result.samples.contains(&PathBuf::from("/c")));
+    }
+
+    #[test]
+    fn test_sample_difference_empty() {
+        let left: HashSet<PathBuf> = HashSet::new();
+        let right: HashSet<PathBuf> = HashSet::new();
+        let result = sample_difference(&left, &right);
+        assert_eq!(result.count, 0);
+        assert!(result.samples.is_empty());
+    }
+
+    #[test]
+    fn test_sample_difference_identical() {
+        let set: HashSet<PathBuf> = vec![PathBuf::from("/x")].into_iter().collect();
+        let result = sample_difference(&set, &set);
+        assert_eq!(result.count, 0);
+        assert!(result.samples.is_empty());
+    }
+
+    #[test]
+    fn test_sample_intersection() {
+        let left: HashSet<PathBuf> = vec![PathBuf::from("/a"), PathBuf::from("/b")].into_iter().collect();
+        let right: HashSet<PathBuf> = vec![PathBuf::from("/b"), PathBuf::from("/c")].into_iter().collect();
+        let result = sample_intersection(&left, &right);
+        assert_eq!(result.count, 1);
+        assert_eq!(result.samples, vec![PathBuf::from("/b")]);
+    }
+
+    #[test]
+    fn test_sample_intersection_empty() {
+        let left: HashSet<PathBuf> = vec![PathBuf::from("/a")].into_iter().collect();
+        let right: HashSet<PathBuf> = vec![PathBuf::from("/b")].into_iter().collect();
+        let result = sample_intersection(&left, &right);
+        assert_eq!(result.count, 0);
+        assert!(result.samples.is_empty());
+    }
+
+    #[test]
+    fn test_symlink_source_missing_broken() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let link_path = dir.path().join("broken_link");
+        std::os::unix::fs::symlink(
+            std::path::Path::new("/nonexistent_target"),
+            &link_path,
+        )
+        .unwrap();
+        assert!(symlink_source_missing(&link_path));
+    }
+
+    #[test]
+    fn test_symlink_source_missing_valid() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let target = dir.path().join("target_file");
+        std::fs::write(&target, b"content").unwrap();
+        let link_path = dir.path().join("valid_link");
+        std::os::unix::fs::symlink(&target, &link_path).unwrap();
+        assert!(!symlink_source_missing(&link_path));
+    }
+
+    #[test]
+    fn test_collect_link_presence_active_and_dead() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let movies = dir.path().join("movies");
+        let series = dir.path().join("series");
+        std::fs::create_dir_all(&movies).unwrap();
+        std::fs::create_dir_all(&series).unwrap();
+
+        let movie_a = movies.join("Movie A {tmdb-1}");
+        let series_b = series.join("Show B {tvdb-2}");
+        std::fs::create_dir_all(&movie_a).unwrap();
+        std::fs::create_dir_all(&series_b).unwrap();
+
+        let movie_lib = LibraryConfig {
+            name: "Movies".to_string(),
+            path: movies.clone(),
+            media_type: crate::models::MediaType::Movie,
+            content_type: None,
+            depth: 1,
+        };
+        let series_lib = LibraryConfig {
+            name: "Series".to_string(),
+            path: series.clone(),
+            media_type: crate::models::MediaType::Tv,
+            content_type: None,
+            depth: 1,
+        };
+        let libraries = vec![&movie_lib, &series_lib];
+
+        let link_a = LinkRecord {
+            id: None,
+            source_path: PathBuf::from("/rd/movie-a.mkv"),
+            target_path: movie_a.join("Movie A.mkv"),
+            media_id: "tmdb-1".to_string(),
+            media_type: MediaType::Movie,
+            status: LinkStatus::Active,
+            created_at: None,
+            updated_at: None,
+        };
+        let link_b = LinkRecord {
+            id: None,
+            source_path: PathBuf::from("/rd/show-b-s01e01.mkv"),
+            target_path: series_b.join("Show B - S01E01.mkv"),
+            media_id: "tvdb-2".to_string(),
+            media_type: MediaType::Tv,
+            status: LinkStatus::Dead,
+            created_at: None,
+            updated_at: None,
+        };
+        let link_c = LinkRecord {
+            id: None,
+            source_path: PathBuf::from("/rd/removed.mkv"),
+            target_path: movies.join("Removed.mkv"),
+            media_id: "tmdb-99".to_string(),
+            media_type: MediaType::Movie,
+            status: LinkStatus::Removed,
+            created_at: None,
+            updated_at: None,
+        };
+
+        let link_records = vec![link_a.clone(), link_b.clone(), link_c.clone()];
+        let presence = collect_link_presence(&libraries, &link_records);
+
+        // Movies: 1 active, 0 dead
+        let movie_presence = presence.get("Movies").unwrap();
+        assert!(movie_presence.active_media_ids.contains("tmdb-1"));
+        assert!(!movie_presence.active_media_ids.contains("tmdb-99")); // Removed is not active
+        assert!(!movie_presence.dead_media_ids.contains("tmdb-1"));
+        assert!(!movie_presence.dead_media_ids.contains("tmdb-99"));
+
+        // Series: 0 active, 1 dead
+        let series_presence = presence.get("Series").unwrap();
+        assert!(series_presence.active_media_ids.is_empty());
+        assert!(series_presence.dead_media_ids.contains("tvdb-2"));
+
+        // All libraries pre-filled even with no links
+        assert!(presence.contains_key("Movies"));
+        assert!(presence.contains_key("Series"));
+    }
+
+    #[test]
+    fn test_collect_link_presence_unknown_library() {
+        // Link to a path not under any configured library should be ignored
+        let dir = tempfile::TempDir::new().unwrap();
+        let movies = dir.path().join("movies");
+        std::fs::create_dir_all(&movies).unwrap();
+
+        let movie_lib = LibraryConfig {
+            name: "Movies".to_string(),
+            path: movies.clone(),
+            media_type: crate::models::MediaType::Movie,
+            content_type: None,
+            depth: 1,
+        };
+        let libraries = vec![&movie_lib];
+
+        // Link pointing to /somewhere/else entirely
+        let orphan_link = LinkRecord {
+            id: None,
+            source_path: PathBuf::from("/rd/unknown.mkv"),
+            target_path: PathBuf::from("/unknown/path/link.mkv"),
+            media_id: "tmdb-999".to_string(),
+            media_type: MediaType::Movie,
+            status: LinkStatus::Active,
+            created_at: None,
+            updated_at: None,
+        };
+
+        let presence = collect_link_presence(&libraries, &[orphan_link]);
+        // Should still have Movies pre-filled
+        let movie_presence = presence.get("Movies").unwrap();
+        assert!(movie_presence.active_media_ids.is_empty());
+        assert!(movie_presence.dead_media_ids.is_empty());
+    }
+
     fn test_config(movies: PathBuf, anime: PathBuf, source: PathBuf, db_path: String) -> Config {
         Config {
             libraries: vec![
