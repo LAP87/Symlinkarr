@@ -146,10 +146,15 @@ async fn build_report(
         .iter()
         .map(|lib| lib.path.clone())
         .collect();
-    let link_records = db.get_links_scoped(Some(&selected_roots)).await?;
-    let link_presence = collect_link_presence(&selected_libraries, &link_records);
 
-    // Scan all libraries in parallel for best performance
+    // Run DB query and library scan in parallel using tokio::spawn
+    let db_handle = tokio::spawn({
+        let db = db.clone();
+        let roots = selected_roots.clone();
+        async move { db.get_links_scoped(Some(&roots)).await }
+    });
+
+    // Library scan is CPU-bound with file I/O, run in parallel with DB query
     let all_library_items: Vec<Vec<LibraryScannerItem>> = selected_libraries
         .par_iter()
         .map(|lib| {
@@ -164,6 +169,10 @@ async fn build_report(
                 .collect()
         })
         .collect();
+
+    // Await DB results after library scan has started
+    let link_records = db_handle.await??;
+    let link_presence = collect_link_presence(&selected_libraries, &link_records);
 
     let mut summary = Summary::default();
     for library_items in &all_library_items {

@@ -285,12 +285,18 @@ pub struct ScanHistoryRecord {
 
 /// Database manager for Symlinkarr state.
 /// Uses SQLite via sqlx for async persistence.
-#[derive(Clone)]
 pub struct Database {
     pool: SqlitePool,
 }
 
 const LATEST_SCHEMA_VERSION: i64 = 8;
+
+// SqlitePool is Clone (wraps Arc), so Database can safely be Clone
+impl Clone for Database {
+    fn clone(&self) -> Self {
+        Self { pool: self.pool.clone() }
+    }
+}
 
 impl Database {
     /// Create a new database connection and run migrations.
