@@ -9,7 +9,7 @@ use walkdir::WalkDir;
 
 use crate::commands::{panel_border, panel_kv_row, panel_title};
 use crate::config::{Config, LibraryConfig};
-use crate::db::{Database, LibraryStats, MediaTypeStats};
+use crate::db::Database;
 use crate::library_scanner::LibraryScanner;
 use crate::models::MediaType;
 use crate::plex_db;
@@ -89,7 +89,6 @@ pub(crate) async fn run_report(
     plex_db_path: Option<&Path>,
     pretty: bool,
 ) -> Result<()> {
-    touch_legacy_db_stats_api();
     let report = build_report(cfg, db, filter, plex_db_path).await?;
 
     match output_format {
@@ -109,35 +108,6 @@ pub(crate) async fn run_report(
 
     Ok(())
 }
-
-fn touch_legacy_db_stats_api() {
-    let media_stats = MediaTypeStats {
-        media_type: String::new(),
-        library_items: 0,
-        linked: 0,
-        broken: 0,
-    };
-    let library_stats = LibraryStats {
-        name: String::new(),
-        library_items: 0,
-        linked: 0,
-        broken: 0,
-    };
-
-    let _ = (
-        &media_stats.media_type,
-        media_stats.library_items,
-        media_stats.linked,
-        media_stats.broken,
-        &library_stats.name,
-        library_stats.library_items,
-        library_stats.linked,
-        library_stats.broken,
-        Database::get_stats_by_media_type,
-        Database::get_stats_by_library,
-    );
-}
-
 async fn build_report(
     cfg: &Config,
     db: &Database,
