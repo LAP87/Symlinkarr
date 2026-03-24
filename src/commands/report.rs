@@ -69,6 +69,12 @@ struct PathCompareOutput {
     all_three: Option<usize>,
 }
 
+struct LibraryScannerItem {
+    library_name: String,
+    media_type: MediaType,
+    media_id: String,
+}
+
 #[derive(Default)]
 struct LinkPresence {
     active_media_ids: HashSet<String>,
@@ -173,18 +179,32 @@ async fn build_report(
     let link_records = db.get_links_scoped(Some(&selected_roots)).await?;
     let link_presence = collect_link_presence(&selected_libraries, &link_records);
 
+    // Scan all libraries in parallel for best performance
+    let all_library_items: Vec<Vec<LibraryScannerItem>> = selected_libraries
+        .par_iter()
+        .map(|lib| {
+            scanner
+                .scan_library(lib)
+                .into_iter()
+                .map(|item| LibraryScannerItem {
+                    library_name: item.library_name,
+                    media_type: item.media_type,
+                    media_id: item.id.to_string(),
+                })
+                .collect()
+        })
+        .collect();
+
     let mut summary = Summary::default();
-    for lib in &selected_libraries {
-        let library_items = scanner.scan_library(lib);
+    for library_items in &all_library_items {
         for item in library_items {
             let media_key = media_type_key(item.media_type).to_string();
-            let media_id = item.id.to_string();
             let (has_active, has_dead) = link_presence
                 .get(&item.library_name)
                 .map(|presence| {
                     (
-                        presence.active_media_ids.contains(&media_id),
-                        presence.dead_media_ids.contains(&media_id),
+                        presence.active_media_ids.contains(&item.media_id),
+                        presence.dead_media_ids.contains(&item.media_id),
                     )
                 })
                 .unwrap_or((false, false));
