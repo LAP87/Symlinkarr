@@ -247,20 +247,29 @@ fn collect_link_presence(
     link_records: &[crate::models::LinkRecord],
 ) -> HashMap<String, LinkPresence> {
     let mut presence_by_library: HashMap<String, LinkPresence> = HashMap::new();
+    // Pre-fill with all libraries so we get consistent output ordering
+    for lib in libraries {
+        presence_by_library.entry(lib.name.clone()).or_default();
+    }
     for link in link_records {
-        let Some(library_name) = library_name_for_path(libraries, &link.target_path) else {
-            continue;
-        };
+        // Find the most-specific matching library (longest path prefix)
+        let library_name = libraries
+            .iter()
+            .filter(|lib| link.target_path.starts_with(&lib.path))
+            .max_by_key(|lib| lib.path.components().count())
+            .map(|lib| lib.name.clone());
 
-        let entry = presence_by_library.entry(library_name).or_default();
-        match link.status {
-            crate::models::LinkStatus::Active => {
-                entry.active_media_ids.insert(link.media_id.clone());
+        if let Some(name) = library_name {
+            let entry = presence_by_library.entry(name).or_default();
+            match link.status {
+                crate::models::LinkStatus::Active => {
+                    entry.active_media_ids.insert(link.media_id.clone());
+                }
+                crate::models::LinkStatus::Dead => {
+                    entry.dead_media_ids.insert(link.media_id.clone());
+                }
+                crate::models::LinkStatus::Removed => {}
             }
-            crate::models::LinkStatus::Dead => {
-                entry.dead_media_ids.insert(link.media_id.clone());
-            }
-            crate::models::LinkStatus::Removed => {}
         }
     }
     presence_by_library
