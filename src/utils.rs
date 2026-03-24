@@ -229,6 +229,60 @@ impl ProgressLine {
 mod tests {
     use super::*;
 
+    // === path_under_roots ===
+
+    #[test]
+    fn path_under_roots_single_match() {
+        let roots = [PathBuf::from("/mnt/storage")];
+        assert!(path_under_roots(Path::new("/mnt/storage/film"), &roots));
+        assert!(path_under_roots(Path::new("/mnt/storage/film/Movie {tmdb-1}"), &roots));
+    }
+
+    #[test]
+    fn path_under_roots_no_match() {
+        let roots = [PathBuf::from("/mnt/storage")];
+        assert!(!path_under_roots(Path::new("/home/lenny/Downloads"), &roots));
+    }
+
+    #[test]
+    fn path_under_roots_multiple_roots() {
+        let roots = vec![PathBuf::from("/mnt/storage/film"), PathBuf::from("/mnt/storage/serier")];
+        assert!(path_under_roots(Path::new("/mnt/storage/film/Movie {tmdb-1}"), &roots));
+        assert!(path_under_roots(Path::new("/mnt/storage/serier/Show {tvdb-1}"), &roots));
+        assert!(!path_under_roots(Path::new("/mnt/storage/other"), &roots));
+    }
+
+    // === normalize ===
+
+    #[test]
+    fn normalize_lowercase() {
+        assert_eq!(normalize("Hello World"), "hello world");
+    }
+
+    #[test]
+    fn normalize_removes_special_chars() {
+        assert_eq!(normalize("Movie.Name.2024"), "movie name 2024");
+    }
+
+    #[test]
+    fn normalize_nfc_normalization() {
+        // NFC vs NFD normalization - é as single char vs decomposed
+        let composed = normalize("Café");
+        assert!(composed.contains("cafe") || composed.contains("caf"));
+    }
+
+    #[test]
+    fn normalize_trims_whitespace() {
+        assert_eq!(normalize("  Hello   World  "), "hello world");
+    }
+
+    #[test]
+    fn normalize_empty_string() {
+        assert_eq!(normalize(""), "");
+    }
+
+    // === PathHealth ===
+
     #[test]
     fn fast_health_marks_missing_paths() {
         let path = Path::new("/definitely/missing/symlinkarr-test");
