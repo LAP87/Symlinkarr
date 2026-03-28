@@ -289,7 +289,7 @@ pub struct Database {
     pool: SqlitePool,
 }
 
-const LATEST_SCHEMA_VERSION: i64 = 8;
+const LATEST_SCHEMA_VERSION: i64 = 9;
 
 // SqlitePool is Clone (wraps Arc), so Database can safely be Clone
 impl Clone for Database {
@@ -2534,6 +2534,23 @@ mod tests {
         assert!(db.table_exists("scan_runs").await.unwrap());
         assert!(db.table_exists("link_events").await.unwrap());
         assert!(db.table_exists("acquisition_jobs").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_latest_migration_creates_links_status_target_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        let index_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_links_status_target'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+
+        assert_eq!(index_count, 1);
     }
 
     #[tokio::test]
