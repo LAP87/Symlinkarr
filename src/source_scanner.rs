@@ -520,15 +520,6 @@ impl SourceScanner {
         title.to_string()
     }
 
-    /// Scan all configured sources and return a combined list.
-    pub fn scan_all(&self, sources: &[SourceConfig]) -> Vec<SourceItem> {
-        let mut all_items = Vec::new();
-        for source in sources {
-            all_items.extend(self.scan_source(source));
-        }
-        info!("Total {} media files across all sources", all_items.len());
-        all_items
-    }
 }
 
 #[cfg(test)]
