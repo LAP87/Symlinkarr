@@ -307,22 +307,19 @@ async fn build_path_compare(
         }
     }
 
-    // Load Plex path records first (if requested)
-    let plex_path_records = match plex_db_path {
-        Some(path) => Some(plex_db::load_path_records(path, roots).await?),
-        None => None,
-    };
-
-    // Fast path: skip the expensive WalkDir filesystem scan when plex path compare is not requested.
-    // This saves ~2-3s on cold runs (228k filesystem entries) for the common CLI case.
+    // Fast path without Plex DB: still compute filesystem vs DB drift, but skip Plex lookups.
     if plex_db_path.is_none() {
+        let filesystem_scan = collect_filesystem_symlink_paths(libraries);
+        let filesystem_symlinks = filesystem_scan.paths;
+        known_missing_source_paths.extend(filesystem_scan.missing_source_paths);
+
         return Ok(PathCompareOutput {
-            filesystem_symlinks: 0,
+            filesystem_symlinks: filesystem_symlinks.len(),
             db_active_links: db_active_links.len(),
             plex_indexed_files: None,
             plex_deleted_paths: None,
-            fs_not_in_db: PathSample::default(),
-            db_not_on_fs: sample_difference(&db_active_links, &HashSet::new()),
+            fs_not_in_db: sample_difference(&filesystem_symlinks, &db_active_links),
+            db_not_on_fs: sample_difference(&db_active_links, &filesystem_symlinks),
             fs_not_in_plex: None,
             db_not_in_plex: None,
             plex_not_on_fs: None,
@@ -332,11 +329,11 @@ async fn build_path_compare(
         });
     }
 
+    let plex_path_records = plex_db::load_path_records(plex_db_path.unwrap(), roots).await?;
     let filesystem_scan = collect_filesystem_symlink_paths(libraries);
     let filesystem_symlinks = filesystem_scan.paths;
     known_missing_source_paths.extend(filesystem_scan.missing_source_paths);
 
-    let plex_path_records = plex_path_records.unwrap();
     let plex_indexed_files = plex_path_records
         .iter()
         .map(|record| record.path.clone())
@@ -1199,6 +1196,84 @@ mod tests {
             report.path_compare.plex_not_on_fs.as_ref().unwrap().samples,
             vec![plex_only_path]
         );
+    }
+
+    #[tokio::test]
+    async fn test_build_report_path_compare_without_plex_db_still_tracks_fs_db_drift() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let movies = dir.path().join("movies");
+        let anime = dir.path().join("anime");
+        let source = dir.path().join("rd");
+        std::fs::create_dir_all(&movies).unwrap();
+        std::fs::create_dir_all(&anime).unwrap();
+        std::fs::create_dir_all(&source).unwrap();
+
+        let movie_a_dir = movies.join("Movie A {tmdb-1}");
+        let movie_b_dir = movies.join("Movie B {tmdb-2}");
+        let show_a_dir = anime.join("Show A {tvdb-10}/Season 01");
+        std::fs::create_dir_all(&movie_a_dir).unwrap();
+        std::fs::create_dir_all(&movie_b_dir).unwrap();
+        std::fs::create_dir_all(&show_a_dir).unwrap();
+
+        let source_a = source.join("movie-a-source.mkv");
+        let source_b = source.join("movie-b-source.mkv");
+        std::fs::write(&source_a, b"a").unwrap();
+        std::fs::write(&source_b, b"b").unwrap();
+
+        let movie_a_link = movie_a_dir.join("Movie A.mkv");
+        let movie_b_link = movie_b_dir.join("Movie B.mkv");
+        symlink(&source_a, &movie_a_link).unwrap();
+        symlink(&source_b, &movie_b_link).unwrap();
+
+        let db_path = dir.path().join("test.db");
+        let cfg = test_config(
+            movies.clone(),
+            anime.clone(),
+            source.clone(),
+            db_path.to_string_lossy().into_owned(),
+        );
+        let db = Database::new(db_path.to_str().unwrap()).await.unwrap();
+
+        let db_only_path = show_a_dir.join("Show A - S01E01.mkv");
+        db.insert_link(&LinkRecord {
+            id: None,
+            source_path: source_a.clone(),
+            target_path: movie_a_link.clone(),
+            media_id: "tmdb-1".to_string(),
+            media_type: MediaType::Movie,
+            status: LinkStatus::Active,
+            created_at: None,
+            updated_at: None,
+        })
+        .await
+        .unwrap();
+        db.insert_link(&LinkRecord {
+            id: None,
+            source_path: source.join("show-a-source.mkv"),
+            target_path: db_only_path.clone(),
+            media_id: "tvdb-10".to_string(),
+            media_type: MediaType::Tv,
+            status: LinkStatus::Active,
+            created_at: None,
+            updated_at: None,
+        })
+        .await
+        .unwrap();
+
+        let report = build_report(&cfg, &db, None, None).await.unwrap();
+
+        assert_eq!(report.path_compare.filesystem_symlinks, 2);
+        assert_eq!(report.path_compare.db_active_links, 2);
+        assert_eq!(report.path_compare.plex_indexed_files, None);
+        assert_eq!(report.path_compare.plex_deleted_paths, None);
+        assert_eq!(report.path_compare.fs_not_in_db.count, 1);
+        assert_eq!(report.path_compare.db_not_on_fs.count, 1);
+        assert_eq!(report.path_compare.fs_not_in_db.samples, vec![movie_b_link]);
+        assert_eq!(report.path_compare.db_not_on_fs.samples, vec![db_only_path]);
+        assert_eq!(report.path_compare.fs_not_in_plex, None);
+        assert_eq!(report.path_compare.db_not_in_plex, None);
+        assert_eq!(report.path_compare.plex_not_on_fs, None);
+        assert_eq!(report.path_compare.all_three, None);
     }
 
     #[tokio::test]
