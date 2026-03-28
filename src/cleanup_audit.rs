@@ -65,6 +65,23 @@ impl std::fmt::Display for FindingSeverity {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CleanupOwnership {
+    Managed,
+    #[default]
+    Foreign,
+}
+
+impl std::fmt::Display for CleanupOwnership {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CleanupOwnership::Managed => write!(f, "managed"),
+            CleanupOwnership::Foreign => write!(f, "foreign"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum FindingReason {
@@ -123,6 +140,8 @@ pub struct CleanupFinding {
     pub alternate_match: Option<AlternateMatchContext>,
     #[serde(default)]
     pub db_tracked: bool,
+    #[serde(default)]
+    pub ownership: CleanupOwnership,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -147,9 +166,29 @@ pub struct PruneOutcome {
     pub candidates: usize,
     pub high_or_critical_candidates: usize,
     pub safe_warning_duplicate_candidates: usize,
+    pub managed_candidates: usize,
+    pub foreign_candidates: usize,
     pub removed: usize,
+    pub quarantined: usize,
     pub skipped: usize,
     pub confirmation_token: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PruneDisposition {
+    Delete,
+    Quarantine,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PrunePlan {
+    pub candidate_paths: Vec<PathBuf>,
+    pub high_or_critical_candidates: usize,
+    pub safe_warning_duplicate_candidates: usize,
+    pub managed_candidates: usize,
+    pub foreign_candidates: usize,
+    pub confirmation_token: String,
+    dispositions: HashMap<PathBuf, PruneDisposition>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -476,6 +515,7 @@ impl<'a> CleanupAuditor<'a> {
                 },
                 alternate_match: entry.alternate_match,
                 db_tracked: false,
+                ownership: CleanupOwnership::Foreign,
             });
         }
         info!(
@@ -899,44 +939,28 @@ pub async fn run_prune(
         .filter(|finding| finding.db_tracked)
         .map(|finding| finding.symlink_path.clone())
         .collect();
-    let safe_duplicate_plan = collect_safe_duplicate_prune_plan(&report.findings);
-
-    let high_or_critical_candidates: Vec<_> = report
-        .findings
-        .iter()
-        .filter(|f| {
-            matches!(
-                f.severity,
-                FindingSeverity::Critical | FindingSeverity::High
-            )
-        })
-        .filter(|f| !safe_duplicate_plan.managed_paths.contains(&f.symlink_path))
-        .collect();
-
-    let mut candidate_paths: Vec<PathBuf> = high_or_critical_candidates
-        .iter()
-        .map(|f| f.symlink_path.clone())
-        .collect();
-    candidate_paths.extend(safe_duplicate_plan.prune_paths.iter().cloned());
-    candidate_paths.sort();
-    candidate_paths.dedup();
-    let token = prune_confirmation_token(&report, &candidate_paths);
+    let plan = build_prune_plan(&report, cfg.cleanup.prune.quarantine_foreign);
 
     info!(
-        "Cleanup prune: {} high/critical + {} safe duplicate candidates ({} total unique)",
-        high_or_critical_candidates.len(),
-        safe_duplicate_plan.prune_paths.len(),
-        candidate_paths.len()
+        "Cleanup prune: {} high/critical + {} safe duplicate candidates ({} total unique; {} managed delete / {} foreign quarantine)",
+        plan.high_or_critical_candidates,
+        plan.safe_warning_duplicate_candidates,
+        plan.candidate_paths.len(),
+        plan.managed_candidates,
+        plan.foreign_candidates,
     );
 
     if !apply {
         return Ok(PruneOutcome {
-            candidates: candidate_paths.len(),
-            high_or_critical_candidates: high_or_critical_candidates.len(),
-            safe_warning_duplicate_candidates: safe_duplicate_plan.prune_paths.len(),
+            candidates: plan.candidate_paths.len(),
+            high_or_critical_candidates: plan.high_or_critical_candidates,
+            safe_warning_duplicate_candidates: plan.safe_warning_duplicate_candidates,
+            managed_candidates: plan.managed_candidates,
+            foreign_candidates: plan.foreign_candidates,
             removed: 0,
+            quarantined: 0,
             skipped: 0,
-            confirmation_token: token,
+            confirmation_token: plan.confirmation_token,
         });
     }
 
@@ -959,25 +983,26 @@ pub async fn run_prune(
         }
 
         let provided = confirmation_token.unwrap_or("");
-        if provided.is_empty() || provided != token {
+        if provided.is_empty() || provided != plan.confirmation_token {
             anyhow::bail!(
                 "Refusing prune apply: invalid or missing confirmation token. Re-run preview and pass --confirm-token {}",
-                token
+                plan.confirmation_token
             );
         }
     }
 
-    if candidate_paths.len() > delete_cap {
+    if plan.candidate_paths.len() > delete_cap {
         anyhow::bail!(
             "Refusing prune apply: {} candidates exceeds delete cap {} (use --max-delete to override)",
-            candidate_paths.len(),
+            plan.candidate_paths.len(),
             delete_cap
         );
     }
 
     if cfg.backup.enabled {
         let backup = BackupManager::new(&cfg.backup);
-        let extra_snapshot_paths: Vec<_> = candidate_paths
+        let extra_snapshot_paths: Vec<_> = plan
+            .candidate_paths
             .iter()
             .filter(|path| !tracked_paths.contains(*path))
             .cloned()
@@ -988,9 +1013,10 @@ pub async fn run_prune(
     }
 
     let mut removed = 0usize;
+    let mut quarantined = 0usize;
     let mut skipped = 0usize;
 
-    for symlink_path in &candidate_paths {
+    for symlink_path in &plan.candidate_paths {
         if cfg.security.enforce_roots && !path_is_within_roots(symlink_path, &library_roots(cfg)) {
             warn!(
                 "Cleanup prune: skipping {:?} (outside configured library roots)",
@@ -1012,46 +1038,109 @@ pub async fn run_prune(
         match std::fs::symlink_metadata(symlink_path) {
             Ok(meta) => {
                 if meta.file_type().is_symlink() {
-                    if let Err(e) = std::fs::remove_file(symlink_path) {
-                        warn!("Cleanup prune: failed removing {:?}: {}", symlink_path, e);
-                        let _ = db
-                            .record_link_event_fields(
-                                "prune_skipped",
-                                symlink_path,
-                                None,
-                                None,
-                                Some("delete_failed"),
-                            )
-                            .await;
-                        skipped += 1;
-                    } else {
-                        if let Err(e) = db.mark_removed_path(symlink_path).await {
-                            warn!(
-                                "Cleanup prune: removed {:?} but failed DB mark_removed: {}",
-                                symlink_path, e
-                            );
+                    match plan.dispositions.get(symlink_path).copied() {
+                        Some(PruneDisposition::Delete) => {
+                            if let Err(e) = std::fs::remove_file(symlink_path) {
+                                warn!("Cleanup prune: failed removing {:?}: {}", symlink_path, e);
+                                let _ = db
+                                    .record_link_event_fields(
+                                        "prune_skipped",
+                                        symlink_path,
+                                        None,
+                                        None,
+                                        Some("delete_failed"),
+                                    )
+                                    .await;
+                                skipped += 1;
+                            } else {
+                                if let Err(e) = db.mark_removed_path(symlink_path).await {
+                                    warn!(
+                                        "Cleanup prune: removed {:?} but failed DB mark_removed: {}",
+                                        symlink_path, e
+                                    );
+                                    let _ = db
+                                        .record_link_event_fields(
+                                            "prune_skipped",
+                                            symlink_path,
+                                            None,
+                                            None,
+                                            Some("db_mark_removed_failed"),
+                                        )
+                                        .await;
+                                    skipped += 1;
+                                    continue;
+                                }
+                                let _ = db
+                                    .record_link_event_fields(
+                                        "prune_removed",
+                                        symlink_path,
+                                        None,
+                                        None,
+                                        None,
+                                    )
+                                    .await;
+                                removed += 1;
+                            }
+                        }
+                        Some(PruneDisposition::Quarantine) => {
+                            if !cfg.cleanup.prune.quarantine_foreign {
+                                let _ = db
+                                    .record_link_event_fields(
+                                        "prune_skipped",
+                                        symlink_path,
+                                        None,
+                                        None,
+                                        Some("foreign_quarantine_disabled"),
+                                    )
+                                    .await;
+                                skipped += 1;
+                                continue;
+                            }
+
+                            match quarantine_symlink(cfg, symlink_path) {
+                                Ok(destination) => {
+                                    let note = format!("quarantined_to={}", destination.display());
+                                    let _ = db
+                                        .record_link_event_fields(
+                                            "prune_quarantined",
+                                            symlink_path,
+                                            None,
+                                            None,
+                                            Some(&note),
+                                        )
+                                        .await;
+                                    quarantined += 1;
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        "Cleanup prune: failed quarantining {:?}: {}",
+                                        symlink_path, e
+                                    );
+                                    let _ = db
+                                        .record_link_event_fields(
+                                            "prune_skipped",
+                                            symlink_path,
+                                            None,
+                                            None,
+                                            Some("quarantine_failed"),
+                                        )
+                                        .await;
+                                    skipped += 1;
+                                }
+                            }
+                        }
+                        None => {
                             let _ = db
                                 .record_link_event_fields(
                                     "prune_skipped",
                                     symlink_path,
                                     None,
                                     None,
-                                    Some("db_mark_removed_failed"),
+                                    Some("missing_prune_disposition"),
                                 )
                                 .await;
                             skipped += 1;
-                            continue;
                         }
-                        let _ = db
-                            .record_link_event_fields(
-                                "prune_removed",
-                                symlink_path,
-                                None,
-                                None,
-                                None,
-                            )
-                            .await;
-                        removed += 1;
                     }
                 } else {
                     warn!("Cleanup prune: skipping {:?} (not a symlink)", symlink_path);
@@ -1096,13 +1185,101 @@ pub async fn run_prune(
     }
 
     Ok(PruneOutcome {
-        candidates: candidate_paths.len(),
-        high_or_critical_candidates: high_or_critical_candidates.len(),
-        safe_warning_duplicate_candidates: safe_duplicate_plan.prune_paths.len(),
+        candidates: plan.candidate_paths.len(),
+        high_or_critical_candidates: plan.high_or_critical_candidates,
+        safe_warning_duplicate_candidates: plan.safe_warning_duplicate_candidates,
+        managed_candidates: plan.managed_candidates,
+        foreign_candidates: plan.foreign_candidates,
         removed,
+        quarantined,
         skipped,
-        confirmation_token: token,
+        confirmation_token: plan.confirmation_token,
     })
+}
+
+fn quarantine_symlink(cfg: &Config, symlink_path: &Path) -> Result<PathBuf> {
+    let target = std::fs::read_link(symlink_path)?;
+    let destination = quarantine_destination(cfg, symlink_path);
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    create_symlink_like(&target, &destination)?;
+    std::fs::remove_file(symlink_path)?;
+    Ok(destination)
+}
+
+fn quarantine_destination(cfg: &Config, symlink_path: &Path) -> PathBuf {
+    let quarantine_root = if cfg.cleanup.prune.quarantine_path.is_absolute() {
+        cfg.cleanup.prune.quarantine_path.clone()
+    } else {
+        cfg.backup.path.join(&cfg.cleanup.prune.quarantine_path)
+    };
+
+    let relative = library_roots(cfg)
+        .into_iter()
+        .find_map(|root| {
+            symlink_path.strip_prefix(&root).ok().map(|rel| {
+                let label = root
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or("library");
+                PathBuf::from(label).join(rel)
+            })
+        })
+        .unwrap_or_else(|| {
+            symlink_path
+                .file_name()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("unknown.symlink"))
+        });
+
+    unique_quarantine_path(quarantine_root.join(relative))
+}
+
+fn unique_quarantine_path(initial: PathBuf) -> PathBuf {
+    if !initial.exists() {
+        return initial;
+    }
+
+    let parent = initial
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let stem = initial
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("quarantine");
+    let ext = initial.extension().and_then(|e| e.to_str());
+
+    for idx in 1.. {
+        let filename = match ext {
+            Some(ext) => format!("{stem}.quarantine-{idx}.{ext}"),
+            None => format!("{stem}.quarantine-{idx}"),
+        };
+        let candidate = parent.join(filename);
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+
+    unreachable!("quarantine path search should always terminate")
+}
+
+#[cfg(unix)]
+fn create_symlink_like(target: &Path, destination: &Path) -> Result<()> {
+    std::os::unix::fs::symlink(target, destination)?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn create_symlink_like(target: &Path, destination: &Path) -> Result<()> {
+    if target.is_dir() {
+        std::os::windows::fs::symlink_dir(target, destination)?;
+    } else {
+        std::os::windows::fs::symlink_file(target, destination)?;
+    }
+    Ok(())
 }
 
 pub fn prune_confirmation_token(report: &CleanupReport, candidate_paths: &[PathBuf]) -> String {
@@ -1649,6 +1826,11 @@ async fn hydrate_db_tracked_flags(
 
     for finding in findings {
         finding.db_tracked = tracked_paths.contains(&finding.symlink_path);
+        finding.ownership = if finding.db_tracked {
+            CleanupOwnership::Managed
+        } else {
+            CleanupOwnership::Foreign
+        };
     }
 
     Ok(tracked_paths)
@@ -1720,14 +1902,7 @@ pub(crate) fn collect_safe_duplicate_prune_plan(
 
         if tracked_paths.len() == 1 {
             prune_paths.extend(untracked_paths);
-            continue;
         }
-
-        let mut symlink_paths = tracked_paths;
-        symlink_paths.extend(untracked_paths);
-        symlink_paths.sort();
-        symlink_paths.dedup();
-        prune_paths.extend(symlink_paths.into_iter().skip(1));
     }
 
     prune_paths.sort();
@@ -1736,6 +1911,71 @@ pub(crate) fn collect_safe_duplicate_prune_plan(
     SafeDuplicatePrunePlan {
         prune_paths,
         managed_paths,
+    }
+}
+
+pub(crate) fn build_prune_plan(report: &CleanupReport, quarantine_foreign: bool) -> PrunePlan {
+    let safe_duplicate_plan = collect_safe_duplicate_prune_plan(&report.findings);
+    let high_or_critical_candidates: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|f| {
+            matches!(
+                f.severity,
+                FindingSeverity::Critical | FindingSeverity::High
+            )
+        })
+        .filter(|f| !safe_duplicate_plan.managed_paths.contains(&f.symlink_path))
+        .collect();
+
+    let ownership_by_path: HashMap<_, _> = report
+        .findings
+        .iter()
+        .map(|finding| (finding.symlink_path.clone(), finding.ownership))
+        .collect();
+
+    let mut candidate_paths: Vec<PathBuf> = high_or_critical_candidates
+        .iter()
+        .map(|f| f.symlink_path.clone())
+        .collect();
+    candidate_paths.extend(safe_duplicate_plan.prune_paths.iter().cloned());
+    candidate_paths.sort();
+    candidate_paths.dedup();
+
+    let mut dispositions = HashMap::new();
+    let mut managed_candidates = 0usize;
+    let mut foreign_candidates = 0usize;
+    for path in &candidate_paths {
+        let ownership = ownership_by_path
+            .get(path)
+            .copied()
+            .unwrap_or(CleanupOwnership::Foreign);
+        let disposition = match ownership {
+            CleanupOwnership::Managed => {
+                managed_candidates += 1;
+                Some(PruneDisposition::Delete)
+            }
+            CleanupOwnership::Foreign if quarantine_foreign => {
+                foreign_candidates += 1;
+                Some(PruneDisposition::Quarantine)
+            }
+            CleanupOwnership::Foreign => None,
+        };
+        if let Some(disposition) = disposition {
+            dispositions.insert(path.clone(), disposition);
+        }
+    }
+
+    candidate_paths.retain(|path| dispositions.contains_key(path));
+
+    PrunePlan {
+        confirmation_token: prune_confirmation_token(report, &candidate_paths),
+        candidate_paths,
+        high_or_critical_candidates: high_or_critical_candidates.len(),
+        safe_warning_duplicate_candidates: safe_duplicate_plan.prune_paths.len(),
+        managed_candidates,
+        foreign_candidates,
+        dispositions,
     }
 }
 
@@ -1952,6 +2192,7 @@ mod tests {
             },
             alternate_match: None,
             db_tracked: false,
+            ownership: CleanupOwnership::Foreign,
         }
     }
 
@@ -2141,9 +2382,18 @@ mod tests {
     #[test]
     fn test_finding_reason_display() {
         assert_eq!(FindingReason::BrokenSource.to_string(), "broken_source");
-        assert_eq!(FindingReason::ParserTitleMismatch.to_string(), "parser_title_mismatch");
-        assert_eq!(FindingReason::DuplicateEpisodeSlot.to_string(), "duplicate_episode_slot");
-        assert_eq!(FindingReason::NonRdSourcePath.to_string(), "non_rd_source_path");
+        assert_eq!(
+            FindingReason::ParserTitleMismatch.to_string(),
+            "parser_title_mismatch"
+        );
+        assert_eq!(
+            FindingReason::DuplicateEpisodeSlot.to_string(),
+            "duplicate_episode_slot"
+        );
+        assert_eq!(
+            FindingReason::NonRdSourcePath.to_string(),
+            "non_rd_source_path"
+        );
     }
 
     #[test]
@@ -2286,7 +2536,7 @@ mod tests {
     }
 
     #[test]
-    fn test_collect_safe_warning_duplicate_prunes_keeps_one_identical_source() {
+    fn test_collect_safe_warning_duplicate_prunes_requires_tracked_anchor() {
         let findings = vec![
             test_cleanup_finding(
                 "tvdb-1",
@@ -2309,7 +2559,7 @@ mod tests {
         ];
 
         let prunes = collect_safe_duplicate_prune_plan(&findings).prune_paths;
-        assert_eq!(prunes, vec![PathBuf::from("/lib/Show - S01E03 b.mkv")]);
+        assert!(prunes.is_empty());
     }
 
     #[test]
@@ -2449,6 +2699,10 @@ mod tests {
     }
 
     fn test_config(library_root: &Path, source_root: &Path) -> Config {
+        let quarantine_root = library_root
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("quarantine");
         let yaml = format!(
             r#"
 libraries:
@@ -2462,9 +2716,13 @@ sources:
     media_type: auto
 backup:
   enabled: false
+cleanup:
+  prune:
+    quarantine_path: "{}"
 "#,
             library_root.display(),
-            source_root.display()
+            source_root.display(),
+            quarantine_root.display()
         );
         serde_yaml::from_str(&yaml).unwrap()
     }
@@ -2475,6 +2733,10 @@ backup:
         movie_root: &Path,
         source_root: &Path,
     ) -> Config {
+        let quarantine_root = anime_a_root
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("quarantine");
         let yaml = format!(
             r#"
 libraries:
@@ -2496,11 +2758,15 @@ sources:
     media_type: auto
 backup:
   enabled: false
+cleanup:
+  prune:
+    quarantine_path: "{}"
 "#,
             anime_a_root.display(),
             anime_b_root.display(),
             movie_root.display(),
-            source_root.display()
+            source_root.display(),
+            quarantine_root.display()
         );
         serde_yaml::from_str(&yaml).unwrap()
     }
@@ -2521,6 +2787,7 @@ backup:
             },
             alternate_match: None,
             db_tracked: false,
+            ownership: CleanupOwnership::Foreign,
         }
     }
 
@@ -2649,6 +2916,7 @@ backup:
         .unwrap();
 
         assert_eq!(outcome.removed, 1);
+        assert_eq!(outcome.quarantined, 0);
         assert!(!symlink_path.exists() && !symlink_path.is_symlink());
 
         let updated = db
@@ -2657,6 +2925,87 @@ backup:
             .unwrap()
             .unwrap();
         assert_eq!(updated.status, LinkStatus::Removed);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_prune_apply_quarantines_foreign_high_finding() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let library_root = dir.path().join("library");
+        let source_root = dir.path().join("rd");
+        let quarantine_root = dir.path().join("quarantine");
+        std::fs::create_dir_all(&library_root).unwrap();
+        std::fs::create_dir_all(&source_root).unwrap();
+
+        let source_file = source_root.join("source.mkv");
+        std::fs::write(&source_file, "video").unwrap();
+        let symlink_path = library_root.join("Show - S01E02.mkv");
+        std::os::unix::fs::symlink(&source_file, &symlink_path).unwrap();
+
+        let mut cfg = test_config(&library_root, &source_root);
+        cfg.cleanup.prune.quarantine_path = quarantine_root.clone();
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        let report =
+            report_with_findings(Utc::now(), vec![high_finding(&symlink_path, &source_file)]);
+        let report_path = dir.path().join("foreign-report.json");
+        std::fs::write(&report_path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
+
+        let preview = run_prune(&cfg, &db, &report_path, false, None, None)
+            .await
+            .unwrap();
+        assert_eq!(preview.candidates, 1);
+        assert_eq!(preview.managed_candidates, 0);
+        assert_eq!(preview.foreign_candidates, 1);
+
+        let outcome = run_prune(
+            &cfg,
+            &db,
+            &report_path,
+            true,
+            None,
+            Some(&preview.confirmation_token),
+        )
+        .await
+        .unwrap();
+
+        let quarantined_path = quarantine_root.join("library/Show - S01E02.mkv");
+        assert_eq!(outcome.removed, 0);
+        assert_eq!(outcome.quarantined, 1);
+        assert!(!symlink_path.exists());
+        assert!(quarantined_path.is_symlink());
+        assert_eq!(std::fs::read_link(&quarantined_path).unwrap(), source_file);
+    }
+
+    #[tokio::test]
+    async fn test_prune_preview_skips_foreign_when_quarantine_disabled() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let library_root = dir.path().join("library");
+        let source_root = dir.path().join("rd");
+        std::fs::create_dir_all(&library_root).unwrap();
+        std::fs::create_dir_all(&source_root).unwrap();
+
+        let mut cfg = test_config(&library_root, &source_root);
+        cfg.cleanup.prune.quarantine_foreign = false;
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        let source_file = source_root.join("source.mkv");
+        let symlink_path = library_root.join("foreign.mkv");
+        let report =
+            report_with_findings(Utc::now(), vec![high_finding(&symlink_path, &source_file)]);
+        let report_path = dir.path().join("foreign-disabled-report.json");
+        std::fs::write(&report_path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
+
+        let preview = run_prune(&cfg, &db, &report_path, false, None, None)
+            .await
+            .unwrap();
+        assert_eq!(preview.candidates, 0);
+        assert_eq!(preview.managed_candidates, 0);
+        assert_eq!(preview.foreign_candidates, 0);
     }
 
     #[cfg(unix)]
@@ -2730,6 +3079,8 @@ backup:
             .unwrap();
         assert_eq!(preview.candidates, 1);
         assert_eq!(preview.safe_warning_duplicate_candidates, 0);
+        assert_eq!(preview.managed_candidates, 0);
+        assert_eq!(preview.foreign_candidates, 1);
 
         let outcome = run_prune(
             &cfg,
@@ -2742,7 +3093,8 @@ backup:
         .await
         .unwrap();
 
-        assert_eq!(outcome.removed, 1);
+        assert_eq!(outcome.removed, 0);
+        assert_eq!(outcome.quarantined, 1);
         assert!(canonical_symlink.is_symlink());
         assert!(!suspicious_symlink.exists() && !suspicious_symlink.is_symlink());
         let updated = db
@@ -2753,6 +3105,73 @@ backup:
         assert_eq!(updated.status, LinkStatus::Active);
         assert!(db
             .get_link_by_target_path(&suspicious_symlink)
+            .await
+            .unwrap()
+            .is_none());
+
+        let quarantine_path = cfg
+            .cleanup
+            .prune
+            .quarantine_path
+            .join("library/Show - S01E01 suspicious.mkv");
+        assert!(quarantine_path.is_symlink());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_prune_apply_quarantines_untracked_foreign_symlink() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let library_root = dir.path().join("library");
+        let source_root = dir.path().join("rd");
+        std::fs::create_dir_all(&library_root).unwrap();
+        std::fs::create_dir_all(&source_root).unwrap();
+
+        let source_file = source_root.join("foreign-source.mkv");
+        std::fs::write(&source_file, "video").unwrap();
+        let foreign_symlink = library_root.join("Foreign - S01E01.mkv");
+        std::os::unix::fs::symlink(&source_file, &foreign_symlink).unwrap();
+
+        let cfg = test_config(&library_root, &source_root);
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        let report = report_with_findings(
+            Utc::now(),
+            vec![high_finding(&foreign_symlink, &source_file)],
+        );
+        let report_path = dir.path().join("foreign-report.json");
+        std::fs::write(&report_path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
+
+        let preview = run_prune(&cfg, &db, &report_path, false, None, None)
+            .await
+            .unwrap();
+        assert_eq!(preview.managed_candidates, 0);
+        assert_eq!(preview.foreign_candidates, 1);
+
+        let outcome = run_prune(
+            &cfg,
+            &db,
+            &report_path,
+            true,
+            None,
+            Some(&preview.confirmation_token),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.removed, 0);
+        assert_eq!(outcome.quarantined, 1);
+        assert!(!foreign_symlink.exists());
+
+        let quarantine_path = cfg
+            .cleanup
+            .prune
+            .quarantine_path
+            .join("library/Foreign - S01E01.mkv");
+        assert!(quarantine_path.is_symlink());
+        assert!(db
+            .get_link_by_target_path(&foreign_symlink)
             .await
             .unwrap()
             .is_none());
@@ -2886,6 +3305,7 @@ backup:
         .unwrap();
 
         assert_eq!(outcome.removed, 0);
+        assert_eq!(outcome.quarantined, 0);
         assert_eq!(outcome.skipped, 1);
         assert!(escaped_symlink.is_symlink());
     }
@@ -2895,7 +3315,10 @@ backup:
         // Case-sensitive: only lowercase article prefix is stripped
         assert_eq!(strip_leading_article("the Matrix"), "Matrix");
         assert_eq!(strip_leading_article("a Beautiful Mind"), "Beautiful Mind");
-        assert_eq!(strip_leading_article("an Affair to Remember"), "Affair to Remember");
+        assert_eq!(
+            strip_leading_article("an Affair to Remember"),
+            "Affair to Remember"
+        );
         assert_eq!(strip_leading_article("The Matrix"), "The Matrix"); // case-sensitive, no match
         assert_eq!(strip_leading_article("Matrix"), "Matrix"); // no article
     }
@@ -2905,7 +3328,10 @@ backup:
         // Only strips whitespace-delimited year tokens (1900-2099)
         assert_eq!(strip_trailing_year("Breaking Bad 2008"), "Breaking Bad");
         assert_eq!(strip_trailing_year("Movie 2024"), "Movie");
-        assert_eq!(strip_trailing_year("Breaking Bad (2008)"), "Breaking Bad (2008)"); // parens not stripped
+        assert_eq!(
+            strip_trailing_year("Breaking Bad (2008)"),
+            "Breaking Bad (2008)"
+        ); // parens not stripped
         assert_eq!(strip_trailing_year("No Year Here"), "No Year Here");
         assert_eq!(strip_trailing_year("Show Season 1"), "Show Season 1"); // "1" not a valid year
     }
@@ -2922,5 +3348,4 @@ backup:
         // Not anomaly: 18 links when expected 20 (18 < 20, deficit)
         assert!(!is_season_count_anomaly(18, 20));
     }
-
 }

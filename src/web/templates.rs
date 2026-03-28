@@ -303,6 +303,8 @@ pub struct PrunePreviewTemplate {
     pub critical: usize,
     pub high: usize,
     pub warning: usize,
+    pub managed_candidates: usize,
+    pub foreign_candidates: usize,
     pub report_path: Option<PathBuf>,
     pub confirmation_token: Option<String>,
 }
@@ -407,7 +409,8 @@ mod tests {
     use super::*;
 
     use crate::cleanup_audit::{
-        AlternateMatchContext, CleanupFinding, FindingReason, FindingSeverity, ParsedContext,
+        AlternateMatchContext, CleanupFinding, CleanupOwnership, FindingReason, FindingSeverity,
+        ParsedContext,
     };
     use crate::models::{LinkStatus, MediaType};
 
@@ -556,11 +559,14 @@ mod tests {
                     score: 1.0,
                 }),
                 db_tracked: true,
+                ownership: CleanupOwnership::Managed,
             }],
             total: 1,
             critical: 1,
             high: 0,
             warning: 0,
+            managed_candidates: 1,
+            foreign_candidates: 0,
             report_path: Some(PathBuf::from("/tmp/cleanup-audit-all.json")),
             confirmation_token: Some("abcdef1234567890".to_string()),
         };

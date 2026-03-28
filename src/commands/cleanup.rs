@@ -215,7 +215,10 @@ pub(crate) async fn run_cleanup_prune(
             "candidates": outcome.candidates,
             "high_or_critical_candidates": outcome.high_or_critical_candidates,
             "safe_warning_duplicate_candidates": outcome.safe_warning_duplicate_candidates,
+            "managed_candidates": outcome.managed_candidates,
+            "foreign_candidates": outcome.foreign_candidates,
             "removed": outcome.removed,
+            "quarantined": outcome.quarantined,
             "skipped": outcome.skipped,
             "confirmation_token": outcome.confirmation_token,
         }));
@@ -234,7 +237,16 @@ pub(crate) async fn run_cleanup_prune(
             "   Safe duplicate-warning candidates: {}",
             outcome.safe_warning_duplicate_candidates
         );
+        println!(
+            "   Managed delete candidates: {}",
+            outcome.managed_candidates
+        );
+        println!(
+            "   Foreign quarantine candidates: {}",
+            outcome.foreign_candidates
+        );
         println!("   Removed: {}", outcome.removed);
+        println!("   Quarantined: {}", outcome.quarantined);
         println!("   Skipped: {}", outcome.skipped);
         if !apply {
             println!("   Confirmation token: {}", outcome.confirmation_token);
