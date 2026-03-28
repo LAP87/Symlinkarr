@@ -539,6 +539,8 @@ pub async fn get_cleanup_prune(
                 critical: 0,
                 high: 0,
                 warning: 0,
+                managed_candidates: 0,
+                foreign_candidates: 0,
                 report_path: None,
                 confirmation_token: None,
             }
@@ -557,6 +559,8 @@ pub async fn get_cleanup_prune(
                 critical: 0,
                 high: 0,
                 warning: 0,
+                managed_candidates: 0,
+                foreign_candidates: 0,
                 report_path: None,
                 confirmation_token: None,
             }
@@ -577,6 +581,8 @@ pub async fn get_cleanup_prune(
                     critical: 0,
                     high: 0,
                     warning: 0,
+                    managed_candidates: 0,
+                    foreign_candidates: 0,
                     report_path: None,
                     confirmation_token: None,
                 }
@@ -597,6 +603,8 @@ pub async fn get_cleanup_prune(
                     critical: 0,
                     high: 0,
                     warning: 0,
+                    managed_candidates: 0,
+                    foreign_candidates: 0,
                     report_path: None,
                     confirmation_token: None,
                 }
@@ -606,37 +614,12 @@ pub async fn get_cleanup_prune(
         }
     };
 
-    let confirmation_token =
+    let prune_plan =
         match cleanup_audit::hydrate_report_db_tracked_flags(&state.database, &mut report).await {
-            Ok(()) => {
-                let safe_duplicate_plan =
-                    cleanup_audit::collect_safe_duplicate_prune_plan(&report.findings);
-                let high_or_critical_candidates: Vec<_> = report
-                    .findings
-                    .iter()
-                    .filter(|f| {
-                        matches!(
-                            f.severity,
-                            cleanup_audit::FindingSeverity::Critical
-                                | cleanup_audit::FindingSeverity::High
-                        )
-                    })
-                    .filter(|f| !safe_duplicate_plan.managed_paths.contains(&f.symlink_path))
-                    .collect();
-
-                let mut candidate_paths: Vec<PathBuf> = high_or_critical_candidates
-                    .iter()
-                    .map(|f| f.symlink_path.clone())
-                    .collect();
-                candidate_paths.extend(safe_duplicate_plan.prune_paths.iter().cloned());
-                candidate_paths.sort();
-                candidate_paths.dedup();
-
-                Some(cleanup_audit::prune_confirmation_token(
-                    &report,
-                    &candidate_paths,
-                ))
-            }
+            Ok(()) => Some(cleanup_audit::build_prune_plan(
+                &report,
+                state.config.cleanup.prune.quarantine_foreign,
+            )),
             Err(e) => {
                 error!("Failed to hydrate cleanup report DB state: {}", e);
                 None
@@ -649,8 +632,16 @@ pub async fn get_cleanup_prune(
         critical: report.summary.critical,
         high: report.summary.high,
         warning: report.summary.warning,
+        managed_candidates: prune_plan
+            .as_ref()
+            .map(|plan| plan.managed_candidates)
+            .unwrap_or(0),
+        foreign_candidates: prune_plan
+            .as_ref()
+            .map(|plan| plan.foreign_candidates)
+            .unwrap_or(0),
         report_path: Some(report_path.to_path_buf()),
-        confirmation_token,
+        confirmation_token: prune_plan.map(|plan| plan.confirmation_token),
     };
 
     Html(template.render().unwrap_or_else(|e| e.to_string()))
@@ -1462,7 +1453,6 @@ mod tests {
         assert!(body.contains("Apply Cleanup"));
     }
 
-
     #[test]
     fn cleanup_audit_form_selected_libraries_dedupes_legacy_and_multi_select_fields() {
         let form = CleanupAuditForm {
@@ -1513,5 +1503,4 @@ mod tests {
         assert!(result.contains(&"Anime 2".to_string()));
         assert_eq!(result.len(), 2);
     }
-
 }

@@ -44,12 +44,12 @@
 
         <div class="metric-grid metric-grid--compact">
             <div class="metric-card">
-                <span class="metric-label">Safe to prune</span>
-                <strong>{{ critical + high }}</strong>
+                <span class="metric-label">Managed delete</span>
+                <strong>{{ managed_candidates }}</strong>
             </div>
             <div class="metric-card">
-                <span class="metric-label">Warnings only</span>
-                <strong>{{ warning }}</strong>
+                <span class="metric-label">Foreign quarantine</span>
+                <strong>{{ foreign_candidates }}</strong>
             </div>
             <div class="metric-card">
                 <span class="metric-label">Token required</span>
@@ -75,7 +75,7 @@
         This token applies only to this report. If anything changed in the library since the audit, rerun the audit and get a fresh token.
     </p>
     <p class="mt-1">
-        Prune removes only the entries listed in this report. Warning-only anomalies are shown for context, but they are not the primary prune target unless they also appear in a safer duplicate or broken-source path.
+        Managed Symlinkarr links are deleted. Foreign or untracked symlinks are quarantined instead of deleted. Warning-only anomalies are shown for context, but they are not the primary prune target unless they also appear in a safer duplicate or broken-source path.
     </p>
 </div>
 {% match report_path %}
@@ -90,12 +90,12 @@
     </div>
     <div class="metric-grid metric-grid--compact mb-2">
         <div class="metric-card">
-            <span class="metric-label">Critical + High</span>
-            <strong>{{ critical + high }}</strong>
+            <span class="metric-label">Managed delete</span>
+            <strong>{{ managed_candidates }}</strong>
         </div>
         <div class="metric-card">
-            <span class="metric-label">Warnings</span>
-            <strong>{{ warning }}</strong>
+            <span class="metric-label">Foreign quarantine</span>
+            <strong>{{ foreign_candidates }}</strong>
         </div>
         <div class="metric-card">
             <span class="metric-label">Report file</span>
@@ -109,6 +109,7 @@
                 <th>Symlink Path</th>
                 <th>Source Path</th>
                 <th>Media ID</th>
+                <th>Ownership</th>
                 <th>Season/Episode</th>
                 <th>Better Match</th>
                 <th>Reasons</th>
@@ -130,6 +131,14 @@
                 <td><code class="mono">{{ finding.symlink_path.display() }}</code></td>
                 <td><code class="mono">{{ finding.source_path.display() }}</code></td>
                 <td>{{ finding.media_id }}</td>
+                <td>
+                    {% match finding.ownership %}
+                    {% when crate::cleanup_audit::CleanupOwnership::Managed %}
+                    <span class="badge badge-danger">Managed</span>
+                    {% when crate::cleanup_audit::CleanupOwnership::Foreign %}
+                    <span class="badge badge-info">Foreign</span>
+                    {% endmatch %}
+                </td>
                 <td>
                     {% match finding.parsed.season %}
                     {% when Some with (s) %}

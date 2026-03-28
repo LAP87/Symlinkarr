@@ -639,6 +639,12 @@ pub struct PrunePolicyConfig {
     /// Default max delete cap for apply when CLI does not specify --max-delete
     #[serde(default = "default_prune_default_max_delete")]
     pub default_max_delete: usize,
+    /// Quarantine symlinks that are not actively tracked by Symlinkarr instead of deleting them.
+    #[serde(default = "default_true")]
+    pub quarantine_foreign: bool,
+    /// Directory used to stash quarantined symlinks for later inspection/recovery.
+    #[serde(default = "default_prune_quarantine_path")]
+    pub quarantine_path: PathBuf,
 }
 
 impl Default for PrunePolicyConfig {
@@ -647,6 +653,8 @@ impl Default for PrunePolicyConfig {
             enforce_policy: default_true(),
             max_report_age_hours: default_prune_max_report_age_hours(),
             default_max_delete: default_prune_default_max_delete(),
+            quarantine_foreign: default_true(),
+            quarantine_path: default_prune_quarantine_path(),
         }
     }
 }
@@ -661,6 +669,10 @@ fn default_prune_max_report_age_hours() -> u64 {
 
 fn default_prune_default_max_delete() -> usize {
     5000
+}
+
+fn default_prune_quarantine_path() -> PathBuf {
+    PathBuf::from("quarantine")
 }
 
 // --- Default value functions ---
@@ -1488,6 +1500,14 @@ fn validate_secure_permissions(cfg: &Config, report: &mut ValidationReport) {
         }
         if let Some(backup_path) = secure_path_if_exists(&cfg.backup.path) {
             validate_private_path(backup_path, "backup.path", report);
+        }
+        let quarantine_path = if cfg.cleanup.prune.quarantine_path.is_absolute() {
+            cfg.cleanup.prune.quarantine_path.clone()
+        } else {
+            cfg.backup.path.join(&cfg.cleanup.prune.quarantine_path)
+        };
+        if let Some(quarantine_path) = secure_path_if_exists(&quarantine_path) {
+            validate_private_path(quarantine_path, "cleanup.prune.quarantine_path", report);
         }
         for secret_path in &cfg.secret_files {
             if let Some(secret_path) = secure_path_if_exists(secret_path) {
