@@ -2001,4 +2001,73 @@ mod tests {
         assert_eq!(extract_year("No Year Here.mkv"), None);
     }
 
+
+    #[test]
+    fn test_title_tokens_filters_all_noise_tokens() {
+        // More comprehensive noise token filtering
+        let tokens = title_tokens("breaking bad x264 webrip bluray bdrip hdrip hdtv 720p");
+        assert!(tokens.contains(&"breaking".to_string()));
+        assert!(tokens.contains(&"bad".to_string()));
+        assert!(!tokens.contains(&"x264".to_string()));
+        assert!(!tokens.contains(&"webrip".to_string()));
+        assert!(!tokens.contains(&"bluray".to_string()));
+        assert!(!tokens.contains(&"720p".to_string()));
+    }
+
+    #[test]
+    fn test_title_tokens_minimum_length_enforced() {
+        // Tokens < 2 chars should be filtered; tokens >= 2 chars are kept
+        let tokens = title_tokens("a xb ccc dddd");
+        assert!(!tokens.contains(&"a".to_string()), "single char should be filtered");
+        assert!(tokens.contains(&"xb".to_string()), "two char token should be kept");
+        assert!(tokens.contains(&"ccc".to_string()));
+        assert!(tokens.contains(&"dddd".to_string()));
+    }
+
+    #[test]
+    fn test_token_is_lookup_noise_recognizes_common_noise() {
+        assert!(token_is_lookup_noise("x264"));
+        assert!(token_is_lookup_noise("x265"));
+        assert!(token_is_lookup_noise("hevc"));
+        assert!(token_is_lookup_noise("webrip"));
+        assert!(token_is_lookup_noise("webdl"));
+        assert!(token_is_lookup_noise("bluray"));
+        assert!(token_is_lookup_noise("bdrip"));
+        assert!(token_is_lookup_noise("hdtv"));
+    }
+
+    #[test]
+    fn test_token_is_lookup_noise_strips_pound_prefix_suffix() {
+        // "720p" -> strip "p" -> "720" -> all digits -> is_year_token true -> noise
+        assert!(token_is_lookup_noise("720p"));
+        // "s01" -> strip "s" -> "01" -> all digits -> is_year_token true -> noise
+        assert!(token_is_lookup_noise("s01"));
+    }
+
+    #[test]
+    fn test_trash_season_episode_regex_parses_formats() {
+        let re = trash_season_episode_regex();
+        assert_eq!(
+            re.captures("S01E05").map(|c| (c[1].to_string(), c[2].to_string())),
+            Some(("01".to_string(), "05".to_string()))
+        );
+        assert_eq!(
+            re.captures("s2e10").map(|c| (c[1].to_string(), c[2].to_string())),
+            Some(("2".to_string(), "10".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_trash_quality_regex_parses_formats() {
+        let re = trash_quality_regex();
+        assert_eq!(
+            re.captures("[1080p]").map(|c| c[1].to_string()),
+            Some("1080".to_string())
+        );
+        assert_eq!(
+            re.captures("[2160p HEVC]").map(|c| c[1].to_string()),
+            Some("2160".to_string())
+        );
+    }
+
 }

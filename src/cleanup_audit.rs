@@ -2889,4 +2889,38 @@ backup:
         assert_eq!(outcome.skipped, 1);
         assert!(escaped_symlink.is_symlink());
     }
+
+    #[test]
+    fn test_strip_leading_article() {
+        // Case-sensitive: only lowercase article prefix is stripped
+        assert_eq!(strip_leading_article("the Matrix"), "Matrix");
+        assert_eq!(strip_leading_article("a Beautiful Mind"), "Beautiful Mind");
+        assert_eq!(strip_leading_article("an Affair to Remember"), "Affair to Remember");
+        assert_eq!(strip_leading_article("The Matrix"), "The Matrix"); // case-sensitive, no match
+        assert_eq!(strip_leading_article("Matrix"), "Matrix"); // no article
+    }
+
+    #[test]
+    fn test_strip_trailing_year() {
+        // Only strips whitespace-delimited year tokens (1900-2099)
+        assert_eq!(strip_trailing_year("Breaking Bad 2008"), "Breaking Bad");
+        assert_eq!(strip_trailing_year("Movie 2024"), "Movie");
+        assert_eq!(strip_trailing_year("Breaking Bad (2008)"), "Breaking Bad (2008)"); // parens not stripped
+        assert_eq!(strip_trailing_year("No Year Here"), "No Year Here");
+        assert_eq!(strip_trailing_year("Show Season 1"), "Show Season 1"); // "1" not a valid year
+    }
+
+    #[test]
+    fn test_is_season_count_anomaly() {
+        // Anomaly: excess links compared to expected count
+        // Anomaly: 20 links when expected 5 (ratio=4.0, well above 2.0 threshold)
+        assert!(is_season_count_anomaly(20, 5));
+        // Not anomaly: 5 links when expected 20 (deficit, not excess)
+        assert!(!is_season_count_anomaly(5, 20));
+        // Not anomaly: actual equals expected
+        assert!(!is_season_count_anomaly(5, 5));
+        // Not anomaly: 18 links when expected 20 (18 < 20, deficit)
+        assert!(!is_season_count_anomaly(18, 20));
+    }
+
 }

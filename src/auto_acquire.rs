@@ -1670,6 +1670,12 @@ fn build_anime_request_context(request: &AutoAcquireRequest) -> Option<AnimeRequ
                 );
             }
             (None, Some(parsed_episode), ParserKind::Anime) => {
+                // Episode-only hint (absolute numbering, no season detected).
+                // If we already have a query_episode from another source, keep it;
+                // otherwise record this as the episode number for the current season.
+                if query_episode.is_none() {
+                    query_episode = Some(parsed_episode);
+                }
                 absolute_query_episode = Some(parsed_episode);
             }
             _ => {}
@@ -1686,6 +1692,11 @@ fn build_anime_request_context(request: &AutoAcquireRequest) -> Option<AnimeRequ
                     );
                 }
                 (None, Some(parsed_episode), ParserKind::Anime) => {
+                    // Episode-only hint from a hint string.
+                    // Record the episode number so acceptable slots include it.
+                    if query_episode.is_none() {
+                        query_episode = Some(parsed_episode);
+                    }
                     if absolute_query_episode.is_none() {
                         absolute_query_episode = Some(parsed_episode);
                     }
@@ -1765,6 +1776,7 @@ fn is_numbering_token(token: &str) -> bool {
         || is_episode_number_token(&lower)
         || is_year_token(&lower)
         || matches!(lower.as_str(), "upgrade" | "new" | "unlinked")
+        || matches!(lower.as_str(), "bd" | "bdrip" | "brrip" | "hdrip" | "dvdr")
 }
 
 fn anime_hit_score(
@@ -2930,6 +2942,67 @@ mod tests {
     }
 
     #[test]
+    fn anime_context_records_episode_only_hint() {
+        // When a hint like "My Hero Academia S05E21" provides episode number
+        // but no season, the query_episode should still be recorded so that
+        // acceptable_episode_slots includes it.
+        let request = AutoAcquireRequest {
+            label: "My Hero Academia S05E21".to_string(),
+            query: "My Hero Academia S05E21".to_string(),
+            query_hints: vec![
+                "Boku no Hero Academia 21".to_string(),
+            ],
+            imdb_id: None,
+            categories: vec![5070],
+            arr: "sonarr-anime".to_string(),
+            library_filter: Some("Anime".to_string()),
+            relink_check: RelinkCheck::MediaEpisode {
+                media_id: "tvdb-777".to_string(),
+                season: 5,
+                episode: 21,
+            },
+        };
+
+        let context = build_anime_request_context(&request).unwrap();
+        assert_eq!(context.query_episode, Some(21));
+        assert_eq!(context.absolute_query_episode, Some(21));
+        assert!(
+            context.acceptable_episode_slots.contains(&(5, 21)),
+            "acceptable slots should include (5, 21): {:?}",
+            context.acceptable_episode_slots
+        );
+    }
+
+    #[test]
+    fn anime_batch_fallbacks_strips_episode_and_returns_title() {
+        // "My Hero Academia 21" → ["My Hero Academia"]
+        let fallbacks = anime_batch_fallbacks("My Hero Academia 21");
+        assert_eq!(fallbacks, vec!["My Hero Academia".to_string()]);
+    }
+
+    #[test]
+    fn anime_batch_fallbacks_handles_season_token() {
+        // "Frieren S01E05" → ["Frieren S01", "Frieren"]
+        // parse_season_token reformats as "S{:02}" (drops episode part)
+        let fallbacks = anime_batch_fallbacks("Frieren S01E05");
+        assert_eq!(fallbacks, vec!["Frieren S01".to_string(), "Frieren".to_string()]);
+    }
+
+    #[test]
+    fn anime_batch_fallbacks_ignores_single_token() {
+        // Single token → no fallbacks
+        let fallbacks = anime_batch_fallbacks("Frieren");
+        assert!(fallbacks.is_empty());
+    }
+
+    #[test]
+    fn anime_batch_fallbacks_ignores_year_token() {
+        // "Frieren 2023" → standalone year is not a batch marker, so no fallback
+        let fallbacks = anime_batch_fallbacks("Frieren 2023");
+        assert!(fallbacks.is_empty(), "standalone year is not a batch marker: {:?}", fallbacks);
+    }
+
+    #[test]
     fn dmm_search_session_cache_key_uses_season_for_shows() {
         assert_eq!(
             DmmSearchSession::cache_key(DmmMediaKind::Show, "tt123", Some(2)),
@@ -2943,6 +3016,49 @@ mod tests {
             DmmSearchSession::cache_key(DmmMediaKind::Show, "tt123", None),
             None
         );
+    }
+
+
+    #[test]
+    fn is_numbering_token_rejects_release_format_tokens() {
+        // BD, BDRip, HDRip, DVDR, BRRip are format tokens treated as noise in query tokens
+        // They are filtered out when building title tokens for cleaner DMM queries
+        assert!(is_numbering_token("BD"), "BD should be treated as a noise token");
+        assert!(is_numbering_token("BDRip"), "BDRip should be treated as a noise token");
+        assert!(is_numbering_token("HDRip"), "HDRip should be treated as a noise token");
+        assert!(is_numbering_token("DVDR"), "DVDR should be treated as a noise token");
+        assert!(is_numbering_token("BRRip"), "BRRip should be treated as a noise token");
+        assert!(is_numbering_token("HDRip"), "HDRip should be treated as a noise token");
+        // Year and season/episode tokens are also noise
+        assert!(is_numbering_token("2020"), "2020 is a year/numbering token");
+        assert!(is_numbering_token("s01e05"), "s01e05 is a season+episode token");
+        assert!(is_numbering_token("05"), "05 is a standalone episode token");
+        assert!(is_numbering_token("upgrade"), "upgrade is a numbering token");
+    }
+
+    #[test]
+    fn clean_request_label_strips_suffixes() {
+        assert_eq!(clean_request_label("Show S01E05"), "Show S01E05");
+        assert_eq!(clean_request_label("Show S01E05 (unlinked)"), "Show S01E05");
+        assert_eq!(clean_request_label("Show S01E05 upgrade"), "Show S01E05");
+        assert_eq!(clean_request_label("Show S01E05 upgrade (unlinked)"), "Show S01E05");
+        assert_eq!(clean_request_label("Show S01E05 (new)"), "Show S01E05");
+        assert_eq!(clean_request_label("  Show S01E05  "), "Show S01E05");
+    }
+
+    #[test]
+    fn anime_quality_bonus_for_upgrade() {
+        // Upgrade: prefer higher quality
+        assert!(anime_quality_bonus(Some("2160p"), true) > anime_quality_bonus(Some("1080p"), true));
+        assert!(anime_quality_bonus(Some("1080p"), true) > anime_quality_bonus(Some("720p"), true));
+        // Non-upgrade: prefer higher quality (get the best available)
+        assert!(anime_quality_bonus(Some("1080p"), false) > anime_quality_bonus(Some("720p"), false));
+    }
+
+    #[test]
+    fn anime_quality_bonus_unknown_quality() {
+        assert_eq!(anime_quality_bonus(None, false), 0);
+        assert_eq!(anime_quality_bonus(Some("480p"), false), 0);
     }
 
     #[test]

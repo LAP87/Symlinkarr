@@ -1462,6 +1462,7 @@ mod tests {
         assert!(body.contains("Apply Cleanup"));
     }
 
+
     #[test]
     fn cleanup_audit_form_selected_libraries_dedupes_legacy_and_multi_select_fields() {
         let form = CleanupAuditForm {
@@ -1475,4 +1476,42 @@ mod tests {
             vec!["Anime".to_string(), "Anime 2".to_string()]
         );
     }
+
+    #[test]
+    fn cleanup_audit_form_selected_libraries_uses_single_when_multi_empty() {
+        let form = CleanupAuditForm {
+            scope: "anime".to_string(),
+            library: Some("Anime".to_string()),
+            libraries: vec![],
+        };
+
+        assert_eq!(form.selected_libraries(), vec!["Anime".to_string()]);
+    }
+
+    #[test]
+    fn cleanup_audit_form_selected_libraries_ignores_empty_library() {
+        let form = CleanupAuditForm {
+            scope: "anime".to_string(),
+            library: Some("".to_string()),
+            libraries: vec!["Anime".to_string()],
+        };
+
+        assert_eq!(form.selected_libraries(), vec!["Anime".to_string()]);
+    }
+
+    #[test]
+    fn cleanup_audit_form_selected_libraries_whitespace_trimmed() {
+        // Single is appended after multi-select, whitespace is trimmed throughout
+        let form = CleanupAuditForm {
+            scope: "anime".to_string(),
+            library: Some("  Anime  ".to_string()),
+            libraries: vec!["  Anime 2  ".to_string()],
+        };
+
+        let result = form.selected_libraries();
+        assert!(result.contains(&"Anime".to_string()));
+        assert!(result.contains(&"Anime 2".to_string()));
+        assert_eq!(result.len(), 2);
+    }
+
 }

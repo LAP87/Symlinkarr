@@ -218,3 +218,52 @@ fn retry_after_wait(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
     let seconds: u64 = value.parse().ok()?;
     Some(Duration::from_secs(seconds))
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_retryable_status_429_and_5xx() {
+        assert!(is_retryable_status(StatusCode::TOO_MANY_REQUESTS));
+        assert!(is_retryable_status(StatusCode::INTERNAL_SERVER_ERROR));
+        assert!(is_retryable_status(StatusCode::BAD_GATEWAY));
+        assert!(is_retryable_status(StatusCode::SERVICE_UNAVAILABLE));
+        assert!(is_retryable_status(StatusCode::GATEWAY_TIMEOUT));
+        assert!(!is_retryable_status(StatusCode::NOT_FOUND));
+        assert!(!is_retryable_status(StatusCode::UNAUTHORIZED));
+        assert!(!is_retryable_status(StatusCode::BAD_REQUEST));
+    }
+
+    #[test]
+    fn backoff_doubles_each_attempt() {
+        // BASE_BACKOFF_MS = 250
+        assert_eq!(backoff(1), Duration::from_millis(250)); // 250 * 2^0
+        assert_eq!(backoff(2), Duration::from_millis(500)); // 250 * 2^1
+        assert_eq!(backoff(3), Duration::from_millis(1000)); // 250 * 2^2
+        assert_eq!(backoff(10), Duration::from_millis(128000)); // 250 * 2^9
+    }
+
+    #[test]
+    fn backoff_works_for_normal_attempts() {
+        // Normal attempt range
+        for attempt in 1..=20 {
+            let result = backoff(attempt);
+            assert!(result > Duration::from_secs(0), "attempt {} should give positive duration", attempt);
+        }
+    }
+
+    #[test]
+    fn retry_after_wait_parses_seconds() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(reqwest::header::RETRY_AFTER, "120".parse().unwrap());
+        assert_eq!(retry_after_wait(&headers), Some(Duration::from_secs(120)));
+    }
+
+    #[test]
+    fn retry_after_wait_returns_none_for_missing_header() {
+        let headers = reqwest::header::HeaderMap::new();
+        assert_eq!(retry_after_wait(&headers), None);
+    }
+}

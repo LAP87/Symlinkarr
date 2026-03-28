@@ -216,6 +216,7 @@ impl AcquisitionJobCounts {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct MediaTypeStats {
     pub media_type: String,
     pub library_items: i64,
@@ -224,6 +225,7 @@ pub struct MediaTypeStats {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct LibraryStats {
     pub name: String,
     pub library_items: i64,
@@ -754,6 +756,11 @@ impl Database {
     #[cfg(test)]
     async fn migrate_down_one(&self, current_version: i64) -> Result<()> {
         match current_version {
+            9 => {
+                sqlx::query("DROP INDEX IF EXISTS idx_links_status_target")
+                    .execute(&self.pool)
+                    .await?;
+            }
             8 => {
                 let columns = [
                     "auto_acquire_completed_unlinked",
@@ -1260,6 +1267,7 @@ impl Database {
     // --- Stats by category ---
 
     /// Get statistics about links grouped by media type.
+    #[allow(dead_code)]
     pub async fn get_stats_by_media_type(&self) -> Result<Vec<MediaTypeStats>> {
         let rows = sqlx::query(
             "SELECT
@@ -1286,6 +1294,7 @@ impl Database {
     }
 
     /// Get statistics about links grouped by library (folder name).
+    #[allow(dead_code)]
     pub async fn get_stats_by_library(&self) -> Result<Vec<LibraryStats>> {
         let rows = sqlx::query(
             "SELECT

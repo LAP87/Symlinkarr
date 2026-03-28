@@ -1183,4 +1183,48 @@ mod tests {
         assert_eq!(outcome.refresh_path, Some(lib_path.clone()));
         assert_eq!(fs::read_link(&target).unwrap(), PathBuf::from(&new_source));
     }
+
+    #[test]
+    fn truncate_filename_to_limit_under_limit() {
+        let filename = "Show - S01E01 - Episode Title.mkv";
+        let result = truncate_filename_to_limit(
+            filename.to_string(),
+            "Show",
+            "Episode Title",
+            1, 1, "mkv"
+        );
+        assert_eq!(result, filename);
+    }
+
+    #[test]
+    fn truncate_filename_to_limit_truncates_episode_title() {
+        // Long episode title should be truncated first
+        let long_title = "A".repeat(300);
+        let filename = format!("Show - S01E01 - {}.mkv", long_title);
+        let result = truncate_filename_to_limit(
+            filename,
+            "Show",
+            &long_title,
+            1, 1, "mkv"
+        );
+        assert!(result.len() <= 250, "result len {} should be <= 250", result.len());
+        assert!(result.contains("Show"));
+        assert!(result.contains("S01E01"));
+    }
+
+    #[test]
+    fn truncate_filename_to_limit_handles_empty_episode_title() {
+        // Long filename with empty episode title — should use title-only format
+        let long_title = "A".repeat(230);
+        let filename = format!("Show - S01E01 - {}.mkv", long_title);
+        let result = truncate_filename_to_limit(
+            filename,
+            "Show",
+            "",
+            1, 1, "mkv"
+        );
+        assert!(result.len() <= 250, "result len {} should be <= 250", result.len());
+        // Should not have double dash before extension
+        assert!(!result.contains(" - .mkv"));
+    }
 }

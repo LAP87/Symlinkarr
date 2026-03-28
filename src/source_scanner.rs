@@ -857,4 +857,45 @@ mod tests {
         assert_eq!(item.episode, Some(5));
         assert_eq!(item.episode_end, None);
     }
+
+    // ── Anime edge cases ──
+
+    #[test]
+    fn test_anime_bare_episode_with_subgroup_and_resolution() {
+        // [SubsPlease] Jujutsu Kaisen - 03 (720p) [ABC123].mkv
+        let scanner = SourceScanner::new();
+        let path = PathBuf::from("/mnt/rd/[SubsPlease] Jujutsu Kaisen - 03 (720p) [ABC123].mkv");
+        let item = scanner.parse_filename_anime(&path).unwrap();
+        assert_eq!(item.parsed_title, "Jujutsu Kaisen");
+        assert_eq!(item.episode, Some(3));
+        assert_eq!(item.quality, Some("720p".to_string()));
+    }
+
+    #[test]
+    fn test_anime_episode_v2_not_double_counted() {
+        // v2 should not affect episode number parsing
+        let scanner = SourceScanner::new();
+        let path = PathBuf::from("/mnt/rd/[Era] Show - 05v2.mkv");
+        let item = scanner.parse_filename_anime(&path).unwrap();
+        assert_eq!(item.episode, Some(5));
+    }
+
+    #[test]
+    fn test_anime_quality_from_resolution_4k() {
+        let scanner = SourceScanner::new();
+        let path = PathBuf::from("/mnt/rd/Show - 01 (3840x2160).mkv");
+        let item = scanner.parse_filename_anime(&path).unwrap();
+        assert_eq!(item.quality, Some("2160p".to_string()));
+    }
+
+    #[test]
+    fn test_anime_japanese_title_romanized() {
+        // Romanized Japanese titles should parse correctly
+        let scanner = SourceScanner::new();
+        let path = PathBuf::from("/mnt/rd/[Subs] Sousou no Frieren - 01 (BD 1080p).mkv");
+        let item = scanner.parse_filename_anime(&path).unwrap();
+        assert_eq!(item.parsed_title, "Sousou no Frieren");
+        assert_eq!(item.episode, Some(1));
+        assert_eq!(item.quality, Some("1080p".to_string()));
+    }
 }
