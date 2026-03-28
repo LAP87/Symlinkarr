@@ -2100,17 +2100,20 @@ tautulli:
         let library_dir = dir.path().join("library");
         let source_dir = dir.path().join("source");
         let backup_dir = dir.path().join("backups");
+        let quarantine_dir = dir.path().join("quarantine");
         let db_path = dir.path().join("symlinkarr.db");
         let secret_path = dir.path().join("tmdb.key");
 
         std::fs::create_dir_all(&library_dir).unwrap();
         std::fs::create_dir_all(&source_dir).unwrap();
         std::fs::create_dir_all(&backup_dir).unwrap();
+        std::fs::create_dir_all(&quarantine_dir).unwrap();
         std::fs::write(&db_path, "").unwrap();
         std::fs::write(&secret_path, "secret").unwrap();
 
         std::fs::set_permissions(&db_path, std::fs::Permissions::from_mode(0o644)).unwrap();
         std::fs::set_permissions(&backup_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&quarantine_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
         std::fs::set_permissions(&secret_path, std::fs::Permissions::from_mode(0o644)).unwrap();
 
         let cfg = Config {
@@ -2151,7 +2154,12 @@ tautulli:
                 enforce_secure_permissions: true,
                 ..SecurityConfig::default()
             },
-            cleanup: CleanupPolicyConfig::default(),
+            cleanup: CleanupPolicyConfig {
+                prune: PrunePolicyConfig {
+                    quarantine_path: quarantine_dir,
+                    ..PrunePolicyConfig::default()
+                },
+            },
             web: WebConfig::default(),
             loaded_from: None,
             secret_files: vec![secret_path],
@@ -2166,6 +2174,10 @@ tautulli:
             .errors
             .iter()
             .any(|err| err.contains("backup.path must not be group/world accessible")));
+        assert!(report
+            .errors
+            .iter()
+            .any(|err| err.contains("cleanup.prune.quarantine_path must not be group/world accessible")));
         assert!(report
             .errors
             .iter()
