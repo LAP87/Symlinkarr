@@ -12,7 +12,7 @@ use anyhow::Result;
 use axum::{
     extract::State,
     http::{
-        header::{HOST, ORIGIN, REFERER},
+        header::{COOKIE, HOST, ORIGIN, REFERER, SET_COOKIE},
         HeaderMap, HeaderValue, Method, StatusCode, Uri,
     },
     middleware::{self, Next},
@@ -22,6 +22,7 @@ use axum::{
 };
 use serde_json::json;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tower_http::{services::ServeDir, trace::TraceLayer};
 use tracing::{error, info, warn};
 
@@ -33,6 +34,7 @@ use crate::db::Database;
 pub struct WebState {
     pub config: Arc<Config>,
     pub database: Arc<Database>,
+    browser_session_token: Arc<String>,
 }
 
 impl WebState {
@@ -40,7 +42,12 @@ impl WebState {
         Self {
             config: Arc::new(config),
             database: Arc::new(database),
+            browser_session_token: Arc::new(generate_browser_session_token()),
         }
+    }
+
+    fn browser_session_token(&self) -> &str {
+        self.browser_session_token.as_str()
     }
 }
 
@@ -97,14 +104,23 @@ fn create_router(state: WebState) -> Router {
     Router::new()
         .merge(app_routes)
         .nest("/api/v1", api_routes)
-        .layer(middleware::from_fn(reject_cross_origin_mutations))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            guard_browser_mutations,
+        ))
         .layer(TraceLayer::new_for_http())
         .nest_service("/static", ServeDir::new(static_dir()))
         .with_state(state)
 }
 
+const BROWSER_SESSION_COOKIE: &str = "symlinkarr_browser_session";
+
 fn method_requires_same_origin(method: &Method) -> bool {
     !matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS)
+}
+
+fn method_receives_browser_session(method: &Method) -> bool {
+    matches!(*method, Method::GET | Method::HEAD)
 }
 
 fn header_value_str(value: &HeaderValue) -> Option<&str> {
@@ -125,6 +141,28 @@ fn uri_authority(value: &HeaderValue) -> Option<String> {
         .map(|authority| authority.as_str().to_ascii_lowercase())
 }
 
+fn request_has_browser_metadata(headers: &HeaderMap) -> bool {
+    headers.contains_key(ORIGIN) || headers.contains_key(REFERER)
+}
+
+fn request_cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
+    let raw = headers.get(COOKIE).and_then(header_value_str)?;
+    raw.split(';').find_map(|entry| {
+        let (cookie_name, cookie_value) = entry.trim().split_once('=')?;
+        if cookie_name.trim() == name {
+            Some(cookie_value.trim().to_string())
+        } else {
+            None
+        }
+    })
+}
+
+fn browser_session_cookie_header(token: &str) -> String {
+    format!(
+        "{BROWSER_SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict"
+    )
+}
+
 fn is_same_origin_browser_mutation(headers: &HeaderMap) -> bool {
     let Some(host) = headers.get(HOST).and_then(header_authority) else {
         return false;
@@ -139,6 +177,11 @@ fn is_same_origin_browser_mutation(headers: &HeaderMap) -> bool {
     }
 
     false
+}
+
+fn has_valid_browser_session(headers: &HeaderMap, state: &WebState) -> bool {
+    request_cookie_value(headers, BROWSER_SESSION_COOKIE).as_deref()
+        == Some(state.browser_session_token())
 }
 
 fn forbidden_origin_response(path: &str) -> axum::response::Response {
@@ -159,7 +202,39 @@ fn forbidden_origin_response(path: &str) -> axum::response::Response {
         .into_response()
 }
 
-async fn reject_cross_origin_mutations(
+fn missing_browser_session_response(path: &str) -> axum::response::Response {
+    if path.starts_with("/api/") {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "browser mutation blocked; refresh the Symlinkarr UI from the same origin and retry with the issued browser session"
+            })),
+        )
+            .into_response();
+    }
+
+    (
+        StatusCode::FORBIDDEN,
+        "Browser mutation blocked; refresh the Symlinkarr UI from the same origin and retry.",
+    )
+        .into_response()
+}
+
+fn generate_browser_session_token() -> String {
+    let mut bytes = [0u8; 32];
+    if getrandom::getrandom(&mut bytes).is_ok() {
+        return bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    }
+
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("{:016x}{:08x}", nanos, std::process::id())
+}
+
+async fn guard_browser_mutations(
+    State(state): State<WebState>,
     request: axum::extract::Request,
     next: Next,
 ) -> axum::response::Response {
@@ -168,23 +243,48 @@ async fn reject_cross_origin_mutations(
     let origin = request.headers().get(ORIGIN).and_then(header_value_str);
     let referer = request.headers().get(REFERER).and_then(header_value_str);
     let host = request.headers().get(HOST).and_then(header_value_str);
+    let has_browser_metadata = request_has_browser_metadata(request.headers());
+    let has_valid_session = has_valid_browser_session(request.headers(), &state);
+    let should_issue_session =
+        method_receives_browser_session(&method) && !has_valid_session;
 
     if method_requires_same_origin(&method)
-        && (origin.is_some() || referer.is_some())
-        && !is_same_origin_browser_mutation(request.headers())
+        && has_browser_metadata
     {
-        warn!(
-            method = %method,
-            path,
-            host = host.unwrap_or("<missing>"),
-            origin = origin.unwrap_or("<missing>"),
-            referer = referer.unwrap_or("<missing>"),
-            "blocked cross-origin mutation request"
-        );
-        return forbidden_origin_response(request.uri().path());
+        if !is_same_origin_browser_mutation(request.headers()) {
+            warn!(
+                method = %method,
+                path,
+                host = host.unwrap_or("<missing>"),
+                origin = origin.unwrap_or("<missing>"),
+                referer = referer.unwrap_or("<missing>"),
+                "blocked cross-origin mutation request"
+            );
+            return forbidden_origin_response(request.uri().path());
+        }
+
+        if !has_valid_session {
+            warn!(
+                method = %method,
+                path,
+                host = host.unwrap_or("<missing>"),
+                origin = origin.unwrap_or("<missing>"),
+                referer = referer.unwrap_or("<missing>"),
+                "blocked browser mutation without issued session cookie"
+            );
+            return missing_browser_session_response(request.uri().path());
+        }
     }
 
-    next.run(request).await
+    let mut response = next.run(request).await;
+    if should_issue_session {
+        if let Ok(value) =
+            HeaderValue::from_str(&browser_session_cookie_header(state.browser_session_token()))
+        {
+            response.headers_mut().append(SET_COOKIE, value);
+        }
+    }
+    response
 }
 
 /// Start the web server
@@ -393,6 +493,47 @@ mod tests {
         (status, body)
     }
 
+    async fn get_html_with_headers(
+        router: &Router,
+        path: &str,
+        headers: &[(&str, &str)],
+    ) -> (u16, axum::http::HeaderMap, String) {
+        let mut request = Request::builder().uri(path);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        let response = router
+            .clone()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status().as_u16();
+        let headers = response.headers().clone();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        (status, headers, body)
+    }
+
+    fn browser_session_cookie(headers: &axum::http::HeaderMap) -> String {
+        headers
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .find_map(|value| {
+                value
+                    .to_str()
+                    .ok()
+                    .filter(|cookie| cookie.starts_with("symlinkarr_browser_session="))
+                    .map(|cookie| {
+                        cookie
+                            .split(';')
+                            .next()
+                            .unwrap_or(cookie)
+                            .to_string()
+                    })
+            })
+            .expect("expected symlinkarr browser session cookie")
+    }
+
     async fn post_json(
         router: &Router,
         path: &str,
@@ -539,6 +680,8 @@ mod tests {
     #[tokio::test]
     async fn api_allows_same_origin_mutations() {
         let router = test_router().await;
+        let (_, headers, _) = get_html_with_headers(&router, "/", &[]).await;
+        let cookie = browser_session_cookie(&headers);
         let (status, body) = post_json_with_headers(
             &router,
             "/api/v1/cleanup/audit",
@@ -546,6 +689,7 @@ mod tests {
             &[
                 (header::HOST.as_str(), "127.0.0.1:8726"),
                 (header::ORIGIN.as_str(), "http://127.0.0.1:8726"),
+                (header::COOKIE.as_str(), &cookie),
             ],
         )
         .await;
@@ -571,5 +715,46 @@ mod tests {
 
         assert_eq!(status, 403);
         assert!(body.contains("Cross-origin mutation blocked"));
+    }
+
+    #[tokio::test]
+    async fn browser_same_origin_mutations_require_issued_session_cookie() {
+        let router = test_router().await;
+        let (status, body) = post_json_with_headers(
+            &router,
+            "/api/v1/cleanup/audit",
+            serde_json::json!({ "scope": "anime" }),
+            &[
+                (header::HOST.as_str(), "127.0.0.1:8726"),
+                (header::ORIGIN.as_str(), "http://127.0.0.1:8726"),
+            ],
+        )
+        .await;
+
+        assert_eq!(status, 403);
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            json["error"],
+            "browser mutation blocked; refresh the Symlinkarr UI from the same origin and retry with the issued browser session"
+        );
+    }
+
+    #[tokio::test]
+    async fn dashboard_get_sets_browser_session_cookie() {
+        let router = test_router().await;
+        let (status, headers, body) = get_html_with_headers(&router, "/", &[]).await;
+
+        assert_eq!(status, 200);
+        assert!(body.contains("Dashboard"));
+        let cookie = browser_session_cookie(&headers);
+        assert!(cookie.starts_with("symlinkarr_browser_session="));
+        let set_cookie = headers
+            .get(header::SET_COOKIE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        assert!(set_cookie.contains("HttpOnly"));
+        assert!(set_cookie.contains("SameSite=Strict"));
+        assert!(set_cookie.contains("Path=/"));
     }
 }

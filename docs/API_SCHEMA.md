@@ -8,9 +8,16 @@ Base path:
 /api/v1
 ```
 
-The API is currently local-first and intended to back the bundled web UI. There is no auth layer in front of these routes yet, so treat it as trusted-local-network tooling rather than a public internet API.
+The API is currently local-first and intended to back the bundled web UI. There is still no full user auth layer in front of these routes, so treat it as trusted-local-network tooling rather than a public internet API.
 
 By default, the web server binds to `127.0.0.1`. Set `web.bind_address: "0.0.0.0"` only when you intentionally want external reachability, such as a container with explicit port publishing. Cross-origin access is not enabled by default.
+
+For mutating browser requests, Symlinkarr now enforces two layers:
+
+- same-origin `Origin`/`Referer` validation for browser-style `POST` requests
+- an issued host-only browser session cookie (`SameSite=Strict`) that is set by same-origin `GET` responses and required on later browser mutations
+
+Non-browser local clients that do not send `Origin` or `Referer` headers are still allowed to call mutating endpoints without that browser session cookie.
 
 ## Conventions
 
