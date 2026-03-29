@@ -20,17 +20,19 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use chrono::Utc;
+use chrono::{DateTime, NaiveDateTime, Utc};
 use futures_util::FutureExt;
 use serde_json::json;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 use tower_http::{services::ServeDir, trace::TraceLayer};
 use tracing::{error, info, warn};
 
-use crate::cleanup_audit::{CleanupAuditor, CleanupScope};
-use crate::config::Config;
+use crate::cleanup_audit::{CleanupAuditor, CleanupReport, CleanupScope};
+use crate::config::{Config, ContentType, LibraryConfig};
 use crate::db::Database;
 
 #[derive(Clone, Debug)]
@@ -256,13 +258,8 @@ impl WebState {
         scope: CleanupScope,
         selected_libraries: Vec<String>,
     ) -> std::result::Result<ActiveCleanupAuditJob, String> {
-        let library_filter = (!selected_libraries.is_empty()).then(|| selected_libraries.join(","));
         let canonical_libraries =
-            crate::commands::selected_libraries(self.config.as_ref(), library_filter.as_deref())
-                .map_err(|err| err.to_string())?
-                .into_iter()
-                .map(|library| library.name.clone())
-                .collect::<Vec<_>>();
+            resolve_cleanup_libraries(self.config.as_ref(), scope, &selected_libraries)?;
 
         let mut background_jobs = self.background_jobs.lock().await;
         if let Some(job) = background_jobs.active_scan.clone() {
@@ -408,6 +405,62 @@ fn panic_message(payload: Box<dyn std::any::Any + Send + 'static>) -> String {
     }
 }
 
+pub(crate) fn parse_display_utc_timestamp(value: &str) -> Option<DateTime<Utc>> {
+    ["%Y-%m-%d %H:%M:%S UTC", "%Y-%m-%d %H:%M:%S"]
+        .into_iter()
+        .find_map(|format| {
+            NaiveDateTime::parse_from_str(value, format)
+                .ok()
+                .map(|naive| DateTime::<Utc>::from_naive_utc_and_offset(naive, Utc))
+        })
+}
+
+pub(crate) fn should_surface_scan_outcome(
+    outcome: &LastScanOutcome,
+    latest_run_started_at: Option<&str>,
+) -> bool {
+    if outcome.success {
+        return latest_run_started_at.is_none();
+    }
+
+    let Some(latest_run_started_at) = latest_run_started_at else {
+        return true;
+    };
+
+    match (
+        parse_display_utc_timestamp(&outcome.finished_at),
+        parse_display_utc_timestamp(latest_run_started_at),
+    ) {
+        (Some(outcome_finished_at), Some(latest_run_started_at)) => {
+            outcome_finished_at >= latest_run_started_at
+        }
+        _ => true,
+    }
+}
+
+pub(crate) fn should_surface_cleanup_audit_outcome(
+    outcome: &LastCleanupAuditOutcome,
+    latest_report_created_at: Option<&str>,
+) -> bool {
+    if outcome.success {
+        return latest_report_created_at.is_none();
+    }
+
+    let Some(latest_report_created_at) = latest_report_created_at else {
+        return true;
+    };
+
+    match (
+        parse_display_utc_timestamp(&outcome.finished_at),
+        parse_display_utc_timestamp(latest_report_created_at),
+    ) {
+        (Some(outcome_finished_at), Some(latest_report_created_at)) => {
+            outcome_finished_at >= latest_report_created_at
+        }
+        _ => true,
+    }
+}
+
 fn cleanup_scope_label(scope: CleanupScope) -> &'static str {
     match scope {
         CleanupScope::Anime => "Anime",
@@ -434,6 +487,117 @@ fn cleanup_libraries_label(selected_libraries: &[String]) -> String {
         [first, second, third] => format!("{}, {}, {}", first, second, third),
         many => format!("{} libraries", many.len()),
     }
+}
+
+pub(crate) fn latest_cleanup_report_path(backup_dir: &Path) -> Option<PathBuf> {
+    let mut reports: Vec<_> = std::fs::read_dir(backup_dir)
+        .ok()?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            let name = entry.file_name();
+            name.to_string_lossy().starts_with("cleanup-audit-")
+                && name.to_string_lossy().ends_with(".json")
+        })
+        .collect();
+
+    reports.sort_by_key(|entry| {
+        entry
+            .metadata()
+            .ok()
+            .and_then(|meta| meta.modified().ok())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+    });
+    reports.reverse();
+    reports.first().map(|entry| entry.path())
+}
+
+pub(crate) fn load_cleanup_report(path: &Path) -> Option<CleanupReport> {
+    let json = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&json).ok()
+}
+
+pub(crate) fn latest_cleanup_report_created_at(backup_dir: &Path) -> Option<String> {
+    let path = latest_cleanup_report_path(backup_dir)?;
+    let report = load_cleanup_report(&path)?;
+    Some(
+        report
+            .created_at
+            .format("%Y-%m-%d %H:%M:%S UTC")
+            .to_string(),
+    )
+}
+
+fn effective_content_type(library: &LibraryConfig) -> ContentType {
+    library
+        .content_type
+        .unwrap_or(ContentType::from_media_type(library.media_type))
+}
+
+fn library_matches_cleanup_scope(library: &LibraryConfig, scope: CleanupScope) -> bool {
+    match scope {
+        CleanupScope::Anime => effective_content_type(library) == ContentType::Anime,
+        CleanupScope::Tv => effective_content_type(library) == ContentType::Tv,
+        CleanupScope::Movie => effective_content_type(library) == ContentType::Movie,
+        CleanupScope::All => true,
+    }
+}
+
+fn resolve_cleanup_libraries(
+    cfg: &Config,
+    scope: CleanupScope,
+    selected_libraries: &[String],
+) -> std::result::Result<Vec<String>, String> {
+    let selected_names = selected_libraries
+        .iter()
+        .map(|name| name.trim())
+        .filter(|name| !name.is_empty())
+        .collect::<Vec<_>>();
+
+    let selected_names_set = selected_names.iter().copied().collect::<HashSet<_>>();
+
+    let unknown = selected_names
+        .iter()
+        .copied()
+        .filter(|want| {
+            !cfg.libraries
+                .iter()
+                .any(|lib| lib.name.eq_ignore_ascii_case(want))
+        })
+        .collect::<Vec<_>>();
+    if !unknown.is_empty() {
+        return Err(format!(
+            "Unknown library filter(s): {}. Available: {}",
+            unknown.join(", "),
+            cfg.libraries
+                .iter()
+                .map(|library| library.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+
+    let canonical = cfg
+        .libraries
+        .iter()
+        .filter(|library| {
+            selected_names_set.is_empty()
+                || selected_names_set
+                    .iter()
+                    .any(|name| library.name.eq_ignore_ascii_case(name))
+        })
+        .filter(|library| library_matches_cleanup_scope(library, scope))
+        .map(|library| library.name.clone())
+        .collect::<Vec<_>>();
+
+    if !selected_names_set.is_empty() && canonical.is_empty() {
+        return Err(format!(
+            "No libraries matched scope {:?} for selection: {}",
+            scope,
+            selected_libraries.join(", ")
+        ));
+    }
+
+    Ok(canonical)
 }
 
 fn cleanup_audit_output_path(
@@ -1196,5 +1360,61 @@ mod tests {
     fn panic_message_extracts_string_payload() {
         let payload: Box<dyn std::any::Any + Send> = Box::new("boom".to_string());
         assert_eq!(super::panic_message(payload), "boom");
+    }
+
+    #[test]
+    fn failed_scan_outcome_is_hidden_when_newer_scan_run_exists() {
+        let outcome = LastScanOutcome {
+            finished_at: "2026-03-29 10:00:00 UTC".to_string(),
+            scope_label: "Anime".to_string(),
+            dry_run: false,
+            search_missing: true,
+            success: false,
+            message: "boom".to_string(),
+        };
+
+        assert!(!super::should_surface_scan_outcome(
+            &outcome,
+            Some("2026-03-29 10:05:00 UTC")
+        ));
+    }
+
+    #[test]
+    fn failed_cleanup_outcome_is_hidden_when_newer_report_exists() {
+        let outcome = LastCleanupAuditOutcome {
+            finished_at: "2026-03-29 10:00:00 UTC".to_string(),
+            scope_label: "Anime".to_string(),
+            libraries_label: "Anime".to_string(),
+            success: false,
+            message: "boom".to_string(),
+            report_path: None,
+        };
+
+        assert!(!super::should_surface_cleanup_audit_outcome(
+            &outcome,
+            Some("2026-03-29 10:05:00 UTC")
+        ));
+    }
+
+    #[test]
+    fn resolve_cleanup_libraries_preserves_commas_and_filters_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = test_config(dir.path());
+        cfg.libraries.push(LibraryConfig {
+            name: "Movies, Archive".to_string(),
+            path: dir.path().join("movies"),
+            media_type: MediaType::Movie,
+            content_type: Some(ContentType::Movie),
+            depth: 1,
+        });
+
+        let selected = super::resolve_cleanup_libraries(
+            &cfg,
+            CleanupScope::Movie,
+            &["Movies, Archive".to_string(), "Anime".to_string()],
+        )
+        .unwrap();
+
+        assert_eq!(selected, vec!["Movies, Archive".to_string()]);
     }
 }

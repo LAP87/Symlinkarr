@@ -1,11 +1,11 @@
 //! JSON API endpoints for automation
 
 use axum::{
-    Json, Router,
     extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
+    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use tracing::info;
@@ -14,12 +14,15 @@ use crate::backup::BackupManager;
 use crate::cleanup_audit::{self, CleanupReport, CleanupScope};
 use crate::commands::config::validate_config_report;
 use crate::commands::discover::load_discovery_snapshot;
-use crate::commands::doctor::{DoctorCheckMode, collect_doctor_checks};
+use crate::commands::doctor::{collect_doctor_checks, DoctorCheckMode};
 use crate::commands::repair::{execute_repair_auto, summarize_repair_results};
 use crate::config::Config;
 use crate::db::{Database, ScanHistoryRecord};
 
-use super::WebState;
+use super::{
+    latest_cleanup_report_created_at, should_surface_cleanup_audit_outcome,
+    should_surface_scan_outcome, WebState,
+};
 
 /// Create the API router
 pub fn create_router(state: WebState) -> Router<WebState> {
@@ -537,11 +540,21 @@ fn api_scan_job_from_active(job: crate::web::ActiveScanJob) -> ApiScanJob {
 
 /// GET /api/v1/scan/status
 pub async fn api_get_scan_status(State(state): State<WebState>) -> Json<ApiScanStatusResponse> {
+    let latest_run_started_at = state
+        .database
+        .get_scan_history(1)
+        .await
+        .ok()
+        .and_then(|history| history.into_iter().next().map(|run| run.started_at));
+
     Json(ApiScanStatusResponse {
         active_job: state.active_scan().await.map(api_scan_job_from_active),
         last_outcome: state
             .last_scan_outcome()
             .await
+            .filter(|outcome| {
+                should_surface_scan_outcome(outcome, latest_run_started_at.as_deref())
+            })
             .map(|outcome| ApiScanOutcome {
                 finished_at: outcome.finished_at,
                 scope_label: outcome.scope_label,
@@ -897,6 +910,8 @@ pub async fn api_post_cleanup_audit(
 pub async fn api_get_cleanup_audit_status(
     State(state): State<WebState>,
 ) -> Json<ApiCleanupAuditStatusResponse> {
+    let latest_report_created_at = latest_cleanup_report_created_at(&state.config.backup.path);
+
     Json(ApiCleanupAuditStatusResponse {
         active_job: state
             .active_cleanup_audit()
@@ -907,16 +922,20 @@ pub async fn api_get_cleanup_audit_status(
                 scope_label: active_audit.scope_label,
                 libraries_label: active_audit.libraries_label,
             }),
-        last_outcome: state.last_cleanup_audit_outcome().await.map(|outcome| {
-            ApiCleanupAuditOutcome {
+        last_outcome: state
+            .last_cleanup_audit_outcome()
+            .await
+            .filter(|outcome| {
+                should_surface_cleanup_audit_outcome(outcome, latest_report_created_at.as_deref())
+            })
+            .map(|outcome| ApiCleanupAuditOutcome {
                 finished_at: outcome.finished_at,
                 scope_label: outcome.scope_label,
                 libraries_label: outcome.libraries_label,
                 success: outcome.success,
                 message: outcome.message,
                 report_path: outcome.report_path,
-            }
-        }),
+            }),
     })
 }
 
@@ -1075,7 +1094,7 @@ pub async fn api_get_doctor(State(state): State<WebState>) -> Json<ApiDoctorResp
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::{Body, to_bytes};
+    use axum::body::{to_bytes, Body};
     use axum::http::Request;
     use axum::response::IntoResponse;
     use serde_json::Value;
@@ -1411,6 +1430,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn api_get_scan_status_hides_stale_failed_outcome_when_newer_run_exists() {
+        let ctx = test_state().await;
+        ctx.set_last_scan_outcome_for_test(Some(LastScanOutcome {
+            finished_at: "2026-03-29 09:58:00 UTC".to_string(),
+            scope_label: "Anime".to_string(),
+            dry_run: false,
+            search_missing: true,
+            success: false,
+            message: "stale failure".to_string(),
+        }))
+        .await;
+
+        let response = api_get_scan_status(State(ctx)).await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: ApiScanStatusResponse = serde_json::from_slice(&bytes).unwrap();
+
+        assert!(json.last_outcome.is_none());
+    }
+
+    #[tokio::test]
     async fn api_post_scan_rejects_when_background_scan_is_already_running() {
         let ctx = test_state().await;
         ctx.set_active_scan_for_test(Some(ActiveScanJob {
@@ -1475,18 +1515,16 @@ mod tests {
         assert_eq!(json.items.len(), 1);
         assert_eq!(json.items[0].rd_torrent_id, "rd-1");
         assert_eq!(json.items[0].parsed_title, "Missing Show");
-        assert!(
-            json.status_message
-                .as_deref()
-                .unwrap_or_default()
-                .contains("Real-Debrid API key not configured")
-        );
-        assert!(
-            json.status_message
-                .as_deref()
-                .unwrap_or_default()
-                .contains("live refresh is unavailable")
-        );
+        assert!(json
+            .status_message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Real-Debrid API key not configured"));
+        assert!(json
+            .status_message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("live refresh is unavailable"));
     }
 
     #[tokio::test]
@@ -1506,12 +1544,10 @@ mod tests {
         let body = body.into_response();
         let bytes = to_bytes(body.into_body(), usize::MAX).await.unwrap();
         let json: Value = serde_json::from_slice(&bytes).unwrap();
-        assert!(
-            json["error"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("Unknown library filter")
-        );
+        assert!(json["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Unknown library filter"));
     }
 
     #[tokio::test]
@@ -1522,21 +1558,18 @@ mod tests {
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let json: ApiDoctorResponse = serde_json::from_slice(&bytes).unwrap();
 
-        assert!(
-            json.checks
-                .iter()
-                .any(|check| check.check == "db_schema_version")
-        );
-        assert!(
-            json.checks
-                .iter()
-                .any(|check| check.check == "config_validation")
-        );
-        assert!(
-            json.checks
-                .iter()
-                .any(|check| check.check == "cleanup.prune.enforce_policy")
-        );
+        assert!(json
+            .checks
+            .iter()
+            .any(|check| check.check == "db_schema_version"));
+        assert!(json
+            .checks
+            .iter()
+            .any(|check| check.check == "config_validation"));
+        assert!(json
+            .checks
+            .iter()
+            .any(|check| check.check == "cleanup.prune.enforce_policy"));
     }
 
     #[tokio::test]
@@ -1698,12 +1731,10 @@ mod tests {
 
         let Json(response) = api_get_config_validate(State(state)).await;
 
-        assert!(
-            response
-                .warnings
-                .iter()
-                .any(|warning| warning.contains("web.allow_remote=true"))
-        );
+        assert!(response
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("web.allow_remote=true")));
     }
 
     #[tokio::test]
@@ -1723,11 +1754,9 @@ mod tests {
         let response: ApiCleanupAuditResponse = serde_json::from_slice(&bytes).unwrap();
 
         assert!(response.success);
-        assert!(
-            response
-                .message
-                .contains("Cleanup audit started in background")
-        );
+        assert!(response
+            .message
+            .contains("Cleanup audit started in background"));
         assert!(response.running);
         assert!(response.report_path.is_empty());
         assert_eq!(response.scope_label.as_deref(), Some("Anime"));
@@ -1893,6 +1922,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn api_get_cleanup_audit_status_hides_stale_failed_outcome_when_newer_report_exists() {
+        let ctx = test_state().await;
+        let report_path = ctx
+            .config
+            .backup
+            .path
+            .join("cleanup-audit-anime-20260329.json");
+        let report = CleanupReport {
+            version: 1,
+            created_at: chrono::Utc::now(),
+            scope: CleanupScope::Anime,
+            findings: vec![],
+            summary: cleanup_audit::CleanupSummary {
+                total_findings: 1,
+                critical: 0,
+                high: 1,
+                warning: 0,
+            },
+        };
+        std::fs::write(&report_path, serde_json::to_vec(&report).unwrap()).unwrap();
+
+        ctx.set_last_cleanup_audit_outcome_for_test(Some(LastCleanupAuditOutcome {
+            finished_at: "2026-03-29 09:58:00 UTC".to_string(),
+            scope_label: "Anime".to_string(),
+            libraries_label: "Anime".to_string(),
+            success: false,
+            message: "stale cleanup failure".to_string(),
+            report_path: None,
+        }))
+        .await;
+
+        let response = api_get_cleanup_audit_status(State(ctx))
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: ApiCleanupAuditStatusResponse = serde_json::from_slice(&bytes).unwrap();
+
+        assert!(json.last_outcome.is_none());
+    }
+
+    #[tokio::test]
     async fn api_post_cleanup_audit_rejects_when_background_audit_is_already_running() {
         let ctx = test_state().await;
         ctx.set_active_cleanup_audit_for_test(Some(ActiveCleanupAuditJob {
@@ -1965,10 +2036,8 @@ mod tests {
         let bytes = to_bytes(body.into_body(), usize::MAX).await.unwrap();
         let response: ApiCleanupPruneResponse = serde_json::from_slice(&bytes).unwrap();
         assert!(!response.success);
-        assert!(
-            response
-                .message
-                .contains("Cleanup report must be inside the configured backup directory")
-        );
+        assert!(response
+            .message
+            .contains("Cleanup report must be inside the configured backup directory"));
     }
 }

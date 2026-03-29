@@ -15,12 +15,15 @@ use crate::backup::BackupManager;
 use crate::cleanup_audit::{self, CleanupScope};
 use crate::commands::config::validate_config_report;
 use crate::commands::discover::load_discovery_snapshot;
-use crate::commands::doctor::{DoctorCheckMode, collect_doctor_checks};
+use crate::commands::doctor::{collect_doctor_checks, DoctorCheckMode};
 use crate::commands::repair::{execute_repair_auto, summarize_repair_results};
 use crate::db::{AcquisitionJobCounts, ScanHistoryRecord};
 
-use super::WebState;
 use super::templates::*;
+use super::{
+    latest_cleanup_report_path, load_cleanup_report, should_surface_cleanup_audit_outcome,
+    should_surface_scan_outcome, WebState,
+};
 
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct ScanHistoryQuery {
@@ -67,12 +70,43 @@ fn scan_history_filters_from_query(query: &ScanHistoryQuery) -> ScanHistoryFilte
 }
 
 fn cleanup_report_summary_from_path(path: &StdPath) -> Option<CleanupReportSummaryView> {
-    let json = std::fs::read_to_string(path).ok()?;
-    let report: cleanup_audit::CleanupReport = serde_json::from_str(&json).ok()?;
+    let report = load_cleanup_report(path)?;
     Some(CleanupReportSummaryView::from_report(
         path.to_path_buf(),
         report,
     ))
+}
+
+async fn visible_last_scan_outcome(state: &WebState) -> Option<BackgroundScanOutcomeView> {
+    let latest_run_started_at = state
+        .database
+        .get_scan_history(1)
+        .await
+        .ok()
+        .and_then(|history| history.into_iter().next().map(|run| run.started_at));
+
+    state
+        .last_scan_outcome()
+        .await
+        .filter(|outcome| should_surface_scan_outcome(outcome, latest_run_started_at.as_deref()))
+        .map(Into::into)
+}
+
+async fn visible_last_cleanup_audit_outcome(
+    state: &WebState,
+) -> Option<BackgroundCleanupAuditOutcomeView> {
+    let latest_report_created_at = latest_cleanup_report_path(&state.config.backup.path)
+        .as_deref()
+        .and_then(cleanup_report_summary_from_path)
+        .map(|summary| summary.created_at);
+
+    state
+        .last_cleanup_audit_outcome()
+        .await
+        .filter(|outcome| {
+            should_surface_cleanup_audit_outcome(outcome, latest_report_created_at.as_deref())
+        })
+        .map(Into::into)
 }
 
 fn resolve_backup_restore_path(backup_dir: &StdPath, backup_file: &str) -> anyhow::Result<PathBuf> {
@@ -338,11 +372,7 @@ pub async fn get_scan(
     let latest_run = history.first().cloned();
     let active_scan = state.active_scan().await.map(Into::into);
     let last_scan_outcome = if active_scan.is_none() {
-        state
-            .last_scan_outcome()
-            .await
-            .filter(|outcome| !outcome.success || latest_run.is_none())
-            .map(Into::into)
+        visible_last_scan_outcome(&state).await
     } else {
         None
     };
@@ -414,7 +444,7 @@ pub async fn post_scan_trigger(
                         success: false,
                         message: format!("Scan not started: {}", e),
                         active_scan: state.active_scan().await.map(Into::into),
-                        last_scan_outcome: state.last_scan_outcome().await.map(Into::into),
+                        last_scan_outcome: visible_last_scan_outcome(&state).await,
                         latest_run: None,
                         dry_run: form.dry_run,
                     }
@@ -468,43 +498,14 @@ pub async fn get_scan_run_detail(
 
 /// GET /cleanup - Cleanup page
 pub async fn get_cleanup(State(state): State<WebState>) -> impl IntoResponse {
-    // Look for the most recent cleanup report
-    let last_report = match std::fs::read_dir(&state.config.backup.path) {
-        Ok(entries) => {
-            let mut reports: Vec<_> = entries
-                .filter_map(|entry| entry.ok())
-                .filter(|entry| {
-                    let name = entry.file_name();
-                    name.to_string_lossy().starts_with("cleanup-audit-")
-                        && name.to_string_lossy().ends_with(".json")
-                })
-                .collect();
-
-            // Sort by modification time (newest first)
-            reports.sort_by_key(|entry| {
-                entry
-                    .metadata()
-                    .ok()
-                    .and_then(|meta| meta.modified().ok())
-                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
-            });
-            reports.reverse();
-
-            reports.first().map(|entry| entry.path())
-        }
-        Err(_) => None,
-    };
+    let last_report = latest_cleanup_report_path(&state.config.backup.path);
 
     let last_report_summary = last_report
         .as_deref()
         .and_then(cleanup_report_summary_from_path);
     let active_cleanup_audit = state.active_cleanup_audit().await.map(Into::into);
     let last_cleanup_audit_outcome = if active_cleanup_audit.is_none() {
-        state
-            .last_cleanup_audit_outcome()
-            .await
-            .filter(|outcome| !outcome.success || last_report_summary.is_none())
-            .map(Into::into)
+        visible_last_cleanup_audit_outcome(&state).await
     } else {
         None
     };
@@ -541,10 +542,8 @@ pub async fn post_cleanup_audit(
                         success: false,
                         message: format!("Invalid scope: {}", e),
                         active_cleanup_audit: state.active_cleanup_audit().await.map(Into::into),
-                        last_cleanup_audit_outcome: state
-                            .last_cleanup_audit_outcome()
-                            .await
-                            .map(Into::into),
+                        last_cleanup_audit_outcome: visible_last_cleanup_audit_outcome(&state)
+                            .await,
                         report_path: None,
                         report_summary: None,
                     }
@@ -586,10 +585,8 @@ pub async fn post_cleanup_audit(
                         success: false,
                         message: format!("Cleanup audit not started: {}", e),
                         active_cleanup_audit: state.active_cleanup_audit().await.map(Into::into),
-                        last_cleanup_audit_outcome: state
-                            .last_cleanup_audit_outcome()
-                            .await
-                            .map(Into::into),
+                        last_cleanup_audit_outcome: visible_last_cleanup_audit_outcome(&state)
+                            .await,
                         report_path: None,
                         report_summary: None,
                     }
@@ -1553,6 +1550,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn scan_page_hides_stale_failed_background_outcome_when_newer_run_exists() {
+        let ctx = test_context().await;
+        ctx.state
+            .set_last_scan_outcome_for_test(Some(LastScanOutcome {
+                finished_at: "2026-03-29 09:58:00 UTC".to_string(),
+                scope_label: "Anime".to_string(),
+                dry_run: false,
+                search_missing: true,
+                success: false,
+                message: "stale failure".to_string(),
+            }))
+            .await;
+
+        let body = render_body(
+            get_scan(State(ctx.state.clone()), Query(ScanHistoryQuery::default())).await,
+        )
+        .await;
+
+        assert!(!body.contains("Background scan failed"));
+        assert!(!body.contains("stale failure"));
+    }
+
+    #[tokio::test]
     async fn cleanup_page_renders_active_background_audit_banner() {
         let ctx = test_context().await;
         ctx.state
@@ -1589,6 +1609,47 @@ mod tests {
         assert!(body.contains("Background cleanup audit failed"));
         assert!(body.contains("source root unhealthy"));
         assert!(body.contains("2026-03-29 23:58:00 UTC"));
+    }
+
+    #[tokio::test]
+    async fn cleanup_page_hides_stale_failed_background_audit_outcome_when_newer_report_exists() {
+        let ctx = test_context().await;
+        let report_path = ctx
+            .state
+            .config
+            .backup
+            .path
+            .join("cleanup-audit-anime-20260329.json");
+        let report = CleanupReport {
+            version: 1,
+            created_at: chrono::Utc::now(),
+            scope: CleanupScope::Anime,
+            findings: vec![],
+            summary: CleanupSummary {
+                total_findings: 1,
+                critical: 0,
+                high: 1,
+                warning: 0,
+            },
+        };
+        std::fs::write(&report_path, serde_json::to_vec(&report).unwrap()).unwrap();
+
+        ctx.state
+            .set_last_cleanup_audit_outcome_for_test(Some(LastCleanupAuditOutcome {
+                finished_at: "2026-03-29 09:58:00 UTC".to_string(),
+                scope_label: "Anime".to_string(),
+                libraries_label: "Anime".to_string(),
+                success: false,
+                message: "stale cleanup failure".to_string(),
+                report_path: None,
+            }))
+            .await;
+
+        let body = render_body(get_cleanup(State(ctx.state.clone())).await).await;
+
+        assert!(!body.contains("Background cleanup audit failed"));
+        assert!(!body.contains("stale cleanup failure"));
+        assert!(body.contains("Last Report"));
     }
 
     #[tokio::test]
