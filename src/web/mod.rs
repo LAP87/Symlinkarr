@@ -11,14 +11,19 @@ pub mod templates;
 use anyhow::Result;
 use axum::{
     extract::State,
-    http::StatusCode,
+    http::{
+        header::{HOST, ORIGIN, REFERER},
+        HeaderMap, HeaderValue, Method, StatusCode, Uri,
+    },
+    middleware::{self, Next},
     response::IntoResponse,
     routing::{get, post},
-    Router,
+    Json, Router,
 };
+use serde_json::json;
 use std::sync::Arc;
 use tower_http::{services::ServeDir, trace::TraceLayer};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::config::Config;
 use crate::db::Database;
@@ -92,9 +97,94 @@ fn create_router(state: WebState) -> Router {
     Router::new()
         .merge(app_routes)
         .nest("/api/v1", api_routes)
+        .layer(middleware::from_fn(reject_cross_origin_mutations))
         .layer(TraceLayer::new_for_http())
         .nest_service("/static", ServeDir::new(static_dir()))
         .with_state(state)
+}
+
+fn method_requires_same_origin(method: &Method) -> bool {
+    !matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS)
+}
+
+fn header_value_str(value: &HeaderValue) -> Option<&str> {
+    value
+        .to_str()
+        .ok()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn header_authority(value: &HeaderValue) -> Option<String> {
+    header_value_str(value).map(|value| value.to_ascii_lowercase())
+}
+
+fn uri_authority(value: &HeaderValue) -> Option<String> {
+    let uri: Uri = header_value_str(value)?.parse().ok()?;
+    uri.authority()
+        .map(|authority| authority.as_str().to_ascii_lowercase())
+}
+
+fn is_same_origin_browser_mutation(headers: &HeaderMap) -> bool {
+    let Some(host) = headers.get(HOST).and_then(header_authority) else {
+        return false;
+    };
+
+    if let Some(origin) = headers.get(ORIGIN).and_then(uri_authority) {
+        return origin == host;
+    }
+
+    if let Some(referer) = headers.get(REFERER).and_then(uri_authority) {
+        return referer == host;
+    }
+
+    false
+}
+
+fn forbidden_origin_response(path: &str) -> axum::response::Response {
+    if path.starts_with("/api/") {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "cross-origin mutation blocked; use the same origin as the web UI or a non-browser client without Origin/Referer headers"
+            })),
+        )
+            .into_response();
+    }
+
+    (
+        StatusCode::FORBIDDEN,
+        "Cross-origin mutation blocked; submit the form from the same Symlinkarr origin.",
+    )
+        .into_response()
+}
+
+async fn reject_cross_origin_mutations(
+    request: axum::extract::Request,
+    next: Next,
+) -> axum::response::Response {
+    let method = request.method().clone();
+    let path = request.uri().path().to_string();
+    let origin = request.headers().get(ORIGIN).and_then(header_value_str);
+    let referer = request.headers().get(REFERER).and_then(header_value_str);
+    let host = request.headers().get(HOST).and_then(header_value_str);
+
+    if method_requires_same_origin(&method)
+        && (origin.is_some() || referer.is_some())
+        && !is_same_origin_browser_mutation(request.headers())
+    {
+        warn!(
+            method = %method,
+            path,
+            host = host.unwrap_or("<missing>"),
+            origin = origin.unwrap_or("<missing>"),
+            referer = referer.unwrap_or("<missing>"),
+            "blocked cross-origin mutation request"
+        );
+        return forbidden_origin_response(request.uri().path());
+    }
+
+    next.run(request).await
 }
 
 /// Start the web server
@@ -147,7 +237,7 @@ mod tests {
     use super::*;
     use axum::{
         body::{to_bytes, Body},
-        http::Request,
+        http::{header, Request},
     };
     use tower::ServiceExt;
 
@@ -325,6 +415,58 @@ mod tests {
         (status, body)
     }
 
+    async fn post_json_with_headers(
+        router: &Router,
+        path: &str,
+        body: serde_json::Value,
+        headers: &[(&str, &str)],
+    ) -> (u16, String) {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri(path)
+            .header("content-type", "application/json");
+
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+
+        let response = router
+            .clone()
+            .oneshot(request.body(Body::from(body.to_string())).unwrap())
+            .await
+            .unwrap();
+        let status = response.status().as_u16();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        (status, body)
+    }
+
+    async fn post_form_with_headers(
+        router: &Router,
+        path: &str,
+        body: &str,
+        headers: &[(&str, &str)],
+    ) -> (u16, String) {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri(path)
+            .header("content-type", "application/x-www-form-urlencoded");
+
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+
+        let response = router
+            .clone()
+            .oneshot(request.body(Body::from(body.to_string())).unwrap())
+            .await
+            .unwrap();
+        let status = response.status().as_u16();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        (status, body)
+    }
+
     #[tokio::test]
     async fn dashboard_status_and_scan_render_successfully() {
         let router = test_router().await;
@@ -369,5 +511,64 @@ mod tests {
         assert_eq!(body["critical"], report.summary.critical);
         assert_eq!(body["high"], report.summary.high);
         assert_eq!(body["warning"], report.summary.warning);
+    }
+
+    #[tokio::test]
+    async fn api_blocks_cross_origin_mutations() {
+        let router = test_router().await;
+        let (status, body) = post_json_with_headers(
+            &router,
+            "/api/v1/cleanup/audit",
+            serde_json::json!({ "scope": "anime" }),
+            &[
+                (header::HOST.as_str(), "127.0.0.1:8726"),
+                (header::ORIGIN.as_str(), "http://evil.example"),
+            ],
+        )
+        .await;
+
+        assert_eq!(status, 403);
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            json["error"],
+            "cross-origin mutation blocked; use the same origin as the web UI or a non-browser client without Origin/Referer headers"
+        );
+    }
+
+    #[tokio::test]
+    async fn api_allows_same_origin_mutations() {
+        let router = test_router().await;
+        let (status, body) = post_json_with_headers(
+            &router,
+            "/api/v1/cleanup/audit",
+            serde_json::json!({ "scope": "anime" }),
+            &[
+                (header::HOST.as_str(), "127.0.0.1:8726"),
+                (header::ORIGIN.as_str(), "http://127.0.0.1:8726"),
+            ],
+        )
+        .await;
+
+        assert_eq!(status, 200);
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(json["success"], true);
+    }
+
+    #[tokio::test]
+    async fn ui_blocks_cross_origin_form_posts() {
+        let router = test_router().await;
+        let (status, body) = post_form_with_headers(
+            &router,
+            "/config/validate",
+            "",
+            &[
+                (header::HOST.as_str(), "127.0.0.1:8726"),
+                (header::REFERER.as_str(), "http://evil.example/form"),
+            ],
+        )
+        .await;
+
+        assert_eq!(status, 403);
+        assert!(body.contains("Cross-origin mutation blocked"));
     }
 }
