@@ -102,4 +102,5 @@ backup:
 web:
   enabled: false
   bind_address: "0.0.0.0"
+  allow_remote: true
   port: 8726

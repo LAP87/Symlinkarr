@@ -121,13 +121,14 @@ Example config:
 web:
   enabled: true
   bind_address: "127.0.0.1"
+  allow_remote: false
   port: 8726
 ```
 
 Notes:
 
 - Loopback is the safe default for host installs.
-- For Docker or another explicitly exposed setup, set `bind_address: "0.0.0.0"`.
+- For Docker or another explicitly exposed setup, set `bind_address: "0.0.0.0"` and `allow_remote: true`.
 - Native Windows is not supported; use WSL2 or a Linux container on Windows 11.
 
 ### `cleanup`

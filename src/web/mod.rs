@@ -113,6 +113,16 @@ fn create_router(state: WebState) -> Router {
         .with_state(state)
 }
 
+fn ensure_remote_bind_allowed(config: &Config) -> Result<()> {
+    if config.web.requires_remote_ack() && !config.web.allow_remote {
+        anyhow::bail!(
+            "Refusing to start web UI on {} without web.allow_remote=true",
+            config.web.normalized_bind_address()
+        );
+    }
+    Ok(())
+}
+
 const BROWSER_SESSION_COOKIE: &str = "symlinkarr_browser_session";
 
 fn method_requires_same_origin(method: &Method) -> bool {
@@ -292,6 +302,7 @@ async fn guard_browser_mutations(
 /// Binds to the specified port and serves the web UI.
 /// This function blocks until the server is shut down.
 pub async fn serve(config: Config, db: Database, port: u16) -> Result<()> {
+    ensure_remote_bind_allowed(&config)?;
     let bind_address = config.web.normalized_bind_address();
     let state = WebState::new(config, db);
     let addr = format!("{}:{}", bind_address, port);
@@ -756,5 +767,27 @@ mod tests {
         assert!(set_cookie.contains("HttpOnly"));
         assert!(set_cookie.contains("SameSite=Strict"));
         assert!(set_cookie.contains("Path=/"));
+    }
+
+    #[test]
+    fn remote_bind_requires_explicit_opt_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = test_config(dir.path());
+        cfg.web.enabled = true;
+        cfg.web.bind_address = "0.0.0.0".to_string();
+
+        let err = ensure_remote_bind_allowed(&cfg).unwrap_err();
+        assert!(err.to_string().contains("web.allow_remote=true"));
+    }
+
+    #[test]
+    fn remote_bind_is_allowed_when_acknowledged() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = test_config(dir.path());
+        cfg.web.enabled = true;
+        cfg.web.bind_address = "0.0.0.0".to_string();
+        cfg.web.allow_remote = true;
+
+        assert!(ensure_remote_bind_allowed(&cfg).is_ok());
     }
 }

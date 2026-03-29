@@ -206,10 +206,11 @@ Symlinkarr supports:
 web:
   enabled: true
   bind_address: "127.0.0.1"
+  allow_remote: false
   port: 8726
 ```
 
-Use `bind_address: "0.0.0.0"` only when you explicitly want to expose the web UI beyond loopback, for example inside Docker with a published port.
+Use `bind_address: "0.0.0.0"` only when you explicitly want to expose the web UI beyond loopback, for example inside Docker with a published port. Remote binds now require `allow_remote: true` as an explicit acknowledgement.
 
 When `--config` is omitted, Symlinkarr searches:
 

@@ -1478,6 +1478,7 @@ mod tests {
         let mut cfg = test_config(&root);
         cfg.web.enabled = true;
         cfg.web.bind_address = "0.0.0.0".to_string();
+        cfg.web.allow_remote = true;
         let db = Database::new(&cfg.db_path).await.unwrap();
         let state = WebState::new(cfg, db);
 
@@ -1486,7 +1487,7 @@ mod tests {
         assert!(response
             .warnings
             .iter()
-            .any(|warning| warning.contains("web.bind_address=0.0.0.0 exposes the web UI")));
+            .any(|warning| warning.contains("web.allow_remote=true")));
     }
 
     #[tokio::test]
