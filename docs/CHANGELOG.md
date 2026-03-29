@@ -13,6 +13,9 @@
 - `cleanup prune` gained an explicit `--include-legacy-anime-roots` opt-in for warning-only anime findings where an untagged legacy root coexists with a tagged `{tvdb-*}` or `{tmdb-*}` root.
   - these candidates remain `foreign` and flow into quarantine instead of raw delete when foreign quarantine is enabled
   - files: `src/main.rs`, `src/commands/cleanup.rs`, `src/cleanup_audit.rs`, `src/web/handlers.rs`
+- destructive cleanup commands now refuse to run if the configured source mounts are unhealthy at runtime.
+  - reuses the same runtime mount probe path used by `scan`, so transient RD outages are blocked before `cleanup dead` or `cleanup prune --apply` can mutate the library
+  - files: `src/commands/mod.rs`, `src/commands/scan.rs`, `src/commands/cleanup.rs`
 
 ### Docs
 
@@ -31,6 +34,8 @@
     - legacy anime-root warning candidates: `2735`
     - managed delete candidates: `148`
     - foreign quarantine candidates: `6788`
+- `cargo test commands::tests -- --nocapture`
+  - result: passed
 
 ## 2026-03-22 - WSL2 Development Guide
 

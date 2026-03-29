@@ -18,7 +18,7 @@ use anyhow::Result;
 use serde::Serialize;
 
 use crate::api::prowlarr;
-use crate::config::{Config, ContentType, LibraryConfig};
+use crate::config::{Config, ContentType, LibraryConfig, SourceConfig};
 use crate::db::Database;
 use crate::models::MediaType;
 use crate::utils::{directory_path_health_with_timeout, fast_path_health, PathHealth};
@@ -227,9 +227,42 @@ pub(crate) async fn runtime_source_health(path: &Path, probe_path: &Path) -> Pat
     directory_path_health_with_timeout(probe_path.to_path_buf(), DIRECTORY_PROBE_TIMEOUT).await
 }
 
+pub(crate) async fn ensure_runtime_directories_healthy(
+    libraries: &[&LibraryConfig],
+    sources: &[SourceConfig],
+) -> Result<()> {
+    for lib in libraries {
+        let health =
+            directory_path_health_with_timeout(lib.path.clone(), DIRECTORY_PROBE_TIMEOUT).await;
+        if !health.is_healthy() {
+            anyhow::bail!(
+                "Library '{}' is not healthy: {}",
+                lib.name,
+                health.describe(&lib.path)
+            );
+        }
+    }
+
+    for src in sources {
+        let probe_path = runtime_source_probe_path(&src.path);
+        let health = runtime_source_health(&src.path, &probe_path).await;
+        if !health.is_healthy() {
+            anyhow::bail!(
+                "Source '{}' is not healthy: {}",
+                src.name,
+                health.describe(&probe_path)
+            );
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{LibraryConfig, SourceConfig};
+    use crate::models::MediaType;
 
     #[test]
     fn safe_auto_acquire_queries_require_enough_signal() {
@@ -254,5 +287,60 @@ mod tests {
     fn runtime_source_probe_leaves_normal_paths_unchanged() {
         let path = Path::new("/srv/media/source");
         assert_eq!(runtime_source_probe_path(path), path);
+    }
+
+    #[tokio::test]
+    async fn ensure_runtime_directories_healthy_accepts_existing_library_and_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let library_path = dir.path().join("library");
+        let source_path = dir.path().join("source");
+        std::fs::create_dir_all(&library_path).unwrap();
+        std::fs::create_dir_all(&source_path).unwrap();
+
+        let library = LibraryConfig {
+            name: "Anime".to_string(),
+            path: library_path,
+            media_type: MediaType::Tv,
+            content_type: None,
+            depth: 1,
+        };
+        let source = SourceConfig {
+            name: "RealDebrid".to_string(),
+            path: source_path,
+            media_type: "auto".to_string(),
+        };
+
+        ensure_runtime_directories_healthy(&[&library], &[source])
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn ensure_runtime_directories_healthy_rejects_missing_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let library_path = dir.path().join("library");
+        std::fs::create_dir_all(&library_path).unwrap();
+
+        let library = LibraryConfig {
+            name: "Anime".to_string(),
+            path: library_path,
+            media_type: MediaType::Tv,
+            content_type: None,
+            depth: 1,
+        };
+        let source = SourceConfig {
+            name: "RealDebrid".to_string(),
+            path: dir.path().join("missing-source"),
+            media_type: "auto".to_string(),
+        };
+
+        let err = ensure_runtime_directories_healthy(&[&library], &[source])
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Source 'RealDebrid' is not healthy"),
+            "unexpected error: {err}"
+        );
     }
 }

@@ -4,7 +4,7 @@ use anyhow::Result;
 use tracing::info;
 
 use crate::cleanup_audit::{self, CleanupAuditor, CleanupScope};
-use crate::commands::{print_json, selected_libraries};
+use crate::commands::{ensure_runtime_directories_healthy, print_json, selected_libraries};
 use crate::config::Config;
 use crate::db::Database;
 use crate::linker::Linker;
@@ -73,6 +73,7 @@ async fn run_cleanup_dead(
 ) -> Result<i64> {
     info!("=== Symlinkarr Cleanup ===");
     let selected = selected_libraries(cfg, library_filter)?;
+    ensure_runtime_directories_healthy(&selected, &cfg.sources).await?;
     let library_roots: Vec<_> = selected.iter().map(|l| l.path.clone()).collect();
 
     if cfg.backup.enabled {
@@ -184,8 +185,8 @@ pub(crate) async fn run_cleanup_prune(
 
     let mut effective_report_path = report_path.to_path_buf();
     let mut temporary_report: Option<std::path::PathBuf> = None;
+    let selected = selected_libraries(cfg, library_filter)?;
     if library_filter.is_some() {
-        let selected = selected_libraries(cfg, library_filter)?;
         let roots: Vec<_> = selected.iter().map(|lib| lib.path.clone()).collect();
         let report_json = std::fs::read_to_string(report_path)?;
         let mut report: cleanup_audit::CleanupReport = serde_json::from_str(&report_json)?;
@@ -197,6 +198,10 @@ pub(crate) async fn run_cleanup_prune(
         std::fs::write(&tmp, serde_json::to_string_pretty(&report)?)?;
         effective_report_path = tmp.clone();
         temporary_report = Some(tmp);
+    }
+
+    if apply {
+        ensure_runtime_directories_healthy(&selected, &cfg.sources).await?;
     }
 
     let outcome = cleanup_audit::run_prune(
@@ -221,6 +226,7 @@ pub(crate) async fn run_cleanup_prune(
             "high_or_critical_candidates": outcome.high_or_critical_candidates,
             "safe_warning_duplicate_candidates": outcome.safe_warning_duplicate_candidates,
             "legacy_anime_root_candidates": outcome.legacy_anime_root_candidates,
+            "legacy_anime_root_groups": outcome.legacy_anime_root_groups,
             "managed_candidates": outcome.managed_candidates,
             "foreign_candidates": outcome.foreign_candidates,
             "reason_counts": outcome.reason_counts,
@@ -263,6 +269,15 @@ pub(crate) async fn run_cleanup_prune(
                     "      - {}: {} (managed {}, foreign {})",
                     bucket.reason, bucket.total, bucket.managed, bucket.foreign
                 );
+            }
+        }
+        if !outcome.legacy_anime_root_groups.is_empty() {
+            println!("   Top legacy anime-root groups:");
+            for group in outcome.legacy_anime_root_groups.iter().take(6) {
+                println!("      - {}: {}", group.normalized_title, group.total);
+                for root in group.tagged_roots.iter().take(2) {
+                    println!("          tagged root: {}", root.display());
+                }
             }
         }
         println!("   Removed: {}", outcome.removed);

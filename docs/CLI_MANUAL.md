@@ -157,6 +157,7 @@ Notes:
 - `cleanup audit` supports `anime`, `tv`, `movie`, and `all`.
 - `cleanup prune` is intentionally two-step. Preview first, then apply.
 - `cleanup prune --include-legacy-anime-roots` opt-ins warning-only anime findings where an untagged legacy root coexists with a tagged `{tvdb-*}`/`{tmdb-*}` root. These candidates are quarantined as `foreign`, not deleted.
+- Destructive cleanup commands refuse to run when a configured source mount is unhealthy or missing at runtime. Fix the mount first, then re-run the command.
 
 ### `repair`
 

@@ -267,6 +267,7 @@ symlinkarr cleanup prune --report backups/cleanup-audit-anime-YYYYMMDD-HHMMSS.js
 ```
 
 `--include-legacy-anime-roots` is an explicit opt-in for warning-only anime findings where a legacy untagged root coexists with a tagged `{tvdb-*}` or `{tmdb-*}` root. Those candidates stay `foreign` and are quarantined rather than deleted.
+Destructive cleanup commands also stop early if a configured source mount is unhealthy, so a transient RD outage does not become a cleanup event.
 
 Cache management:
 
