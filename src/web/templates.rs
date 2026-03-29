@@ -373,6 +373,7 @@ use crate::discovery::DiscoveredItem;
 pub struct DiscoverTemplate {
     pub libraries: Vec<LibraryConfig>,
     pub selected_library: String,
+    pub refresh_cache: bool,
     pub discovered_items: Vec<DiscoveredItem>,
     pub status_message: Option<String>,
 }

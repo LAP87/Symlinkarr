@@ -74,6 +74,7 @@ Returns read-only discovery results from the RD cache, scoped to all libraries o
 Query params:
 
 - `library=<LIBRARY_NAME>` optional
+- `refresh_cache=true|false` optional, defaults to `false` for cached-only discover
 
 Status codes:
 
@@ -97,6 +98,11 @@ Response:
   "status_message": "Real-Debrid API key not configured. Showing cached results only."
 }
 ```
+
+Notes:
+
+- Browser/UI discover defaults to cached-only mode for lower latency and fewer inline surprises.
+- Set `refresh_cache=true` only when you explicitly want a live RD cache sync before gap detection.
 
 ## `POST /api/v1/scan`
 

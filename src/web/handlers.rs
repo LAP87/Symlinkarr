@@ -35,6 +35,8 @@ pub struct ScanHistoryQuery {
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct DiscoverQuery {
     pub library: Option<String>,
+    #[serde(default)]
+    pub refresh_cache: bool,
 }
 
 fn dashboard_stats_from_web_stats(stats: crate::db::WebStats) -> DashboardStats {
@@ -1033,7 +1035,7 @@ pub async fn get_discover(
         &state.config,
         &state.database,
         query.library.as_deref(),
-        true,
+        query.refresh_cache,
     )
     .await
     {
@@ -1041,8 +1043,14 @@ pub async fn get_discover(
             let template = DiscoverTemplate {
                 libraries: state.config.libraries.clone(),
                 selected_library,
+                refresh_cache: query.refresh_cache,
                 discovered_items: snapshot.items,
-                status_message: snapshot.status_message,
+                status_message: snapshot.status_message.or_else(|| {
+                    (!query.refresh_cache).then(|| {
+                        "Showing cached RD results only. Enable refresh when you want a slower live cache sync first."
+                            .to_string()
+                    })
+                }),
             };
             (
                 StatusCode::OK,
@@ -1054,6 +1062,7 @@ pub async fn get_discover(
             let template = DiscoverTemplate {
                 libraries: state.config.libraries.clone(),
                 selected_library,
+                refresh_cache: query.refresh_cache,
                 discovered_items: vec![],
                 status_message: Some(if message.contains("Unknown library filter") {
                     format!("Invalid library filter: {}", message)
@@ -1588,7 +1597,7 @@ mod tests {
 
         assert!(body.contains("Discovered Items (1)"));
         assert!(body.contains("Missing Show"));
-        assert!(body.contains("cached results only"));
+        assert!(body.contains("cached RD results only"));
     }
 
     #[tokio::test]
@@ -1598,6 +1607,7 @@ mod tests {
             State(ctx.state),
             Query(DiscoverQuery {
                 library: Some("Nope".to_string()),
+                refresh_cache: false,
             }),
         )
         .await

@@ -54,6 +54,8 @@ pub struct ApiStatus {
 #[derive(Debug, Default, Clone, Deserialize)]
 pub struct ApiDiscoverQuery {
     pub library: Option<String>,
+    #[serde(default)]
+    pub refresh_cache: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -373,7 +375,7 @@ pub async fn api_get_discover(
         &state.config,
         &state.database,
         query.library.as_deref(),
-        true,
+        query.refresh_cache,
     )
     .await
     {
@@ -389,7 +391,12 @@ pub async fn api_get_discover(
                     parsed_title: item.parsed_title,
                 })
                 .collect(),
-            status_message: snapshot.status_message,
+            status_message: snapshot.status_message.or_else(|| {
+                (!query.refresh_cache).then(|| {
+                    "Showing cached RD results only. Set refresh_cache=true when you want a slower live cache sync first."
+                        .to_string()
+                })
+            }),
         })),
         Err(err) => {
             let message = err.to_string();
@@ -1278,6 +1285,7 @@ mod tests {
             State(state),
             Query(ApiDiscoverQuery {
                 library: Some("Anime".to_string()),
+                refresh_cache: false,
             }),
         )
         .await
@@ -1294,7 +1302,7 @@ mod tests {
             .status_message
             .as_deref()
             .unwrap_or_default()
-            .contains("cached results only"));
+            .contains("cached RD results only"));
     }
 
     #[tokio::test]
@@ -1304,6 +1312,7 @@ mod tests {
             State(ctx),
             Query(ApiDiscoverQuery {
                 library: Some("Nope".to_string()),
+                refresh_cache: false,
             }),
         )
         .await;

@@ -29,6 +29,13 @@
                 {% endfor %}
             </select>
         </div>
+        <label class="toggle-row">
+            <input type="checkbox" name="refresh_cache" value="true" {% if refresh_cache %}checked{% endif %}>
+            <div>
+                <strong>Refresh RD cache first</strong>
+                <p class="text-muted">Slower, but fetches a live cache snapshot before gap detection. Leave off for fast cached-only discover.</p>
+            </div>
+        </label>
         <div class="actions mt-2">
             <button type="submit" class="btn btn-primary">&#128269; Refresh Discover</button>
         </div>
