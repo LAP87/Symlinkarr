@@ -18,7 +18,7 @@ use anyhow::Result;
 use serde::Serialize;
 
 use crate::api::prowlarr;
-use crate::config::{Config, ContentType, LibraryConfig};
+use crate::config::{Config, ContentType, LibraryConfig, SourceConfig};
 use crate::db::Database;
 use crate::models::MediaType;
 use crate::utils::{directory_path_health_with_timeout, fast_path_health, PathHealth};
@@ -227,6 +227,66 @@ pub(crate) async fn runtime_source_health(path: &Path, probe_path: &Path) -> Pat
     directory_path_health_with_timeout(probe_path.to_path_buf(), DIRECTORY_PROBE_TIMEOUT).await
 }
 
+pub(crate) async fn ensure_runtime_sources_healthy(
+    sources: &[SourceConfig],
+    operation: &str,
+) -> Result<()> {
+    for src in sources {
+        let probe_path = runtime_source_probe_path(&src.path);
+        let health = runtime_source_health(&src.path, &probe_path).await;
+        if !health.is_healthy() {
+            anyhow::bail!(
+                "Refusing {}: source '{}' is not healthy: {}",
+                operation,
+                src.name,
+                health.describe(&probe_path)
+            );
+        }
+    }
+
+    Ok(())
+}
+
+pub(crate) async fn ensure_runtime_source_paths_healthy(
+    source_paths: &[PathBuf],
+    operation: &str,
+) -> Result<()> {
+    for path in source_paths {
+        let probe_path = runtime_source_probe_path(path);
+        let health = runtime_source_health(path, &probe_path).await;
+        if !health.is_healthy() {
+            anyhow::bail!(
+                "Refusing {}: source root is not healthy: {}",
+                operation,
+                health.describe(&probe_path)
+            );
+        }
+    }
+
+    Ok(())
+}
+
+pub(crate) async fn ensure_runtime_directories_healthy(
+    libraries: &[&LibraryConfig],
+    sources: &[SourceConfig],
+    operation: &str,
+) -> Result<()> {
+    for lib in libraries {
+        let health =
+            directory_path_health_with_timeout(lib.path.clone(), DIRECTORY_PROBE_TIMEOUT).await;
+        if !health.is_healthy() {
+            anyhow::bail!(
+                "Refusing {}: library '{}' is not healthy: {}",
+                operation,
+                lib.name,
+                health.describe(&lib.path)
+            );
+        }
+    }
+
+    ensure_runtime_sources_healthy(sources, operation).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,5 +314,34 @@ mod tests {
     fn runtime_source_probe_leaves_normal_paths_unchanged() {
         let path = Path::new("/srv/media/source");
         assert_eq!(runtime_source_probe_path(path), path);
+    }
+
+    #[tokio::test]
+    async fn ensure_runtime_source_paths_reports_missing_source_root() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let missing = dir.path().join("missing-rd");
+        let err = ensure_runtime_source_paths_healthy(&[missing], "repair auto")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("Refusing repair auto"));
+    }
+
+    #[tokio::test]
+    async fn ensure_runtime_sources_reports_named_missing_source_root() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let missing = dir.path().join("missing-rd");
+        let err = ensure_runtime_sources_healthy(
+            &[SourceConfig {
+                name: "RD".to_string(),
+                path: missing,
+                media_type: "auto".to_string(),
+            }],
+            "cleanup prune apply",
+        )
+        .await
+        .unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("Refusing cleanup prune apply"));
+        assert!(message.contains("source 'RD' is not healthy"));
     }
 }

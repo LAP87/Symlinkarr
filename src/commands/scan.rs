@@ -13,17 +13,17 @@ use crate::auto_acquire::{
     process_auto_acquire_queue, AutoAcquireBatchSummary, AutoAcquireRequest, RelinkCheck,
 };
 use crate::commands::{
-    decypharr_arr_name, is_safe_auto_acquire_query, prowlarr_categories, runtime_source_health,
-    runtime_source_probe_path, selected_libraries, DIRECTORY_PROBE_TIMEOUT,
+    decypharr_arr_name, ensure_runtime_directories_healthy, ensure_runtime_sources_healthy,
+    is_safe_auto_acquire_query, prowlarr_categories, selected_libraries,
 };
-use crate::config::{Config, LibraryConfig};
+use crate::config::Config;
 use crate::db::Database;
 use crate::library_scanner::LibraryScanner;
 use crate::linker::{LinkProcessSummary, Linker};
 use crate::matcher::{MatchRunOutput, MatchTelemetry, Matcher};
 use crate::models::{LibraryItem, MatchResult, MediaId, MediaType, SourceItem};
 use crate::source_scanner::SourceScanner;
-use crate::utils::{directory_path_health_with_timeout, stdout_text_guard, user_println};
+use crate::utils::{stdout_text_guard, user_println};
 use crate::OutputFormat;
 
 const PLEX_REFRESH_COALESCE_THRESHOLD: usize = 8;
@@ -94,7 +94,7 @@ pub(crate) async fn run_scan(
     let selected_libraries = selected_libraries(cfg, library_filter)?;
 
     let runtime_checks_started = Instant::now();
-    ensure_runtime_directories_healthy(&selected_libraries, &cfg.sources).await?;
+    ensure_runtime_directories_healthy(&selected_libraries, &cfg.sources, "scan startup").await?;
     telemetry.runtime_checks = runtime_checks_started.elapsed();
 
     let library_scan_started = Instant::now();
@@ -228,6 +228,7 @@ pub(crate) async fn run_scan(
     .await?;
 
     let dead = if search_missing {
+        ensure_runtime_sources_healthy(&cfg.sources, "scan dead-link sweep").await?;
         let dead_started = Instant::now();
         let library_roots: Vec<_> = selected_libraries
             .iter()
@@ -718,37 +719,6 @@ async fn trigger_plex_refresh(
     }
 
     Ok(telemetry)
-}
-
-async fn ensure_runtime_directories_healthy(
-    libraries: &[&LibraryConfig],
-    sources: &[crate::config::SourceConfig],
-) -> Result<()> {
-    for lib in libraries {
-        let health =
-            directory_path_health_with_timeout(lib.path.clone(), DIRECTORY_PROBE_TIMEOUT).await;
-        if !health.is_healthy() {
-            anyhow::bail!(
-                "Library '{}' is not healthy: {}",
-                lib.name,
-                health.describe(&lib.path)
-            );
-        }
-    }
-
-    for src in sources {
-        let probe_path = runtime_source_probe_path(&src.path);
-        let health = runtime_source_health(&src.path, &probe_path).await;
-        if !health.is_healthy() {
-            anyhow::bail!(
-                "Source '{}' is not healthy: {}",
-                src.name,
-                health.describe(&probe_path)
-            );
-        }
-    }
-
-    Ok(())
 }
 
 fn build_missing_search_query(item: &LibraryItem) -> Option<String> {

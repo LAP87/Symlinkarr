@@ -9,7 +9,8 @@ use crate::api::bazarr::BazarrClient;
 use crate::api::tautulli::TautulliClient;
 use crate::auto_acquire::{process_auto_acquire_queue, AutoAcquireRequest, RelinkCheck};
 use crate::commands::{
-    decypharr_arr_name, is_safe_auto_acquire_query, prowlarr_categories, selected_libraries,
+    decypharr_arr_name, ensure_runtime_directories_healthy, is_safe_auto_acquire_query,
+    prowlarr_categories, selected_libraries,
 };
 use crate::config::Config;
 use crate::db::Database;
@@ -48,6 +49,7 @@ pub(crate) async fn run_repair(
                     "   ⚠️  --self-heal may trigger external downloads via Prowlarr/Decypharr."
                 );
             }
+            ensure_runtime_directories_healthy(&selected, &cfg.sources, "repair auto").await?;
 
             if cfg.backup.enabled {
                 if dry_run {

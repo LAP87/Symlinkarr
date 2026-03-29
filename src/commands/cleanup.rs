@@ -4,7 +4,7 @@ use anyhow::Result;
 use tracing::info;
 
 use crate::cleanup_audit::{self, CleanupAuditor, CleanupScope};
-use crate::commands::{print_json, selected_libraries};
+use crate::commands::{ensure_runtime_directories_healthy, print_json, selected_libraries};
 use crate::config::Config;
 use crate::db::Database;
 use crate::linker::Linker;
@@ -71,6 +71,9 @@ async fn run_cleanup_dead(
     info!("=== Symlinkarr Cleanup ===");
     let selected = selected_libraries(cfg, library_filter)?;
     let library_roots: Vec<_> = selected.iter().map(|l| l.path.clone()).collect();
+
+    ensure_runtime_directories_healthy(&selected, &cfg.sources, "cleanup dead-link removal")
+        .await?;
 
     if cfg.backup.enabled {
         let bm = crate::backup::BackupManager::new(&cfg.backup);

@@ -15,6 +15,7 @@ use crate::api::sonarr::SonarrClient;
 use crate::api::tmdb::TmdbClient;
 use crate::api::tvdb::TvdbClient;
 use crate::backup::BackupManager;
+use crate::commands::ensure_runtime_sources_healthy;
 use crate::config::{Config, ContentType, LibraryConfig, MetadataMode};
 use crate::db::Database;
 use crate::library_scanner::LibraryScanner;
@@ -313,6 +314,7 @@ impl<'a> CleanupAuditor<'a> {
         scope: CleanupScope,
         selected_libraries: Option<&[String]>,
     ) -> Result<CleanupReport> {
+        ensure_runtime_sources_healthy(&self.cfg.sources, "cleanup audit").await?;
         let libraries = self.libraries_for_scope_filtered(scope, selected_libraries)?;
         if libraries.is_empty() {
             anyhow::bail!("No libraries found for scope {:?}", scope);
@@ -930,6 +932,10 @@ pub async fn run_prune(
     max_delete: Option<usize>,
     confirmation_token: Option<&str>,
 ) -> Result<PruneOutcome> {
+    if apply {
+        ensure_runtime_sources_healthy(&cfg.sources, "cleanup prune apply").await?;
+    }
+
     let json = std::fs::read_to_string(report_path)?;
     let mut report: CleanupReport = serde_json::from_str(&json)?;
     hydrate_report_db_tracked_flags(db, &mut report).await?;
@@ -3260,6 +3266,47 @@ cleanup:
         assert!(err
             .to_string()
             .contains("invalid or missing confirmation token"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_prune_apply_rejects_unhealthy_source_root() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let library_root = dir.path().join("library");
+        let missing_source_root = dir.path().join("missing-rd");
+        std::fs::create_dir_all(&library_root).unwrap();
+
+        let source_file = missing_source_root.join("source.mkv");
+        let symlink_path = library_root.join("broken-source.mkv");
+        std::os::unix::fs::symlink(&source_file, &symlink_path).unwrap();
+
+        let cfg = test_config(&library_root, &missing_source_root);
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        let report =
+            report_with_findings(Utc::now(), vec![high_finding(&symlink_path, &source_file)]);
+        let report_path = dir.path().join("missing-source-report.json");
+        std::fs::write(&report_path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
+
+        let preview = run_prune(&cfg, &db, &report_path, false, None, None)
+            .await
+            .unwrap();
+        let err = run_prune(
+            &cfg,
+            &db,
+            &report_path,
+            true,
+            None,
+            Some(&preview.confirmation_token),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(err.to_string().contains("Refusing cleanup prune"));
+        assert!(err.to_string().contains("source 'RD' is not healthy"));
+        assert!(symlink_path.is_symlink());
     }
 
     #[cfg(unix)]
