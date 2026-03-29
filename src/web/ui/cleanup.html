@@ -9,6 +9,15 @@
     <p class="page-lead">Cleanup is intentionally two-step: run an audit to produce a report, review that report in prune preview, then apply prune only if the preview still looks correct.</p>
 </div>
 
+{% match active_cleanup_audit %}
+{% when Some with (job) %}
+<div class="alert alert-info">
+    <strong>&#9203; Background cleanup audit running.</strong>
+    {{ job.scope_label }} across {{ job.libraries_label }} started {{ job.started_at }}.
+    Refresh this page for the finished report.
+</div>
+{% when None %}{% endmatch %}
+
 {% if libraries|length > 0 %}
 <div class="card">
     <div class="section-head">

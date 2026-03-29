@@ -1,20 +1,20 @@
 //! JSON API endpoints for automation
 
 use axum::{
-    Json, Router,
     extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
+    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
 use crate::backup::BackupManager;
-use crate::cleanup_audit::{self, CleanupAuditor, CleanupReport, CleanupScope};
+use crate::cleanup_audit::{self, CleanupReport, CleanupScope};
 use crate::commands::config::validate_config_report;
 use crate::commands::discover::load_discovery_snapshot;
-use crate::commands::doctor::{DoctorCheckMode, collect_doctor_checks};
+use crate::commands::doctor::{collect_doctor_checks, DoctorCheckMode};
 use crate::commands::repair::{execute_repair_auto, summarize_repair_results};
 use crate::config::Config;
 use crate::db::{Database, ScanHistoryRecord};
@@ -33,6 +33,7 @@ pub fn create_router(state: WebState) -> Router<WebState> {
         .route("/scan/:id", get(api_get_scan_run))
         .route("/repair/auto", post(api_post_repair_auto))
         .route("/cleanup/audit", post(api_post_cleanup_audit))
+        .route("/cleanup/audit/jobs", get(api_get_cleanup_audit_jobs))
         .route("/cleanup/prune", post(api_post_cleanup_prune))
         .route("/links", get(api_get_links))
         .route("/config/validate", get(api_get_config_validate))
@@ -260,6 +261,18 @@ pub struct ApiCleanupAuditResponse {
     pub critical: usize,
     pub high: usize,
     pub warning: usize,
+    pub running: bool,
+    pub started_at: Option<String>,
+    pub scope_label: Option<String>,
+    pub libraries_label: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ApiCleanupAuditJob {
+    pub status: String,
+    pub started_at: String,
+    pub scope_label: String,
+    pub libraries_label: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -758,7 +771,7 @@ pub async fn api_post_cleanup_audit(
     State(state): State<WebState>,
     Json(req): Json<ApiCleanupAuditRequest>,
 ) -> impl IntoResponse {
-    info!("API: Running cleanup audit");
+    info!("API: Starting cleanup audit");
 
     let scope = match CleanupScope::parse(&req.scope) {
         Ok(s) => s,
@@ -773,84 +786,74 @@ pub async fn api_post_cleanup_audit(
                     critical: 0,
                     high: 0,
                     warning: 0,
+                    running: false,
+                    started_at: None,
+                    scope_label: None,
+                    libraries_label: None,
                 }),
             );
         }
     };
 
-    let auditor = CleanupAuditor::new_with_progress(&state.config, &state.database, false);
-
-    let default_output = state.config.backup.path.join(format!(
-        "cleanup-audit-{}-{}.json",
-        req.scope,
-        chrono::Utc::now().format("%Y%m%d-%H%M%S")
-    ));
-    let report_path = match auditor.run_audit(scope, Some(&default_output)).await {
-        Ok(p) => p,
+    match state.start_cleanup_audit(scope, Vec::new()).await {
+        Ok(job) => (
+            StatusCode::ACCEPTED,
+            Json(ApiCleanupAuditResponse {
+                success: true,
+                message: format!(
+                    "Cleanup audit started in background for {}. Poll /api/v1/cleanup/audit/jobs or inspect /cleanup for the finished report.",
+                    job.scope_label
+                ),
+                report_path: String::new(),
+                total_findings: 0,
+                critical: 0,
+                high: 0,
+                warning: 0,
+                running: true,
+                started_at: Some(job.started_at),
+                scope_label: Some(job.scope_label),
+                libraries_label: Some(job.libraries_label),
+            }),
+        ),
         Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
+            let active_audit = state.active_cleanup_audit().await;
+            (
+                StatusCode::CONFLICT,
                 Json(ApiCleanupAuditResponse {
                     success: false,
-                    message: format!("Audit failed: {}", e),
+                    message: format!("Cleanup audit not started: {}", e),
                     report_path: String::new(),
                     total_findings: 0,
                     critical: 0,
                     high: 0,
                     warning: 0,
+                    running: active_audit.is_some(),
+                    started_at: active_audit.as_ref().map(|job| job.started_at.clone()),
+                    scope_label: active_audit.as_ref().map(|job| job.scope_label.clone()),
+                    libraries_label: active_audit
+                        .as_ref()
+                        .map(|job| job.libraries_label.clone()),
                 }),
-            );
+            )
         }
-    };
+    }
+}
 
-    let report_json = match std::fs::read_to_string(&report_path) {
-        Ok(json) => json,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiCleanupAuditResponse {
-                    success: false,
-                    message: format!("Audit report read failed: {}", e),
-                    report_path: report_path.to_string_lossy().to_string(),
-                    total_findings: 0,
-                    critical: 0,
-                    high: 0,
-                    warning: 0,
-                }),
-            );
-        }
-    };
+/// GET /api/v1/cleanup/audit/jobs
+pub async fn api_get_cleanup_audit_jobs(
+    State(state): State<WebState>,
+) -> Json<Vec<ApiCleanupAuditJob>> {
+    let mut jobs = Vec::new();
+    if let Some(active_audit) = state.active_cleanup_audit().await {
+        jobs.push(ApiCleanupAuditJob {
+            status: "running".to_string(),
+            started_at: active_audit.started_at,
+            scope_label: active_audit.scope_label,
+            libraries_label: active_audit.libraries_label,
+        });
+    }
 
-    let report: CleanupReport = match serde_json::from_str(&report_json) {
-        Ok(report) => report,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiCleanupAuditResponse {
-                    success: false,
-                    message: format!("Audit report parse failed: {}", e),
-                    report_path: report_path.to_string_lossy().to_string(),
-                    total_findings: 0,
-                    critical: 0,
-                    high: 0,
-                    warning: 0,
-                }),
-            );
-        }
-    };
-
-    (
-        StatusCode::OK,
-        Json(ApiCleanupAuditResponse {
-            success: true,
-            message: "Audit complete".to_string(),
-            report_path: report_path.to_string_lossy().to_string(),
-            total_findings: report.summary.total_findings,
-            critical: report.summary.critical,
-            high: report.summary.high,
-            warning: report.summary.warning,
-        }),
-    )
+    Json(jobs)
 }
 
 /// POST /api/v1/cleanup/prune
@@ -991,7 +994,7 @@ pub async fn api_get_doctor(State(state): State<WebState>) -> Json<ApiDoctorResp
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::{Body, to_bytes};
+    use axum::body::{to_bytes, Body};
     use axum::http::Request;
     use axum::response::IntoResponse;
     use serde_json::Value;
@@ -1006,7 +1009,7 @@ mod tests {
     };
     use crate::db::{Database, ScanRunRecord};
     use crate::models::{LinkRecord, LinkStatus, MediaType};
-    use crate::web::ActiveScanJob;
+    use crate::web::{ActiveCleanupAuditJob, ActiveScanJob};
 
     fn test_config(root: &Path) -> Config {
         let library_root = root.join("library");
@@ -1363,18 +1366,16 @@ mod tests {
         assert_eq!(json.items.len(), 1);
         assert_eq!(json.items[0].rd_torrent_id, "rd-1");
         assert_eq!(json.items[0].parsed_title, "Missing Show");
-        assert!(
-            json.status_message
-                .as_deref()
-                .unwrap_or_default()
-                .contains("Real-Debrid API key not configured")
-        );
-        assert!(
-            json.status_message
-                .as_deref()
-                .unwrap_or_default()
-                .contains("live refresh is unavailable")
-        );
+        assert!(json
+            .status_message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Real-Debrid API key not configured"));
+        assert!(json
+            .status_message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("live refresh is unavailable"));
     }
 
     #[tokio::test]
@@ -1394,12 +1395,10 @@ mod tests {
         let body = body.into_response();
         let bytes = to_bytes(body.into_body(), usize::MAX).await.unwrap();
         let json: Value = serde_json::from_slice(&bytes).unwrap();
-        assert!(
-            json["error"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("Unknown library filter")
-        );
+        assert!(json["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Unknown library filter"));
     }
 
     #[tokio::test]
@@ -1410,21 +1409,18 @@ mod tests {
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let json: ApiDoctorResponse = serde_json::from_slice(&bytes).unwrap();
 
-        assert!(
-            json.checks
-                .iter()
-                .any(|check| check.check == "db_schema_version")
-        );
-        assert!(
-            json.checks
-                .iter()
-                .any(|check| check.check == "config_validation")
-        );
-        assert!(
-            json.checks
-                .iter()
-                .any(|check| check.check == "cleanup.prune.enforce_policy")
-        );
+        assert!(json
+            .checks
+            .iter()
+            .any(|check| check.check == "db_schema_version"));
+        assert!(json
+            .checks
+            .iter()
+            .any(|check| check.check == "config_validation"));
+        assert!(json
+            .checks
+            .iter()
+            .any(|check| check.check == "cleanup.prune.enforce_policy"));
     }
 
     #[tokio::test]
@@ -1586,16 +1582,14 @@ mod tests {
 
         let Json(response) = api_get_config_validate(State(state)).await;
 
-        assert!(
-            response
-                .warnings
-                .iter()
-                .any(|warning| warning.contains("web.allow_remote=true"))
-        );
+        assert!(response
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("web.allow_remote=true")));
     }
 
     #[tokio::test]
-    async fn api_post_cleanup_audit_returns_real_report_summary() {
+    async fn api_post_cleanup_audit_accepts_background_job() {
         let ctx = test_state().await;
 
         let response = api_post_cleanup_audit(
@@ -1606,21 +1600,19 @@ mod tests {
         )
         .await;
         let body = response.into_response();
-        assert_eq!(body.status(), StatusCode::OK);
+        assert_eq!(body.status(), StatusCode::ACCEPTED);
         let bytes = to_bytes(body.into_body(), usize::MAX).await.unwrap();
         let response: ApiCleanupAuditResponse = serde_json::from_slice(&bytes).unwrap();
 
         assert!(response.success);
-        assert_eq!(response.message, "Audit complete");
-        assert!(!response.report_path.is_empty());
-
-        let report_json = std::fs::read_to_string(&response.report_path).unwrap();
-        let report: CleanupReport = serde_json::from_str(&report_json).unwrap();
-
-        assert_eq!(response.total_findings, report.summary.total_findings);
-        assert_eq!(response.critical, report.summary.critical);
-        assert_eq!(response.high, report.summary.high);
-        assert_eq!(response.warning, report.summary.warning);
+        assert!(response
+            .message
+            .contains("Cleanup audit started in background"));
+        assert!(response.running);
+        assert!(response.report_path.is_empty());
+        assert_eq!(response.scope_label.as_deref(), Some("Anime"));
+        assert_eq!(response.libraries_label.as_deref(), Some("Anime"));
+        assert!(response.started_at.is_some());
     }
 
     #[cfg(unix)]
@@ -1731,6 +1723,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn api_get_cleanup_audit_jobs_includes_active_background_audit() {
+        let ctx = test_state().await;
+        ctx.set_active_cleanup_audit_for_test(Some(ActiveCleanupAuditJob {
+            started_at: "2026-03-29 23:59:00 UTC".to_string(),
+            scope_label: "Anime".to_string(),
+            libraries_label: "Anime".to_string(),
+        }))
+        .await;
+
+        let response = api_get_cleanup_audit_jobs(State(ctx)).await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&bytes).unwrap();
+        let jobs = json.as_array().unwrap();
+
+        assert_eq!(jobs[0]["status"], "running");
+        assert_eq!(jobs[0]["scope_label"], "Anime");
+        assert_eq!(jobs[0]["libraries_label"], "Anime");
+    }
+
+    #[tokio::test]
+    async fn api_post_cleanup_audit_rejects_when_background_audit_is_already_running() {
+        let ctx = test_state().await;
+        ctx.set_active_cleanup_audit_for_test(Some(ActiveCleanupAuditJob {
+            started_at: "2026-03-29 23:59:00 UTC".to_string(),
+            scope_label: "Anime".to_string(),
+            libraries_label: "Anime".to_string(),
+        }))
+        .await;
+
+        let response = api_post_cleanup_audit(
+            State(ctx),
+            Json(ApiCleanupAuditRequest {
+                scope: "anime".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: ApiCleanupAuditResponse = serde_json::from_slice(&bytes).unwrap();
+
+        assert!(!json.success);
+        assert!(json.message.contains("Cleanup audit not started"));
+        assert!(json.running);
+        assert_eq!(json.scope_label.as_deref(), Some("Anime"));
+        assert_eq!(json.libraries_label.as_deref(), Some("Anime"));
+    }
+
+    #[tokio::test]
     async fn api_post_cleanup_prune_returns_bad_request_for_invalid_token() {
         let ctx = test_state().await;
         let response = api_post_cleanup_prune(
@@ -1773,10 +1816,8 @@ mod tests {
         let bytes = to_bytes(body.into_body(), usize::MAX).await.unwrap();
         let response: ApiCleanupPruneResponse = serde_json::from_slice(&bytes).unwrap();
         assert!(!response.success);
-        assert!(
-            response
-                .message
-                .contains("Cleanup report must be inside the configured backup directory")
-        );
+        assert!(response
+            .message
+            .contains("Cleanup report must be inside the configured backup directory"));
     }
 }

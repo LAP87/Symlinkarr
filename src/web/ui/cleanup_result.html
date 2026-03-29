@@ -8,9 +8,22 @@
     <h1>&#129529; Cleanup Result</h1>
 </div>
 
+{% match active_cleanup_audit %}
+{% when Some with (job) %}
+<div class="alert alert-info">
+    <strong>&#9203; Background cleanup audit running.</strong>
+    {{ job.scope_label }} across {{ job.libraries_label }} started {{ job.started_at }}.
+</div>
+{% when None %}{% endmatch %}
+
 {% if success %}
 <div class="alert alert-success">
+    {% match active_cleanup_audit %}
+    {% when Some with (_) %}
+    <h2>&#9989; Background Audit Accepted</h2>
+    {% when None %}
     <h2>&#9989; Audit Completed Successfully</h2>
+    {% endmatch %}
     <p>{{ message }}</p>
 </div>
 

@@ -6,6 +6,22 @@
 - posture: `stable core, evolving ops`
 - intended use: local-first host or Docker installs, with Windows 11 users running through WSL2 or a Linux container
 
+## 2026-03-29 - Cleanup Audit Backgrounding + Local Repo Cleanup
+
+### Code Changes
+
+- web/API cleanup audit triggering now runs in the background instead of holding the request open for the full audit.
+  - web cleanup pages show an active background-audit banner
+  - `POST /api/v1/cleanup/audit` now returns `202 Accepted`
+  - `GET /api/v1/cleanup/audit/jobs` exposes the currently running audit job
+  - scan and cleanup audit now share one background-job gate so they cannot start concurrently by racing separate mutexes
+  - files: `src/web/mod.rs`, `src/web/templates.rs`, `src/web/handlers.rs`, `src/web/api/mod.rs`, `src/web/ui/cleanup.html`, `src/web/ui/cleanup_result.html`
+
+### Docs
+
+- documented the new background cleanup-audit posture and JSON API polling surface.
+  - file: `docs/API_SCHEMA.md`
+
 ## 2026-03-29 - Web Scan Backgrounding + Discover/Doctor Honesty
 
 ### Code Changes

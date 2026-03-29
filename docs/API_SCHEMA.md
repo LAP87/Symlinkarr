@@ -302,13 +302,13 @@ This endpoint now runs the same core repair flow as the CLI repair path, without
 
 ## `POST /api/v1/cleanup/audit`
 
-Runs a cleanup audit and writes a report.
+Starts a cleanup audit in the background. The finished report is written under the configured backup directory and becomes visible from the web cleanup page.
 
 Status codes:
 
-- `200 OK` on success
+- `202 Accepted` when the audit was queued successfully
+- `409 Conflict` when another scan or cleanup audit is already running
 - `400 Bad Request` for invalid scope values
-- `500 Internal Server Error` if the audit run, report read, or report parse fails
 
 Request body:
 
@@ -323,19 +323,45 @@ Response schema:
 ```json
 {
   "success": true,
-  "message": "Audit complete",
-  "report_path": "/path/to/report.json",
-  "total_findings": 123,
-  "critical": 10,
-  "high": 100,
-  "warning": 13
+  "message": "Cleanup audit started in background for Anime. Poll /api/v1/cleanup/audit/jobs or inspect /cleanup for the finished report.",
+  "report_path": "",
+  "total_findings": 0,
+  "critical": 0,
+  "high": 0,
+  "warning": 0,
+  "running": true,
+  "started_at": "2026-03-29 12:34:56 UTC",
+  "scope_label": "Anime",
+  "libraries_label": "All Libraries"
 }
 ```
 
 Notes:
 
 - `scope` currently supports `anime`, `tv`, `movie`, and `all`.
+- `report_path` stays empty until the background audit has finished and produced a report.
 - `report_path` in follow-up prune requests must resolve inside the configured Symlinkarr backup directory.
+
+## `GET /api/v1/cleanup/audit/jobs`
+
+Returns the currently running cleanup audit job, if any.
+
+Status codes:
+
+- `200 OK`
+
+Response schema:
+
+```json
+[
+  {
+    "status": "running",
+    "started_at": "2026-03-29 12:34:56 UTC",
+    "scope_label": "Anime",
+    "libraries_label": "All Libraries"
+  }
+]
+```
 
 ## `POST /api/v1/cleanup/prune`
 

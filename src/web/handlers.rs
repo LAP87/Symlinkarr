@@ -6,22 +6,21 @@ use axum::{
     http::StatusCode,
     response::{Html, IntoResponse},
 };
-use chrono::Utc;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Component, Path as StdPath, PathBuf};
 use tracing::{error, info};
 
 use crate::backup::BackupManager;
-use crate::cleanup_audit::{self, CleanupAuditor, CleanupScope};
+use crate::cleanup_audit::{self, CleanupScope};
 use crate::commands::config::validate_config_report;
 use crate::commands::discover::load_discovery_snapshot;
-use crate::commands::doctor::{DoctorCheckMode, collect_doctor_checks};
+use crate::commands::doctor::{collect_doctor_checks, DoctorCheckMode};
 use crate::commands::repair::{execute_repair_auto, summarize_repair_results};
 use crate::db::{AcquisitionJobCounts, ScanHistoryRecord};
 
-use super::WebState;
 use super::templates::*;
+use super::WebState;
 
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct ScanHistoryQuery {
@@ -489,6 +488,7 @@ pub async fn get_cleanup(State(state): State<WebState>) -> impl IntoResponse {
 
     let template = CleanupTemplate {
         libraries: state.config.libraries.clone(),
+        active_cleanup_audit: state.active_cleanup_audit().await.map(Into::into),
         last_report: last_report_summary,
         last_report_path: last_report,
     };
@@ -510,92 +510,63 @@ pub async fn post_cleanup_audit(
     let scope = match CleanupScope::parse(&form.scope) {
         Ok(s) => s,
         Err(e) => {
-            return Html(
-                CleanupResultTemplate {
-                    success: false,
-                    message: format!("Invalid scope: {}", e),
-                    report_path: None,
-                    report_summary: None,
-                }
-                .render()
-                .unwrap_or_else(|e| e.to_string()),
-            );
+            return (
+                StatusCode::BAD_REQUEST,
+                Html(
+                    CleanupResultTemplate {
+                        success: false,
+                        message: format!("Invalid scope: {}", e),
+                        active_cleanup_audit: state.active_cleanup_audit().await.map(Into::into),
+                        report_path: None,
+                        report_summary: None,
+                    }
+                    .render()
+                    .unwrap_or_else(|e| e.to_string()),
+                ),
+            )
+                .into_response();
         }
     };
 
-    let auditor = CleanupAuditor::new_with_progress(&state.config, &state.database, true);
-
-    // Use a scoped output path when a subset of libraries was selected.
-    let ts = Utc::now().format("%Y%m%d-%H%M%S");
-    let output_path = if selected_libraries.len() == 1 {
-        state.config.backup.path.join(format!(
-            "cleanup-audit-{}-{}-{}.json",
-            form.scope, selected_libraries[0], ts
-        ))
-    } else if !selected_libraries.is_empty() {
-        state.config.backup.path.join(format!(
-            "cleanup-audit-{}-multi-{}-{}.json",
-            form.scope,
-            selected_libraries.len(),
-            ts
-        ))
-    } else {
-        state
-            .config
-            .backup
-            .path
-            .join(format!("cleanup-audit-{}-{}.json", form.scope, ts))
-    };
-
-    let report_path = match auditor
-        .run_audit_filtered(
-            scope,
-            (!selected_libraries.is_empty()).then_some(selected_libraries.as_slice()),
-            Some(&output_path),
-        )
-        .await
+    match state.start_cleanup_audit(scope, selected_libraries.clone()).await
     {
-        Ok(p) => p,
-        Err(e) => {
-            error!("Audit failed: {}", e);
-            return Html(
+        Ok(job) => (
+            StatusCode::ACCEPTED,
+            Html(
                 CleanupResultTemplate {
-                    success: false,
-                    message: format!("Audit failed: {}", e),
+                    success: true,
+                    message: format!(
+                        "Cleanup audit started in background for {} across {}. Refresh /cleanup for the finished report.",
+                        job.scope_label, job.libraries_label
+                    ),
+                    active_cleanup_audit: Some(job.into()),
                     report_path: None,
                     report_summary: None,
                 }
                 .render()
                 .unwrap_or_else(|e| e.to_string()),
-            );
+            ),
+        )
+            .into_response(),
+        Err(e) => {
+            error!("Cleanup audit rejected: {}", e);
+            (
+                StatusCode::CONFLICT,
+                Html(
+                    CleanupResultTemplate {
+                        success: false,
+                        message: format!("Cleanup audit not started: {}", e),
+                        active_cleanup_audit: state.active_cleanup_audit().await.map(Into::into),
+                        report_path: None,
+                        report_summary: None,
+                    }
+                    .render()
+                    .unwrap_or_else(|e| e.to_string()),
+                ),
+            )
+                .into_response()
         }
-    };
-
-    let message = if selected_libraries.len() == 1 {
-        format!(
-            "Audit complete for library '{}': {}",
-            selected_libraries[0],
-            report_path.display()
-        )
-    } else if !selected_libraries.is_empty() {
-        format!(
-            "Audit complete for {} libraries ({}): {}",
-            selected_libraries.len(),
-            selected_libraries.join(", "),
-            report_path.display()
-        )
-    } else {
-        format!("Audit complete: {}", report_path.display())
-    };
-
-    let template = CleanupResultTemplate {
-        success: true,
-        message,
-        report_summary: cleanup_report_summary_from_path(&report_path),
-        report_path: Some(report_path),
-    };
-
-    Html(template.render().unwrap_or_else(|e| e.to_string()))
+    }
 }
 
 /// GET /cleanup/prune - Prune preview
@@ -760,6 +731,7 @@ pub async fn post_cleanup_prune(
             CleanupResultTemplate {
                 success: false,
                 message: "Report path is required".to_string(),
+                active_cleanup_audit: None,
                 report_path: None,
                 report_summary: None,
             }
@@ -773,6 +745,7 @@ pub async fn post_cleanup_prune(
             CleanupResultTemplate {
                 success: false,
                 message: "Confirmation token is required".to_string(),
+                active_cleanup_audit: None,
                 report_path: None,
                 report_summary: None,
             }
@@ -789,6 +762,7 @@ pub async fn post_cleanup_prune(
                 CleanupResultTemplate {
                     success: false,
                     message: err.to_string(),
+                    active_cleanup_audit: None,
                     report_path: None,
                     report_summary: None,
                 }
@@ -802,6 +776,7 @@ pub async fn post_cleanup_prune(
             CleanupResultTemplate {
                 success: false,
                 message: format!("Report not found: {}", report_path.display()),
+                active_cleanup_audit: None,
                 report_path: None,
                 report_summary: None,
             }
@@ -818,6 +793,7 @@ pub async fn post_cleanup_prune(
                 CleanupResultTemplate {
                     success: false,
                     message: format!("Failed to read report: {}", e),
+                    active_cleanup_audit: None,
                     report_path: None,
                     report_summary: None,
                 }
@@ -835,6 +811,7 @@ pub async fn post_cleanup_prune(
                 CleanupResultTemplate {
                     success: false,
                     message: format!("Failed to parse report: {}", e),
+                    active_cleanup_audit: None,
                     report_path: None,
                     report_summary: None,
                 }
@@ -862,6 +839,7 @@ pub async fn post_cleanup_prune(
                 CleanupResultTemplate {
                     success: false,
                     message: format!("Prune failed: {}", e),
+                    active_cleanup_audit: None,
                     report_path: None,
                     report_summary: None,
                 }
@@ -883,6 +861,7 @@ pub async fn post_cleanup_prune(
     let template = CleanupResultTemplate {
         success: true,
         message,
+        active_cleanup_audit: None,
         report_summary: cleanup_report_summary_from_path(&report_path),
         report_path: Some(report_path.to_path_buf()),
     };
@@ -1310,7 +1289,7 @@ mod tests {
     };
     use crate::db::{AcquisitionJobSeed, AcquisitionRelinkKind, Database, ScanRunRecord};
     use crate::models::{LinkRecord, LinkStatus, MediaType};
-    use crate::web::ActiveScanJob;
+    use crate::web::{ActiveCleanupAuditJob, ActiveScanJob};
 
     struct TestWebContext {
         _dir: TempDir,
@@ -1504,6 +1483,24 @@ mod tests {
         assert!(body.contains("2026-03-29 23:59:00 UTC"));
         assert!(body.contains("Anime"));
         assert!(body.contains("Search missing enabled"));
+    }
+
+    #[tokio::test]
+    async fn cleanup_page_renders_active_background_audit_banner() {
+        let ctx = test_context().await;
+        ctx.state
+            .set_active_cleanup_audit_for_test(Some(ActiveCleanupAuditJob {
+                started_at: "2026-03-29 23:59:00 UTC".to_string(),
+                scope_label: "Anime".to_string(),
+                libraries_label: "Anime".to_string(),
+            }))
+            .await;
+
+        let body = render_body(get_cleanup(State(ctx.state.clone())).await).await;
+
+        assert!(body.contains("Background cleanup audit running"));
+        assert!(body.contains("2026-03-29 23:59:00 UTC"));
+        assert!(body.contains("Anime across Anime"));
     }
 
     #[tokio::test]
@@ -1752,7 +1749,7 @@ mod tests {
             .join("cleanup-audit-anime-20260321.json");
         let report = CleanupReport {
             version: 1,
-            created_at: Utc::now(),
+            created_at: chrono::Utc::now(),
             scope: CleanupScope::Anime,
             findings: vec![],
             summary: CleanupSummary {

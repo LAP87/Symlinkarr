@@ -8,7 +8,7 @@ use std::time::SystemTime;
 #[allow(unused_imports)]
 use super::filters;
 
-use super::ActiveScanJob;
+use super::{ActiveCleanupAuditJob, ActiveScanJob};
 use crate::cleanup_audit::{CleanupReport, CleanupScope};
 use crate::config::Config;
 use crate::db::{AcquisitionJobCounts, ScanHistoryRecord};
@@ -74,6 +74,23 @@ impl From<ActiveScanJob> for ActiveScanView {
             scope_label: value.scope_label,
             dry_run: value.dry_run,
             search_missing: value.search_missing,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ActiveCleanupAuditView {
+    pub started_at: String,
+    pub scope_label: String,
+    pub libraries_label: String,
+}
+
+impl From<ActiveCleanupAuditJob> for ActiveCleanupAuditView {
+    fn from(value: ActiveCleanupAuditJob) -> Self {
+        Self {
+            started_at: value.started_at,
+            scope_label: value.scope_label,
+            libraries_label: value.libraries_label,
         }
     }
 }
@@ -279,6 +296,7 @@ pub struct ScanRunDetailTemplate {
 #[template(path = "web/ui/cleanup.html")]
 pub struct CleanupTemplate {
     pub libraries: Vec<LibraryConfig>,
+    pub active_cleanup_audit: Option<ActiveCleanupAuditView>,
     pub last_report: Option<CleanupReportSummaryView>,
     pub last_report_path: Option<PathBuf>,
 }
@@ -313,6 +331,7 @@ impl CleanupReportSummaryView {
 pub struct CleanupResultTemplate {
     pub success: bool,
     pub message: String,
+    pub active_cleanup_audit: Option<ActiveCleanupAuditView>,
     pub report_path: Option<PathBuf>,
     pub report_summary: Option<CleanupReportSummaryView>,
 }
@@ -540,6 +559,7 @@ mod tests {
         let template = CleanupResultTemplate {
             success: true,
             message: "Audit complete".to_string(),
+            active_cleanup_audit: None,
             report_path: Some(PathBuf::from("/tmp/cleanup-audit-anime.json")),
             report_summary: Some(CleanupReportSummaryView {
                 path: PathBuf::from("/tmp/cleanup-audit-anime.json"),
@@ -558,6 +578,26 @@ mod tests {
         assert!(html.contains("Anime"));
         assert!(html.contains("18"));
         assert!(html.contains("4 / 9"));
+    }
+
+    #[test]
+    fn cleanup_result_template_renders_background_audit_banner() {
+        let template = CleanupResultTemplate {
+            success: true,
+            message: "Cleanup audit started in background for Anime across Anime.".to_string(),
+            active_cleanup_audit: Some(ActiveCleanupAuditView {
+                started_at: "2026-03-29 23:59:00 UTC".to_string(),
+                scope_label: "Anime".to_string(),
+                libraries_label: "Anime".to_string(),
+            }),
+            report_path: None,
+            report_summary: None,
+        };
+
+        let html = template.render().unwrap();
+        assert!(html.contains("Background cleanup audit running"));
+        assert!(html.contains("Background Audit Accepted"));
+        assert!(html.contains("2026-03-29 23:59:00 UTC"));
     }
 
     #[test]

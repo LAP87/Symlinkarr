@@ -10,15 +10,15 @@ pub mod templates;
 
 use anyhow::Result;
 use axum::{
-    Json, Router,
     extract::State,
     http::{
-        HeaderMap, HeaderValue, Method, StatusCode, Uri,
         header::{COOKIE, HOST, ORIGIN, REFERER, SET_COOKIE},
+        HeaderMap, HeaderValue, Method, StatusCode, Uri,
     },
     middleware::{self, Next},
     response::IntoResponse,
     routing::{get, post},
+    Json, Router,
 };
 use chrono::Utc;
 use serde_json::json;
@@ -28,6 +28,7 @@ use tokio::sync::Mutex;
 use tower_http::{services::ServeDir, trace::TraceLayer};
 use tracing::{error, info, warn};
 
+use crate::cleanup_audit::{CleanupAuditor, CleanupScope};
 use crate::config::Config;
 use crate::db::Database;
 
@@ -39,13 +40,26 @@ pub(crate) struct ActiveScanJob {
     pub search_missing: bool,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct ActiveCleanupAuditJob {
+    pub started_at: String,
+    pub scope_label: String,
+    pub libraries_label: String,
+}
+
+#[derive(Clone, Debug, Default)]
+struct BackgroundJobState {
+    active_scan: Option<ActiveScanJob>,
+    active_cleanup_audit: Option<ActiveCleanupAuditJob>,
+}
+
 /// Shared application state passed to handlers
 #[derive(Clone)]
 pub struct WebState {
     pub config: Arc<Config>,
     pub database: Arc<Database>,
     browser_session_token: Arc<String>,
-    active_scan: Arc<Mutex<Option<ActiveScanJob>>>,
+    background_jobs: Arc<Mutex<BackgroundJobState>>,
 }
 
 impl WebState {
@@ -54,7 +68,7 @@ impl WebState {
             config: Arc::new(config),
             database: Arc::new(database),
             browser_session_token: Arc::new(generate_browser_session_token()),
-            active_scan: Arc::new(Mutex::new(None)),
+            background_jobs: Arc::new(Mutex::new(BackgroundJobState::default())),
         }
     }
 
@@ -63,7 +77,15 @@ impl WebState {
     }
 
     pub(crate) async fn active_scan(&self) -> Option<ActiveScanJob> {
-        self.active_scan.lock().await.clone()
+        self.background_jobs.lock().await.active_scan.clone()
+    }
+
+    pub(crate) async fn active_cleanup_audit(&self) -> Option<ActiveCleanupAuditJob> {
+        self.background_jobs
+            .lock()
+            .await
+            .active_cleanup_audit
+            .clone()
     }
 
     pub(crate) async fn start_scan(
@@ -79,11 +101,17 @@ impl WebState {
         crate::commands::selected_libraries(self.config.as_ref(), library_filter.as_deref())
             .map_err(|err| err.to_string())?;
 
-        let mut active_scan = self.active_scan.lock().await;
-        if let Some(job) = active_scan.clone() {
+        let mut background_jobs = self.background_jobs.lock().await;
+        if let Some(job) = background_jobs.active_scan.clone() {
             return Err(format!(
                 "A scan is already running for {} (started {}).",
                 job.scope_label, job.started_at
+            ));
+        }
+        if let Some(job) = background_jobs.active_cleanup_audit.clone() {
+            return Err(format!(
+                "A cleanup audit is already running for {} ({}) started {}.",
+                job.scope_label, job.libraries_label, job.started_at
             ));
         }
 
@@ -95,12 +123,12 @@ impl WebState {
             dry_run,
             search_missing,
         };
-        *active_scan = Some(job.clone());
-        drop(active_scan);
+        background_jobs.active_scan = Some(job.clone());
+        drop(background_jobs);
 
         let config = self.config.clone();
         let database = self.database.clone();
-        let active_scan = self.active_scan.clone();
+        let background_jobs = self.background_jobs.clone();
         let background_job = job.clone();
         tokio::spawn(async move {
             let result = crate::commands::scan::run_scan(
@@ -131,8 +159,84 @@ impl WebState {
                 ),
             }
 
-            let mut active_scan = active_scan.lock().await;
-            *active_scan = None;
+            let mut background_jobs = background_jobs.lock().await;
+            background_jobs.active_scan = None;
+        });
+
+        Ok(job)
+    }
+
+    pub(crate) async fn start_cleanup_audit(
+        &self,
+        scope: CleanupScope,
+        selected_libraries: Vec<String>,
+    ) -> std::result::Result<ActiveCleanupAuditJob, String> {
+        let library_filter = (!selected_libraries.is_empty()).then(|| selected_libraries.join(","));
+        let canonical_libraries =
+            crate::commands::selected_libraries(self.config.as_ref(), library_filter.as_deref())
+                .map_err(|err| err.to_string())?
+                .into_iter()
+                .map(|library| library.name.clone())
+                .collect::<Vec<_>>();
+
+        let mut background_jobs = self.background_jobs.lock().await;
+        if let Some(job) = background_jobs.active_scan.clone() {
+            return Err(format!(
+                "A scan is already running for {} (started {}).",
+                job.scope_label, job.started_at
+            ));
+        }
+        if let Some(job) = background_jobs.active_cleanup_audit.clone() {
+            return Err(format!(
+                "A cleanup audit is already running for {} ({}) started {}.",
+                job.scope_label, job.libraries_label, job.started_at
+            ));
+        }
+
+        let job = ActiveCleanupAuditJob {
+            started_at: Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+            scope_label: cleanup_scope_label(scope).to_string(),
+            libraries_label: cleanup_libraries_label(&canonical_libraries),
+        };
+        background_jobs.active_cleanup_audit = Some(job.clone());
+        drop(background_jobs);
+
+        let config = self.config.clone();
+        let database = self.database.clone();
+        let background_jobs = self.background_jobs.clone();
+        let background_job = job.clone();
+        tokio::spawn(async move {
+            let auditor =
+                CleanupAuditor::new_with_progress(config.as_ref(), database.as_ref(), false);
+            let output_path = cleanup_audit_output_path(
+                config.as_ref(),
+                scope,
+                canonical_libraries.as_slice(),
+                Utc::now().format("%Y%m%d-%H%M%S").to_string(),
+            );
+            let result = auditor
+                .run_audit_filtered(
+                    scope,
+                    (!canonical_libraries.is_empty()).then_some(canonical_libraries.as_slice()),
+                    Some(&output_path),
+                )
+                .await;
+
+            match result {
+                Ok(report_path) => info!(
+                    "Background cleanup audit completed (scope={}, libraries={}): {}",
+                    background_job.scope_label,
+                    background_job.libraries_label,
+                    report_path.display()
+                ),
+                Err(err) => error!(
+                    "Background cleanup audit failed (scope={}, libraries={}): {}",
+                    background_job.scope_label, background_job.libraries_label, err
+                ),
+            }
+
+            let mut background_jobs = background_jobs.lock().await;
+            background_jobs.active_cleanup_audit = None;
         });
 
         Ok(job)
@@ -140,7 +244,70 @@ impl WebState {
 
     #[cfg(test)]
     pub(crate) async fn set_active_scan_for_test(&self, job: Option<ActiveScanJob>) {
-        *self.active_scan.lock().await = job;
+        self.background_jobs.lock().await.active_scan = job;
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn set_active_cleanup_audit_for_test(
+        &self,
+        job: Option<ActiveCleanupAuditJob>,
+    ) {
+        self.background_jobs.lock().await.active_cleanup_audit = job;
+    }
+}
+
+fn cleanup_scope_label(scope: CleanupScope) -> &'static str {
+    match scope {
+        CleanupScope::Anime => "Anime",
+        CleanupScope::Tv => "TV",
+        CleanupScope::Movie => "Movies",
+        CleanupScope::All => "All Libraries",
+    }
+}
+
+fn cleanup_scope_slug(scope: CleanupScope) -> &'static str {
+    match scope {
+        CleanupScope::Anime => "anime",
+        CleanupScope::Tv => "tv",
+        CleanupScope::Movie => "movie",
+        CleanupScope::All => "all",
+    }
+}
+
+fn cleanup_libraries_label(selected_libraries: &[String]) -> String {
+    match selected_libraries {
+        [] => "All Libraries".to_string(),
+        [single] => single.clone(),
+        [first, second] => format!("{}, {}", first, second),
+        [first, second, third] => format!("{}, {}, {}", first, second, third),
+        many => format!("{} libraries", many.len()),
+    }
+}
+
+fn cleanup_audit_output_path(
+    config: &Config,
+    scope: CleanupScope,
+    selected_libraries: &[String],
+    timestamp: String,
+) -> std::path::PathBuf {
+    let scope_slug = cleanup_scope_slug(scope);
+    if selected_libraries.len() == 1 {
+        config.backup.path.join(format!(
+            "cleanup-audit-{}-{}-{}.json",
+            scope_slug, selected_libraries[0], timestamp
+        ))
+    } else if !selected_libraries.is_empty() {
+        config.backup.path.join(format!(
+            "cleanup-audit-{}-multi-{}-{}.json",
+            scope_slug,
+            selected_libraries.len(),
+            timestamp
+        ))
+    } else {
+        config
+            .backup
+            .path
+            .join(format!("cleanup-audit-{}-{}.json", scope_slug, timestamp))
     }
 }
 
@@ -435,8 +602,8 @@ fn static_dir() -> std::path::PathBuf {
 mod tests {
     use super::*;
     use axum::{
-        body::{Body, to_bytes},
-        http::{Request, header},
+        body::{to_bytes, Body},
+        http::{header, Request},
     };
     use tower::ServiceExt;
 
@@ -734,18 +901,11 @@ mod tests {
         )
         .await;
 
-        assert_eq!(status, 200);
+        assert_eq!(status, 202);
         assert_eq!(body["success"], true);
-
-        let report_path = body["report_path"].as_str().unwrap();
-        let report_json = std::fs::read_to_string(report_path).unwrap();
-        let report: crate::cleanup_audit::CleanupReport =
-            serde_json::from_str(&report_json).unwrap();
-
-        assert_eq!(body["total_findings"], report.summary.total_findings);
-        assert_eq!(body["critical"], report.summary.critical);
-        assert_eq!(body["high"], report.summary.high);
-        assert_eq!(body["warning"], report.summary.warning);
+        assert_eq!(body["running"], true);
+        assert_eq!(body["scope_label"], "Anime");
+        assert_eq!(body["report_path"], "");
     }
 
     #[tokio::test]
@@ -787,9 +947,10 @@ mod tests {
         )
         .await;
 
-        assert_eq!(status, 200);
+        assert_eq!(status, 202);
         let json: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(json["success"], true);
+        assert_eq!(json["running"], true);
     }
 
     #[tokio::test]
