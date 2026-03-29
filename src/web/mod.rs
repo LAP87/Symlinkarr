@@ -10,17 +10,18 @@ pub mod templates;
 
 use anyhow::Result;
 use axum::{
-    Json, Router,
     extract::State,
     http::{
-        HeaderMap, HeaderValue, Method, StatusCode, Uri,
         header::{COOKIE, HOST, ORIGIN, REFERER, SET_COOKIE},
+        HeaderMap, HeaderValue, Method, StatusCode, Uri,
     },
     middleware::{self, Next},
     response::IntoResponse,
     routing::{get, post},
+    Json, Router,
 };
 use chrono::Utc;
+use futures_util::FutureExt;
 use serde_json::json;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -165,19 +166,23 @@ impl WebState {
         let background_jobs = self.background_jobs.clone();
         let background_job = job.clone();
         tokio::spawn(async move {
-            let result = crate::commands::scan::run_scan(
-                config.as_ref(),
-                database.as_ref(),
-                dry_run,
-                search_missing,
-                crate::OutputFormat::Json,
-                library_filter.as_deref(),
-            )
+            let result = std::panic::AssertUnwindSafe(async {
+                crate::commands::scan::run_scan(
+                    config.as_ref(),
+                    database.as_ref(),
+                    dry_run,
+                    search_missing,
+                    crate::OutputFormat::Json,
+                    library_filter.as_deref(),
+                )
+                .await
+            })
+            .catch_unwind()
             .await;
 
             let finished_at = Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string();
-            match result {
-                Ok((added, removed)) => {
+            let outcome = match result {
+                Ok(Ok((added, removed))) => {
                     info!(
                         "Background scan completed (scope={}, dry_run={}, search_missing={}): added_or_updated={}, removed={}",
                         background_job.scope_label,
@@ -186,9 +191,7 @@ impl WebState {
                         added,
                         removed
                     );
-
-                    let mut background_jobs = background_jobs.lock().await;
-                    background_jobs.last_scan_outcome = Some(LastScanOutcome {
+                    LastScanOutcome {
                         finished_at,
                         scope_label: background_job.scope_label.clone(),
                         dry_run: background_job.dry_run,
@@ -198,10 +201,9 @@ impl WebState {
                             "Completed: {} added or updated, {} removed.",
                             added, removed
                         ),
-                    });
-                    background_jobs.active_scan = None;
+                    }
                 }
-                Err(err) => {
+                Ok(Err(err)) => {
                     error!(
                         "Background scan failed (scope={}, dry_run={}, search_missing={}): {}",
                         background_job.scope_label,
@@ -209,19 +211,41 @@ impl WebState {
                         background_job.search_missing,
                         err
                     );
-
-                    let mut background_jobs = background_jobs.lock().await;
-                    background_jobs.last_scan_outcome = Some(LastScanOutcome {
+                    LastScanOutcome {
                         finished_at,
                         scope_label: background_job.scope_label.clone(),
                         dry_run: background_job.dry_run,
                         search_missing: background_job.search_missing,
                         success: false,
                         message: err.to_string(),
-                    });
-                    background_jobs.active_scan = None;
+                    }
                 }
-            }
+                Err(panic) => {
+                    let message = format!(
+                        "internal panic while running background scan: {}",
+                        panic_message(panic)
+                    );
+                    error!(
+                        "Background scan panicked (scope={}, dry_run={}, search_missing={}): {}",
+                        background_job.scope_label,
+                        background_job.dry_run,
+                        background_job.search_missing,
+                        message
+                    );
+                    LastScanOutcome {
+                        finished_at,
+                        scope_label: background_job.scope_label.clone(),
+                        dry_run: background_job.dry_run,
+                        search_missing: background_job.search_missing,
+                        success: false,
+                        message,
+                    }
+                }
+            };
+
+            let mut background_jobs = background_jobs.lock().await;
+            background_jobs.last_scan_outcome = Some(outcome);
+            background_jobs.active_scan = None;
         });
 
         Ok(job)
@@ -267,61 +291,81 @@ impl WebState {
         let background_jobs = self.background_jobs.clone();
         let background_job = job.clone();
         tokio::spawn(async move {
-            let auditor =
-                CleanupAuditor::new_with_progress(config.as_ref(), database.as_ref(), false);
-            let output_path = cleanup_audit_output_path(
-                config.as_ref(),
-                scope,
-                canonical_libraries.as_slice(),
-                Utc::now().format("%Y%m%d-%H%M%S").to_string(),
-            );
-            let result = auditor
-                .run_audit_filtered(
+            let result = std::panic::AssertUnwindSafe(async {
+                let auditor =
+                    CleanupAuditor::new_with_progress(config.as_ref(), database.as_ref(), false);
+                let output_path = cleanup_audit_output_path(
+                    config.as_ref(),
                     scope,
-                    (!canonical_libraries.is_empty()).then_some(canonical_libraries.as_slice()),
-                    Some(&output_path),
-                )
-                .await;
+                    canonical_libraries.as_slice(),
+                    Utc::now().format("%Y%m%d-%H%M%S").to_string(),
+                );
+                auditor
+                    .run_audit_filtered(
+                        scope,
+                        (!canonical_libraries.is_empty()).then_some(canonical_libraries.as_slice()),
+                        Some(&output_path),
+                    )
+                    .await
+            })
+            .catch_unwind()
+            .await;
 
             let finished_at = Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string();
-            match result {
-                Ok(report_path) => {
+            let outcome = match result {
+                Ok(Ok(report_path)) => {
                     info!(
                         "Background cleanup audit completed (scope={}, libraries={}): {}",
                         background_job.scope_label,
                         background_job.libraries_label,
                         report_path.display()
                     );
-
-                    let mut background_jobs = background_jobs.lock().await;
-                    background_jobs.last_cleanup_audit_outcome = Some(LastCleanupAuditOutcome {
+                    LastCleanupAuditOutcome {
                         finished_at,
                         scope_label: background_job.scope_label.clone(),
                         libraries_label: background_job.libraries_label.clone(),
                         success: true,
                         message: format!("Report written to {}", report_path.display()),
                         report_path: Some(report_path.to_string_lossy().to_string()),
-                    });
-                    background_jobs.active_cleanup_audit = None;
+                    }
                 }
-                Err(err) => {
+                Ok(Err(err)) => {
                     error!(
                         "Background cleanup audit failed (scope={}, libraries={}): {}",
                         background_job.scope_label, background_job.libraries_label, err
                     );
-
-                    let mut background_jobs = background_jobs.lock().await;
-                    background_jobs.last_cleanup_audit_outcome = Some(LastCleanupAuditOutcome {
+                    LastCleanupAuditOutcome {
                         finished_at,
                         scope_label: background_job.scope_label.clone(),
                         libraries_label: background_job.libraries_label.clone(),
                         success: false,
                         message: err.to_string(),
                         report_path: None,
-                    });
-                    background_jobs.active_cleanup_audit = None;
+                    }
                 }
-            }
+                Err(panic) => {
+                    let message = format!(
+                        "internal panic while running background cleanup audit: {}",
+                        panic_message(panic)
+                    );
+                    error!(
+                        "Background cleanup audit panicked (scope={}, libraries={}): {}",
+                        background_job.scope_label, background_job.libraries_label, message
+                    );
+                    LastCleanupAuditOutcome {
+                        finished_at,
+                        scope_label: background_job.scope_label.clone(),
+                        libraries_label: background_job.libraries_label.clone(),
+                        success: false,
+                        message,
+                        report_path: None,
+                    }
+                }
+            };
+
+            let mut background_jobs = background_jobs.lock().await;
+            background_jobs.last_cleanup_audit_outcome = Some(outcome);
+            background_jobs.active_cleanup_audit = None;
         });
 
         Ok(job)
@@ -351,6 +395,16 @@ impl WebState {
         outcome: Option<LastCleanupAuditOutcome>,
     ) {
         self.background_jobs.lock().await.last_cleanup_audit_outcome = outcome;
+    }
+}
+
+fn panic_message(payload: Box<dyn std::any::Any + Send + 'static>) -> String {
+    if let Some(message) = payload.downcast_ref::<&'static str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "non-string panic payload".to_string()
     }
 }
 
@@ -700,8 +754,8 @@ fn static_dir() -> std::path::PathBuf {
 mod tests {
     use super::*;
     use axum::{
-        body::{Body, to_bytes},
-        http::{Request, header},
+        body::{to_bytes, Body},
+        http::{header, Request},
     };
     use tower::ServiceExt;
 
@@ -1130,5 +1184,17 @@ mod tests {
         cfg.web.allow_remote = true;
 
         assert!(ensure_remote_bind_allowed(&cfg).is_ok());
+    }
+
+    #[test]
+    fn panic_message_extracts_str_payload() {
+        let payload: Box<dyn std::any::Any + Send> = Box::new("boom");
+        assert_eq!(super::panic_message(payload), "boom");
+    }
+
+    #[test]
+    fn panic_message_extracts_string_payload() {
+        let payload: Box<dyn std::any::Any + Send> = Box::new("boom".to_string());
+        assert_eq!(super::panic_message(payload), "boom");
     }
 }

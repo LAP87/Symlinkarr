@@ -20,6 +20,8 @@
   - added `GET /api/v1/scan/status` and `GET /api/v1/cleanup/audit/status`
   - web scan/cleanup pages now show the most recent failed background outcome directly
   - files: `src/web/mod.rs`, `src/web/templates.rs`, `src/web/handlers.rs`, `src/web/api/mod.rs`, `src/web/ui/scan.html`, `src/web/ui/scan_result.html`, `src/web/ui/cleanup.html`, `src/web/ui/cleanup_result.html`
+- background scan and cleanup-audit workers now clear their active-job state even if the task panics, and surface that panic as a failed last outcome instead of leaving the UI/API permanently "running".
+  - files: `src/web/mod.rs`, `Cargo.toml`, `Cargo.lock`
 
 ### Docs
 
