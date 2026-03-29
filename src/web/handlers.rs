@@ -872,39 +872,12 @@ pub async fn get_config(State(state): State<WebState>) -> impl IntoResponse {
 
 /// POST /config/validate - Validate config
 pub async fn post_config_validate(State(state): State<WebState>) -> impl IntoResponse {
-    // Config is already loaded, just check for obvious issues
-    let mut errors = vec![];
-    let mut warnings = vec![];
-
-    if state.config.libraries.is_empty() {
-        errors.push("No libraries configured".to_string());
-    }
-
-    if state.config.sources.is_empty() {
-        errors.push("No sources configured".to_string());
-    }
-
-    if !state.config.has_tmdb() {
-        warnings.push("TMDB API key not configured".to_string());
-    }
-
-    if !state.config.has_tvdb() {
-        warnings.push("TVDB API key not configured".to_string());
-    }
-
-    let result = if errors.is_empty() {
-        Some(ValidationResult {
-            valid: true,
-            errors,
-            warnings,
-        })
-    } else {
-        Some(ValidationResult {
-            valid: false,
-            errors,
-            warnings,
-        })
-    };
+    let report = state.config.validate();
+    let result = Some(ValidationResult {
+        valid: report.errors.is_empty(),
+        errors: report.errors,
+        warnings: report.warnings,
+    });
 
     let template = ConfigTemplate {
         config: (*state.config).clone(),

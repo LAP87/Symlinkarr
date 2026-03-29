@@ -790,29 +790,12 @@ pub async fn api_get_links(
 pub async fn api_get_config_validate(
     State(state): State<WebState>,
 ) -> Json<ApiConfigValidateResponse> {
-    let mut errors = vec![];
-    let mut warnings = vec![];
-
-    if state.config.libraries.is_empty() {
-        errors.push("No libraries configured".to_string());
-    }
-
-    if state.config.sources.is_empty() {
-        errors.push("No sources configured".to_string());
-    }
-
-    if !state.config.has_tmdb() {
-        warnings.push("TMDB API key not configured".to_string());
-    }
-
-    if !state.config.has_tvdb() {
-        warnings.push("TVDB API key not configured".to_string());
-    }
+    let report = state.config.validate();
 
     Json(ApiConfigValidateResponse {
-        valid: errors.is_empty(),
-        errors,
-        warnings,
+        valid: report.errors.is_empty(),
+        errors: report.errors,
+        warnings: report.warnings,
     })
 }
 
@@ -1189,6 +1172,25 @@ mod tests {
 
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].target_path, "/plex/show/S01E02.mkv");
+    }
+
+    #[tokio::test]
+    async fn api_get_config_validate_uses_full_config_validation() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        std::mem::forget(dir);
+        let mut cfg = test_config(&root);
+        cfg.web.enabled = true;
+        cfg.web.bind_address = "0.0.0.0".to_string();
+        let db = Database::new(&cfg.db_path).await.unwrap();
+        let state = WebState::new(cfg, db);
+
+        let Json(response) = api_get_config_validate(State(state)).await;
+
+        assert!(response
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("web.bind_address=0.0.0.0 exposes the web UI")));
     }
 
     #[tokio::test]
