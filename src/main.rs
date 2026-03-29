@@ -2,6 +2,7 @@
 compile_error!("Symlinkarr requires a Unix platform (symlink support).");
 
 mod anime_identity;
+mod anime_roots;
 mod anime_scanner;
 mod api;
 mod auto_acquire;

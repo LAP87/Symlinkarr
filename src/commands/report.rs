@@ -4,10 +4,10 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use chrono::Utc;
 use rayon::prelude::*;
-use regex::Regex;
 use serde::Serialize;
 use walkdir::WalkDir;
 
+use crate::anime_roots::collect_anime_root_duplicate_groups;
 use crate::commands::{panel_border, panel_kv_row, panel_title};
 use crate::config::{Config, ContentType, LibraryConfig};
 use crate::db::Database;
@@ -430,8 +430,17 @@ async fn build_anime_duplicate_audit(
         return Ok(None);
     }
 
-    let (filesystem_mixed_root_groups, filesystem_sample_groups) =
-        collect_anime_root_duplicates(&anime_libraries);
+    let duplicate_groups = collect_anime_root_duplicate_groups(&anime_libraries);
+    let filesystem_mixed_root_groups = duplicate_groups.len();
+    let filesystem_sample_groups = duplicate_groups
+        .into_iter()
+        .take(PATH_SAMPLE_LIMIT)
+        .map(|group| AnimeRootDuplicateSample {
+            normalized_title: group.normalized_title,
+            tagged_roots: group.tagged_roots,
+            untagged_roots: group.untagged_roots,
+        })
+        .collect();
 
     let (
         plex_duplicate_show_groups,
@@ -460,71 +469,6 @@ async fn build_anime_duplicate_audit(
         plex_other_duplicate_show_groups,
         plex_sample_groups,
     }))
-}
-
-fn collect_anime_root_duplicates(
-    libraries: &[&LibraryConfig],
-) -> (usize, Vec<AnimeRootDuplicateSample>) {
-    #[derive(Default)]
-    struct Bucket {
-        tagged_roots: Vec<PathBuf>,
-        untagged_roots: Vec<PathBuf>,
-    }
-
-    let tagged_suffix =
-        Regex::new(r" \((?:19|20)\d{2}\) \{(?:tvdb|tmdb)-\d+\}$").expect("valid anime root regex");
-    let mut buckets: BTreeMap<String, Bucket> = BTreeMap::new();
-
-    for library in libraries {
-        let Ok(entries) = std::fs::read_dir(&library.path) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            if !file_type.is_dir() {
-                continue;
-            }
-
-            let path = entry.path();
-            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-                continue;
-            };
-
-            let is_tagged = tagged_suffix.is_match(name);
-            let normalized_title = tagged_suffix.replace(name, "").to_string();
-            let bucket = buckets.entry(normalized_title).or_default();
-            if is_tagged {
-                bucket.tagged_roots.push(path);
-            } else {
-                bucket.untagged_roots.push(path);
-            }
-        }
-    }
-
-    let mut samples = Vec::new();
-    let mut total = 0;
-
-    for (normalized_title, mut bucket) in buckets {
-        if bucket.tagged_roots.is_empty() || bucket.untagged_roots.is_empty() {
-            continue;
-        }
-
-        total += 1;
-        bucket.tagged_roots.sort();
-        bucket.untagged_roots.sort();
-
-        if samples.len() < PATH_SAMPLE_LIMIT {
-            samples.push(AnimeRootDuplicateSample {
-                normalized_title,
-                tagged_roots: bucket.tagged_roots,
-                untagged_roots: bucket.untagged_roots,
-            });
-        }
-    }
-
-    (total, samples)
 }
 
 #[derive(Default)]
@@ -927,14 +871,13 @@ mod tests {
             depth: 1,
         };
 
-        let (count, samples) = collect_anime_root_duplicates(&[&library]);
+        let groups = collect_anime_root_duplicate_groups(&[&library]);
 
-        assert_eq!(count, 1);
-        assert_eq!(samples.len(), 1);
-        assert_eq!(samples[0].normalized_title, "Black Clover");
-        assert_eq!(samples[0].untagged_roots, vec![anime.join("Black Clover")]);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].normalized_title, "Black Clover");
+        assert_eq!(groups[0].untagged_roots, vec![anime.join("Black Clover")]);
         assert_eq!(
-            samples[0].tagged_roots,
+            groups[0].tagged_roots,
             vec![anime.join("Black Clover (2017) {tvdb-331753}")]
         );
     }

@@ -11,6 +11,7 @@ use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 use walkdir::WalkDir;
 
+use crate::anime_roots::collect_anime_root_duplicate_groups;
 use crate::api::sonarr::SonarrClient;
 use crate::api::tmdb::TmdbClient;
 use crate::api::tvdb::TvdbClient;
@@ -69,6 +70,7 @@ impl std::fmt::Display for FindingSeverity {
 #[serde(rename_all = "snake_case")]
 pub enum FindingReason {
     BrokenSource,
+    LegacyAnimeRootDuplicate,
     ParserTitleMismatch,
     AlternateLibraryMatch,
     MovieEpisodeSource,
@@ -83,6 +85,7 @@ impl std::fmt::Display for FindingReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             FindingReason::BrokenSource => write!(f, "broken_source"),
+            FindingReason::LegacyAnimeRootDuplicate => write!(f, "legacy_anime_root_duplicate"),
             FindingReason::ParserTitleMismatch => write!(f, "parser_title_mismatch"),
             FindingReason::AlternateLibraryMatch => write!(f, "alternate_library_match"),
             FindingReason::MovieEpisodeSource => write!(f, "movie_episode_source"),
@@ -162,6 +165,11 @@ pub(crate) struct SafeDuplicatePrunePlan {
 struct ArrSeriesSnapshot {
     with_file: HashSet<(u32, u32)>,
     season_counts: HashMap<u32, usize>,
+}
+
+#[derive(Debug, Clone)]
+struct LegacyAnimeRootContext {
+    normalized_title: String,
 }
 
 #[derive(Debug, Clone)]
@@ -286,13 +294,18 @@ impl<'a> CleanupAuditor<'a> {
         }
         let library_indices_by_path = build_library_indices_by_path(&library_items);
         let library_indices_by_id = build_library_indices_by_id(&library_items);
+        let legacy_anime_roots = build_legacy_anime_root_lookup(&libraries);
 
         if self.emit_progress {
             println!("   🔗 Cleanup audit: collecting symlink entries...");
         }
         let entries_started = Instant::now();
-        let mut entries =
-            self.collect_symlink_entries(&libraries, &library_items, &library_indices_by_path);
+        let mut entries = self.collect_symlink_entries(
+            &libraries,
+            &library_items,
+            &library_indices_by_path,
+            &legacy_anime_roots,
+        );
         info!(
             "Cleanup audit: collected {} symlink entries in {:.1}s",
             entries.len(),
@@ -557,6 +570,7 @@ impl<'a> CleanupAuditor<'a> {
         libraries: &[&LibraryConfig],
         library_items: &[LibraryItem],
         library_indices_by_path: &HashMap<PathBuf, usize>,
+        legacy_anime_roots: &HashMap<PathBuf, LegacyAnimeRootContext>,
     ) -> Vec<WorkingEntry> {
         let mut entries = Vec::new();
         let mut symlink_count = 0usize;
@@ -597,6 +611,11 @@ impl<'a> CleanupAuditor<'a> {
 
                 let owner =
                     find_owner_library_item(&symlink_path, library_items, library_indices_by_path);
+                let legacy_root_context = legacy_anime_root_context_for_path(
+                    &symlink_path,
+                    &lib.path,
+                    legacy_anime_roots,
+                );
 
                 let owner_content_type = owner
                     .map(|o| o.content_type)
@@ -610,9 +629,16 @@ impl<'a> CleanupAuditor<'a> {
                             .parse_filename_with_type(&symlink_path, owner_content_type)
                     });
 
-                let (media_id, library_title) = owner
+                let (media_id, mut library_title) = owner
                     .map(|o| (o.id.to_string(), o.title.clone()))
                     .unwrap_or_else(|| (String::new(), String::new()));
+                let mut reasons = BTreeSet::new();
+                if owner.is_none() {
+                    if let Some(context) = legacy_root_context {
+                        library_title = context.normalized_title.clone();
+                        reasons.insert(FindingReason::LegacyAnimeRootDuplicate);
+                    }
+                }
 
                 entries.push(WorkingEntry {
                     symlink_path,
@@ -628,7 +654,7 @@ impl<'a> CleanupAuditor<'a> {
                     episode: parsed_source.as_ref().and_then(|s| s.episode),
                     library_title,
                     alternate_match: None,
-                    reasons: BTreeSet::new(),
+                    reasons,
                 });
             }
         }
@@ -1152,6 +1178,41 @@ fn resolve_link_target(symlink_path: &Path, target: &Path) -> PathBuf {
             .unwrap_or_else(|| Path::new("."))
             .join(target)
     }
+}
+
+fn build_legacy_anime_root_lookup(
+    libraries: &[&LibraryConfig],
+) -> HashMap<PathBuf, LegacyAnimeRootContext> {
+    let anime_libraries: Vec<&LibraryConfig> = libraries
+        .iter()
+        .copied()
+        .filter(|lib| effective_content_type(lib) == ContentType::Anime)
+        .collect();
+
+    let mut lookup = HashMap::new();
+    for group in collect_anime_root_duplicate_groups(&anime_libraries) {
+        for root in group.untagged_roots {
+            lookup.insert(
+                root,
+                LegacyAnimeRootContext {
+                    normalized_title: group.normalized_title.clone(),
+                },
+            );
+        }
+    }
+
+    lookup
+}
+
+fn legacy_anime_root_context_for_path<'a>(
+    symlink_path: &Path,
+    library_root: &Path,
+    legacy_anime_roots: &'a HashMap<PathBuf, LegacyAnimeRootContext>,
+) -> Option<&'a LegacyAnimeRootContext> {
+    let relative = symlink_path.strip_prefix(library_root).ok()?;
+    let first_component = relative.components().next()?;
+    let show_root = library_root.join(first_component.as_os_str());
+    legacy_anime_roots.get(&show_root)
 }
 
 fn build_library_indices_by_path(library_items: &[LibraryItem]) -> HashMap<PathBuf, usize> {
@@ -1815,6 +1876,7 @@ fn classify_confidence(reasons: &BTreeSet<FindingReason>) -> f64 {
     for reason in reasons {
         let weight = match reason {
             FindingReason::BrokenSource => 1.0,
+            FindingReason::LegacyAnimeRootDuplicate => 0.55,
             FindingReason::AlternateLibraryMatch => 0.98,
             FindingReason::MovieEpisodeSource => 0.95,
             FindingReason::EpisodeOutOfRange => 0.9,
@@ -2141,9 +2203,22 @@ mod tests {
     #[test]
     fn test_finding_reason_display() {
         assert_eq!(FindingReason::BrokenSource.to_string(), "broken_source");
-        assert_eq!(FindingReason::ParserTitleMismatch.to_string(), "parser_title_mismatch");
-        assert_eq!(FindingReason::DuplicateEpisodeSlot.to_string(), "duplicate_episode_slot");
-        assert_eq!(FindingReason::NonRdSourcePath.to_string(), "non_rd_source_path");
+        assert_eq!(
+            FindingReason::LegacyAnimeRootDuplicate.to_string(),
+            "legacy_anime_root_duplicate"
+        );
+        assert_eq!(
+            FindingReason::ParserTitleMismatch.to_string(),
+            "parser_title_mismatch"
+        );
+        assert_eq!(
+            FindingReason::DuplicateEpisodeSlot.to_string(),
+            "duplicate_episode_slot"
+        );
+        assert_eq!(
+            FindingReason::NonRdSourcePath.to_string(),
+            "non_rd_source_path"
+        );
     }
 
     #[test]
@@ -2177,6 +2252,14 @@ mod tests {
         let mut reasons = BTreeSet::new();
         reasons.insert(FindingReason::SeasonCountAnomaly);
         assert_eq!(classify_severity(&reasons), FindingSeverity::Warning);
+    }
+
+    #[test]
+    fn test_classify_severity_keeps_legacy_anime_root_duplicate_as_warning() {
+        let mut reasons = BTreeSet::new();
+        reasons.insert(FindingReason::LegacyAnimeRootDuplicate);
+        assert_eq!(classify_severity(&reasons), FindingSeverity::Warning);
+        assert_eq!(classify_confidence(&reasons), 0.55);
     }
 
     #[test]
@@ -2572,6 +2655,60 @@ backup:
         assert_eq!(libraries[0].name, "Anime B");
     }
 
+    #[test]
+    fn test_build_legacy_anime_root_lookup_indexes_untagged_roots_only() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let anime_root = dir.path().join("anime");
+        std::fs::create_dir_all(anime_root.join("Show")).unwrap();
+        std::fs::create_dir_all(anime_root.join("Show (2024) {tvdb-123}")).unwrap();
+        std::fs::create_dir_all(anime_root.join("Other (2024) {tvdb-456}")).unwrap();
+
+        let library = LibraryConfig {
+            name: "Anime".to_string(),
+            path: anime_root.clone(),
+            media_type: MediaType::Tv,
+            content_type: Some(ContentType::Anime),
+            depth: 1,
+        };
+
+        let lookup = build_legacy_anime_root_lookup(&[&library]);
+        assert_eq!(lookup.len(), 1);
+        assert_eq!(
+            lookup
+                .get(&anime_root.join("Show"))
+                .map(|context| context.normalized_title.as_str()),
+            Some("Show")
+        );
+        assert!(!lookup.contains_key(&anime_root.join("Show (2024) {tvdb-123}")));
+    }
+
+    #[test]
+    fn test_legacy_anime_root_context_for_path_uses_first_library_component() {
+        let library_root = PathBuf::from("/library/anime");
+        let mut lookup = HashMap::new();
+        lookup.insert(
+            library_root.join("Show"),
+            LegacyAnimeRootContext {
+                normalized_title: "Show".to_string(),
+            },
+        );
+
+        let context = legacy_anime_root_context_for_path(
+            &library_root.join("Show/Season 01/Show - S01E01.mkv"),
+            &library_root,
+            &lookup,
+        )
+        .unwrap();
+
+        assert_eq!(context.normalized_title, "Show");
+        assert!(legacy_anime_root_context_for_path(
+            &library_root.join("Other/Season 01/Other - S01E01.mkv"),
+            &library_root,
+            &lookup
+        )
+        .is_none());
+    }
+
     #[tokio::test]
     async fn test_libraries_for_scope_filtered_rejects_selection_outside_scope() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -2596,6 +2733,42 @@ backup:
             .unwrap_err();
 
         assert!(err.to_string().contains("No libraries matched scope"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_build_report_flags_legacy_anime_root_duplicates() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let library_root = dir.path().join("anime");
+        let source_root = dir.path().join("rd");
+        let tagged_root = library_root.join("Show (2024) {tvdb-123}");
+        let legacy_root = library_root.join("Show");
+        let season_dir = legacy_root.join("Season 01");
+        std::fs::create_dir_all(&tagged_root).unwrap();
+        std::fs::create_dir_all(&season_dir).unwrap();
+        std::fs::create_dir_all(&source_root).unwrap();
+
+        let source_file = source_root.join("Show.S01E01.mkv");
+        std::fs::write(&source_file, "video").unwrap();
+        let legacy_symlink = season_dir.join("Show - S01E01.mkv");
+        std::os::unix::fs::symlink(&source_file, &legacy_symlink).unwrap();
+
+        let cfg = test_config(&library_root, &source_root);
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+        let auditor = CleanupAuditor::new_with_progress(&cfg, &db, false);
+
+        let report = auditor.build_report(CleanupScope::Anime).await.unwrap();
+        assert_eq!(report.summary.total_findings, 1);
+        assert_eq!(report.findings[0].symlink_path, legacy_symlink);
+        assert_eq!(report.findings[0].severity, FindingSeverity::Warning);
+        assert_eq!(
+            report.findings[0].reasons,
+            vec![FindingReason::LegacyAnimeRootDuplicate]
+        );
+        assert_eq!(report.findings[0].parsed.library_title, "Show");
+        assert!(!report.findings[0].db_tracked);
     }
 
     #[cfg(unix)]
@@ -2895,7 +3068,10 @@ backup:
         // Case-sensitive: only lowercase article prefix is stripped
         assert_eq!(strip_leading_article("the Matrix"), "Matrix");
         assert_eq!(strip_leading_article("a Beautiful Mind"), "Beautiful Mind");
-        assert_eq!(strip_leading_article("an Affair to Remember"), "Affair to Remember");
+        assert_eq!(
+            strip_leading_article("an Affair to Remember"),
+            "Affair to Remember"
+        );
         assert_eq!(strip_leading_article("The Matrix"), "The Matrix"); // case-sensitive, no match
         assert_eq!(strip_leading_article("Matrix"), "Matrix"); // no article
     }
@@ -2905,7 +3081,10 @@ backup:
         // Only strips whitespace-delimited year tokens (1900-2099)
         assert_eq!(strip_trailing_year("Breaking Bad 2008"), "Breaking Bad");
         assert_eq!(strip_trailing_year("Movie 2024"), "Movie");
-        assert_eq!(strip_trailing_year("Breaking Bad (2008)"), "Breaking Bad (2008)"); // parens not stripped
+        assert_eq!(
+            strip_trailing_year("Breaking Bad (2008)"),
+            "Breaking Bad (2008)"
+        ); // parens not stripped
         assert_eq!(strip_trailing_year("No Year Here"), "No Year Here");
         assert_eq!(strip_trailing_year("Show Season 1"), "Show Season 1"); // "1" not a valid year
     }
@@ -2922,5 +3101,4 @@ backup:
         // Not anomaly: 18 links when expected 20 (18 < 20, deficit)
         assert!(!is_season_count_anomaly(18, 20));
     }
-
 }
