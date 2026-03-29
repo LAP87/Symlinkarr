@@ -6,6 +6,32 @@
 - posture: `stable core, evolving ops`
 - intended use: local-first host or Docker installs, with Windows 11 users running through WSL2 or a Linux container
 
+## 2026-03-29 - Opt-in Legacy Anime Root Quarantine
+
+### Code Changes
+
+- `cleanup prune` gained an explicit `--include-legacy-anime-roots` opt-in for warning-only anime findings where an untagged legacy root coexists with a tagged `{tvdb-*}` or `{tmdb-*}` root.
+  - these candidates remain `foreign` and flow into quarantine instead of raw delete when foreign quarantine is enabled
+  - files: `src/main.rs`, `src/commands/cleanup.rs`, `src/cleanup_audit.rs`, `src/web/handlers.rs`
+
+### Docs
+
+- documented the new cleanup-prune opt-in in the quick-start cleanup examples and CLI manual.
+  - files: `README.md`, `docs/CLI_MANUAL.md`
+
+### Validation
+
+- `cargo test -q`
+  - result: passed
+- `cargo clippy --all-targets --all-features -- -D warnings`
+  - result: passed
+- `cargo run -- cleanup prune --report /tmp/symlinkarr-anime-cleanup-live.json --include-legacy-anime-roots`
+  - result:
+    - candidates: `6936`
+    - legacy anime-root warning candidates: `2735`
+    - managed delete candidates: `148`
+    - foreign quarantine candidates: `6788`
+
 ## 2026-03-22 - WSL2 Development Guide
 
 ### Docs

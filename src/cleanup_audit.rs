@@ -169,6 +169,7 @@ pub struct PruneOutcome {
     pub candidates: usize,
     pub high_or_critical_candidates: usize,
     pub safe_warning_duplicate_candidates: usize,
+    pub legacy_anime_root_candidates: usize,
     pub managed_candidates: usize,
     pub foreign_candidates: usize,
     pub reason_counts: Vec<PruneReasonCount>,
@@ -189,6 +190,7 @@ pub(crate) struct PrunePlan {
     pub candidate_paths: Vec<PathBuf>,
     pub high_or_critical_candidates: usize,
     pub safe_warning_duplicate_candidates: usize,
+    pub legacy_anime_root_candidates: usize,
     pub managed_candidates: usize,
     pub foreign_candidates: usize,
     pub reason_counts: Vec<PruneReasonCount>,
@@ -963,6 +965,7 @@ pub async fn run_prune(
     db: &Database,
     report_path: &Path,
     apply: bool,
+    include_legacy_anime_roots: bool,
     max_delete: Option<usize>,
     confirmation_token: Option<&str>,
 ) -> Result<PruneOutcome> {
@@ -975,7 +978,11 @@ pub async fn run_prune(
         .filter(|finding| finding.db_tracked)
         .map(|finding| finding.symlink_path.clone())
         .collect();
-    let plan = build_prune_plan(&report, cfg.cleanup.prune.quarantine_foreign);
+    let plan = build_prune_plan(
+        &report,
+        cfg.cleanup.prune.quarantine_foreign,
+        include_legacy_anime_roots,
+    );
 
     info!(
         "Cleanup prune: {} high/critical + {} safe duplicate candidates ({} total unique; {} managed delete / {} foreign quarantine)",
@@ -991,6 +998,7 @@ pub async fn run_prune(
             candidates: plan.candidate_paths.len(),
             high_or_critical_candidates: plan.high_or_critical_candidates,
             safe_warning_duplicate_candidates: plan.safe_warning_duplicate_candidates,
+            legacy_anime_root_candidates: plan.legacy_anime_root_candidates,
             managed_candidates: plan.managed_candidates,
             foreign_candidates: plan.foreign_candidates,
             reason_counts: plan.reason_counts.clone(),
@@ -1225,6 +1233,7 @@ pub async fn run_prune(
         candidates: plan.candidate_paths.len(),
         high_or_critical_candidates: plan.high_or_critical_candidates,
         safe_warning_duplicate_candidates: plan.safe_warning_duplicate_candidates,
+        legacy_anime_root_candidates: plan.legacy_anime_root_candidates,
         managed_candidates: plan.managed_candidates,
         foreign_candidates: plan.foreign_candidates,
         reason_counts: plan.reason_counts,
@@ -1987,8 +1996,23 @@ pub(crate) fn collect_safe_duplicate_prune_plan(
     }
 }
 
-pub(crate) fn build_prune_plan(report: &CleanupReport, quarantine_foreign: bool) -> PrunePlan {
+pub(crate) fn build_prune_plan(
+    report: &CleanupReport,
+    quarantine_foreign: bool,
+    include_legacy_anime_roots: bool,
+) -> PrunePlan {
     let safe_duplicate_plan = collect_safe_duplicate_prune_plan(&report.findings);
+    let legacy_anime_root_candidates: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|finding| !finding.db_tracked)
+        .filter(|finding| {
+            include_legacy_anime_roots
+                && finding
+                    .reasons
+                    .contains(&FindingReason::LegacyAnimeRootDuplicate)
+        })
+        .collect();
     let high_or_critical_candidates: Vec<_> = report
         .findings
         .iter()
@@ -2012,6 +2036,11 @@ pub(crate) fn build_prune_plan(report: &CleanupReport, quarantine_foreign: bool)
         .map(|f| f.symlink_path.clone())
         .collect();
     candidate_paths.extend(safe_duplicate_plan.prune_paths.iter().cloned());
+    candidate_paths.extend(
+        legacy_anime_root_candidates
+            .iter()
+            .map(|finding| finding.symlink_path.clone()),
+    );
     candidate_paths.sort();
     candidate_paths.dedup();
 
@@ -2075,6 +2104,7 @@ pub(crate) fn build_prune_plan(report: &CleanupReport, quarantine_foreign: bool)
         candidate_paths,
         high_or_critical_candidates: high_or_critical_candidates.len(),
         safe_warning_duplicate_candidates: safe_duplicate_plan.prune_paths.len(),
+        legacy_anime_root_candidates: legacy_anime_root_candidates.len(),
         managed_candidates,
         foreign_candidates,
         reason_counts,
@@ -2814,6 +2844,76 @@ mod tests {
         assert!(prunes.is_empty());
     }
 
+    #[test]
+    fn test_build_prune_plan_excludes_legacy_anime_root_warning_by_default() {
+        let report = report_with_findings(
+            Utc::now(),
+            vec![CleanupFinding {
+                symlink_path: PathBuf::from("/lib/Show/Season 01/Show - S01E01.mkv"),
+                source_path: PathBuf::from("/src/Show.S01E01.mkv"),
+                media_id: String::new(),
+                severity: FindingSeverity::Warning,
+                confidence: 0.55,
+                reasons: vec![FindingReason::LegacyAnimeRootDuplicate],
+                parsed: ParsedContext {
+                    library_title: "Show".to_string(),
+                    parsed_title: "Show".to_string(),
+                    season: Some(1),
+                    episode: Some(1),
+                },
+                alternate_match: None,
+                db_tracked: false,
+                ownership: CleanupOwnership::Foreign,
+            }],
+        );
+
+        let plan = build_prune_plan(&report, true, false);
+        assert_eq!(plan.candidate_paths.len(), 0);
+        assert_eq!(plan.legacy_anime_root_candidates, 0);
+    }
+
+    #[test]
+    fn test_build_prune_plan_can_include_legacy_anime_root_warning_candidates() {
+        let report = report_with_findings(
+            Utc::now(),
+            vec![CleanupFinding {
+                symlink_path: PathBuf::from("/lib/Show/Season 01/Show - S01E01.mkv"),
+                source_path: PathBuf::from("/src/Show.S01E01.mkv"),
+                media_id: String::new(),
+                severity: FindingSeverity::Warning,
+                confidence: 0.55,
+                reasons: vec![FindingReason::LegacyAnimeRootDuplicate],
+                parsed: ParsedContext {
+                    library_title: "Show".to_string(),
+                    parsed_title: "Show".to_string(),
+                    season: Some(1),
+                    episode: Some(1),
+                },
+                alternate_match: None,
+                db_tracked: false,
+                ownership: CleanupOwnership::Foreign,
+            }],
+        );
+
+        let plan = build_prune_plan(&report, true, true);
+        assert_eq!(
+            plan.candidate_paths,
+            vec![PathBuf::from("/lib/Show/Season 01/Show - S01E01.mkv")]
+        );
+        assert_eq!(plan.legacy_anime_root_candidates, 1);
+        assert_eq!(plan.foreign_candidates, 1);
+        assert_eq!(plan.managed_candidates, 0);
+        assert_eq!(
+            plan.reason_counts,
+            vec![PruneReasonCount {
+                reason: FindingReason::LegacyAnimeRootDuplicate,
+                total: 1,
+                managed: 0,
+                foreign: 1,
+            }]
+        );
+    }
+
     fn test_config(library_root: &Path, source_root: &Path) -> Config {
         let quarantine_root = library_root
             .parent()
@@ -3107,7 +3207,7 @@ cleanup:
         let report_path = dir.path().join("report.json");
         std::fs::write(&report_path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
 
-        let preview = run_prune(&cfg, &db, &report_path, false, None, None)
+        let preview = run_prune(&cfg, &db, &report_path, false, false, None, None)
             .await
             .unwrap();
         let outcome = run_prune(
@@ -3115,6 +3215,7 @@ cleanup:
             &db,
             &report_path,
             true,
+            false,
             None,
             Some(&preview.confirmation_token),
         )
@@ -3159,7 +3260,7 @@ cleanup:
         let report_path = dir.path().join("foreign-report.json");
         std::fs::write(&report_path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
 
-        let preview = run_prune(&cfg, &db, &report_path, false, None, None)
+        let preview = run_prune(&cfg, &db, &report_path, false, false, None, None)
             .await
             .unwrap();
         assert_eq!(preview.candidates, 1);
@@ -3171,6 +3272,7 @@ cleanup:
             &db,
             &report_path,
             true,
+            false,
             None,
             Some(&preview.confirmation_token),
         )
@@ -3206,7 +3308,7 @@ cleanup:
         let report_path = dir.path().join("foreign-disabled-report.json");
         std::fs::write(&report_path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
 
-        let preview = run_prune(&cfg, &db, &report_path, false, None, None)
+        let preview = run_prune(&cfg, &db, &report_path, false, false, None, None)
             .await
             .unwrap();
         assert_eq!(preview.candidates, 0);
@@ -3280,7 +3382,7 @@ cleanup:
         let report_path = dir.path().join("duplicates-report.json");
         std::fs::write(&report_path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
 
-        let preview = run_prune(&cfg, &db, &report_path, false, None, None)
+        let preview = run_prune(&cfg, &db, &report_path, false, false, None, None)
             .await
             .unwrap();
         assert_eq!(preview.candidates, 1);
@@ -3293,6 +3395,7 @@ cleanup:
             &db,
             &report_path,
             true,
+            false,
             None,
             Some(&preview.confirmation_token),
         )
@@ -3349,7 +3452,7 @@ cleanup:
         let report_path = dir.path().join("foreign-report.json");
         std::fs::write(&report_path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
 
-        let preview = run_prune(&cfg, &db, &report_path, false, None, None)
+        let preview = run_prune(&cfg, &db, &report_path, false, false, None, None)
             .await
             .unwrap();
         assert_eq!(preview.managed_candidates, 0);
@@ -3360,6 +3463,7 @@ cleanup:
             &db,
             &report_path,
             true,
+            false,
             None,
             Some(&preview.confirmation_token),
         )
@@ -3405,7 +3509,7 @@ cleanup:
         let report_path = dir.path().join("stale-report.json");
         std::fs::write(&report_path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
 
-        let preview = run_prune(&cfg, &db, &report_path, false, None, None)
+        let preview = run_prune(&cfg, &db, &report_path, false, false, None, None)
             .await
             .unwrap();
         let err = run_prune(
@@ -3413,6 +3517,7 @@ cleanup:
             &db,
             &report_path,
             true,
+            false,
             None,
             Some(&preview.confirmation_token),
         )
@@ -3442,7 +3547,7 @@ cleanup:
         );
         std::fs::write(&report_path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
 
-        let preview = run_prune(&cfg, &db, &report_path, false, None, None)
+        let preview = run_prune(&cfg, &db, &report_path, false, false, None, None)
             .await
             .unwrap();
 
@@ -3458,6 +3563,7 @@ cleanup:
             &db,
             &report_path,
             true,
+            false,
             None,
             Some(&preview.confirmation_token),
         )
@@ -3496,7 +3602,7 @@ cleanup:
         let report_path = dir.path().join("escaped-report.json");
         std::fs::write(&report_path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
 
-        let preview = run_prune(&cfg, &db, &report_path, false, None, None)
+        let preview = run_prune(&cfg, &db, &report_path, false, false, None, None)
             .await
             .unwrap();
         let outcome = run_prune(
@@ -3504,6 +3610,7 @@ cleanup:
             &db,
             &report_path,
             true,
+            false,
             None,
             Some(&preview.confirmation_token),
         )

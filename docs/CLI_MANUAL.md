@@ -138,7 +138,7 @@ Cleanup workflows for dead links, audit reports, and prune.
 symlinkarr cleanup [--library <LIBRARY>] [--output text|json]
 symlinkarr cleanup dead [--library <LIBRARY>] [--output text|json]
 symlinkarr cleanup audit [--scope anime] [--out <PATH>]
-symlinkarr cleanup prune --report <REPORT> [--apply] [--max-delete <N>] [--confirm-token <TOKEN>] [--gate-mode enforce|relaxed]
+symlinkarr cleanup prune --report <REPORT> [--apply] [--include-legacy-anime-roots] [--max-delete <N>] [--confirm-token <TOKEN>] [--gate-mode enforce|relaxed]
 ```
 
 Examples:
@@ -148,6 +148,7 @@ symlinkarr cleanup
 symlinkarr cleanup audit --scope anime
 symlinkarr cleanup audit --scope anime --out backups/cleanup-audit-manual.json
 symlinkarr cleanup prune --report backups/cleanup-audit-anime-YYYYMMDD-HHMMSS.json
+symlinkarr cleanup prune --report backups/cleanup-audit-anime-YYYYMMDD-HHMMSS.json --include-legacy-anime-roots
 symlinkarr cleanup prune --report backups/cleanup-audit-anime-YYYYMMDD-HHMMSS.json --apply --confirm-token <TOKEN>
 ```
 
@@ -155,6 +156,7 @@ Notes:
 
 - `cleanup audit` supports `anime`, `tv`, `movie`, and `all`.
 - `cleanup prune` is intentionally two-step. Preview first, then apply.
+- `cleanup prune --include-legacy-anime-roots` opt-ins warning-only anime findings where an untagged legacy root coexists with a tagged `{tvdb-*}`/`{tmdb-*}` root. These candidates are quarantined as `foreign`, not deleted.
 
 ### `repair`
 

@@ -623,6 +623,7 @@ pub async fn get_cleanup_prune(
             Ok(()) => Some(cleanup_audit::build_prune_plan(
                 &report,
                 state.config.cleanup.prune.quarantine_foreign,
+                false,
             )),
             Err(e) => {
                 error!("Failed to hydrate cleanup report DB state: {}", e);
@@ -744,6 +745,7 @@ pub async fn post_cleanup_prune(
         &state.database,
         report_path,
         true,              // apply
+        false,             // include_legacy_anime_roots
         None,              // max_delete
         Some(&form.token), // confirmation_token
     )

@@ -262,8 +262,11 @@ Cleanup workflow:
 ```bash
 symlinkarr cleanup audit --scope anime
 symlinkarr cleanup prune --report backups/cleanup-audit-anime-YYYYMMDD-HHMMSS.json
+symlinkarr cleanup prune --report backups/cleanup-audit-anime-YYYYMMDD-HHMMSS.json --include-legacy-anime-roots
 symlinkarr cleanup prune --report backups/cleanup-audit-anime-YYYYMMDD-HHMMSS.json --apply --confirm-token <TOKEN>
 ```
+
+`--include-legacy-anime-roots` is an explicit opt-in for warning-only anime findings where a legacy untagged root coexists with a tagged `{tvdb-*}` or `{tmdb-*}` root. Those candidates stay `foreign` and are quarantined rather than deleted.
 
 Cache management:
 

@@ -300,6 +300,8 @@ pub(crate) enum CleanupAction {
         #[arg(long)]
         apply: bool,
         #[arg(long)]
+        include_legacy_anime_roots: bool,
+        #[arg(long)]
         max_delete: Option<usize>,
         #[arg(long)]
         confirm_token: Option<String>,
@@ -492,6 +494,35 @@ mod tests {
                 assert!(pretty);
             }
             _ => panic!("expected report command"),
+        }
+    }
+
+    #[test]
+    fn cli_accepts_cleanup_prune_with_legacy_anime_opt_in() {
+        let cli = Cli::try_parse_from([
+            "symlinkarr",
+            "cleanup",
+            "prune",
+            "--report",
+            "/tmp/report.json",
+            "--include-legacy-anime-roots",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Cleanup {
+                action:
+                    Some(CleanupAction::Prune {
+                        report,
+                        include_legacy_anime_roots,
+                        ..
+                    }),
+                ..
+            } => {
+                assert_eq!(report, "/tmp/report.json");
+                assert!(include_legacy_anime_roots);
+            }
+            _ => panic!("expected cleanup prune command"),
         }
     }
 

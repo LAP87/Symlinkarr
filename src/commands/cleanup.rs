@@ -14,6 +14,7 @@ use crate::{CleanupAction, GateMode, OutputFormat};
 pub(crate) struct CleanupPruneArgs<'a> {
     pub report: &'a str,
     pub apply: bool,
+    pub include_legacy_anime_roots: bool,
     pub max_delete: Option<usize>,
     pub confirm_token: Option<&'a str>,
     pub gate_mode: GateMode,
@@ -39,6 +40,7 @@ pub(crate) async fn run_cleanup(
         Some(CleanupAction::Prune {
             report,
             apply,
+            include_legacy_anime_roots,
             max_delete,
             confirm_token,
             gate_mode,
@@ -49,6 +51,7 @@ pub(crate) async fn run_cleanup(
                 CleanupPruneArgs {
                     report: &report,
                     apply,
+                    include_legacy_anime_roots,
                     max_delete,
                     confirm_token: confirm_token.as_deref(),
                     gate_mode,
@@ -160,6 +163,7 @@ pub(crate) async fn run_cleanup_prune(
     let CleanupPruneArgs {
         report,
         apply,
+        include_legacy_anime_roots,
         max_delete,
         confirm_token,
         gate_mode,
@@ -200,6 +204,7 @@ pub(crate) async fn run_cleanup_prune(
         db,
         &effective_report_path,
         apply,
+        include_legacy_anime_roots,
         max_delete,
         confirm_token,
     )
@@ -215,6 +220,7 @@ pub(crate) async fn run_cleanup_prune(
             "candidates": outcome.candidates,
             "high_or_critical_candidates": outcome.high_or_critical_candidates,
             "safe_warning_duplicate_candidates": outcome.safe_warning_duplicate_candidates,
+            "legacy_anime_root_candidates": outcome.legacy_anime_root_candidates,
             "managed_candidates": outcome.managed_candidates,
             "foreign_candidates": outcome.foreign_candidates,
             "reason_counts": outcome.reason_counts,
@@ -237,6 +243,10 @@ pub(crate) async fn run_cleanup_prune(
         println!(
             "   Safe duplicate-warning candidates: {}",
             outcome.safe_warning_duplicate_candidates
+        );
+        println!(
+            "   Legacy anime-root warning candidates: {}",
+            outcome.legacy_anime_root_candidates
         );
         println!(
             "   Managed delete candidates: {}",
