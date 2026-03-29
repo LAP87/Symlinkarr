@@ -7,7 +7,10 @@ use tracing::{debug, info, warn};
 
 use crate::db::Database;
 use crate::models::{LinkRecord, LinkStatus, MatchResult, MediaType};
-use crate::utils::{cached_source_exists, path_under_roots, user_println, ProgressLine};
+use crate::utils::{
+    cached_source_exists, cached_source_health, path_under_roots, user_println, PathHealth,
+    ProgressLine,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinkWriteOutcome {
@@ -35,6 +38,23 @@ pub struct DeadLinkSummary {
 struct LinkWriteResult {
     outcome: LinkWriteOutcome,
     refresh_path: Option<PathBuf>,
+}
+
+fn destructive_source_exists(
+    operation: &str,
+    source_path: &std::path::Path,
+    source_health_cache: &mut HashMap<PathBuf, PathHealth>,
+    parent_health_cache: &mut HashMap<PathBuf, PathHealth>,
+) -> Result<bool> {
+    let source_health = cached_source_health(source_path, source_health_cache, parent_health_cache);
+    if source_health.blocks_destructive_ops() {
+        anyhow::bail!(
+            "Aborting {}: source path became unhealthy: {}",
+            operation,
+            source_health.describe(source_path)
+        );
+    }
+    Ok(source_health.is_healthy())
 }
 
 /// Creates and manages symlinks from Real-Debrid sources to Plex library.
@@ -537,8 +557,8 @@ impl Linker {
         let mut summary = DeadLinkSummary::default();
         let total_links = active_links.len();
         let started = Instant::now();
-        let mut source_exists_cache: HashMap<PathBuf, bool> = HashMap::new();
-        let mut parent_exists_cache: HashMap<PathBuf, bool> = HashMap::new();
+        let mut source_health_cache: HashMap<PathBuf, PathHealth> = HashMap::new();
+        let mut parent_health_cache: HashMap<PathBuf, PathHealth> = HashMap::new();
 
         if total_links > 0 {
             user_println(format!(
@@ -559,11 +579,12 @@ impl Linker {
                     continue;
                 }
             }
-            let source_exists = cached_source_exists(
+            let source_exists = destructive_source_exists(
+                "dead-link sweep",
                 &link.source_path,
-                &mut source_exists_cache,
-                &mut parent_exists_cache,
-            );
+                &mut source_health_cache,
+                &mut parent_health_cache,
+            )?;
             let target_meta = std::fs::symlink_metadata(&link.target_path);
 
             let target_ok = match &target_meta {
@@ -933,6 +954,25 @@ mod tests {
         let exists = cached_source_exists(&file, &mut source_cache, &mut parent_cache);
         assert!(exists);
         assert_eq!(source_cache.get(&file), Some(&true));
+    }
+
+    #[test]
+    fn test_destructive_source_exists_rejects_unhealthy_parent() {
+        let path = PathBuf::from("/mnt/rd/file.mkv");
+        let parent = path.parent().unwrap().to_path_buf();
+        let mut source_cache = HashMap::new();
+        let mut parent_cache = HashMap::new();
+        parent_cache.insert(parent, PathHealth::TransportDisconnected);
+
+        let err = destructive_source_exists(
+            "dead-link sweep",
+            &path,
+            &mut source_cache,
+            &mut parent_cache,
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("Aborting dead-link sweep"));
     }
 
     fn sample_movie_match(

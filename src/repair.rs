@@ -16,7 +16,10 @@ use crate::config::ContentType;
 use crate::db::Database;
 use crate::models::{LinkRecord, LinkStatus, MediaType};
 use crate::source_scanner::SourceScanner;
-use crate::utils::{cached_source_exists, path_under_roots, ProgressLine, VIDEO_EXTENSIONS};
+use crate::utils::{
+    cached_source_health, path_under_roots, PathHealth, ProgressLine,
+    VIDEO_EXTENSIONS,
+};
 
 /// Minimum score threshold for TV replacements (title + season + episode required)
 const TV_THRESHOLD: f64 = 0.75;
@@ -67,9 +70,9 @@ fn collect_fresh_dead_links_chunk(
     links: Vec<LinkRecord>,
     allowed_symlink_roots: Option<Vec<PathBuf>>,
     processed: &AtomicUsize,
-) -> Vec<DeadLink> {
-    let mut source_exists_cache: HashMap<PathBuf, bool> = HashMap::new();
-    let mut parent_exists_cache: HashMap<PathBuf, bool> = HashMap::new();
+) -> Result<Vec<DeadLink>> {
+    let mut source_health_cache: HashMap<PathBuf, PathHealth> = HashMap::new();
+    let mut parent_health_cache: HashMap<PathBuf, PathHealth> = HashMap::new();
     let mut fresh = Vec::new();
 
     for link in links {
@@ -80,11 +83,12 @@ fn collect_fresh_dead_links_chunk(
             }
         }
 
-        let source_exists = cached_source_exists(
+        let source_exists = destructive_source_exists(
+            "repair dead-link detection",
             &link.source_path,
-            &mut source_exists_cache,
-            &mut parent_exists_cache,
-        );
+            &mut source_health_cache,
+            &mut parent_health_cache,
+        )?;
         let target_ok = match std::fs::symlink_metadata(&link.target_path) {
             Ok(meta) if meta.file_type().is_symlink() => std::fs::read_link(&link.target_path)
                 .map(|resolved| resolved == link.source_path)
@@ -120,7 +124,24 @@ fn collect_fresh_dead_links_chunk(
         processed.fetch_add(1, Ordering::Relaxed);
     }
 
-    fresh
+    Ok(fresh)
+}
+
+fn destructive_source_exists(
+    operation: &str,
+    source_path: &Path,
+    source_health_cache: &mut HashMap<PathBuf, PathHealth>,
+    parent_health_cache: &mut HashMap<PathBuf, PathHealth>,
+) -> Result<bool> {
+    let source_health = cached_source_health(source_path, source_health_cache, parent_health_cache);
+    if source_health.blocks_destructive_ops() {
+        anyhow::bail!(
+            "Aborting {}: source path became unhealthy: {}",
+            operation,
+            source_health.describe(source_path)
+        );
+    }
+    Ok(source_health.is_healthy())
 }
 
 fn recommended_drift_workers(total_active: usize) -> usize {
@@ -461,8 +482,8 @@ impl Repairer {
         let total_active = active_links.len();
         let mut last_progress = Instant::now();
         let mut progress = ProgressLine::new("Fresh dead-link drift:");
-        let mut source_exists_cache: HashMap<PathBuf, bool> = HashMap::new();
-        let mut parent_exists_cache: HashMap<PathBuf, bool> = HashMap::new();
+        let mut source_health_cache: HashMap<PathBuf, PathHealth> = HashMap::new();
+        let mut parent_health_cache: HashMap<PathBuf, PathHealth> = HashMap::new();
         println!(
             "   🔎 Checking {} active link(s) for fresh dead-link drift...",
             total_active
@@ -496,7 +517,7 @@ impl Repairer {
             while !workers.is_empty() {
                 match tokio::time::timeout(Duration::from_millis(500), workers.join_next()).await {
                     Ok(Some(result)) => {
-                        let chunk_fresh = result?;
+                        let chunk_fresh = result??;
                         fresh.extend(chunk_fresh);
                     }
                     Ok(None) => break,
@@ -535,11 +556,12 @@ impl Repairer {
                     }
                 }
 
-                let source_exists = cached_source_exists(
+                let source_exists = destructive_source_exists(
+                    "repair dead-link detection",
                     &link.source_path,
-                    &mut source_exists_cache,
-                    &mut parent_exists_cache,
-                );
+                    &mut source_health_cache,
+                    &mut parent_health_cache,
+                )?;
                 let target_ok = match std::fs::symlink_metadata(&link.target_path) {
                     Ok(meta) if meta.file_type().is_symlink() => {
                         std::fs::read_link(&link.target_path)
@@ -1976,6 +1998,27 @@ mod tests {
             .unwrap_err();
 
         assert!(err.to_string().contains("Refusing repair auto"));
+    }
+
+    #[test]
+    fn test_destructive_source_exists_rejects_unhealthy_parent() {
+        let path = PathBuf::from("/mnt/rd/file.mkv");
+        let parent = path.parent().unwrap().to_path_buf();
+        let mut source_cache = HashMap::new();
+        let mut parent_cache = HashMap::new();
+        parent_cache.insert(parent, PathHealth::TransportDisconnected);
+
+        let err = destructive_source_exists(
+            "repair dead-link detection",
+            &path,
+            &mut source_cache,
+            &mut parent_cache,
+        )
+        .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("Aborting repair dead-link detection"));
     }
 
     // ── Pure function unit tests ──────────────────────────────────────────────
