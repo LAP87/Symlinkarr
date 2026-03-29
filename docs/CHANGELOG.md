@@ -24,6 +24,8 @@
   - files: `src/web/mod.rs`, `Cargo.toml`, `Cargo.lock`
 - web/API background outcome banners and status endpoints now suppress stale failures once a newer durable scan run or cleanup report exists, and cleanup-audit library selection no longer breaks on names containing commas.
   - files: `src/web/mod.rs`, `src/web/handlers.rs`, `src/web/api/mod.rs`
+- web/API repair now runs in the background with in-memory status/outcome reporting instead of holding the request open for the full repair pass.
+  - files: `src/web/mod.rs`, `src/web/handlers.rs`, `src/web/api/mod.rs`, `src/web/templates.rs`, `src/web/ui/dead_links.html`, `src/web/ui/repair_result.html`
 
 ### Docs
 

@@ -8,7 +8,10 @@ use std::time::SystemTime;
 #[allow(unused_imports)]
 use super::filters;
 
-use super::{ActiveCleanupAuditJob, ActiveScanJob, LastCleanupAuditOutcome, LastScanOutcome};
+use super::{
+    ActiveCleanupAuditJob, ActiveRepairJob, ActiveScanJob, LastCleanupAuditOutcome,
+    LastRepairOutcome, LastScanOutcome,
+};
 use crate::cleanup_audit::{CleanupReport, CleanupScope};
 use crate::config::Config;
 use crate::db::{AcquisitionJobCounts, ScanHistoryRecord};
@@ -96,6 +99,21 @@ impl From<ActiveCleanupAuditJob> for ActiveCleanupAuditView {
 }
 
 #[derive(Debug, Clone)]
+pub struct ActiveRepairView {
+    pub started_at: String,
+    pub scope_label: String,
+}
+
+impl From<ActiveRepairJob> for ActiveRepairView {
+    fn from(value: ActiveRepairJob) -> Self {
+        Self {
+            started_at: value.started_at,
+            scope_label: value.scope_label,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct BackgroundScanOutcomeView {
     pub finished_at: String,
     pub scope_label: String,
@@ -137,6 +155,33 @@ impl From<LastCleanupAuditOutcome> for BackgroundCleanupAuditOutcomeView {
             success: value.success,
             message: value.message,
             report_path: value.report_path,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BackgroundRepairOutcomeView {
+    pub finished_at: String,
+    pub scope_label: String,
+    pub success: bool,
+    pub message: String,
+    pub repaired: usize,
+    pub failed: usize,
+    pub skipped: usize,
+    pub stale: usize,
+}
+
+impl From<LastRepairOutcome> for BackgroundRepairOutcomeView {
+    fn from(value: LastRepairOutcome) -> Self {
+        Self {
+            finished_at: value.finished_at,
+            scope_label: value.scope_label,
+            success: value.success,
+            message: value.message,
+            repaired: value.repaired,
+            failed: value.failed,
+            skipped: value.skipped,
+            stale: value.stale,
         }
     }
 }
@@ -414,6 +459,8 @@ pub struct LinksTemplate {
 #[template(path = "web/ui/dead_links.html")]
 pub struct DeadLinksTemplate {
     pub links: Vec<LinkRecord>,
+    pub active_repair: Option<ActiveRepairView>,
+    pub last_repair_outcome: Option<BackgroundRepairOutcomeView>,
 }
 
 #[derive(Template)]
@@ -423,6 +470,8 @@ pub struct RepairResultTemplate {
     pub message: String,
     pub repaired: usize,
     pub failed: usize,
+    pub active_repair: Option<ActiveRepairView>,
+    pub last_repair_outcome: Option<BackgroundRepairOutcomeView>,
 }
 
 // ─── Config ─────────────────────────────────────────────────────────
@@ -577,6 +626,11 @@ mod tests {
                     updated_at: None,
                 },
             ],
+            active_repair: Some(ActiveRepairView {
+                started_at: "2026-03-29 23:59:00 UTC".to_string(),
+                scope_label: "All Libraries".to_string(),
+            }),
+            last_repair_outcome: None,
         };
 
         let html = template.render().unwrap();
@@ -584,6 +638,7 @@ mod tests {
         assert!(html.contains("2 dead"));
         assert!(html.contains("Auto-Repair All"));
         assert!(html.contains("Cleanup"));
+        assert!(html.contains("Background repair running"));
         assert!(html.contains("tv / movie"));
         assert!(html.contains("badge badge-info"));
     }

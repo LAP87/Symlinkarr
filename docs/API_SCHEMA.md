@@ -186,6 +186,7 @@ Notes:
 
 - `active_job` is `null` when no background scan is currently running.
 - `last_outcome` carries the latest background-scan success or failure, including failures that do not produce a durable scan-history row.
+- stale failed outcomes are suppressed once a newer durable `scan_runs` entry exists.
 
 ## `GET /api/v1/scan/jobs`
 
@@ -321,26 +322,63 @@ Not found:
 
 ## `POST /api/v1/repair/auto`
 
-Runs the web API repair action.
+Starts the repair flow in the background.
 
 Status codes:
 
-- `200 OK` when the repair flow completed
-- `400 Bad Request` when safety gates reject the run, for example unhealthy source roots
-- `500 Internal Server Error` for unexpected repair failures
+- `202 Accepted` when the repair flow was accepted and is now running in the background
+- `409 Conflict` when another scan, cleanup audit, or repair run is already active
 
 Response schema:
 
 ```json
 {
   "success": true,
-  "message": "Repair completed: 1 repaired, 0 unrepairable, 0 skipped, 0 stale record(s).",
-  "repaired": 1,
-  "failed": 0
+  "message": "Repair started in background for All Libraries. Poll /api/v1/repair/status for the finished outcome.",
+  "repaired": 0,
+  "failed": 0,
+  "skipped": 0,
+  "stale": 0,
+  "running": true,
+  "started_at": "2026-03-29 23:59:00 UTC",
+  "scope_label": "All Libraries"
 }
 ```
 
-This endpoint now runs the same core repair flow as the CLI repair path, without the CLI-only self-heal prompt/output layer.
+Notes:
+
+- this route now returns immediately instead of holding the request open for the full repair pass
+- the background worker still runs the same core repair flow as CLI `repair auto`, without the CLI-only self-heal prompt/output layer
+
+## `GET /api/v1/repair/status`
+
+Returns the current in-memory background repair state plus the latest completed repair outcome.
+
+Status codes:
+
+- `200 OK`
+
+Response schema:
+
+```json
+{
+  "active_job": {
+    "status": "running",
+    "started_at": "2026-03-29 23:59:00 UTC",
+    "scope_label": "All Libraries"
+  },
+  "last_outcome": {
+    "finished_at": "2026-03-30 00:00:05 UTC",
+    "scope_label": "All Libraries",
+    "success": true,
+    "message": "Repair completed: 1 repaired, 0 unrepairable, 0 skipped, 0 stale record(s).",
+    "repaired": 1,
+    "failed": 0,
+    "skipped": 0,
+    "stale": 0
+  }
+}
+```
 
 ## `POST /api/v1/cleanup/audit`
 
@@ -417,6 +455,7 @@ Notes:
 
 - `active_job` is `null` when no cleanup audit is currently running.
 - `last_outcome` carries the latest background cleanup-audit success or failure, including failures that never produced a report file.
+- stale failed outcomes are suppressed once a newer durable cleanup report exists on disk.
 
 ## `GET /api/v1/cleanup/audit/jobs`
 

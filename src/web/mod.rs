@@ -51,6 +51,12 @@ pub(crate) struct ActiveCleanupAuditJob {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) struct ActiveRepairJob {
+    pub started_at: String,
+    pub scope_label: String,
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct LastScanOutcome {
     pub finished_at: String,
     pub scope_label: String,
@@ -70,12 +76,26 @@ pub(crate) struct LastCleanupAuditOutcome {
     pub report_path: Option<String>,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct LastRepairOutcome {
+    pub finished_at: String,
+    pub scope_label: String,
+    pub success: bool,
+    pub message: String,
+    pub repaired: usize,
+    pub failed: usize,
+    pub skipped: usize,
+    pub stale: usize,
+}
+
 #[derive(Clone, Debug, Default)]
 struct BackgroundJobState {
     active_scan: Option<ActiveScanJob>,
     active_cleanup_audit: Option<ActiveCleanupAuditJob>,
+    active_repair: Option<ActiveRepairJob>,
     last_scan_outcome: Option<LastScanOutcome>,
     last_cleanup_audit_outcome: Option<LastCleanupAuditOutcome>,
+    last_repair_outcome: Option<LastRepairOutcome>,
 }
 
 /// Shared application state passed to handlers
@@ -113,6 +133,10 @@ impl WebState {
             .clone()
     }
 
+    pub(crate) async fn active_repair(&self) -> Option<ActiveRepairJob> {
+        self.background_jobs.lock().await.active_repair.clone()
+    }
+
     pub(crate) async fn last_scan_outcome(&self) -> Option<LastScanOutcome> {
         self.background_jobs.lock().await.last_scan_outcome.clone()
     }
@@ -122,6 +146,14 @@ impl WebState {
             .lock()
             .await
             .last_cleanup_audit_outcome
+            .clone()
+    }
+
+    pub(crate) async fn last_repair_outcome(&self) -> Option<LastRepairOutcome> {
+        self.background_jobs
+            .lock()
+            .await
+            .last_repair_outcome
             .clone()
     }
 
@@ -149,6 +181,12 @@ impl WebState {
             return Err(format!(
                 "A cleanup audit is already running for {} ({}) started {}.",
                 job.scope_label, job.libraries_label, job.started_at
+            ));
+        }
+        if let Some(job) = background_jobs.active_repair.clone() {
+            return Err(format!(
+                "A repair run is already running for {} (started {}).",
+                job.scope_label, job.started_at
             ));
         }
 
@@ -274,6 +312,12 @@ impl WebState {
                 job.scope_label, job.libraries_label, job.started_at
             ));
         }
+        if let Some(job) = background_jobs.active_repair.clone() {
+            return Err(format!(
+                "A repair run is already running for {} (started {}).",
+                job.scope_label, job.started_at
+            ));
+        }
 
         let job = ActiveCleanupAuditJob {
             started_at: Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string(),
@@ -368,6 +412,127 @@ impl WebState {
         Ok(job)
     }
 
+    pub(crate) async fn start_repair(&self) -> std::result::Result<ActiveRepairJob, String> {
+        let mut background_jobs = self.background_jobs.lock().await;
+        if let Some(job) = background_jobs.active_scan.clone() {
+            return Err(format!(
+                "A scan is already running for {} (started {}).",
+                job.scope_label, job.started_at
+            ));
+        }
+        if let Some(job) = background_jobs.active_cleanup_audit.clone() {
+            return Err(format!(
+                "A cleanup audit is already running for {} ({}) started {}.",
+                job.scope_label, job.libraries_label, job.started_at
+            ));
+        }
+        if let Some(job) = background_jobs.active_repair.clone() {
+            return Err(format!(
+                "A repair run is already running for {} (started {}).",
+                job.scope_label, job.started_at
+            ));
+        }
+
+        let job = ActiveRepairJob {
+            started_at: Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+            scope_label: "All Libraries".to_string(),
+        };
+        background_jobs.active_repair = Some(job.clone());
+        drop(background_jobs);
+
+        let config = self.config.clone();
+        let database = self.database.clone();
+        let background_jobs = self.background_jobs.clone();
+        let background_job = job.clone();
+        tokio::spawn(async move {
+            let result = std::panic::AssertUnwindSafe(async {
+                crate::commands::repair::execute_repair_auto(
+                    config.as_ref(),
+                    database.as_ref(),
+                    None,
+                    false,
+                )
+                .await
+            })
+            .catch_unwind()
+            .await;
+
+            let finished_at = Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string();
+            let outcome = match result {
+                Ok(Ok(results)) => {
+                    let (repaired, failed, skipped, stale) =
+                        crate::commands::repair::summarize_repair_results(&results);
+                    let message = if repaired == 0 && failed == 0 && skipped == 0 && stale == 0 {
+                        "Repair completed. No dead links required action.".to_string()
+                    } else {
+                        format!(
+                            "Repair completed: {} repaired, {} unrepairable, {} skipped, {} stale record(s).",
+                            repaired, failed, skipped, stale
+                        )
+                    };
+
+                    info!(
+                        "Background repair completed (scope={}): repaired={}, failed={}, skipped={}, stale={}",
+                        background_job.scope_label, repaired, failed, skipped, stale
+                    );
+
+                    LastRepairOutcome {
+                        finished_at,
+                        scope_label: background_job.scope_label.clone(),
+                        success: true,
+                        message,
+                        repaired,
+                        failed,
+                        skipped,
+                        stale,
+                    }
+                }
+                Ok(Err(err)) => {
+                    error!(
+                        "Background repair failed (scope={}): {}",
+                        background_job.scope_label, err
+                    );
+                    LastRepairOutcome {
+                        finished_at,
+                        scope_label: background_job.scope_label.clone(),
+                        success: false,
+                        message: err.to_string(),
+                        repaired: 0,
+                        failed: 0,
+                        skipped: 0,
+                        stale: 0,
+                    }
+                }
+                Err(panic) => {
+                    let message = format!(
+                        "internal panic while running background repair: {}",
+                        panic_message(panic)
+                    );
+                    error!(
+                        "Background repair panicked (scope={}): {}",
+                        background_job.scope_label, message
+                    );
+                    LastRepairOutcome {
+                        finished_at,
+                        scope_label: background_job.scope_label.clone(),
+                        success: false,
+                        message,
+                        repaired: 0,
+                        failed: 0,
+                        skipped: 0,
+                        stale: 0,
+                    }
+                }
+            };
+
+            let mut background_jobs = background_jobs.lock().await;
+            background_jobs.last_repair_outcome = Some(outcome);
+            background_jobs.active_repair = None;
+        });
+
+        Ok(job)
+    }
+
     #[cfg(test)]
     pub(crate) async fn set_active_scan_for_test(&self, job: Option<ActiveScanJob>) {
         self.background_jobs.lock().await.active_scan = job;
@@ -392,6 +557,19 @@ impl WebState {
         outcome: Option<LastCleanupAuditOutcome>,
     ) {
         self.background_jobs.lock().await.last_cleanup_audit_outcome = outcome;
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn set_active_repair_for_test(&self, job: Option<ActiveRepairJob>) {
+        self.background_jobs.lock().await.active_repair = job;
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn set_last_repair_outcome_for_test(
+        &self,
+        outcome: Option<LastRepairOutcome>,
+    ) {
+        self.background_jobs.lock().await.last_repair_outcome = outcome;
     }
 }
 

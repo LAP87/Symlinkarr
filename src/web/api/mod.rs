@@ -15,7 +15,6 @@ use crate::cleanup_audit::{self, CleanupReport, CleanupScope};
 use crate::commands::config::validate_config_report;
 use crate::commands::discover::load_discovery_snapshot;
 use crate::commands::doctor::{collect_doctor_checks, DoctorCheckMode};
-use crate::commands::repair::{execute_repair_auto, summarize_repair_results};
 use crate::config::Config;
 use crate::db::{Database, ScanHistoryRecord};
 
@@ -36,6 +35,7 @@ pub fn create_router(state: WebState) -> Router<WebState> {
         .route("/scan/history", get(api_get_scan_history))
         .route("/scan/:id", get(api_get_scan_run))
         .route("/repair/auto", post(api_post_repair_auto))
+        .route("/repair/status", get(api_get_repair_status))
         .route("/cleanup/audit", post(api_post_cleanup_audit))
         .route("/cleanup/audit/status", get(api_get_cleanup_audit_status))
         .route("/cleanup/audit/jobs", get(api_get_cleanup_audit_jobs))
@@ -225,14 +225,36 @@ pub struct ApiRepairResponse {
     pub message: String,
     pub repaired: usize,
     pub failed: usize,
+    pub skipped: usize,
+    pub stale: usize,
+    pub running: bool,
+    pub started_at: Option<String>,
+    pub scope_label: Option<String>,
 }
 
-fn repair_error_status(message: &str) -> StatusCode {
-    if message.contains("Refusing repair auto") || message.contains("Unknown library filter") {
-        StatusCode::BAD_REQUEST
-    } else {
-        StatusCode::INTERNAL_SERVER_ERROR
-    }
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApiRepairJob {
+    pub status: String,
+    pub started_at: String,
+    pub scope_label: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApiRepairOutcome {
+    pub finished_at: String,
+    pub scope_label: String,
+    pub success: bool,
+    pub message: String,
+    pub repaired: usize,
+    pub failed: usize,
+    pub skipped: usize,
+    pub stale: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApiRepairStatusResponse {
+    pub active_job: Option<ApiRepairJob>,
+    pub last_outcome: Option<ApiRepairOutcome>,
 }
 
 fn resolve_cleanup_report_path(
@@ -797,42 +819,68 @@ pub async fn api_get_scan_run(
 
 /// POST /api/v1/repair/auto
 pub async fn api_post_repair_auto(State(state): State<WebState>) -> impl IntoResponse {
-    info!("API: Running auto repair");
+    info!("API: Starting background auto repair");
 
-    match execute_repair_auto(&state.config, &state.database, None, false).await {
-        Ok(results) => {
-            let (repaired, failed, skipped, stale) = summarize_repair_results(&results);
-            let message = if repaired == 0 && failed == 0 && skipped == 0 && stale == 0 {
-                "Repair completed. No dead links required action.".to_string()
-            } else {
-                format!(
-                    "Repair completed: {} repaired, {} unrepairable, {} skipped, {} stale record(s).",
-                    repaired, failed, skipped, stale
-                )
-            };
-            (
-                StatusCode::OK,
-                Json(ApiRepairResponse {
-                    success: true,
-                    message,
-                    repaired,
-                    failed,
-                }),
-            )
-        }
+    match state.start_repair().await {
+        Ok(job) => (
+            StatusCode::ACCEPTED,
+            Json(ApiRepairResponse {
+                success: true,
+                message: format!(
+                    "Repair started in background for {}. Poll /api/v1/repair/status for the finished outcome.",
+                    job.scope_label
+                ),
+                repaired: 0,
+                failed: 0,
+                skipped: 0,
+                stale: 0,
+                running: true,
+                started_at: Some(job.started_at),
+                scope_label: Some(job.scope_label),
+            }),
+        ),
         Err(err) => {
-            let message = err.to_string();
+            let active_repair = state.active_repair().await;
             (
-                repair_error_status(&message),
+                StatusCode::CONFLICT,
                 Json(ApiRepairResponse {
                     success: false,
-                    message,
+                    message: format!("Repair not started: {}", err),
                     repaired: 0,
                     failed: 0,
+                    skipped: 0,
+                    stale: 0,
+                    running: active_repair.is_some(),
+                    started_at: active_repair.as_ref().map(|job| job.started_at.clone()),
+                    scope_label: active_repair.map(|job| job.scope_label),
                 }),
             )
         }
     }
+}
+
+/// GET /api/v1/repair/status
+pub async fn api_get_repair_status(State(state): State<WebState>) -> Json<ApiRepairStatusResponse> {
+    Json(ApiRepairStatusResponse {
+        active_job: state.active_repair().await.map(|job| ApiRepairJob {
+            status: "running".to_string(),
+            started_at: job.started_at,
+            scope_label: job.scope_label,
+        }),
+        last_outcome: state
+            .last_repair_outcome()
+            .await
+            .map(|outcome| ApiRepairOutcome {
+                finished_at: outcome.finished_at,
+                scope_label: outcome.scope_label,
+                success: outcome.success,
+                message: outcome.message,
+                repaired: outcome.repaired,
+                failed: outcome.failed,
+                skipped: outcome.skipped,
+                stale: outcome.stale,
+            }),
+    })
 }
 
 /// POST /api/v1/cleanup/audit
@@ -1620,7 +1668,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn api_post_repair_auto_runs_real_repair_flow() {
+    async fn api_post_repair_auto_starts_background_repair_flow() {
         let dir = tempfile::tempdir().unwrap();
         let cfg = test_config(dir.path());
         let db = Database::new(&cfg.db_path).await.unwrap();
@@ -1653,14 +1701,32 @@ mod tests {
         let response = api_post_repair_auto(State(state.clone()))
             .await
             .into_response();
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let json: ApiRepairResponse = serde_json::from_slice(&bytes).unwrap();
 
         assert!(json.success);
-        assert_eq!(json.repaired, 1);
+        assert!(json.running);
+        assert_eq!(json.repaired, 0);
         assert_eq!(json.failed, 0);
-        assert!(json.message.contains("1 repaired, 0 unrepairable"));
+        assert!(json.message.contains("Repair started in background"));
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if state.last_repair_outcome().await.is_some() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("background repair should finish");
+
+        let status = api_get_repair_status(State(state.clone())).await;
+        let status_json = serde_json::to_value(status.0).unwrap();
+        assert!(status_json["active_job"].is_null());
+        assert_eq!(status_json["last_outcome"]["repaired"], 1);
+        assert_eq!(status_json["last_outcome"]["failed"], 0);
 
         let repaired = state.database.get_active_links().await.unwrap();
         let repaired = repaired

@@ -16,7 +16,6 @@ use crate::cleanup_audit::{self, CleanupScope};
 use crate::commands::config::validate_config_report;
 use crate::commands::discover::load_discovery_snapshot;
 use crate::commands::doctor::{collect_doctor_checks, DoctorCheckMode};
-use crate::commands::repair::{execute_repair_auto, summarize_repair_results};
 use crate::db::{AcquisitionJobCounts, ScanHistoryRecord};
 
 use super::templates::*;
@@ -109,6 +108,10 @@ async fn visible_last_cleanup_audit_outcome(
         .map(Into::into)
 }
 
+async fn visible_last_repair_outcome(state: &WebState) -> Option<BackgroundRepairOutcomeView> {
+    state.last_repair_outcome().await.map(Into::into)
+}
+
 fn resolve_backup_restore_path(backup_dir: &StdPath, backup_file: &str) -> anyhow::Result<PathBuf> {
     let trimmed = backup_file.trim();
     if trimmed.is_empty() {
@@ -163,14 +166,6 @@ fn resolve_cleanup_report_path(backup_dir: &StdPath, report: &str) -> anyhow::Re
     }
 
     Ok(backup_dir.join(requested))
-}
-
-fn repair_error_status(message: &str) -> StatusCode {
-    if message.contains("Refusing repair auto") || message.contains("Unknown library filter") {
-        StatusCode::BAD_REQUEST
-    } else {
-        StatusCode::INTERNAL_SERVER_ERROR
-    }
 }
 
 async fn filtered_scan_history(
@@ -953,47 +948,61 @@ pub async fn get_dead_links(State(state): State<WebState>) -> impl IntoResponse 
         }
     };
 
-    let template = DeadLinksTemplate { links };
+    let active_repair = state.active_repair().await.map(Into::into);
+    let last_repair_outcome = if active_repair.is_none() {
+        visible_last_repair_outcome(&state).await
+    } else {
+        None
+    };
+
+    let template = DeadLinksTemplate {
+        links,
+        active_repair,
+        last_repair_outcome,
+    };
     Html(template.render().unwrap_or_else(|e| e.to_string()))
 }
 
 /// POST /links/repair - Repair dead links
 pub async fn post_repair(State(state): State<WebState>) -> impl IntoResponse {
-    info!("Running auto repair");
+    info!("Starting background auto repair");
 
-    match execute_repair_auto(&state.config, &state.database, None, false).await {
-        Ok(results) => {
-            let (repaired, failed, skipped, stale) = summarize_repair_results(&results);
-            let message = if repaired == 0 && failed == 0 && skipped == 0 && stale == 0 {
-                "Repair completed. No dead links required action.".to_string()
-            } else {
-                format!(
-                    "Repair completed: {} repaired, {} unrepairable, {} skipped, {} stale record(s).",
-                    repaired, failed, skipped, stale
-                )
-            };
-            let template = RepairResultTemplate {
-                success: true,
-                message,
-                repaired,
-                failed,
-            };
-            (
-                StatusCode::OK,
-                Html(template.render().unwrap_or_else(|e| e.to_string())),
-            )
-        }
+    match state.start_repair().await {
+        Ok(job) => (
+            StatusCode::ACCEPTED,
+            Html(
+                RepairResultTemplate {
+                    success: true,
+                    message: format!(
+                        "Repair started in background for {}. Refresh /links/dead for the finished outcome.",
+                        job.scope_label
+                    ),
+                    repaired: 0,
+                    failed: 0,
+                    active_repair: Some(job.into()),
+                    last_repair_outcome: None,
+                }
+                .render()
+                .unwrap_or_else(|e| e.to_string()),
+            ),
+        ),
         Err(err) => {
             let message = err.to_string();
-            let template = RepairResultTemplate {
-                success: false,
-                message: message.clone(),
-                repaired: 0,
-                failed: 0,
-            };
+            let active_repair = state.active_repair().await.map(Into::into);
             (
-                repair_error_status(&message),
-                Html(template.render().unwrap_or_else(|e| e.to_string())),
+                StatusCode::CONFLICT,
+                Html(
+                    RepairResultTemplate {
+                        success: false,
+                        message: format!("Repair not started: {}", message),
+                        repaired: 0,
+                        failed: 0,
+                        active_repair,
+                        last_repair_outcome: visible_last_repair_outcome(&state).await,
+                    }
+                    .render()
+                    .unwrap_or_else(|e| e.to_string()),
+                ),
             )
         }
     }
@@ -1823,7 +1832,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn post_repair_runs_real_repair_flow() {
+    async fn post_repair_starts_background_repair_flow() {
         let dir = tempfile::tempdir().unwrap();
         let cfg = test_config(dir.path());
         let db = Database::new(&cfg.db_path).await.unwrap();
@@ -1854,11 +1863,30 @@ mod tests {
 
         let state = WebState::new(cfg, db);
         let response = post_repair(State(state.clone())).await.into_response();
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let body = String::from_utf8(bytes.to_vec()).unwrap();
 
-        assert!(body.contains("Repair completed: 1 repaired, 0 unrepairable"));
+        assert!(body.contains("Repair started in background"));
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if state.last_repair_outcome().await.is_some() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("background repair should finish");
+
+        let outcome = state
+            .last_repair_outcome()
+            .await
+            .expect("expected repair outcome");
+        assert!(outcome.success);
+        assert_eq!(outcome.repaired, 1);
+        assert_eq!(outcome.failed, 0);
 
         let repaired = state.database.get_active_links().await.unwrap();
         let repaired = repaired
