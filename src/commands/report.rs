@@ -85,8 +85,11 @@ struct PlexDuplicateShowSample {
     title: String,
     original_title: String,
     year: Option<i64>,
+    total_rows: usize,
     live_rows: usize,
+    deleted_rows: usize,
     guid_kinds: Vec<String>,
+    guids: Vec<String>,
 }
 
 #[derive(Serialize, Debug, Default, Clone, PartialEq, Eq)]
@@ -94,8 +97,11 @@ struct CorrelatedAnimeDuplicateSample {
     normalized_title: String,
     tagged_roots: Vec<PathBuf>,
     untagged_roots: Vec<PathBuf>,
+    plex_total_rows: usize,
     plex_live_rows: usize,
+    plex_deleted_rows: usize,
     plex_guid_kinds: Vec<String>,
+    plex_guids: Vec<String>,
 }
 
 #[derive(Serialize, Debug, Default, Clone, PartialEq, Eq)]
@@ -535,7 +541,9 @@ fn summarize_plex_duplicate_show_records(
 ) -> PlexDuplicateSummary {
     #[derive(Default)]
     struct Bucket {
+        total_rows: usize,
         live_rows: usize,
+        guids: Vec<String>,
         guid_kinds: Vec<String>,
     }
 
@@ -548,9 +556,11 @@ fn summarize_plex_duplicate_show_records(
                 record.year,
             ))
             .or_default();
+        bucket.total_rows += 1;
         if record.live {
             bucket.live_rows += 1;
         }
+        bucket.guids.push(record.guid.clone());
         bucket.guid_kinds.push(record.guid_kind.clone());
     }
 
@@ -558,6 +568,10 @@ fn summarize_plex_duplicate_show_records(
     let mut hama_anidb_tvdb_groups = 0;
 
     for ((title, original_title, year), bucket) in grouped {
+        let mut unique_guids: Vec<String> = bucket.guids.into_iter().collect();
+        unique_guids.sort();
+        unique_guids.dedup();
+
         let mut unique_guid_kinds: Vec<String> = bucket.guid_kinds.into_iter().collect();
         unique_guid_kinds.sort();
         unique_guid_kinds.dedup();
@@ -572,8 +586,11 @@ fn summarize_plex_duplicate_show_records(
             title,
             original_title,
             year,
+            total_rows: bucket.total_rows,
             live_rows: bucket.live_rows,
+            deleted_rows: bucket.total_rows.saturating_sub(bucket.live_rows),
             guid_kinds: unique_guid_kinds,
+            guids: unique_guids,
         });
     }
 
@@ -618,8 +635,11 @@ fn correlate_anime_duplicate_groups(
                 normalized_title: fs_group.normalized_title.clone(),
                 tagged_roots: fs_group.tagged_roots.clone(),
                 untagged_roots: fs_group.untagged_roots.clone(),
+                plex_total_rows: plex_group.total_rows,
                 plex_live_rows: plex_group.live_rows,
+                plex_deleted_rows: plex_group.deleted_rows,
                 plex_guid_kinds: plex_group.guid_kinds.clone(),
+                plex_guids: plex_group.guids.clone(),
             });
         }
     }
@@ -837,8 +857,13 @@ fn emit_text_report(report: &ReportOutput) {
                         .unwrap_or_default();
                     let guid_kinds = sample.guid_kinds.join(", ");
                     println!(
-                        "    - {}{} [{} live rows] <{}>",
-                        sample.title, year, sample.live_rows, guid_kinds
+                        "    - {}{} [{} total, {} live, {} deleted] <{}>",
+                        sample.title,
+                        year,
+                        sample.total_rows,
+                        sample.live_rows,
+                        sample.deleted_rows,
+                        guid_kinds
                     );
                 }
             }
@@ -850,8 +875,12 @@ fn emit_text_report(report: &ReportOutput) {
                 for sample in samples {
                     let guid_kinds = sample.plex_guid_kinds.join(", ");
                     println!(
-                        "    - {} [{} live rows] <{}>",
-                        sample.normalized_title, sample.plex_live_rows, guid_kinds
+                        "    - {} [{} total, {} live, {} deleted] <{}>",
+                        sample.normalized_title,
+                        sample.plex_total_rows,
+                        sample.plex_live_rows,
+                        sample.plex_deleted_rows,
+                        guid_kinds
                     );
                     if let Some(path) = sample.untagged_roots.first() {
                         println!("      legacy: {}", path.display());
@@ -1030,8 +1059,19 @@ mod tests {
         assert_eq!(summary.other_groups, 1);
         assert_eq!(summary.all_groups.len(), 2);
         assert_eq!(summary.sample_groups.len(), 2);
+        assert_eq!(summary.sample_groups[0].total_rows, 2);
         assert_eq!(summary.sample_groups[0].live_rows, 2);
+        assert_eq!(summary.sample_groups[0].deleted_rows, 0);
+        assert_eq!(summary.sample_groups[1].total_rows, 2);
         assert_eq!(summary.sample_groups[1].live_rows, 1);
+        assert_eq!(summary.sample_groups[1].deleted_rows, 1);
+        assert_eq!(
+            summary.sample_groups[0].guids,
+            vec![
+                "com.plexapp.agents.hama://anidb-100?lang=en".to_string(),
+                "com.plexapp.agents.hama://tvdb-200?lang=en".to_string()
+            ]
+        );
 
         let limited = summarize_plex_duplicate_show_records(&records, 1);
         assert_eq!(limited.sample_groups.len(), 1);
@@ -1051,15 +1091,27 @@ mod tests {
                 title: "Show A".to_string(),
                 original_title: String::new(),
                 year: Some(2024),
+                total_rows: 3,
                 live_rows: 2,
+                deleted_rows: 1,
                 guid_kinds: vec!["hama-anidb".to_string(), "hama-tvdb".to_string()],
+                guids: vec![
+                    "com.plexapp.agents.hama://anidb-100?lang=en".to_string(),
+                    "com.plexapp.agents.hama://tvdb-200?lang=en".to_string(),
+                ],
             },
             PlexDuplicateShowSample {
                 title: "Show B".to_string(),
                 original_title: String::new(),
                 year: Some(2024),
+                total_rows: 2,
                 live_rows: 2,
+                deleted_rows: 0,
                 guid_kinds: vec!["hama-tvdb".to_string(), "hama-tvdb".to_string()],
+                guids: vec![
+                    "com.plexapp.agents.hama://tvdb-201?lang=en".to_string(),
+                    "com.plexapp.agents.hama://tvdb-202?lang=en".to_string(),
+                ],
             },
         ];
 
@@ -1070,8 +1122,14 @@ mod tests {
                 normalized_title: "Show A".to_string(),
                 tagged_roots: vec![PathBuf::from("/anime/Show A (2024) {tvdb-1}")],
                 untagged_roots: vec![PathBuf::from("/anime/Show A")],
+                plex_total_rows: 3,
                 plex_live_rows: 2,
+                plex_deleted_rows: 1,
                 plex_guid_kinds: vec!["hama-anidb".to_string(), "hama-tvdb".to_string()],
+                plex_guids: vec![
+                    "com.plexapp.agents.hama://anidb-100?lang=en".to_string(),
+                    "com.plexapp.agents.hama://tvdb-200?lang=en".to_string(),
+                ],
             }]
         );
     }
