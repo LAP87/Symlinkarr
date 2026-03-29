@@ -262,7 +262,7 @@ symlinkarr doctor --output json
 Generate a library report, with optional filesystem vs Symlinkarr DB vs Plex DB path drift compare.
 
 ```bash
-symlinkarr report [--output text|json] [--filter movie|series] [--plex-db <PATH>] [--pretty]
+symlinkarr report [--output text|json] [--filter movie|series] [--library <LIBRARY>] [--plex-db <PATH>] [--full-anime-duplicates] [--pretty]
 ```
 
 Examples:
@@ -272,6 +272,7 @@ symlinkarr report
 symlinkarr report --filter movie --output json --pretty
 symlinkarr report --plex-db "/var/lib/plex/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db"
 symlinkarr report --filter movie --plex-db "/var/lib/plex/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db" --output json --pretty
+symlinkarr report --library Anime --plex-db "/var/lib/plex/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db" --full-anime-duplicates --output json --pretty
 ```
 
 Notes:
@@ -279,6 +280,7 @@ Notes:
 - without `--plex-db`, the report still compares actual filesystem symlink paths against active Symlinkarr DB links
 - with `--plex-db`, the report adds a path-set compare against Plex-indexed files under the selected library roots
 - Plex `deleted_at` is treated as advisory only; the only strong cleanup signal is `Plex deleted + known missing source`, because Plex can mark paths deleted during transient RD-mount outages
+- `--full-anime-duplicates` disables the default sample cap for anime duplicate sections so you can export the full mixed-root and Hama-split remediation backlog
 
 ## JSON-Capable Commands
 

@@ -199,6 +199,9 @@ enum Commands {
         /// Optional path to Plex's library database for path-set drift compare
         #[arg(long)]
         plex_db: Option<String>,
+        /// Include all anime duplicate groups instead of the default sample-limited output
+        #[arg(long)]
+        full_anime_duplicates: bool,
         /// Pretty-print JSON output
         #[arg(long)]
         pretty: bool,
@@ -406,6 +409,7 @@ async fn main() -> Result<()> {
             filter,
             library,
             plex_db,
+            full_anime_duplicates,
             pretty,
         } => {
             let media_type_filter = match filter.as_deref() {
@@ -420,11 +424,14 @@ async fn main() -> Result<()> {
             commands::report::run_report(
                 &cfg,
                 &db,
-                output,
-                media_type_filter,
-                library.as_deref(),
-                plex_db.as_deref().map(std::path::Path::new),
-                pretty,
+                commands::report::ReportOptions {
+                    output_format: output,
+                    filter: media_type_filter,
+                    library_filter: library.as_deref(),
+                    plex_db_path: plex_db.as_deref().map(std::path::Path::new),
+                    full_anime_duplicates,
+                    pretty,
+                },
             )
             .await?
         }
@@ -474,6 +481,7 @@ mod tests {
             "Anime",
             "--plex-db",
             "/var/lib/plex/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db",
+            "--full-anime-duplicates",
             "--pretty",
         ])
         .unwrap();
@@ -481,6 +489,7 @@ mod tests {
             Commands::Report {
                 library,
                 plex_db,
+                full_anime_duplicates,
                 pretty,
                 ..
             } => {
@@ -491,6 +500,7 @@ mod tests {
                         "/var/lib/plex/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db"
                     )
                 );
+                assert!(full_anime_duplicates);
                 assert!(pretty);
             }
             _ => panic!("expected report command"),

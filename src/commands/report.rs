@@ -122,20 +122,33 @@ struct LinkPresence {
     dead_media_ids: HashSet<String>,
 }
 
+pub(crate) struct ReportOptions<'a> {
+    pub(crate) output_format: OutputFormat,
+    pub(crate) filter: Option<MediaType>,
+    pub(crate) library_filter: Option<&'a str>,
+    pub(crate) plex_db_path: Option<&'a Path>,
+    pub(crate) full_anime_duplicates: bool,
+    pub(crate) pretty: bool,
+}
+
 pub(crate) async fn run_report(
     cfg: &Config,
     db: &Database,
-    output_format: OutputFormat,
-    filter: Option<MediaType>,
-    library_filter: Option<&str>,
-    plex_db_path: Option<&Path>,
-    pretty: bool,
+    options: ReportOptions<'_>,
 ) -> Result<()> {
-    let report = build_report(cfg, db, filter, library_filter, plex_db_path).await?;
+    let report = build_report(
+        cfg,
+        db,
+        options.filter,
+        options.library_filter,
+        options.plex_db_path,
+        options.full_anime_duplicates,
+    )
+    .await?;
 
-    match output_format {
+    match options.output_format {
         OutputFormat::Json => {
-            if pretty {
+            if options.pretty {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&report)
@@ -156,6 +169,7 @@ async fn build_report(
     filter: Option<MediaType>,
     library_filter: Option<&str>,
     plex_db_path: Option<&Path>,
+    full_anime_duplicates: bool,
 ) -> Result<ReportOutput> {
     let selected_libraries = selected_report_libraries(cfg, filter, library_filter);
     let generated_at = Utc::now().to_rfc3339();
@@ -271,7 +285,9 @@ async fn build_report(
     top_libraries.sort_by(|a, b| b.items.cmp(&a.items).then_with(|| a.name.cmp(&b.name)));
     top_libraries.truncate(10);
 
-    let anime_duplicates = build_anime_duplicate_audit(&selected_libraries, plex_db_path).await?;
+    let anime_duplicates =
+        build_anime_duplicate_audit(&selected_libraries, plex_db_path, full_anime_duplicates)
+            .await?;
     let path_compare = build_path_compare(
         &selected_libraries,
         &selected_roots,
@@ -432,6 +448,7 @@ async fn build_path_compare(
 async fn build_anime_duplicate_audit(
     libraries: &[&LibraryConfig],
     plex_db_path: Option<&Path>,
+    full_anime_duplicates: bool,
 ) -> Result<Option<AnimeDuplicateAuditOutput>> {
     let anime_libraries: Vec<&LibraryConfig> = libraries
         .iter()
@@ -444,9 +461,14 @@ async fn build_anime_duplicate_audit(
 
     let duplicate_groups = collect_anime_root_duplicate_groups(&anime_libraries);
     let filesystem_mixed_root_groups = duplicate_groups.len();
+    let anime_sample_limit = if full_anime_duplicates {
+        usize::MAX
+    } else {
+        PATH_SAMPLE_LIMIT
+    };
     let filesystem_sample_groups = duplicate_groups
         .into_iter()
-        .take(PATH_SAMPLE_LIMIT)
+        .take(anime_sample_limit)
         .map(|group| AnimeRootDuplicateSample {
             normalized_title: group.normalized_title,
             tagged_roots: group.tagged_roots,
@@ -464,7 +486,7 @@ async fn build_anime_duplicate_audit(
     ) = if let Some(db_path) = plex_db_path {
         let roots: Vec<PathBuf> = anime_libraries.iter().map(|lib| lib.path.clone()).collect();
         let records = plex_db::load_duplicate_show_records(db_path, &roots).await?;
-        let summary = summarize_plex_duplicate_show_records(&records);
+        let summary = summarize_plex_duplicate_show_records(&records, anime_sample_limit);
         let correlated_groups = correlate_anime_duplicate_groups(
             &collect_anime_root_duplicate_groups(&anime_libraries),
             &summary.all_groups,
@@ -478,7 +500,7 @@ async fn build_anime_duplicate_audit(
             Some(
                 correlated_groups
                     .into_iter()
-                    .take(PATH_SAMPLE_LIMIT)
+                    .take(anime_sample_limit)
                     .collect(),
             ),
         )
@@ -509,6 +531,7 @@ struct PlexDuplicateSummary {
 
 fn summarize_plex_duplicate_show_records(
     records: &[plex_db::PlexDuplicateShowRecord],
+    sample_limit: usize,
 ) -> PlexDuplicateSummary {
     #[derive(Default)]
     struct Bucket {
@@ -555,7 +578,7 @@ fn summarize_plex_duplicate_show_records(
     }
 
     let total_groups = all_groups.len();
-    let sample_groups = all_groups.iter().take(PATH_SAMPLE_LIMIT).cloned().collect();
+    let sample_groups = all_groups.iter().take(sample_limit).cloned().collect();
 
     PlexDuplicateSummary {
         total_groups,
@@ -966,7 +989,7 @@ mod tests {
 
     #[test]
     fn test_summarize_plex_duplicate_show_records_counts_hama_splits() {
-        let summary = summarize_plex_duplicate_show_records(&[
+        let records = [
             plex_db::PlexDuplicateShowRecord {
                 title: "Show A".to_string(),
                 original_title: String::new(),
@@ -999,7 +1022,8 @@ mod tests {
                 guid_kind: "hama-tvdb".to_string(),
                 live: false,
             },
-        ]);
+        ];
+        let summary = summarize_plex_duplicate_show_records(&records, PATH_SAMPLE_LIMIT);
 
         assert_eq!(summary.total_groups, 2);
         assert_eq!(summary.hama_anidb_tvdb_groups, 1);
@@ -1008,6 +1032,11 @@ mod tests {
         assert_eq!(summary.sample_groups.len(), 2);
         assert_eq!(summary.sample_groups[0].live_rows, 2);
         assert_eq!(summary.sample_groups[1].live_rows, 1);
+
+        let limited = summarize_plex_duplicate_show_records(&records, 1);
+        assert_eq!(limited.sample_groups.len(), 1);
+        assert_eq!(limited.total_groups, 2);
+        assert_eq!(limited.all_groups.len(), 2);
     }
 
     #[test]
@@ -1391,7 +1420,9 @@ mod tests {
         .await
         .unwrap();
 
-        let report = build_report(&cfg, &db, None, None, None).await.unwrap();
+        let report = build_report(&cfg, &db, None, None, None, false)
+            .await
+            .unwrap();
 
         assert_eq!(
             report.summary,
@@ -1482,7 +1513,7 @@ mod tests {
         .await
         .unwrap();
 
-        let report = build_report(&cfg, &db, Some(MediaType::Movie), None, None)
+        let report = build_report(&cfg, &db, Some(MediaType::Movie), None, None, false)
             .await
             .unwrap();
 
@@ -1574,7 +1605,7 @@ mod tests {
         )
         .await;
 
-        let report = build_report(&cfg, &db, None, None, Some(&plex_db_path))
+        let report = build_report(&cfg, &db, None, None, Some(&plex_db_path), false)
             .await
             .unwrap();
 
@@ -1686,7 +1717,9 @@ mod tests {
         .await
         .unwrap();
 
-        let report = build_report(&cfg, &db, None, None, None).await.unwrap();
+        let report = build_report(&cfg, &db, None, None, None, false)
+            .await
+            .unwrap();
 
         assert_eq!(report.path_compare.filesystem_symlinks, 2);
         assert_eq!(report.path_compare.db_active_links, 2);
@@ -1752,7 +1785,7 @@ mod tests {
         .await;
         mark_test_plex_path_deleted(&plex_db_path, &movie_a_link).await;
 
-        let report = build_report(&cfg, &db, None, None, Some(&plex_db_path))
+        let report = build_report(&cfg, &db, None, None, Some(&plex_db_path), false)
             .await
             .unwrap();
 
@@ -1810,7 +1843,7 @@ mod tests {
         );
         let db = Database::new(db_path.to_str().unwrap()).await.unwrap();
 
-        let report = build_report(&cfg, &db, Some(MediaType::Tv), None, None)
+        let report = build_report(&cfg, &db, Some(MediaType::Tv), None, None, false)
             .await
             .unwrap();
 
@@ -1824,5 +1857,57 @@ mod tests {
         assert_eq!(anime_duplicates.plex_duplicate_show_groups, None);
         assert_eq!(anime_duplicates.correlated_hama_split_groups, None);
         assert_eq!(anime_duplicates.correlated_sample_groups, None);
+    }
+
+    #[tokio::test]
+    async fn test_build_report_full_anime_duplicates_disables_sample_cap() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let movies = dir.path().join("movies");
+        let anime = dir.path().join("anime");
+        let source = dir.path().join("rd");
+        std::fs::create_dir_all(&movies).unwrap();
+        std::fs::create_dir_all(&anime).unwrap();
+        std::fs::create_dir_all(&source).unwrap();
+
+        for idx in 0..(PATH_SAMPLE_LIMIT + 3) {
+            let title = format!("Show {idx:02}");
+            std::fs::create_dir_all(anime.join(&title)).unwrap();
+            std::fs::create_dir_all(anime.join(format!("{title} (2024) {{tvdb-{}}}", 1000 + idx)))
+                .unwrap();
+        }
+
+        let db_path = dir.path().join("test.db");
+        let cfg = test_config(
+            movies,
+            anime,
+            source,
+            db_path.to_string_lossy().into_owned(),
+        );
+        let db = Database::new(db_path.to_str().unwrap()).await.unwrap();
+
+        let sampled = build_report(&cfg, &db, Some(MediaType::Tv), None, None, false)
+            .await
+            .unwrap();
+        let full = build_report(&cfg, &db, Some(MediaType::Tv), None, None, true)
+            .await
+            .unwrap();
+
+        let sampled_duplicates = sampled
+            .anime_duplicates
+            .expect("sampled anime audit present");
+        let full_duplicates = full.anime_duplicates.expect("full anime audit present");
+
+        assert_eq!(
+            sampled_duplicates.filesystem_mixed_root_groups,
+            PATH_SAMPLE_LIMIT + 3
+        );
+        assert_eq!(
+            sampled_duplicates.filesystem_sample_groups.len(),
+            PATH_SAMPLE_LIMIT
+        );
+        assert_eq!(
+            full_duplicates.filesystem_sample_groups.len(),
+            PATH_SAMPLE_LIMIT + 3
+        );
     }
 }

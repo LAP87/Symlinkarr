@@ -25,6 +25,9 @@
 - anime duplicate reporting now surfaces the overlap between mixed filesystem roots and Plex Hama AniDB/TVDB split groups.
   - this isolates the titles where legacy untagged roots and Plex metadata fragmentation are happening at the same time, so remediation can focus on the real overlap set instead of two separate counters
   - files: `src/commands/report.rs`
+- `report` can now emit the full anime duplicate backlog on demand instead of sample-limited slices.
+  - `--full-anime-duplicates` is intended for remediation exports where the default top-N sample would hide part of the mixed-root or Hama-split worklist
+  - files: `src/main.rs`, `src/commands/report.rs`
 
 ### Docs
 
