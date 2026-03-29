@@ -60,6 +60,37 @@ Response:
 }
 ```
 
+## `GET /api/v1/discover`
+
+Returns read-only discovery results from the RD cache, scoped to all libraries or a single library.
+
+Query params:
+
+- `library=<LIBRARY_NAME>` optional
+
+Status codes:
+
+- `200 OK` on success
+- `400 Bad Request` for invalid library filters
+- `500 Internal Server Error` if discovery fails
+
+Response:
+
+```json
+{
+  "items": [
+    {
+      "rd_torrent_id": "rd-1",
+      "torrent_name": "Missing.Show.S01E01.1080p.WEB-DL.mkv",
+      "status": "downloaded",
+      "size": 1073741824,
+      "parsed_title": "Missing Show"
+    }
+  ],
+  "status_message": "Real-Debrid API key not configured. Showing cached results only."
+}
+```
+
 ## `POST /api/v1/scan`
 
 Triggers the scan pipeline.

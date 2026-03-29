@@ -12,6 +12,7 @@ use tracing::info;
 
 use crate::backup::BackupManager;
 use crate::cleanup_audit::{self, CleanupAuditor, CleanupReport, CleanupScope};
+use crate::commands::discover::load_discovery_snapshot;
 use crate::commands::repair::{execute_repair_auto, summarize_repair_results};
 use crate::commands::scan::run_scan;
 use crate::config::Config;
@@ -25,6 +26,7 @@ pub fn create_router(state: WebState) -> Router<WebState> {
     Router::new()
         .route("/status", get(api_get_status))
         .route("/health", get(api_get_health))
+        .route("/discover", get(api_get_discover))
         .route("/scan", post(api_post_scan))
         .route("/scan/jobs", get(api_get_scan_jobs))
         .route("/scan/history", get(api_get_scan_history))
@@ -46,6 +48,26 @@ pub struct ApiStatus {
     pub dead_links: i64,
     pub total_scans: i64,
     pub last_scan: Option<String>,
+}
+
+#[derive(Debug, Default, Clone, Deserialize)]
+pub struct ApiDiscoverQuery {
+    pub library: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApiDiscoverItem {
+    pub rd_torrent_id: String,
+    pub torrent_name: String,
+    pub status: String,
+    pub size: i64,
+    pub parsed_title: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApiDiscoverResponse {
+    pub items: Vec<ApiDiscoverItem>,
+    pub status_message: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -160,7 +182,7 @@ pub struct ApiScanRunDetail {
     pub auto_acquire_successes: i64,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ApiErrorResponse {
     pub error: String,
 }
@@ -301,6 +323,45 @@ pub async fn api_get_health(State(state): State<WebState>) -> Json<ApiHealth> {
         tvdb: tvdb_status.to_string(),
         realdebrid: rd_status.to_string(),
     })
+}
+
+/// GET /api/v1/discover
+pub async fn api_get_discover(
+    State(state): State<WebState>,
+    Query(query): Query<ApiDiscoverQuery>,
+) -> Result<Json<ApiDiscoverResponse>, (StatusCode, Json<ApiErrorResponse>)> {
+    match load_discovery_snapshot(
+        &state.config,
+        &state.database,
+        query.library.as_deref(),
+        true,
+    )
+    .await
+    {
+        Ok(snapshot) => Ok(Json(ApiDiscoverResponse {
+            items: snapshot
+                .items
+                .into_iter()
+                .map(|item| ApiDiscoverItem {
+                    rd_torrent_id: item.rd_torrent_id,
+                    torrent_name: item.torrent_name,
+                    status: item.status,
+                    size: item.size,
+                    parsed_title: item.parsed_title,
+                })
+                .collect(),
+            status_message: snapshot.status_message,
+        })),
+        Err(err) => {
+            let message = err.to_string();
+            let status = if message.contains("Unknown library filter") {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            Err((status, Json(ApiErrorResponse { error: message })))
+        }
+    }
 }
 
 /// POST /api/v1/scan
@@ -1161,6 +1222,67 @@ mod tests {
         assert_eq!(json[0].scope_label, "Movies");
         assert!(!json[0].dry_run);
         assert!(!json[0].search_missing);
+    }
+
+    #[tokio::test]
+    async fn api_get_discover_returns_cached_gap_items() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = test_config(dir.path());
+        let db = Database::new(&cfg.db_path).await.unwrap();
+        db.upsert_rd_torrent(
+            "rd-1",
+            "hash-1",
+            "Missing.Show.S01E01.1080p.WEB-DL.mkv",
+            "downloaded",
+            r#"{"files":[{"bytes":1073741824,"path":"Missing.Show.S01E01.1080p.WEB-DL.mkv"}]}"#,
+        )
+        .await
+        .unwrap();
+
+        let state = WebState::new(cfg, db);
+        let response = api_get_discover(
+            State(state),
+            Query(ApiDiscoverQuery {
+                library: Some("Anime".to_string()),
+            }),
+        )
+        .await
+        .expect("discover response");
+        let body = response.into_response();
+        assert_eq!(body.status(), StatusCode::OK);
+        let bytes = to_bytes(body.into_body(), usize::MAX).await.unwrap();
+        let json: ApiDiscoverResponse = serde_json::from_slice(&bytes).unwrap();
+
+        assert_eq!(json.items.len(), 1);
+        assert_eq!(json.items[0].rd_torrent_id, "rd-1");
+        assert_eq!(json.items[0].parsed_title, "Missing Show");
+        assert!(json
+            .status_message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("cached results only"));
+    }
+
+    #[tokio::test]
+    async fn api_get_discover_rejects_invalid_library_filter() {
+        let ctx = test_state().await;
+        let response = api_get_discover(
+            State(ctx),
+            Query(ApiDiscoverQuery {
+                library: Some("Nope".to_string()),
+            }),
+        )
+        .await;
+
+        let (status, body) = response.expect_err("expected bad request");
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let body = body.into_response();
+        let bytes = to_bytes(body.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(json["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Unknown library filter"));
     }
 
     #[cfg(unix)]

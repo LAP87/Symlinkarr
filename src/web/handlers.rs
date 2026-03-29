@@ -12,16 +12,12 @@ use std::collections::HashMap;
 use std::path::{Component, Path as StdPath, PathBuf};
 use tracing::{error, info};
 
-use crate::api::realdebrid::RealDebridClient;
 use crate::backup::BackupManager;
-use crate::cache::TorrentCache;
 use crate::cleanup_audit::{self, CleanupAuditor, CleanupScope};
+use crate::commands::discover::load_discovery_snapshot;
 use crate::commands::repair::{execute_repair_auto, summarize_repair_results};
 use crate::commands::scan::run_scan;
-use crate::commands::selected_libraries;
 use crate::db::{AcquisitionJobCounts, ScanHistoryRecord};
-use crate::discovery::Discovery;
-use crate::library_scanner::LibraryScanner;
 use crate::OutputFormat;
 
 use super::templates::*;
@@ -1009,52 +1005,20 @@ pub async fn get_discover(
     Query(query): Query<DiscoverQuery>,
 ) -> impl IntoResponse {
     let selected_library = query.library.clone().unwrap_or_default();
-    let selected = match selected_libraries(&state.config, query.library.as_deref()) {
-        Ok(selected) => selected,
-        Err(err) => {
+    match load_discovery_snapshot(
+        &state.config,
+        &state.database,
+        query.library.as_deref(),
+        true,
+    )
+    .await
+    {
+        Ok(snapshot) => {
             let template = DiscoverTemplate {
                 libraries: state.config.libraries.clone(),
                 selected_library,
-                discovered_items: vec![],
-                status_message: Some(format!("Invalid library filter: {}", err)),
-            };
-            return (
-                StatusCode::BAD_REQUEST,
-                Html(template.render().unwrap_or_else(|e| e.to_string())),
-            );
-        }
-    };
-
-    let scanner = LibraryScanner::new();
-    let mut library_items = Vec::new();
-    for library in &selected {
-        library_items.extend(scanner.scan_library(library));
-    }
-
-    let mut notices = Vec::new();
-    if state.config.has_realdebrid() {
-        let rd = RealDebridClient::from_config(&state.config.realdebrid);
-        let cache = TorrentCache::new(&state.database, &rd);
-        if let Err(err) = cache.sync().await {
-            notices.push(format!(
-                "RD cache sync failed ({}). Showing cached results only.",
-                err
-            ));
-        }
-    } else {
-        notices.push(
-            "Real-Debrid API token is not configured. Showing cached results only.".to_string(),
-        );
-    }
-
-    let discovery = Discovery::new();
-    match discovery.find_gaps(&state.database, &library_items).await {
-        Ok(discovered_items) => {
-            let template = DiscoverTemplate {
-                libraries: state.config.libraries.clone(),
-                selected_library,
-                discovered_items,
-                status_message: (!notices.is_empty()).then(|| notices.join(" ")),
+                discovered_items: snapshot.items,
+                status_message: snapshot.status_message,
             };
             (
                 StatusCode::OK,
@@ -1062,14 +1026,23 @@ pub async fn get_discover(
             )
         }
         Err(err) => {
+            let message = err.to_string();
             let template = DiscoverTemplate {
                 libraries: state.config.libraries.clone(),
                 selected_library,
                 discovered_items: vec![],
-                status_message: Some(format!("Discover failed: {}", err)),
+                status_message: Some(if message.contains("Unknown library filter") {
+                    format!("Invalid library filter: {}", message)
+                } else {
+                    format!("Discover failed: {}", message)
+                }),
             };
             (
-                StatusCode::INTERNAL_SERVER_ERROR,
+                if message.contains("Unknown library filter") {
+                    StatusCode::BAD_REQUEST
+                } else {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                },
                 Html(template.render().unwrap_or_else(|e| e.to_string())),
             )
         }

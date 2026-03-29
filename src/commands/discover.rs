@@ -8,8 +8,53 @@ use crate::commands::{print_json, selected_libraries};
 use crate::config::Config;
 use crate::db::Database;
 use crate::discovery;
+use crate::discovery::DiscoveredItem;
 use crate::library_scanner::LibraryScanner;
 use crate::{DiscoverAction, OutputFormat};
+
+pub(crate) struct DiscoverySnapshot {
+    pub items: Vec<DiscoveredItem>,
+    pub status_message: Option<String>,
+}
+
+pub(crate) async fn load_discovery_snapshot(
+    cfg: &Config,
+    db: &Database,
+    library_filter: Option<&str>,
+    refresh_cache: bool,
+) -> Result<DiscoverySnapshot> {
+    let selected = selected_libraries(cfg, library_filter)?;
+    let lib_scanner = LibraryScanner::new();
+    let mut library_items = Vec::new();
+    for lib in &selected {
+        library_items.extend(lib_scanner.scan_library(lib));
+    }
+
+    let mut notices = Vec::new();
+    if refresh_cache {
+        if cfg.has_realdebrid() {
+            let rd_client = RealDebridClient::from_config(&cfg.realdebrid);
+            let cache = crate::cache::TorrentCache::new(db, &rd_client);
+            if let Err(e) = cache.sync().await {
+                notices.push(format!(
+                    "RD cache sync failed ({}). Showing cached results only.",
+                    e
+                ));
+            }
+        } else {
+            notices.push(
+                "Real-Debrid API key not configured. Showing cached results only.".to_string(),
+            );
+        }
+    }
+
+    let disc = discovery::Discovery::new();
+    let items = disc.find_gaps(db, &library_items).await?;
+    Ok(DiscoverySnapshot {
+        items,
+        status_message: (!notices.is_empty()).then(|| notices.join(" ")),
+    })
+}
 
 pub(crate) async fn run_discover(
     cfg: &Config,
@@ -25,26 +70,11 @@ pub(crate) async fn run_discover(
             }
 
             info!("=== Symlinkarr Discovery ===");
-
-            let rd_client = RealDebridClient::from_config(&cfg.realdebrid);
-
-            let lib_scanner = LibraryScanner::new();
-            let selected = selected_libraries(cfg, library_filter)?;
-            let mut library_items = Vec::new();
-            for lib in &selected {
-                library_items.extend(lib_scanner.scan_library(lib));
+            let snapshot = load_discovery_snapshot(cfg, db, library_filter, true).await?;
+            if let Some(message) = snapshot.status_message.as_deref() {
+                println!("   ℹ️  {}", message);
             }
-
-            {
-                use crate::cache::TorrentCache;
-                let cache = TorrentCache::new(db, &rd_client);
-                if let Err(e) = cache.sync().await {
-                    tracing::warn!("Failed to sync RD cache for discovery: {}", e);
-                }
-            }
-
-            let disc = discovery::Discovery::new();
-            let gaps = disc.find_gaps(db, &library_items).await?;
+            let gaps = snapshot.items;
 
             if output == OutputFormat::Json {
                 #[derive(Serialize)]
