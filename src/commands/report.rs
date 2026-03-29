@@ -14,6 +14,7 @@ use crate::db::Database;
 use crate::library_scanner::LibraryScanner;
 use crate::models::MediaType;
 use crate::plex_db;
+use crate::utils::normalize;
 use crate::OutputFormat;
 
 #[derive(Serialize, Debug, Default, PartialEq, Eq)]
@@ -89,6 +90,15 @@ struct PlexDuplicateShowSample {
 }
 
 #[derive(Serialize, Debug, Default, Clone, PartialEq, Eq)]
+struct CorrelatedAnimeDuplicateSample {
+    normalized_title: String,
+    tagged_roots: Vec<PathBuf>,
+    untagged_roots: Vec<PathBuf>,
+    plex_live_rows: usize,
+    plex_guid_kinds: Vec<String>,
+}
+
+#[derive(Serialize, Debug, Default, Clone, PartialEq, Eq)]
 struct AnimeDuplicateAuditOutput {
     filesystem_mixed_root_groups: usize,
     filesystem_sample_groups: Vec<AnimeRootDuplicateSample>,
@@ -96,6 +106,8 @@ struct AnimeDuplicateAuditOutput {
     plex_hama_anidb_tvdb_groups: Option<usize>,
     plex_other_duplicate_show_groups: Option<usize>,
     plex_sample_groups: Option<Vec<PlexDuplicateShowSample>>,
+    correlated_hama_split_groups: Option<usize>,
+    correlated_sample_groups: Option<Vec<CorrelatedAnimeDuplicateSample>>,
 }
 
 struct LibraryScannerItem {
@@ -447,18 +459,31 @@ async fn build_anime_duplicate_audit(
         plex_hama_anidb_tvdb_groups,
         plex_other_duplicate_show_groups,
         plex_sample_groups,
+        correlated_hama_split_groups,
+        correlated_sample_groups,
     ) = if let Some(db_path) = plex_db_path {
         let roots: Vec<PathBuf> = anime_libraries.iter().map(|lib| lib.path.clone()).collect();
         let records = plex_db::load_duplicate_show_records(db_path, &roots).await?;
         let summary = summarize_plex_duplicate_show_records(&records);
+        let correlated_groups = correlate_anime_duplicate_groups(
+            &collect_anime_root_duplicate_groups(&anime_libraries),
+            &summary.all_groups,
+        );
         (
             Some(summary.total_groups),
             Some(summary.hama_anidb_tvdb_groups),
             Some(summary.other_groups),
             Some(summary.sample_groups),
+            Some(correlated_groups.len()),
+            Some(
+                correlated_groups
+                    .into_iter()
+                    .take(PATH_SAMPLE_LIMIT)
+                    .collect(),
+            ),
         )
     } else {
-        (None, None, None, None)
+        (None, None, None, None, None, None)
     };
 
     Ok(Some(AnimeDuplicateAuditOutput {
@@ -468,6 +493,8 @@ async fn build_anime_duplicate_audit(
         plex_hama_anidb_tvdb_groups,
         plex_other_duplicate_show_groups,
         plex_sample_groups,
+        correlated_hama_split_groups,
+        correlated_sample_groups,
     }))
 }
 
@@ -476,6 +503,7 @@ struct PlexDuplicateSummary {
     total_groups: usize,
     hama_anidb_tvdb_groups: usize,
     other_groups: usize,
+    all_groups: Vec<PlexDuplicateShowSample>,
     sample_groups: Vec<PlexDuplicateShowSample>,
 }
 
@@ -503,7 +531,7 @@ fn summarize_plex_duplicate_show_records(
         bucket.guid_kinds.push(record.guid_kind.clone());
     }
 
-    let mut sample_groups = Vec::new();
+    let mut all_groups = Vec::new();
     let mut hama_anidb_tvdb_groups = 0;
 
     for ((title, original_title, year), bucket) in grouped {
@@ -517,37 +545,69 @@ fn summarize_plex_duplicate_show_records(
             hama_anidb_tvdb_groups += 1;
         }
 
-        if sample_groups.len() < PATH_SAMPLE_LIMIT {
-            sample_groups.push(PlexDuplicateShowSample {
-                title,
-                original_title,
-                year,
-                live_rows: bucket.live_rows,
-                guid_kinds: unique_guid_kinds,
-            });
-        }
+        all_groups.push(PlexDuplicateShowSample {
+            title,
+            original_title,
+            year,
+            live_rows: bucket.live_rows,
+            guid_kinds: unique_guid_kinds,
+        });
     }
 
-    let total_groups = sample_groups.len()
-        + records
-            .iter()
-            .map(|record| {
-                (
-                    record.title.clone(),
-                    record.original_title.clone(),
-                    record.year,
-                )
-            })
-            .collect::<HashSet<_>>()
-            .len()
-        - sample_groups.len();
+    let total_groups = all_groups.len();
+    let sample_groups = all_groups.iter().take(PATH_SAMPLE_LIMIT).cloned().collect();
 
     PlexDuplicateSummary {
         total_groups,
         hama_anidb_tvdb_groups,
         other_groups: total_groups.saturating_sub(hama_anidb_tvdb_groups),
+        all_groups,
         sample_groups,
     }
+}
+
+fn correlate_anime_duplicate_groups(
+    filesystem_groups: &[crate::anime_roots::AnimeRootDuplicateGroup],
+    plex_groups: &[PlexDuplicateShowSample],
+) -> Vec<CorrelatedAnimeDuplicateSample> {
+    let mut plex_by_title: HashMap<String, Vec<&PlexDuplicateShowSample>> = HashMap::new();
+    for group in plex_groups {
+        let is_hama_split = group.guid_kinds.iter().any(|kind| kind == "hama-anidb")
+            && group.guid_kinds.iter().any(|kind| kind == "hama-tvdb");
+        if !is_hama_split {
+            continue;
+        }
+
+        plex_by_title
+            .entry(normalize(&group.title))
+            .or_default()
+            .push(group);
+    }
+
+    let mut correlated = Vec::new();
+    for fs_group in filesystem_groups {
+        let Some(plex_matches) = plex_by_title.get(&normalize(&fs_group.normalized_title)) else {
+            continue;
+        };
+
+        for plex_group in plex_matches {
+            correlated.push(CorrelatedAnimeDuplicateSample {
+                normalized_title: fs_group.normalized_title.clone(),
+                tagged_roots: fs_group.tagged_roots.clone(),
+                untagged_roots: fs_group.untagged_roots.clone(),
+                plex_live_rows: plex_group.live_rows,
+                plex_guid_kinds: plex_group.guid_kinds.clone(),
+            });
+        }
+    }
+
+    correlated.sort_by(|a, b| {
+        b.untagged_roots
+            .len()
+            .cmp(&a.untagged_roots.len())
+            .then_with(|| a.normalized_title.cmp(&b.normalized_title))
+    });
+    correlated
 }
 
 struct FilesystemSymlinkScan {
@@ -727,6 +787,9 @@ fn emit_text_report(report: &ReportOutput) {
         if let Some(groups) = anime_duplicates.plex_other_duplicate_show_groups {
             panel_kv_row("  Other dup groups:", groups);
         }
+        if let Some(groups) = anime_duplicates.correlated_hama_split_groups {
+            panel_kv_row("  Correlated HAMA+FS:", groups);
+        }
 
         if !anime_duplicates.filesystem_sample_groups.is_empty() {
             println!("  Sample mixed roots:");
@@ -754,6 +817,25 @@ fn emit_text_report(report: &ReportOutput) {
                         "    - {}{} [{} live rows] <{}>",
                         sample.title, year, sample.live_rows, guid_kinds
                     );
+                }
+            }
+        }
+
+        if let Some(samples) = &anime_duplicates.correlated_sample_groups {
+            if !samples.is_empty() {
+                println!("  Sample correlated duplicate groups:");
+                for sample in samples {
+                    let guid_kinds = sample.plex_guid_kinds.join(", ");
+                    println!(
+                        "    - {} [{} live rows] <{}>",
+                        sample.normalized_title, sample.plex_live_rows, guid_kinds
+                    );
+                    if let Some(path) = sample.untagged_roots.first() {
+                        println!("      legacy: {}", path.display());
+                    }
+                    if let Some(path) = sample.tagged_roots.first() {
+                        println!("      tagged: {}", path.display());
+                    }
                 }
             }
         }
@@ -922,9 +1004,47 @@ mod tests {
         assert_eq!(summary.total_groups, 2);
         assert_eq!(summary.hama_anidb_tvdb_groups, 1);
         assert_eq!(summary.other_groups, 1);
+        assert_eq!(summary.all_groups.len(), 2);
         assert_eq!(summary.sample_groups.len(), 2);
         assert_eq!(summary.sample_groups[0].live_rows, 2);
         assert_eq!(summary.sample_groups[1].live_rows, 1);
+    }
+
+    #[test]
+    fn test_correlate_anime_duplicate_groups_matches_hama_split_titles() {
+        let filesystem_groups = vec![crate::anime_roots::AnimeRootDuplicateGroup {
+            normalized_title: "Show A".to_string(),
+            tagged_roots: vec![PathBuf::from("/anime/Show A (2024) {tvdb-1}")],
+            untagged_roots: vec![PathBuf::from("/anime/Show A")],
+        }];
+        let plex_groups = vec![
+            PlexDuplicateShowSample {
+                title: "Show A".to_string(),
+                original_title: String::new(),
+                year: Some(2024),
+                live_rows: 2,
+                guid_kinds: vec!["hama-anidb".to_string(), "hama-tvdb".to_string()],
+            },
+            PlexDuplicateShowSample {
+                title: "Show B".to_string(),
+                original_title: String::new(),
+                year: Some(2024),
+                live_rows: 2,
+                guid_kinds: vec!["hama-tvdb".to_string(), "hama-tvdb".to_string()],
+            },
+        ];
+
+        let correlated = correlate_anime_duplicate_groups(&filesystem_groups, &plex_groups);
+        assert_eq!(
+            correlated,
+            vec![CorrelatedAnimeDuplicateSample {
+                normalized_title: "Show A".to_string(),
+                tagged_roots: vec![PathBuf::from("/anime/Show A (2024) {tvdb-1}")],
+                untagged_roots: vec![PathBuf::from("/anime/Show A")],
+                plex_live_rows: 2,
+                plex_guid_kinds: vec!["hama-anidb".to_string(), "hama-tvdb".to_string()],
+            }]
+        );
     }
 
     #[test]
@@ -1702,5 +1822,7 @@ mod tests {
             "Aldnoah.Zero"
         );
         assert_eq!(anime_duplicates.plex_duplicate_show_groups, None);
+        assert_eq!(anime_duplicates.correlated_hama_split_groups, None);
+        assert_eq!(anime_duplicates.correlated_sample_groups, None);
     }
 }

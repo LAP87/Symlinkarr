@@ -22,6 +22,9 @@
 - `report` now loads Symlinkarr links once and filters them to the selected libraries in memory, instead of issuing a root-scoped DB query for every selected-root shape.
   - this avoids the slower scoped query path on larger library sets while preserving the same library-local report output
   - files: `src/commands/report.rs`
+- anime duplicate reporting now surfaces the overlap between mixed filesystem roots and Plex Hama AniDB/TVDB split groups.
+  - this isolates the titles where legacy untagged roots and Plex metadata fragmentation are happening at the same time, so remediation can focus on the real overlap set instead of two separate counters
+  - files: `src/commands/report.rs`
 
 ### Docs
 
