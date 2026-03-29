@@ -314,7 +314,6 @@ impl<'a> CleanupAuditor<'a> {
         scope: CleanupScope,
         selected_libraries: Option<&[String]>,
     ) -> Result<CleanupReport> {
-        ensure_runtime_sources_healthy(&self.cfg.sources, "cleanup audit").await?;
         let libraries = self.libraries_for_scope_filtered(scope, selected_libraries)?;
         if libraries.is_empty() {
             anyhow::bail!("No libraries found for scope {:?}", scope);
@@ -2869,6 +2868,36 @@ cleanup:
             .unwrap_err();
 
         assert!(err.to_string().contains("No libraries matched scope"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_build_report_allows_audit_when_source_root_is_missing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let library_root = dir.path().join("library");
+        let missing_source_root = dir.path().join("missing-rd");
+        std::fs::create_dir_all(&library_root).unwrap();
+
+        let series_dir = library_root.join("Show (2024) {tvdb-1}").join("Season 01");
+        std::fs::create_dir_all(&series_dir).unwrap();
+
+        let source_file = missing_source_root.join("Show.S01E01.mkv");
+        let symlink_path = series_dir.join("Show - S01E01.mkv");
+        std::os::unix::fs::symlink(&source_file, &symlink_path).unwrap();
+
+        let cfg = test_config(&library_root, &missing_source_root);
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+        let auditor = CleanupAuditor::new_with_progress(&cfg, &db, false);
+
+        let report = auditor.build_report(CleanupScope::Anime).await.unwrap();
+
+        assert!(!report.findings.is_empty());
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.symlink_path == symlink_path));
     }
 
     #[cfg(unix)]
