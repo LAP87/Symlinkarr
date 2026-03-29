@@ -224,29 +224,56 @@ fn read_only_directory_signal(
     path: &std::path::Path,
     metadata: &std::fs::Metadata,
 ) -> (bool, String) {
+    use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::PermissionsExt;
 
     let mode = metadata.permissions().mode() & 0o777;
-    let writable = mode & 0o222 != 0;
+    let c_path = match std::ffi::CString::new(path.as_os_str().as_bytes()) {
+        Ok(path) => path,
+        Err(_) => {
+            return (
+                false,
+                format!(
+                    "exists but path contains interior NUL (write probe skipped in read-only mode; mode={:03o}): {}",
+                    mode,
+                    path.display()
+                ),
+            );
+        }
+    };
 
-    if writable {
+    let access_result = unsafe { libc::access(c_path.as_ptr(), libc::W_OK | libc::X_OK) };
+    if access_result == 0 {
         (
             true,
             format!(
-                "exists (write probe skipped in read-only mode; permission bits suggest writable, mode={:03o}): {}",
+                "exists (write probe skipped in read-only mode; effective access allows write+traverse, mode={:03o}): {}",
                 mode,
                 path.display()
             ),
         )
     } else {
-        (
-            false,
-            format!(
-                "exists but permission bits suggest not writable (write probe skipped in read-only mode; mode={:03o}): {}",
-                mode,
-                path.display()
-            ),
-        )
+        let err = std::io::Error::last_os_error();
+        if err.kind() == std::io::ErrorKind::PermissionDenied {
+            (
+                false,
+                format!(
+                    "exists but effective access denies write or traverse (write probe skipped in read-only mode; mode={:03o}): {}",
+                    mode,
+                    path.display()
+                ),
+            )
+        } else {
+            (
+                false,
+                format!(
+                    "exists but effective access check failed (write probe skipped in read-only mode; mode={:03o}): {} ({})",
+                    mode,
+                    path.display(),
+                    err
+                ),
+            )
+        }
     }
 }
 
@@ -329,7 +356,7 @@ mod tests {
         let (ok, detail) = inspect_directory_without_write_probe(&path);
 
         assert!(!ok);
-        assert!(detail.contains("not writable"));
+        assert!(detail.contains("denies write or traverse"));
         assert!(detail.contains("mode=555"));
     }
 
@@ -346,8 +373,25 @@ mod tests {
         let (ok, detail) = inspect_directory_without_write_probe(&path);
 
         assert!(ok);
-        assert!(detail.contains("suggest writable"));
+        assert!(detail.contains("effective access allows write+traverse"));
         assert!(detail.contains("mode=755"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inspect_directory_without_write_probe_requires_execute_bit_for_directory_access() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("noexec");
+        std::fs::create_dir(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666)).unwrap();
+
+        let (ok, detail) = inspect_directory_without_write_probe(&path);
+
+        assert!(!ok);
+        assert!(detail.contains("denies write or traverse"));
+        assert!(detail.contains("mode=666"));
     }
 
     #[test]

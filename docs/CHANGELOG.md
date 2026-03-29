@@ -15,7 +15,7 @@
   - `POST /api/v1/scan` now returns `202 Accepted`
   - `GET /api/v1/scan/jobs` now prepends a synthetic `running` row when a background scan is active
   - files: `src/web/mod.rs`, `src/web/templates.rs`, `src/web/handlers.rs`, `src/web/api/mod.rs`, `src/web/ui/scan.html`, `src/web/ui/scan_result.html`
-- read-only doctor checks now preserve a non-writable signal for existing directories without doing a write probe.
+- read-only doctor checks now preserve a non-writable signal for existing directories without doing a write probe, using effective access checks instead of raw write-bit heuristics.
   - files: `src/commands/doctor.rs`, `src/web/handlers.rs`, `src/web/api/mod.rs`
 - discover JSON output remains machine-parseable on RD cache sync failure, and cached-only discover now explicitly surfaces missing RD credentials.
   - files: `src/commands/discover.rs`, `src/web/handlers.rs`, `src/web/api/mod.rs`

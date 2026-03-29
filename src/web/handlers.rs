@@ -1621,7 +1621,7 @@ mod tests {
         let body = render_body(get_doctor(State(ctx.state)).await).await;
 
         assert!(body.contains("backup_dir"));
-        assert!(body.contains("not writable"));
+        assert!(body.contains("denies write or traverse"));
         assert!(body.contains("mode=555"));
     }
 

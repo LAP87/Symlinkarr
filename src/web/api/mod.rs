@@ -1468,7 +1468,7 @@ mod tests {
         assert!(json.checks.iter().any(|check| {
             check.check == "backup_dir"
                 && !check.passed
-                && check.message.contains("not writable")
+                && check.message.contains("denies write or traverse")
                 && check.message.contains("mode=555")
         }));
     }
