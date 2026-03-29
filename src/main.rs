@@ -192,6 +192,9 @@ enum Commands {
         /// Filter by media type (movie, series)
         #[arg(long)]
         filter: Option<String>,
+        /// Filter to a specific configured library name
+        #[arg(long)]
+        library: Option<String>,
         /// Optional path to Plex's library database for path-set drift compare
         #[arg(long)]
         plex_db: Option<String>,
@@ -398,6 +401,7 @@ async fn main() -> Result<()> {
         Commands::Report {
             output,
             filter,
+            library,
             plex_db,
             pretty,
         } => {
@@ -415,6 +419,7 @@ async fn main() -> Result<()> {
                 &db,
                 output,
                 media_type_filter,
+                library.as_deref(),
                 plex_db.as_deref().map(std::path::Path::new),
                 pretty,
             )
@@ -462,6 +467,8 @@ mod tests {
         let cli = Cli::try_parse_from([
             "symlinkarr",
             "report",
+            "--library",
+            "Anime",
             "--plex-db",
             "/var/lib/plex/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db",
             "--pretty",
@@ -469,8 +476,12 @@ mod tests {
         .unwrap();
         match cli.command {
             Commands::Report {
-                plex_db, pretty, ..
+                library,
+                plex_db,
+                pretty,
+                ..
             } => {
+                assert_eq!(library.as_deref(), Some("Anime"));
                 assert_eq!(
                     plex_db.as_deref(),
                     Some(

@@ -4,11 +4,12 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use chrono::Utc;
 use rayon::prelude::*;
+use regex::Regex;
 use serde::Serialize;
 use walkdir::WalkDir;
 
 use crate::commands::{panel_border, panel_kv_row, panel_title};
-use crate::config::{Config, LibraryConfig};
+use crate::config::{Config, ContentType, LibraryConfig};
 use crate::db::Database;
 use crate::library_scanner::LibraryScanner;
 use crate::models::MediaType;
@@ -45,6 +46,8 @@ struct ReportOutput {
     by_media_type: BTreeMap<String, MediaTypeInfo>,
     top_libraries: Vec<LibraryInfo>,
     path_compare: PathCompareOutput,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    anime_duplicates: Option<AnimeDuplicateAuditOutput>,
 }
 
 #[derive(Serialize, Debug, Default, PartialEq, Eq)]
@@ -69,6 +72,32 @@ struct PathCompareOutput {
     all_three: Option<usize>,
 }
 
+#[derive(Serialize, Debug, Default, Clone, PartialEq, Eq)]
+struct AnimeRootDuplicateSample {
+    normalized_title: String,
+    tagged_roots: Vec<PathBuf>,
+    untagged_roots: Vec<PathBuf>,
+}
+
+#[derive(Serialize, Debug, Default, Clone, PartialEq, Eq)]
+struct PlexDuplicateShowSample {
+    title: String,
+    original_title: String,
+    year: Option<i64>,
+    live_rows: usize,
+    guid_kinds: Vec<String>,
+}
+
+#[derive(Serialize, Debug, Default, Clone, PartialEq, Eq)]
+struct AnimeDuplicateAuditOutput {
+    filesystem_mixed_root_groups: usize,
+    filesystem_sample_groups: Vec<AnimeRootDuplicateSample>,
+    plex_duplicate_show_groups: Option<usize>,
+    plex_hama_anidb_tvdb_groups: Option<usize>,
+    plex_other_duplicate_show_groups: Option<usize>,
+    plex_sample_groups: Option<Vec<PlexDuplicateShowSample>>,
+}
+
 struct LibraryScannerItem {
     library_name: String,
     media_type: MediaType,
@@ -86,10 +115,11 @@ pub(crate) async fn run_report(
     db: &Database,
     output_format: OutputFormat,
     filter: Option<MediaType>,
+    library_filter: Option<&str>,
     plex_db_path: Option<&Path>,
     pretty: bool,
 ) -> Result<()> {
-    let report = build_report(cfg, db, filter, plex_db_path).await?;
+    let report = build_report(cfg, db, filter, library_filter, plex_db_path).await?;
 
     match output_format {
         OutputFormat::Json => {
@@ -112,9 +142,10 @@ async fn build_report(
     cfg: &Config,
     db: &Database,
     filter: Option<MediaType>,
+    library_filter: Option<&str>,
     plex_db_path: Option<&Path>,
 ) -> Result<ReportOutput> {
-    let selected_libraries = selected_report_libraries(cfg, filter);
+    let selected_libraries = selected_report_libraries(cfg, filter, library_filter);
     let generated_at = Utc::now().to_rfc3339();
 
     if selected_libraries.is_empty() {
@@ -124,6 +155,7 @@ async fn build_report(
             by_media_type: BTreeMap::new(),
             top_libraries: Vec::new(),
             path_compare: PathCompareOutput::default(),
+            anime_duplicates: None,
         });
     }
 
@@ -227,6 +259,7 @@ async fn build_report(
     top_libraries.sort_by(|a, b| b.items.cmp(&a.items).then_with(|| a.name.cmp(&b.name)));
     top_libraries.truncate(10);
 
+    let anime_duplicates = build_anime_duplicate_audit(&selected_libraries, plex_db_path).await?;
     let path_compare = build_path_compare(
         &selected_libraries,
         &selected_roots,
@@ -241,13 +274,21 @@ async fn build_report(
         by_media_type,
         top_libraries,
         path_compare,
+        anime_duplicates,
     })
 }
 
-fn selected_report_libraries(cfg: &Config, filter: Option<MediaType>) -> Vec<&LibraryConfig> {
+fn selected_report_libraries<'a>(
+    cfg: &'a Config,
+    filter: Option<MediaType>,
+    library_filter: Option<&str>,
+) -> Vec<&'a LibraryConfig> {
     cfg.libraries
         .iter()
         .filter(|lib| filter.is_none_or(|media_type| lib.media_type == media_type))
+        .filter(|lib| {
+            library_filter.is_none_or(|library_name| lib.name.eq_ignore_ascii_case(library_name))
+        })
         .collect()
 }
 
@@ -300,7 +341,10 @@ async fn build_path_compare(
     // Build db_active_links first (needed regardless)
     let mut db_active_links: HashSet<PathBuf> = HashSet::new();
     let mut known_missing_source_paths: HashSet<PathBuf> = HashSet::new();
-    for link in link_records.iter().filter(|link| link.status == crate::models::LinkStatus::Active) {
+    for link in link_records
+        .iter()
+        .filter(|link| link.status == crate::models::LinkStatus::Active)
+    {
         db_active_links.insert(link.target_path.clone());
         if !link.source_path.exists() {
             known_missing_source_paths.insert(link.target_path.clone());
@@ -361,10 +405,205 @@ async fn build_path_compare(
         fs_not_in_plex: Some(sample_difference(&filesystem_symlinks, &plex_indexed_files)),
         db_not_in_plex: Some(sample_difference(&db_active_links, &plex_indexed_files)),
         plex_not_on_fs: Some(sample_difference(&plex_indexed_files, &filesystem_symlinks)),
-        plex_deleted_and_known_missing_source: Some(sample_intersection(&plex_deleted_paths, &known_missing_source_paths)),
-        plex_deleted_without_known_missing_source: Some(sample_difference(&plex_deleted_paths, &known_missing_source_paths)),
+        plex_deleted_and_known_missing_source: Some(sample_intersection(
+            &plex_deleted_paths,
+            &known_missing_source_paths,
+        )),
+        plex_deleted_without_known_missing_source: Some(sample_difference(
+            &plex_deleted_paths,
+            &known_missing_source_paths,
+        )),
         all_three,
     })
+}
+
+async fn build_anime_duplicate_audit(
+    libraries: &[&LibraryConfig],
+    plex_db_path: Option<&Path>,
+) -> Result<Option<AnimeDuplicateAuditOutput>> {
+    let anime_libraries: Vec<&LibraryConfig> = libraries
+        .iter()
+        .copied()
+        .filter(|lib| lib.content_type == Some(ContentType::Anime))
+        .collect();
+    if anime_libraries.is_empty() {
+        return Ok(None);
+    }
+
+    let (filesystem_mixed_root_groups, filesystem_sample_groups) =
+        collect_anime_root_duplicates(&anime_libraries);
+
+    let (
+        plex_duplicate_show_groups,
+        plex_hama_anidb_tvdb_groups,
+        plex_other_duplicate_show_groups,
+        plex_sample_groups,
+    ) = if let Some(db_path) = plex_db_path {
+        let roots: Vec<PathBuf> = anime_libraries.iter().map(|lib| lib.path.clone()).collect();
+        let records = plex_db::load_duplicate_show_records(db_path, &roots).await?;
+        let summary = summarize_plex_duplicate_show_records(&records);
+        (
+            Some(summary.total_groups),
+            Some(summary.hama_anidb_tvdb_groups),
+            Some(summary.other_groups),
+            Some(summary.sample_groups),
+        )
+    } else {
+        (None, None, None, None)
+    };
+
+    Ok(Some(AnimeDuplicateAuditOutput {
+        filesystem_mixed_root_groups,
+        filesystem_sample_groups,
+        plex_duplicate_show_groups,
+        plex_hama_anidb_tvdb_groups,
+        plex_other_duplicate_show_groups,
+        plex_sample_groups,
+    }))
+}
+
+fn collect_anime_root_duplicates(
+    libraries: &[&LibraryConfig],
+) -> (usize, Vec<AnimeRootDuplicateSample>) {
+    #[derive(Default)]
+    struct Bucket {
+        tagged_roots: Vec<PathBuf>,
+        untagged_roots: Vec<PathBuf>,
+    }
+
+    let tagged_suffix =
+        Regex::new(r" \((?:19|20)\d{2}\) \{(?:tvdb|tmdb)-\d+\}$").expect("valid anime root regex");
+    let mut buckets: BTreeMap<String, Bucket> = BTreeMap::new();
+
+    for library in libraries {
+        let Ok(entries) = std::fs::read_dir(&library.path) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if !file_type.is_dir() {
+                continue;
+            }
+
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+
+            let is_tagged = tagged_suffix.is_match(name);
+            let normalized_title = tagged_suffix.replace(name, "").to_string();
+            let bucket = buckets.entry(normalized_title).or_default();
+            if is_tagged {
+                bucket.tagged_roots.push(path);
+            } else {
+                bucket.untagged_roots.push(path);
+            }
+        }
+    }
+
+    let mut samples = Vec::new();
+    let mut total = 0;
+
+    for (normalized_title, mut bucket) in buckets {
+        if bucket.tagged_roots.is_empty() || bucket.untagged_roots.is_empty() {
+            continue;
+        }
+
+        total += 1;
+        bucket.tagged_roots.sort();
+        bucket.untagged_roots.sort();
+
+        if samples.len() < PATH_SAMPLE_LIMIT {
+            samples.push(AnimeRootDuplicateSample {
+                normalized_title,
+                tagged_roots: bucket.tagged_roots,
+                untagged_roots: bucket.untagged_roots,
+            });
+        }
+    }
+
+    (total, samples)
+}
+
+#[derive(Default)]
+struct PlexDuplicateSummary {
+    total_groups: usize,
+    hama_anidb_tvdb_groups: usize,
+    other_groups: usize,
+    sample_groups: Vec<PlexDuplicateShowSample>,
+}
+
+fn summarize_plex_duplicate_show_records(
+    records: &[plex_db::PlexDuplicateShowRecord],
+) -> PlexDuplicateSummary {
+    #[derive(Default)]
+    struct Bucket {
+        live_rows: usize,
+        guid_kinds: Vec<String>,
+    }
+
+    let mut grouped: BTreeMap<(String, String, Option<i64>), Bucket> = BTreeMap::new();
+    for record in records {
+        let bucket = grouped
+            .entry((
+                record.title.clone(),
+                record.original_title.clone(),
+                record.year,
+            ))
+            .or_default();
+        if record.live {
+            bucket.live_rows += 1;
+        }
+        bucket.guid_kinds.push(record.guid_kind.clone());
+    }
+
+    let mut sample_groups = Vec::new();
+    let mut hama_anidb_tvdb_groups = 0;
+
+    for ((title, original_title, year), bucket) in grouped {
+        let mut unique_guid_kinds: Vec<String> = bucket.guid_kinds.into_iter().collect();
+        unique_guid_kinds.sort();
+        unique_guid_kinds.dedup();
+
+        if unique_guid_kinds.iter().any(|kind| kind == "hama-anidb")
+            && unique_guid_kinds.iter().any(|kind| kind == "hama-tvdb")
+        {
+            hama_anidb_tvdb_groups += 1;
+        }
+
+        if sample_groups.len() < PATH_SAMPLE_LIMIT {
+            sample_groups.push(PlexDuplicateShowSample {
+                title,
+                original_title,
+                year,
+                live_rows: bucket.live_rows,
+                guid_kinds: unique_guid_kinds,
+            });
+        }
+    }
+
+    let total_groups = sample_groups.len()
+        + records
+            .iter()
+            .map(|record| {
+                (
+                    record.title.clone(),
+                    record.original_title.clone(),
+                    record.year,
+                )
+            })
+            .collect::<HashSet<_>>()
+            .len()
+        - sample_groups.len();
+
+    PlexDuplicateSummary {
+        total_groups,
+        hama_anidb_tvdb_groups,
+        other_groups: total_groups.saturating_sub(hama_anidb_tvdb_groups),
+        sample_groups,
+    }
 }
 
 struct FilesystemSymlinkScan {
@@ -515,16 +754,65 @@ fn emit_text_report(report: &ReportOutput) {
         panel_kv_row("  Plex not on FS:", sample.count);
     }
     if let Some(sample) = &report.path_compare.plex_deleted_and_known_missing_source {
-        panel_kv_row("  Plex deleted + known missing source:", sample.count);
+        panel_kv_row("  Plex del + src missing:", sample.count);
     }
     if let Some(sample) = &report
         .path_compare
         .plex_deleted_without_known_missing_source
     {
-        panel_kv_row("  Plex deleted w/o known missing source:", sample.count);
+        panel_kv_row("  Plex del, src intact:", sample.count);
     }
     if let Some(all_three) = report.path_compare.all_three {
         panel_kv_row("  In all three:", all_three);
+    }
+
+    if let Some(anime_duplicates) = &report.anime_duplicates {
+        panel_border('╠', '═', '╣');
+        panel_title("Anime Duplicates");
+        panel_border('╠', '═', '╣');
+        panel_kv_row(
+            "  Mixed roots:",
+            anime_duplicates.filesystem_mixed_root_groups,
+        );
+        if let Some(groups) = anime_duplicates.plex_duplicate_show_groups {
+            panel_kv_row("  Plex dup groups:", groups);
+        }
+        if let Some(groups) = anime_duplicates.plex_hama_anidb_tvdb_groups {
+            panel_kv_row("  HAMA split groups:", groups);
+        }
+        if let Some(groups) = anime_duplicates.plex_other_duplicate_show_groups {
+            panel_kv_row("  Other dup groups:", groups);
+        }
+
+        if !anime_duplicates.filesystem_sample_groups.is_empty() {
+            println!("  Sample mixed roots:");
+            for sample in &anime_duplicates.filesystem_sample_groups {
+                println!("    - {}", sample.normalized_title);
+                if let Some(path) = sample.untagged_roots.first() {
+                    println!("      legacy: {}", path.display());
+                }
+                if let Some(path) = sample.tagged_roots.first() {
+                    println!("      tagged: {}", path.display());
+                }
+            }
+        }
+
+        if let Some(samples) = &anime_duplicates.plex_sample_groups {
+            if !samples.is_empty() {
+                println!("  Sample Plex duplicate groups:");
+                for sample in samples {
+                    let year = sample
+                        .year
+                        .map(|year| format!(" ({year})"))
+                        .unwrap_or_default();
+                    let guid_kinds = sample.guid_kinds.join(", ");
+                    println!(
+                        "    - {}{} [{} live rows] <{}>",
+                        sample.title, year, sample.live_rows, guid_kinds
+                    );
+                }
+            }
+        }
     }
 
     panel_border('╚', '═', '╝');
@@ -602,8 +890,12 @@ mod tests {
 
     #[test]
     fn test_sample_intersection() {
-        let left: HashSet<PathBuf> = vec![PathBuf::from("/a"), PathBuf::from("/b")].into_iter().collect();
-        let right: HashSet<PathBuf> = vec![PathBuf::from("/b"), PathBuf::from("/c")].into_iter().collect();
+        let left: HashSet<PathBuf> = vec![PathBuf::from("/a"), PathBuf::from("/b")]
+            .into_iter()
+            .collect();
+        let right: HashSet<PathBuf> = vec![PathBuf::from("/b"), PathBuf::from("/c")]
+            .into_iter()
+            .collect();
         let result = sample_intersection(&left, &right);
         assert_eq!(result.count, 1);
         assert_eq!(result.samples, vec![PathBuf::from("/b")]);
@@ -619,14 +911,85 @@ mod tests {
     }
 
     #[test]
+    fn test_collect_anime_root_duplicates_detects_legacy_and_tagged_pairs() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let anime = dir.path().join("anime");
+        std::fs::create_dir_all(&anime).unwrap();
+        std::fs::create_dir_all(anime.join("Black Clover")).unwrap();
+        std::fs::create_dir_all(anime.join("Black Clover (2017) {tvdb-331753}")).unwrap();
+        std::fs::create_dir_all(anime.join("Blue Lock (2022) {tvdb-408629}")).unwrap();
+
+        let library = LibraryConfig {
+            name: "Anime".to_string(),
+            path: anime.clone(),
+            media_type: MediaType::Tv,
+            content_type: Some(ContentType::Anime),
+            depth: 1,
+        };
+
+        let (count, samples) = collect_anime_root_duplicates(&[&library]);
+
+        assert_eq!(count, 1);
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].normalized_title, "Black Clover");
+        assert_eq!(samples[0].untagged_roots, vec![anime.join("Black Clover")]);
+        assert_eq!(
+            samples[0].tagged_roots,
+            vec![anime.join("Black Clover (2017) {tvdb-331753}")]
+        );
+    }
+
+    #[test]
+    fn test_summarize_plex_duplicate_show_records_counts_hama_splits() {
+        let summary = summarize_plex_duplicate_show_records(&[
+            plex_db::PlexDuplicateShowRecord {
+                title: "Show A".to_string(),
+                original_title: String::new(),
+                year: Some(2024),
+                guid: "com.plexapp.agents.hama://anidb-100?lang=en".to_string(),
+                guid_kind: "hama-anidb".to_string(),
+                live: true,
+            },
+            plex_db::PlexDuplicateShowRecord {
+                title: "Show A".to_string(),
+                original_title: String::new(),
+                year: Some(2024),
+                guid: "com.plexapp.agents.hama://tvdb-200?lang=en".to_string(),
+                guid_kind: "hama-tvdb".to_string(),
+                live: true,
+            },
+            plex_db::PlexDuplicateShowRecord {
+                title: "Show B".to_string(),
+                original_title: String::new(),
+                year: Some(2025),
+                guid: "com.plexapp.agents.hama://tvdb-201?lang=en".to_string(),
+                guid_kind: "hama-tvdb".to_string(),
+                live: true,
+            },
+            plex_db::PlexDuplicateShowRecord {
+                title: "Show B".to_string(),
+                original_title: String::new(),
+                year: Some(2025),
+                guid: "com.plexapp.agents.hama://tvdb-202?lang=en".to_string(),
+                guid_kind: "hama-tvdb".to_string(),
+                live: false,
+            },
+        ]);
+
+        assert_eq!(summary.total_groups, 2);
+        assert_eq!(summary.hama_anidb_tvdb_groups, 1);
+        assert_eq!(summary.other_groups, 1);
+        assert_eq!(summary.sample_groups.len(), 2);
+        assert_eq!(summary.sample_groups[0].live_rows, 2);
+        assert_eq!(summary.sample_groups[1].live_rows, 1);
+    }
+
+    #[test]
     fn test_symlink_source_missing_broken() {
         let dir = tempfile::TempDir::new().unwrap();
         let link_path = dir.path().join("broken_link");
-        std::os::unix::fs::symlink(
-            std::path::Path::new("/nonexistent_target"),
-            &link_path,
-        )
-        .unwrap();
+        std::os::unix::fs::symlink(std::path::Path::new("/nonexistent_target"), &link_path)
+            .unwrap();
         assert!(symlink_source_missing(&link_path));
     }
 
@@ -821,7 +1184,7 @@ mod tests {
 
         for statement in [
             "CREATE TABLE section_locations (id INTEGER PRIMARY KEY, library_section_id INTEGER, root_path TEXT, available BOOLEAN, scanned_at INTEGER, created_at INTEGER, updated_at INTEGER)",
-            "CREATE TABLE metadata_items (id INTEGER PRIMARY KEY, library_section_id INTEGER, deleted_at INTEGER)",
+            "CREATE TABLE metadata_items (id INTEGER PRIMARY KEY, library_section_id INTEGER, metadata_type INTEGER, title TEXT, original_title TEXT, year INTEGER, guid TEXT, deleted_at INTEGER)",
             "CREATE TABLE media_items (id INTEGER PRIMARY KEY, library_section_id INTEGER, section_location_id INTEGER, metadata_item_id INTEGER, deleted_at INTEGER)",
             "CREATE TABLE media_parts (id INTEGER PRIMARY KEY, media_item_id INTEGER, file TEXT, deleted_at INTEGER)",
         ] {
@@ -841,7 +1204,7 @@ mod tests {
             let section_location_id = if path.starts_with(movie_root) { 1 } else { 2 };
             let library_section_id = section_location_id;
             sqlx::query(
-                "INSERT INTO metadata_items (id, library_section_id, deleted_at) VALUES (?, ?, NULL)",
+                "INSERT INTO metadata_items (id, library_section_id, metadata_type, title, original_title, year, guid, deleted_at) VALUES (?, ?, 4, '', '', NULL, '', NULL)",
             )
             .bind(metadata_item_id)
             .bind(library_section_id)
@@ -965,7 +1328,7 @@ mod tests {
         .await
         .unwrap();
 
-        let report = build_report(&cfg, &db, None, None).await.unwrap();
+        let report = build_report(&cfg, &db, None, None, None).await.unwrap();
 
         assert_eq!(
             report.summary,
@@ -1056,7 +1419,7 @@ mod tests {
         .await
         .unwrap();
 
-        let report = build_report(&cfg, &db, Some(MediaType::Movie), None)
+        let report = build_report(&cfg, &db, Some(MediaType::Movie), None, None)
             .await
             .unwrap();
 
@@ -1148,7 +1511,7 @@ mod tests {
         )
         .await;
 
-        let report = build_report(&cfg, &db, None, Some(&plex_db_path))
+        let report = build_report(&cfg, &db, None, None, Some(&plex_db_path))
             .await
             .unwrap();
 
@@ -1260,7 +1623,7 @@ mod tests {
         .await
         .unwrap();
 
-        let report = build_report(&cfg, &db, None, None).await.unwrap();
+        let report = build_report(&cfg, &db, None, None, None).await.unwrap();
 
         assert_eq!(report.path_compare.filesystem_symlinks, 2);
         assert_eq!(report.path_compare.db_active_links, 2);
@@ -1326,7 +1689,7 @@ mod tests {
         .await;
         mark_test_plex_path_deleted(&plex_db_path, &movie_a_link).await;
 
-        let report = build_report(&cfg, &db, None, Some(&plex_db_path))
+        let report = build_report(&cfg, &db, None, None, Some(&plex_db_path))
             .await
             .unwrap();
 
@@ -1359,5 +1722,42 @@ mod tests {
                 .samples,
             vec![movie_a_link]
         );
+    }
+
+    #[tokio::test]
+    async fn test_build_report_includes_anime_duplicate_audit_without_plex_db() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let movies = dir.path().join("movies");
+        let anime = dir.path().join("anime");
+        let source = dir.path().join("rd");
+        std::fs::create_dir_all(&movies).unwrap();
+        std::fs::create_dir_all(&anime).unwrap();
+        std::fs::create_dir_all(&source).unwrap();
+
+        std::fs::create_dir_all(anime.join("Aldnoah.Zero")).unwrap();
+        std::fs::create_dir_all(anime.join("Aldnoah.Zero (2014) {tvdb-279827}")).unwrap();
+        std::fs::create_dir_all(anime.join("Blue Lock (2022) {tvdb-408629}")).unwrap();
+
+        let db_path = dir.path().join("test.db");
+        let cfg = test_config(
+            movies,
+            anime.clone(),
+            source,
+            db_path.to_string_lossy().into_owned(),
+        );
+        let db = Database::new(db_path.to_str().unwrap()).await.unwrap();
+
+        let report = build_report(&cfg, &db, Some(MediaType::Tv), None, None)
+            .await
+            .unwrap();
+
+        let anime_duplicates = report.anime_duplicates.expect("anime audit present");
+        assert_eq!(anime_duplicates.filesystem_mixed_root_groups, 1);
+        assert_eq!(anime_duplicates.filesystem_sample_groups.len(), 1);
+        assert_eq!(
+            anime_duplicates.filesystem_sample_groups[0].normalized_title,
+            "Aldnoah.Zero"
+        );
+        assert_eq!(anime_duplicates.plex_duplicate_show_groups, None);
     }
 }

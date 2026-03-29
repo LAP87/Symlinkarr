@@ -1676,6 +1676,10 @@ realdebrid:
 
     #[test]
     fn validate_treats_missing_paths_as_errors() {
+        let security = SecurityConfig {
+            enforce_secure_permissions: false,
+            ..SecurityConfig::default()
+        };
         let cfg = Config {
             libraries: vec![LibraryConfig {
                 name: "Movies".to_string(),
@@ -1707,7 +1711,7 @@ realdebrid:
             sonarr: SonarrConfig::default(),
             sonarr_anime: SonarrConfig::default(),
             features: FeaturesConfig::default(),
-            security: SecurityConfig::default(),
+            security,
             cleanup: CleanupPolicyConfig::default(),
             web: WebConfig::default(),
             loaded_from: None,
@@ -1728,6 +1732,10 @@ realdebrid:
 
     #[test]
     fn validate_runtime_settings_skips_missing_path_errors() {
+        let security = SecurityConfig {
+            enforce_secure_permissions: false,
+            ..SecurityConfig::default()
+        };
         let cfg = Config {
             libraries: vec![LibraryConfig {
                 name: "Movies".to_string(),
@@ -1759,7 +1767,7 @@ realdebrid:
             sonarr: SonarrConfig::default(),
             sonarr_anime: SonarrConfig::default(),
             features: FeaturesConfig::default(),
-            security: SecurityConfig::default(),
+            security,
             cleanup: CleanupPolicyConfig::default(),
             web: WebConfig::default(),
             loaded_from: None,
@@ -2162,7 +2170,10 @@ tautulli:
     #[test]
     fn test_content_type_from_media_type() {
         assert_eq!(ContentType::from_media_type(MediaType::Tv), ContentType::Tv);
-        assert_eq!(ContentType::from_media_type(MediaType::Movie), ContentType::Movie);
+        assert_eq!(
+            ContentType::from_media_type(MediaType::Movie),
+            ContentType::Movie
+        );
     }
 
     #[test]
