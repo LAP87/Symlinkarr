@@ -175,7 +175,7 @@ pub struct PruneOutcome {
     pub confirmation_token: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum PruneDisposition {
     Delete,
     Quarantine,
@@ -1204,11 +1204,12 @@ pub async fn run_prune(
 
 fn quarantine_symlink(cfg: &Config, symlink_path: &Path) -> Result<PathBuf> {
     let target = std::fs::read_link(symlink_path)?;
+    let resolved_target = resolve_link_target(symlink_path, &target);
     let destination = quarantine_destination(cfg, symlink_path);
     if let Some(parent) = destination.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    create_symlink_like(&target, &destination)?;
+    create_symlink_like(&resolved_target, &destination)?;
     std::fs::remove_file(symlink_path)?;
     Ok(destination)
 }
@@ -1287,7 +1288,11 @@ fn create_symlink_like(target: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn prune_confirmation_token(report: &CleanupReport, candidate_paths: &[PathBuf]) -> String {
+fn prune_confirmation_token(
+    report: &CleanupReport,
+    candidate_paths: &[PathBuf],
+    dispositions: &HashMap<PathBuf, PruneDisposition>,
+) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
@@ -1297,6 +1302,7 @@ pub fn prune_confirmation_token(report: &CleanupReport, candidate_paths: &[PathB
     report.scope.hash(&mut hasher);
     for path in candidate_paths {
         path.hash(&mut hasher);
+        dispositions.get(path).hash(&mut hasher);
     }
 
     format!("{:016x}", hasher.finish())
@@ -1821,17 +1827,28 @@ async fn hydrate_db_tracked_flags(
     findings: &mut [CleanupFinding],
 ) -> Result<HashSet<PathBuf>> {
     let target_paths: Vec<_> = findings.iter().map(|f| f.symlink_path.clone()).collect();
-    let tracked_paths: HashSet<_> = db
+    let links_by_target: HashMap<_, Vec<_>> = db
         .get_links_by_targets(&target_paths)
         .await?
         .into_iter()
         .filter(|link| link.status == LinkStatus::Active)
-        .map(|link| link.target_path)
-        .collect();
+        .fold(HashMap::new(), |mut acc, link| {
+            acc.entry(link.target_path.clone()).or_default().push(link);
+            acc
+        });
+    let mut tracked_paths = HashSet::new();
 
     for finding in findings {
-        finding.db_tracked = tracked_paths.contains(&finding.symlink_path);
+        finding.db_tracked = links_by_target
+            .get(&finding.symlink_path)
+            .map(|links| {
+                links.iter().any(|link| {
+                    link.source_path == finding.source_path && link.media_id == finding.media_id
+                })
+            })
+            .unwrap_or(false);
         finding.ownership = if finding.db_tracked {
+            tracked_paths.insert(finding.symlink_path.clone());
             CleanupOwnership::Managed
         } else {
             CleanupOwnership::Foreign
@@ -1974,7 +1991,7 @@ pub(crate) fn build_prune_plan(report: &CleanupReport, quarantine_foreign: bool)
     candidate_paths.retain(|path| dispositions.contains_key(path));
 
     PrunePlan {
-        confirmation_token: prune_confirmation_token(report, &candidate_paths),
+        confirmation_token: prune_confirmation_token(report, &candidate_paths, &dispositions),
         candidate_paths,
         high_or_critical_candidates: high_or_critical_candidates.len(),
         safe_warning_duplicate_candidates: safe_duplicate_plan.prune_paths.len(),
@@ -2962,6 +2979,37 @@ cleanup:
         assert_eq!(updated.status, LinkStatus::Removed);
     }
 
+    #[tokio::test]
+    async fn test_hydrate_db_tracked_flags_requires_matching_source_path() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+        let symlink_path = dir.path().join("library/Show - S01E01.mkv");
+        let tracked_source = dir.path().join("rd/tracked.mkv");
+        let finding_source = dir.path().join("rd/manual-replacement.mkv");
+
+        db.insert_link(&LinkRecord {
+            id: None,
+            source_path: tracked_source,
+            target_path: symlink_path.clone(),
+            media_id: "tvdb-1".to_string(),
+            media_type: MediaType::Tv,
+            status: LinkStatus::Active,
+            created_at: None,
+            updated_at: None,
+        })
+        .await
+        .unwrap();
+
+        let mut findings = vec![high_finding(&symlink_path, &finding_source)];
+        let tracked_paths = hydrate_db_tracked_flags(&db, &mut findings).await.unwrap();
+
+        assert!(tracked_paths.is_empty());
+        assert!(!findings[0].db_tracked);
+        assert_eq!(findings[0].ownership, CleanupOwnership::Foreign);
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn test_prune_apply_quarantines_foreign_high_finding() {
@@ -3012,6 +3060,56 @@ cleanup:
         assert!(!symlink_path.exists());
         assert!(quarantined_path.is_symlink());
         assert_eq!(std::fs::read_link(&quarantined_path).unwrap(), source_file);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_prune_apply_quarantine_resolves_relative_symlink_target() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let library_root = dir.path().join("library");
+        let source_root = dir.path().join("rd");
+        let quarantine_root = dir.path().join("quarantine");
+        std::fs::create_dir_all(&library_root).unwrap();
+        std::fs::create_dir_all(&source_root).unwrap();
+
+        let source_file = source_root.join("source.mkv");
+        std::fs::write(&source_file, "video").unwrap();
+        let symlink_path = library_root.join("relative-source.mkv");
+        std::os::unix::fs::symlink(Path::new("../rd/source.mkv"), &symlink_path).unwrap();
+
+        let mut cfg = test_config(&library_root, &source_root);
+        cfg.cleanup.prune.quarantine_path = quarantine_root.clone();
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        let report =
+            report_with_findings(Utc::now(), vec![high_finding(&symlink_path, &source_file)]);
+        let report_path = dir.path().join("relative-foreign-report.json");
+        std::fs::write(&report_path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
+
+        let preview = run_prune(&cfg, &db, &report_path, false, None, None)
+            .await
+            .unwrap();
+        let outcome = run_prune(
+            &cfg,
+            &db,
+            &report_path,
+            true,
+            None,
+            Some(&preview.confirmation_token),
+        )
+        .await
+        .unwrap();
+
+        let quarantined_path = quarantine_root.join("library/relative-source.mkv");
+        assert_eq!(outcome.removed, 0);
+        assert_eq!(outcome.quarantined, 1);
+        assert!(quarantined_path.is_symlink());
+        assert_eq!(
+            std::fs::canonicalize(&quarantined_path).unwrap(),
+            std::fs::canonicalize(&source_file).unwrap()
+        );
     }
 
     #[tokio::test]
@@ -3292,6 +3390,65 @@ cleanup:
         )
         .await
         .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("invalid or missing confirmation token"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_prune_apply_rejects_disposition_change_after_preview() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let library_root = dir.path().join("library");
+        let source_root = dir.path().join("rd");
+        std::fs::create_dir_all(&library_root).unwrap();
+        std::fs::create_dir_all(&source_root).unwrap();
+
+        let source_file = source_root.join("source.mkv");
+        std::fs::write(&source_file, "video").unwrap();
+        let symlink_path = library_root.join("flip.mkv");
+        std::os::unix::fs::symlink(&source_file, &symlink_path).unwrap();
+
+        let cfg = test_config(&library_root, &source_root);
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        let report =
+            report_with_findings(Utc::now(), vec![high_finding(&symlink_path, &source_file)]);
+        let report_path = dir.path().join("flip-report.json");
+        std::fs::write(&report_path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
+
+        let preview = run_prune(&cfg, &db, &report_path, false, None, None)
+            .await
+            .unwrap();
+        assert_eq!(preview.managed_candidates, 0);
+        assert_eq!(preview.foreign_candidates, 1);
+
+        db.insert_link(&LinkRecord {
+            id: None,
+            source_path: source_file.clone(),
+            target_path: symlink_path.clone(),
+            media_id: "tvdb-1".to_string(),
+            media_type: MediaType::Tv,
+            status: LinkStatus::Active,
+            created_at: None,
+            updated_at: None,
+        })
+        .await
+        .unwrap();
+
+        let err = run_prune(
+            &cfg,
+            &db,
+            &report_path,
+            true,
+            None,
+            Some(&preview.confirmation_token),
+        )
+        .await
+        .unwrap_err();
+
         assert!(err
             .to_string()
             .contains("invalid or missing confirmation token"));
