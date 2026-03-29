@@ -172,7 +172,7 @@ pub struct ApiRepairResponse {
     pub failed: usize,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct ApiCleanupAuditResponse {
     pub success: bool,
     pub message: String,
@@ -183,7 +183,7 @@ pub struct ApiCleanupAuditResponse {
     pub warning: usize,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct ApiCleanupPruneResponse {
     pub success: bool,
     pub message: String,
@@ -298,7 +298,7 @@ pub async fn api_get_health(State(state): State<WebState>) -> Json<ApiHealth> {
 pub async fn api_post_scan(
     State(state): State<WebState>,
     Json(req): Json<ApiScanRequest>,
-) -> Json<ApiScanResponse> {
+) -> impl IntoResponse {
     info!("API: Triggering scan");
 
     let dry_run = req.dry_run.unwrap_or(false);
@@ -321,13 +321,16 @@ pub async fn api_post_scan(
     )
     .await
     {
-        return Json(ApiScanResponse {
-            success: false,
-            message: format!("Scan failed: {}", e),
-            created: 0,
-            updated: 0,
-            skipped: 0,
-        });
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiScanResponse {
+                success: false,
+                message: format!("Scan failed: {}", e),
+                created: 0,
+                updated: 0,
+                skipped: 0,
+            }),
+        );
     }
 
     let latest_run = state
@@ -339,24 +342,30 @@ pub async fn api_post_scan(
         .filter(|record| before_latest_id.is_none_or(|before| record.id > before));
 
     if let Some(record) = latest_run {
-        Json(ApiScanResponse {
-            success: true,
-            message: format!(
-                "Scan complete: {} created, {} updated, {} skipped",
-                record.links_created, record.links_updated, record.links_skipped
-            ),
-            created: record.links_created as u64,
-            updated: record.links_updated as u64,
-            skipped: record.links_skipped as u64,
-        })
+        (
+            StatusCode::OK,
+            Json(ApiScanResponse {
+                success: true,
+                message: format!(
+                    "Scan complete: {} created, {} updated, {} skipped",
+                    record.links_created, record.links_updated, record.links_skipped
+                ),
+                created: record.links_created as u64,
+                updated: record.links_updated as u64,
+                skipped: record.links_skipped as u64,
+            }),
+        )
     } else {
-        Json(ApiScanResponse {
-            success: true,
-            message: "Scan complete, but no new history row was available".to_string(),
-            created: 0,
-            updated: 0,
-            skipped: 0,
-        })
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiScanResponse {
+                success: false,
+                message: "Scan completed, but no new history row was recorded".to_string(),
+                created: 0,
+                updated: 0,
+                skipped: 0,
+            }),
+        )
     }
 }
 
@@ -600,21 +609,24 @@ pub async fn api_post_repair_auto(State(_state): State<WebState>) -> impl IntoRe
 pub async fn api_post_cleanup_audit(
     State(state): State<WebState>,
     Json(req): Json<ApiCleanupAuditRequest>,
-) -> Json<ApiCleanupAuditResponse> {
+) -> impl IntoResponse {
     info!("API: Running cleanup audit");
 
     let scope = match CleanupScope::parse(&req.scope) {
         Ok(s) => s,
         Err(e) => {
-            return Json(ApiCleanupAuditResponse {
-                success: false,
-                message: format!("Invalid scope: {}", e),
-                report_path: String::new(),
-                total_findings: 0,
-                critical: 0,
-                high: 0,
-                warning: 0,
-            });
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ApiCleanupAuditResponse {
+                    success: false,
+                    message: format!("Invalid scope: {}", e),
+                    report_path: String::new(),
+                    total_findings: 0,
+                    critical: 0,
+                    high: 0,
+                    warning: 0,
+                }),
+            );
         }
     };
 
@@ -628,64 +640,76 @@ pub async fn api_post_cleanup_audit(
     let report_path = match auditor.run_audit(scope, Some(&default_output)).await {
         Ok(p) => p,
         Err(e) => {
-            return Json(ApiCleanupAuditResponse {
-                success: false,
-                message: format!("Audit failed: {}", e),
-                report_path: String::new(),
-                total_findings: 0,
-                critical: 0,
-                high: 0,
-                warning: 0,
-            });
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiCleanupAuditResponse {
+                    success: false,
+                    message: format!("Audit failed: {}", e),
+                    report_path: String::new(),
+                    total_findings: 0,
+                    critical: 0,
+                    high: 0,
+                    warning: 0,
+                }),
+            );
         }
     };
 
     let report_json = match std::fs::read_to_string(&report_path) {
         Ok(json) => json,
         Err(e) => {
-            return Json(ApiCleanupAuditResponse {
-                success: false,
-                message: format!("Audit report read failed: {}", e),
-                report_path: report_path.to_string_lossy().to_string(),
-                total_findings: 0,
-                critical: 0,
-                high: 0,
-                warning: 0,
-            });
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiCleanupAuditResponse {
+                    success: false,
+                    message: format!("Audit report read failed: {}", e),
+                    report_path: report_path.to_string_lossy().to_string(),
+                    total_findings: 0,
+                    critical: 0,
+                    high: 0,
+                    warning: 0,
+                }),
+            );
         }
     };
 
     let report: CleanupReport = match serde_json::from_str(&report_json) {
         Ok(report) => report,
         Err(e) => {
-            return Json(ApiCleanupAuditResponse {
-                success: false,
-                message: format!("Audit report parse failed: {}", e),
-                report_path: report_path.to_string_lossy().to_string(),
-                total_findings: 0,
-                critical: 0,
-                high: 0,
-                warning: 0,
-            });
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiCleanupAuditResponse {
+                    success: false,
+                    message: format!("Audit report parse failed: {}", e),
+                    report_path: report_path.to_string_lossy().to_string(),
+                    total_findings: 0,
+                    critical: 0,
+                    high: 0,
+                    warning: 0,
+                }),
+            );
         }
     };
 
-    Json(ApiCleanupAuditResponse {
-        success: true,
-        message: "Audit complete".to_string(),
-        report_path: report_path.to_string_lossy().to_string(),
-        total_findings: report.summary.total_findings,
-        critical: report.summary.critical,
-        high: report.summary.high,
-        warning: report.summary.warning,
-    })
+    (
+        StatusCode::OK,
+        Json(ApiCleanupAuditResponse {
+            success: true,
+            message: "Audit complete".to_string(),
+            report_path: report_path.to_string_lossy().to_string(),
+            total_findings: report.summary.total_findings,
+            critical: report.summary.critical,
+            high: report.summary.high,
+            warning: report.summary.warning,
+        }),
+    )
 }
 
 /// POST /api/v1/cleanup/prune
 pub async fn api_post_cleanup_prune(
     State(state): State<WebState>,
     Json(req): Json<ApiCleanupPruneRequest>,
-) -> Json<ApiCleanupPruneResponse> {
+) -> impl IntoResponse {
     info!("API: Applying prune");
 
     match cleanup_audit::run_prune(
@@ -698,26 +722,32 @@ pub async fn api_post_cleanup_prune(
     )
     .await
     {
-        Ok(outcome) => Json(ApiCleanupPruneResponse {
-            success: true,
-            message: "Prune applied".to_string(),
-            candidates: outcome.candidates,
-            managed_candidates: outcome.managed_candidates,
-            foreign_candidates: outcome.foreign_candidates,
-            removed: outcome.removed,
-            quarantined: outcome.quarantined,
-            skipped: outcome.skipped,
-        }),
-        Err(e) => Json(ApiCleanupPruneResponse {
-            success: false,
-            message: format!("Prune failed: {}", e),
-            candidates: 0,
-            managed_candidates: 0,
-            foreign_candidates: 0,
-            removed: 0,
-            quarantined: 0,
-            skipped: 0,
-        }),
+        Ok(outcome) => (
+            StatusCode::OK,
+            Json(ApiCleanupPruneResponse {
+                success: true,
+                message: "Prune applied".to_string(),
+                candidates: outcome.candidates,
+                managed_candidates: outcome.managed_candidates,
+                foreign_candidates: outcome.foreign_candidates,
+                removed: outcome.removed,
+                quarantined: outcome.quarantined,
+                skipped: outcome.skipped,
+            }),
+        ),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(ApiCleanupPruneResponse {
+                success: false,
+                message: format!("Prune failed: {}", e),
+                candidates: 0,
+                managed_candidates: 0,
+                foreign_candidates: 0,
+                removed: 0,
+                quarantined: 0,
+                skipped: 0,
+            }),
+        ),
     }
 }
 
@@ -1115,13 +1145,17 @@ mod tests {
     async fn api_post_cleanup_audit_returns_real_report_summary() {
         let ctx = test_state().await;
 
-        let Json(response) = api_post_cleanup_audit(
+        let response = api_post_cleanup_audit(
             State(ctx),
             Json(ApiCleanupAuditRequest {
                 scope: "anime".to_string(),
             }),
         )
         .await;
+        let body = response.into_response();
+        assert_eq!(body.status(), StatusCode::OK);
+        let bytes = to_bytes(body.into_body(), usize::MAX).await.unwrap();
+        let response: ApiCleanupAuditResponse = serde_json::from_slice(&bytes).unwrap();
 
         assert!(response.success);
         assert_eq!(response.message, "Audit complete");
@@ -1200,7 +1234,7 @@ mod tests {
             .unwrap();
 
         let state = WebState::new(cfg, db);
-        let Json(response) = api_post_cleanup_prune(
+        let response = api_post_cleanup_prune(
             State(state),
             Json(ApiCleanupPruneRequest {
                 report_path: report_path.to_string_lossy().to_string(),
@@ -1209,6 +1243,10 @@ mod tests {
             }),
         )
         .await;
+        let body = response.into_response();
+        assert_eq!(body.status(), StatusCode::OK);
+        let bytes = to_bytes(body.into_body(), usize::MAX).await.unwrap();
+        let response: ApiCleanupPruneResponse = serde_json::from_slice(&bytes).unwrap();
 
         assert!(response.success);
         assert_eq!(response.candidates, 1);
@@ -1218,5 +1256,44 @@ mod tests {
         assert_eq!(response.quarantined, 0);
         assert_eq!(response.skipped, 0);
         assert!(!symlink_path.exists());
+    }
+
+    #[tokio::test]
+    async fn api_post_cleanup_audit_rejects_invalid_scope_with_bad_request() {
+        let ctx = test_state().await;
+
+        let response = api_post_cleanup_audit(
+            State(ctx),
+            Json(ApiCleanupAuditRequest {
+                scope: "nope".to_string(),
+            }),
+        )
+        .await;
+        let body = response.into_response();
+        assert_eq!(body.status(), StatusCode::BAD_REQUEST);
+        let bytes = to_bytes(body.into_body(), usize::MAX).await.unwrap();
+        let response: ApiCleanupAuditResponse = serde_json::from_slice(&bytes).unwrap();
+        assert!(!response.success);
+        assert!(response.message.contains("Invalid scope"));
+    }
+
+    #[tokio::test]
+    async fn api_post_cleanup_prune_returns_bad_request_for_invalid_token() {
+        let ctx = test_state().await;
+        let response = api_post_cleanup_prune(
+            State(ctx),
+            Json(ApiCleanupPruneRequest {
+                report_path: "/tmp/does-not-exist.json".to_string(),
+                token: "bad-token".to_string(),
+                max_delete: None,
+            }),
+        )
+        .await;
+        let body = response.into_response();
+        assert_eq!(body.status(), StatusCode::BAD_REQUEST);
+        let bytes = to_bytes(body.into_body(), usize::MAX).await.unwrap();
+        let response: ApiCleanupPruneResponse = serde_json::from_slice(&bytes).unwrap();
+        assert!(!response.success);
+        assert!(response.message.contains("Prune failed"));
     }
 }

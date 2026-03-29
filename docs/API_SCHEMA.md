@@ -64,6 +64,11 @@ Response:
 
 Triggers the scan pipeline.
 
+Status codes:
+
+- `200 OK` when the scan completes and records a new history row
+- `500 Internal Server Error` when the scan fails or completes without a durable history row
+
 Request body:
 
 ```json
@@ -213,22 +218,32 @@ Not found:
 
 Runs the web API repair action.
 
+Status codes:
+
+- `501 Not Implemented` because the JSON endpoint is not yet wired to the full repair workflow
+
 Response schema:
 
 ```json
 {
-  "success": true,
-  "message": "Repair completed",
+  "success": false,
+  "message": "repair/auto is not wired to the full CLI repair flow yet; use the CLI or web UI flow",
   "repaired": 0,
   "failed": 0
 }
 ```
 
-Note: this endpoint is currently a thin placeholder compared to the richer CLI repair paths.
+Note: this endpoint is intentionally a thin placeholder compared to the richer CLI repair paths.
 
 ## `POST /api/v1/cleanup/audit`
 
 Runs a cleanup audit and writes a report.
+
+Status codes:
+
+- `200 OK` on success
+- `400 Bad Request` for invalid scope values
+- `500 Internal Server Error` if the audit run, report read, or report parse fails
 
 Request body:
 
@@ -260,6 +275,11 @@ Notes:
 
 Applies prune against a previously generated report.
 
+Status codes:
+
+- `200 OK` on success
+- `400 Bad Request` when prune validation fails, including invalid tokens or bad report input
+
 Request body:
 
 ```json
@@ -274,8 +294,12 @@ Response schema:
 ```json
 {
   "success": true,
-  "message": "Prune completed successfully",
+  "message": "Prune applied",
+  "candidates": 17,
+  "managed_candidates": 17,
+  "foreign_candidates": 0,
   "removed": 17,
+  "quarantined": 0,
   "skipped": 2
 }
 ```

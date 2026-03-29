@@ -9,7 +9,7 @@ use axum::{
 use chrono::Utc;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::path::{Path as StdPath, PathBuf};
+use std::path::{Component, Path as StdPath, PathBuf};
 use tracing::{error, info};
 
 use crate::backup::BackupManager;
@@ -65,6 +65,29 @@ fn cleanup_report_summary_from_path(path: &StdPath) -> Option<CleanupReportSumma
         path.to_path_buf(),
         report,
     ))
+}
+
+fn resolve_backup_restore_path(backup_dir: &StdPath, backup_file: &str) -> anyhow::Result<PathBuf> {
+    let trimmed = backup_file.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("Backup file must not be empty");
+    }
+
+    let requested = StdPath::new(trimmed);
+    if requested.is_absolute() {
+        anyhow::bail!("Backup restore only accepts files inside the configured backup directory");
+    }
+
+    if requested.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
+        anyhow::bail!("Backup restore path escapes the configured backup directory");
+    }
+
+    Ok(backup_dir.join(requested))
 }
 
 async fn filtered_scan_history(
@@ -1054,8 +1077,18 @@ pub async fn post_backup_restore(
     info!("Restoring backup: {}", form.backup_file);
 
     let backup_manager = BackupManager::new(&state.config.backup);
-
-    let backup_path = state.config.backup.path.join(&form.backup_file);
+    let backup_path = match resolve_backup_restore_path(&state.config.backup.path, &form.backup_file)
+    {
+        Ok(path) => path,
+        Err(e) => {
+            let template = BackupResultTemplate {
+                success: false,
+                message: format!("Restore failed: {}", e),
+                backup_path: None,
+            };
+            return Html(template.render().unwrap_or_else(|render_err| render_err.to_string()));
+        }
+    };
 
     let allowed_roots: Vec<PathBuf> = state
         .config
@@ -1502,5 +1535,28 @@ mod tests {
         assert!(result.contains(&"Anime".to_string()));
         assert!(result.contains(&"Anime 2".to_string()));
         assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn resolve_backup_restore_path_rejects_absolute_input() {
+        let backup_dir = PathBuf::from("/srv/symlinkarr/backups");
+        let err = resolve_backup_restore_path(&backup_dir, "/tmp/evil.json").unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("configured backup directory"));
+    }
+
+    #[test]
+    fn resolve_backup_restore_path_rejects_parent_escape() {
+        let backup_dir = PathBuf::from("/srv/symlinkarr/backups");
+        let err = resolve_backup_restore_path(&backup_dir, "../outside.json").unwrap_err();
+        assert!(err.to_string().contains("escapes"));
+    }
+
+    #[test]
+    fn resolve_backup_restore_path_accepts_plain_filename() {
+        let backup_dir = PathBuf::from("/srv/symlinkarr/backups");
+        let path = resolve_backup_restore_path(&backup_dir, "backup-20260329.json").unwrap();
+        assert_eq!(path, backup_dir.join("backup-20260329.json"));
     }
 }
