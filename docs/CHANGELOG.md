@@ -13,9 +13,15 @@
 - `cleanup prune` gained an explicit `--include-legacy-anime-roots` opt-in for warning-only anime findings where an untagged legacy root coexists with a tagged `{tvdb-*}` or `{tmdb-*}` root.
   - these candidates remain `foreign` and flow into quarantine instead of raw delete when foreign quarantine is enabled
   - files: `src/main.rs`, `src/commands/cleanup.rs`, `src/cleanup_audit.rs`, `src/web/handlers.rs`
+- cleanup reports and prune preview now preserve legacy anime-root context, including the canonical tagged roots behind each untagged legacy finding.
+  - prune preview surfaces top legacy root groups in web UI, and each row can now show the tagged root(s) it conflicts with
+  - files: `src/cleanup_audit.rs`, `src/web/templates.rs`, `src/web/ui/prune_preview.html`, `src/web/handlers.rs`
 - destructive cleanup commands now refuse to run if the configured source mounts are unhealthy at runtime.
   - reuses the same runtime mount probe path used by `scan`, so transient RD outages are blocked before `cleanup dead` or `cleanup prune --apply` can mutate the library
   - files: `src/commands/mod.rs`, `src/commands/scan.rs`, `src/commands/cleanup.rs`
+- `report` now loads Symlinkarr links once and filters them to the selected libraries in memory, instead of issuing a root-scoped DB query for every selected-root shape.
+  - this avoids the slower scoped query path on larger library sets while preserving the same library-local report output
+  - files: `src/commands/report.rs`
 
 ### Docs
 

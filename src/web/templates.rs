@@ -306,6 +306,7 @@ pub struct PrunePreviewTemplate {
     pub managed_candidates: usize,
     pub foreign_candidates: usize,
     pub reason_counts: Vec<crate::cleanup_audit::PruneReasonCount>,
+    pub legacy_anime_root_groups: Vec<crate::cleanup_audit::LegacyAnimeRootGroupCount>,
     pub report_path: Option<PathBuf>,
     pub confirmation_token: Option<String>,
 }
@@ -559,6 +560,7 @@ mod tests {
                     title: "Chucky (2021)".to_string(),
                     score: 1.0,
                 }),
+                legacy_anime_root: None,
                 db_tracked: true,
                 ownership: CleanupOwnership::Managed,
             }],
@@ -574,6 +576,7 @@ mod tests {
                 managed: 1,
                 foreign: 0,
             }],
+            legacy_anime_root_groups: vec![],
             report_path: Some(PathBuf::from("/tmp/cleanup-audit-all.json")),
             confirmation_token: Some("abcdef1234567890".to_string()),
         };
@@ -583,5 +586,57 @@ mod tests {
         assert!(html.contains("Chucky (2021)"));
         assert!(html.contains("tvdb-2"));
         assert!(html.contains("score 1.00"));
+    }
+
+    #[test]
+    fn prune_preview_template_renders_legacy_anime_root_context() {
+        let template = PrunePreviewTemplate {
+            findings: vec![CleanupFinding {
+                symlink_path: PathBuf::from("/plex/Show/Season 01/Show - S01E01.mkv"),
+                source_path: PathBuf::from("/rd/Show.S01E01.mkv"),
+                media_id: String::new(),
+                severity: FindingSeverity::Warning,
+                confidence: 0.55,
+                reasons: vec![FindingReason::LegacyAnimeRootDuplicate],
+                parsed: ParsedContext {
+                    library_title: "Show".to_string(),
+                    parsed_title: "Show".to_string(),
+                    season: Some(1),
+                    episode: Some(1),
+                },
+                alternate_match: None,
+                legacy_anime_root: Some(crate::cleanup_audit::LegacyAnimeRootDetails {
+                    normalized_title: "Show".to_string(),
+                    untagged_root: PathBuf::from("/plex/Show"),
+                    tagged_roots: vec![PathBuf::from("/plex/Show (2024) {tvdb-123}")],
+                }),
+                db_tracked: false,
+                ownership: CleanupOwnership::Foreign,
+            }],
+            total: 1,
+            critical: 0,
+            high: 0,
+            warning: 1,
+            managed_candidates: 0,
+            foreign_candidates: 1,
+            reason_counts: vec![PruneReasonCount {
+                reason: FindingReason::LegacyAnimeRootDuplicate,
+                total: 1,
+                managed: 0,
+                foreign: 1,
+            }],
+            legacy_anime_root_groups: vec![crate::cleanup_audit::LegacyAnimeRootGroupCount {
+                normalized_title: "Show".to_string(),
+                total: 1,
+                tagged_roots: vec![PathBuf::from("/plex/Show (2024) {tvdb-123}")],
+            }],
+            report_path: Some(PathBuf::from("/tmp/cleanup-audit-anime.json")),
+            confirmation_token: Some("abcdef1234567890".to_string()),
+        };
+
+        let html = template.render().unwrap();
+        assert!(html.contains("Legacy Anime Root Groups"));
+        assert!(html.contains("/plex/Show (2024) {tvdb-123}"));
+        assert!(html.contains("legacy root"));
     }
 }

@@ -130,6 +130,13 @@ pub struct AlternateMatchContext {
     pub score: f64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LegacyAnimeRootDetails {
+    pub normalized_title: String,
+    pub untagged_root: PathBuf,
+    pub tagged_roots: Vec<PathBuf>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CleanupFinding {
     pub symlink_path: PathBuf,
@@ -141,6 +148,8 @@ pub struct CleanupFinding {
     pub parsed: ParsedContext,
     #[serde(default)]
     pub alternate_match: Option<AlternateMatchContext>,
+    #[serde(default)]
+    pub legacy_anime_root: Option<LegacyAnimeRootDetails>,
     #[serde(default)]
     pub db_tracked: bool,
     #[serde(default)]
@@ -170,6 +179,7 @@ pub struct PruneOutcome {
     pub high_or_critical_candidates: usize,
     pub safe_warning_duplicate_candidates: usize,
     pub legacy_anime_root_candidates: usize,
+    pub legacy_anime_root_groups: Vec<LegacyAnimeRootGroupCount>,
     pub managed_candidates: usize,
     pub foreign_candidates: usize,
     pub reason_counts: Vec<PruneReasonCount>,
@@ -191,6 +201,7 @@ pub(crate) struct PrunePlan {
     pub high_or_critical_candidates: usize,
     pub safe_warning_duplicate_candidates: usize,
     pub legacy_anime_root_candidates: usize,
+    pub legacy_anime_root_groups: Vec<LegacyAnimeRootGroupCount>,
     pub managed_candidates: usize,
     pub foreign_candidates: usize,
     pub reason_counts: Vec<PruneReasonCount>,
@@ -204,6 +215,13 @@ pub struct PruneReasonCount {
     pub total: usize,
     pub managed: usize,
     pub foreign: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LegacyAnimeRootGroupCount {
+    pub normalized_title: String,
+    pub total: usize,
+    pub tagged_roots: Vec<PathBuf>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -221,6 +239,8 @@ struct ArrSeriesSnapshot {
 #[derive(Debug, Clone)]
 struct LegacyAnimeRootContext {
     normalized_title: String,
+    untagged_root: PathBuf,
+    tagged_roots: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -235,6 +255,7 @@ struct WorkingEntry {
     episode: Option<u32>,
     library_title: String,
     alternate_match: Option<AlternateMatchContext>,
+    legacy_anime_root: Option<LegacyAnimeRootDetails>,
     reasons: BTreeSet<FindingReason>,
 }
 
@@ -539,6 +560,7 @@ impl<'a> CleanupAuditor<'a> {
                     episode: entry.episode,
                 },
                 alternate_match: entry.alternate_match,
+                legacy_anime_root: entry.legacy_anime_root,
                 db_tracked: false,
                 ownership: CleanupOwnership::Foreign,
             });
@@ -685,10 +707,16 @@ impl<'a> CleanupAuditor<'a> {
                     .map(|o| (o.id.to_string(), o.title.clone()))
                     .unwrap_or_else(|| (String::new(), String::new()));
                 let mut reasons = BTreeSet::new();
+                let mut legacy_anime_root = None;
                 if owner.is_none() {
                     if let Some(context) = legacy_root_context {
                         library_title = context.normalized_title.clone();
                         reasons.insert(FindingReason::LegacyAnimeRootDuplicate);
+                        legacy_anime_root = Some(LegacyAnimeRootDetails {
+                            normalized_title: context.normalized_title.clone(),
+                            untagged_root: context.untagged_root.clone(),
+                            tagged_roots: context.tagged_roots.clone(),
+                        });
                     }
                 }
 
@@ -706,6 +734,7 @@ impl<'a> CleanupAuditor<'a> {
                     episode: parsed_source.as_ref().and_then(|s| s.episode),
                     library_title,
                     alternate_match: None,
+                    legacy_anime_root,
                     reasons,
                 });
             }
@@ -999,6 +1028,7 @@ pub async fn run_prune(
             high_or_critical_candidates: plan.high_or_critical_candidates,
             safe_warning_duplicate_candidates: plan.safe_warning_duplicate_candidates,
             legacy_anime_root_candidates: plan.legacy_anime_root_candidates,
+            legacy_anime_root_groups: plan.legacy_anime_root_groups.clone(),
             managed_candidates: plan.managed_candidates,
             foreign_candidates: plan.foreign_candidates,
             reason_counts: plan.reason_counts.clone(),
@@ -1234,6 +1264,7 @@ pub async fn run_prune(
         high_or_critical_candidates: plan.high_or_critical_candidates,
         safe_warning_duplicate_candidates: plan.safe_warning_duplicate_candidates,
         legacy_anime_root_candidates: plan.legacy_anime_root_candidates,
+        legacy_anime_root_groups: plan.legacy_anime_root_groups,
         managed_candidates: plan.managed_candidates,
         foreign_candidates: plan.foreign_candidates,
         reason_counts: plan.reason_counts,
@@ -1391,9 +1422,11 @@ fn build_legacy_anime_root_lookup(
     for group in collect_anime_root_duplicate_groups(&anime_libraries) {
         for root in group.untagged_roots {
             lookup.insert(
-                root,
+                root.clone(),
                 LegacyAnimeRootContext {
                     normalized_title: group.normalized_title.clone(),
+                    untagged_root: root,
+                    tagged_roots: group.tagged_roots.clone(),
                 },
             );
         }
@@ -2072,6 +2105,7 @@ pub(crate) fn build_prune_plan(
 
     let candidate_set: HashSet<_> = candidate_paths.iter().cloned().collect();
     let mut reason_counts: HashMap<FindingReason, PruneReasonCount> = HashMap::new();
+    let mut legacy_anime_root_groups: HashMap<String, LegacyAnimeRootGroupCount> = HashMap::new();
     for finding in &report.findings {
         if !candidate_set.contains(&finding.symlink_path) {
             continue;
@@ -2094,10 +2128,27 @@ pub(crate) fn build_prune_plan(
                 CleanupOwnership::Foreign => entry.foreign += 1,
             }
         }
+
+        if let Some(legacy) = &finding.legacy_anime_root {
+            let entry = legacy_anime_root_groups
+                .entry(legacy.normalized_title.clone())
+                .or_insert(LegacyAnimeRootGroupCount {
+                    normalized_title: legacy.normalized_title.clone(),
+                    total: 0,
+                    tagged_roots: legacy.tagged_roots.clone(),
+                });
+            entry.total += 1;
+        }
     }
 
     let mut reason_counts: Vec<_> = reason_counts.into_values().collect();
     reason_counts.sort_by(|a, b| b.total.cmp(&a.total).then_with(|| a.reason.cmp(&b.reason)));
+    let mut legacy_anime_root_groups: Vec<_> = legacy_anime_root_groups.into_values().collect();
+    legacy_anime_root_groups.sort_by(|a, b| {
+        b.total
+            .cmp(&a.total)
+            .then_with(|| a.normalized_title.cmp(&b.normalized_title))
+    });
 
     PrunePlan {
         confirmation_token: prune_confirmation_token(report, &candidate_paths),
@@ -2105,6 +2156,7 @@ pub(crate) fn build_prune_plan(
         high_or_critical_candidates: high_or_critical_candidates.len(),
         safe_warning_duplicate_candidates: safe_duplicate_plan.prune_paths.len(),
         legacy_anime_root_candidates: legacy_anime_root_candidates.len(),
+        legacy_anime_root_groups,
         managed_candidates,
         foreign_candidates,
         reason_counts,
@@ -2298,6 +2350,7 @@ mod tests {
             episode,
             library_title: String::new(),
             alternate_match: None,
+            legacy_anime_root: None,
             reasons: reason_set,
         }
     }
@@ -2325,6 +2378,7 @@ mod tests {
                 episode: Some(episode),
             },
             alternate_match: None,
+            legacy_anime_root: None,
             db_tracked: false,
             ownership: CleanupOwnership::Foreign,
         }
@@ -2449,6 +2503,7 @@ mod tests {
             episode: Some(1),
             library_title: "Chuck (2007)".to_string(),
             alternate_match: None,
+            legacy_anime_root: None,
             reasons: BTreeSet::new(),
         };
 
@@ -2862,6 +2917,11 @@ mod tests {
                     episode: Some(1),
                 },
                 alternate_match: None,
+                legacy_anime_root: Some(LegacyAnimeRootDetails {
+                    normalized_title: "Show".to_string(),
+                    untagged_root: PathBuf::from("/lib/Show"),
+                    tagged_roots: vec![PathBuf::from("/lib/Show (2024) {tvdb-123}")],
+                }),
                 db_tracked: false,
                 ownership: CleanupOwnership::Foreign,
             }],
@@ -2890,6 +2950,11 @@ mod tests {
                     episode: Some(1),
                 },
                 alternate_match: None,
+                legacy_anime_root: Some(LegacyAnimeRootDetails {
+                    normalized_title: "Show".to_string(),
+                    untagged_root: PathBuf::from("/lib/Show"),
+                    tagged_roots: vec![PathBuf::from("/lib/Show (2024) {tvdb-123}")],
+                }),
                 db_tracked: false,
                 ownership: CleanupOwnership::Foreign,
             }],
@@ -2901,6 +2966,14 @@ mod tests {
             vec![PathBuf::from("/lib/Show/Season 01/Show - S01E01.mkv")]
         );
         assert_eq!(plan.legacy_anime_root_candidates, 1);
+        assert_eq!(
+            plan.legacy_anime_root_groups,
+            vec![LegacyAnimeRootGroupCount {
+                normalized_title: "Show".to_string(),
+                total: 1,
+                tagged_roots: vec![PathBuf::from("/lib/Show (2024) {tvdb-123}")],
+            }]
+        );
         assert_eq!(plan.foreign_candidates, 1);
         assert_eq!(plan.managed_candidates, 0);
         assert_eq!(
@@ -3002,6 +3075,7 @@ cleanup:
                 episode: Some(1),
             },
             alternate_match: None,
+            legacy_anime_root: None,
             db_tracked: false,
             ownership: CleanupOwnership::Foreign,
         }
@@ -3079,6 +3153,12 @@ cleanup:
                 .map(|context| context.normalized_title.as_str()),
             Some("Show")
         );
+        assert_eq!(
+            lookup
+                .get(&anime_root.join("Show"))
+                .map(|context| context.tagged_roots.clone()),
+            Some(vec![anime_root.join("Show (2024) {tvdb-123}")])
+        );
         assert!(!lookup.contains_key(&anime_root.join("Show (2024) {tvdb-123}")));
     }
 
@@ -3090,6 +3170,8 @@ cleanup:
             library_root.join("Show"),
             LegacyAnimeRootContext {
                 normalized_title: "Show".to_string(),
+                untagged_root: library_root.join("Show"),
+                tagged_roots: vec![library_root.join("Show (2024) {tvdb-123}")],
             },
         );
 

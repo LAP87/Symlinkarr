@@ -542,6 +542,7 @@ pub async fn get_cleanup_prune(
                 managed_candidates: 0,
                 foreign_candidates: 0,
                 reason_counts: vec![],
+                legacy_anime_root_groups: vec![],
                 report_path: None,
                 confirmation_token: None,
             }
@@ -563,6 +564,7 @@ pub async fn get_cleanup_prune(
                 managed_candidates: 0,
                 foreign_candidates: 0,
                 reason_counts: vec![],
+                legacy_anime_root_groups: vec![],
                 report_path: None,
                 confirmation_token: None,
             }
@@ -586,6 +588,7 @@ pub async fn get_cleanup_prune(
                     managed_candidates: 0,
                     foreign_candidates: 0,
                     reason_counts: vec![],
+                    legacy_anime_root_groups: vec![],
                     report_path: None,
                     confirmation_token: None,
                 }
@@ -609,6 +612,7 @@ pub async fn get_cleanup_prune(
                     managed_candidates: 0,
                     foreign_candidates: 0,
                     reason_counts: vec![],
+                    legacy_anime_root_groups: vec![],
                     report_path: None,
                     confirmation_token: None,
                 }
@@ -631,6 +635,15 @@ pub async fn get_cleanup_prune(
             }
         };
 
+    let legacy_anime_root_groups = prune_plan
+        .as_ref()
+        .map(|plan| {
+            let mut groups = plan.legacy_anime_root_groups.clone();
+            groups.truncate(12);
+            groups
+        })
+        .unwrap_or_default();
+
     let template = PrunePreviewTemplate {
         findings: report.findings.clone(),
         total: report.findings.len(),
@@ -649,6 +662,7 @@ pub async fn get_cleanup_prune(
             .as_ref()
             .map(|plan| plan.reason_counts.clone())
             .unwrap_or_default(),
+        legacy_anime_root_groups,
         report_path: Some(report_path.to_path_buf()),
         confirmation_token: prune_plan.map(|plan| plan.confirmation_token),
     };
