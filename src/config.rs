@@ -496,7 +496,7 @@ pub struct TautulliConfig {
 }
 
 /// Plex integration
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlexConfig {
     /// Plex URL (e.g. "http://localhost:32400")
     #[serde(default)]
@@ -504,6 +504,47 @@ pub struct PlexConfig {
     /// Plex token for library refresh requests
     #[serde(default)]
     pub token: String,
+    /// Enable Symlinkarr-triggered Plex refreshes after linking
+    #[serde(default = "default_plex_refresh_enabled")]
+    pub refresh_enabled: bool,
+    /// Delay between queued Plex refresh requests to avoid overloading Plex
+    #[serde(default = "default_plex_refresh_delay_ms")]
+    pub refresh_delay_ms: u64,
+    /// Coalesce large per-library refresh groups to the library root after this many paths
+    #[serde(default = "default_plex_refresh_coalesce_threshold")]
+    pub refresh_coalesce_threshold: usize,
+    /// Maximum Plex refresh batches queued per scan (0 = unlimited)
+    #[serde(default = "default_plex_max_refresh_batches_per_run")]
+    pub max_refresh_batches_per_run: usize,
+}
+
+fn default_plex_refresh_enabled() -> bool {
+    true
+}
+
+fn default_plex_refresh_delay_ms() -> u64 {
+    250
+}
+
+fn default_plex_refresh_coalesce_threshold() -> usize {
+    8
+}
+
+fn default_plex_max_refresh_batches_per_run() -> usize {
+    12
+}
+
+impl Default for PlexConfig {
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            token: String::new(),
+            refresh_enabled: default_plex_refresh_enabled(),
+            refresh_delay_ms: default_plex_refresh_delay_ms(),
+            refresh_coalesce_threshold: default_plex_refresh_coalesce_threshold(),
+            max_refresh_batches_per_run: default_plex_max_refresh_batches_per_run(),
+        }
+    }
 }
 
 /// Radarr integration
@@ -1054,6 +1095,11 @@ impl Config {
     /// Check if Plex is configured
     pub fn has_plex(&self) -> bool {
         !self.plex.url.is_empty() && !self.plex.token.is_empty()
+    }
+
+    /// Check if targeted Plex refresh is configured and enabled
+    pub fn has_plex_refresh(&self) -> bool {
+        self.has_plex() && self.plex.refresh_enabled
     }
 
     /// Check if Radarr is configured
@@ -2000,6 +2046,27 @@ realdebrid:
     }
 
     #[test]
+    fn plex_config_defaults_to_safe_refresh_limits() {
+        let plex = PlexConfig::default();
+        assert!(plex.refresh_enabled);
+        assert_eq!(plex.refresh_delay_ms, 250);
+        assert_eq!(plex.refresh_coalesce_threshold, 8);
+        assert_eq!(plex.max_refresh_batches_per_run, 12);
+    }
+
+    #[test]
+    fn has_plex_refresh_respects_refresh_enabled_flag() {
+        let mut cfg = runtime_config_fixture();
+        cfg.plex.url = "http://localhost:32400".to_string();
+        cfg.plex.token = "token".to_string();
+        assert!(cfg.has_plex_refresh());
+
+        cfg.plex.refresh_enabled = false;
+        assert!(!cfg.has_plex_refresh());
+        assert!(cfg.has_plex());
+    }
+
+    #[test]
     fn config_load_parses_web_bind_address() {
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("config.yaml");
@@ -2185,7 +2252,8 @@ tautulli:
         assert!(report
             .errors
             .iter()
-            .any(|err| err.contains("cleanup.prune.quarantine_path must not be group/world accessible")));
+            .any(|err| err
+                .contains("cleanup.prune.quarantine_path must not be group/world accessible")));
         assert!(report
             .errors
             .iter()

@@ -211,6 +211,20 @@ web:
 
 Use `bind_address: "0.0.0.0"` only when you explicitly want to expose the web UI beyond loopback, for example inside Docker with a published port.
 
+Optional Plex refresh hardening:
+
+```yaml
+plex:
+  url: "http://localhost:32400"
+  token: "env:SYMLINKARR_PLEX_TOKEN"
+  refresh_enabled: true
+  refresh_delay_ms: 250
+  refresh_coalesce_threshold: 8
+  max_refresh_batches_per_run: 12
+```
+
+If Plex becomes unstable under refresh load, raise `refresh_delay_ms`, lower `max_refresh_batches_per_run`, or temporarily set `refresh_enabled: false`.
+
 When `--config` is omitted, Symlinkarr searches:
 
 1. `SYMLINKARR_CONFIG`

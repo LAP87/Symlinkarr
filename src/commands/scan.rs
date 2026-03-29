@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use tokio::time::sleep;
 use tracing::info;
 
 use crate::api::bazarr::BazarrClient;
@@ -25,8 +26,6 @@ use crate::models::{LibraryItem, MatchResult, MediaId, MediaType, SourceItem};
 use crate::source_scanner::SourceScanner;
 use crate::utils::{stdout_text_guard, user_println};
 use crate::OutputFormat;
-
-const PLEX_REFRESH_COALESCE_THRESHOLD: usize = 8;
 
 #[derive(Debug, Clone, Default)]
 struct SourceInventoryTelemetry {
@@ -655,16 +654,22 @@ async fn trigger_plex_refresh(
         requested_paths: refresh_paths.len(),
         ..PlexRefreshTelemetry::default()
     };
-    if refresh_paths.is_empty() || !cfg.has_plex() {
+    if refresh_paths.is_empty() || !cfg.has_plex_refresh() {
         return Ok(telemetry);
     }
 
     let plex = PlexClient::new(&cfg.plex.url, &cfg.plex.token);
     let sections = plex.get_sections().await?;
-    let plan = plan_refresh_batches(&sections, refresh_paths, PLEX_REFRESH_COALESCE_THRESHOLD);
+    let planned = plan_refresh_batches(
+        &sections,
+        refresh_paths,
+        cfg.plex.refresh_coalesce_threshold,
+    );
+    let (plan, dropped_batches) =
+        enforce_refresh_batch_limit(planned, cfg.plex.max_refresh_batches_per_run);
 
     telemetry.unique_paths = plan.unique_paths;
-    telemetry.planned_batches = plan.batches.len();
+    telemetry.planned_batches = plan.batches.len() + dropped_batches;
     telemetry.coalesced_batches = plan.coalesced_batches;
     telemetry.coalesced_paths = plan.coalesced_paths;
     telemetry.unresolved_paths = plan.unresolved_paths.len();
@@ -676,8 +681,17 @@ async fn trigger_plex_refresh(
         ));
     }
     telemetry.skipped_batches += plan.unresolved_paths.len();
+    if dropped_batches > 0 {
+        telemetry.skipped_batches += dropped_batches;
+        user_println(format!(
+            "   ⚠️  Plex: capped refresh plan at {} request(s); {} request(s) skipped to reduce load",
+            cfg.plex.max_refresh_batches_per_run, dropped_batches
+        ));
+    }
 
-    for batch in plan.batches {
+    let refresh_delay = Duration::from_millis(cfg.plex.refresh_delay_ms);
+    let batch_count = plan.batches.len();
+    for (idx, batch) in plan.batches.into_iter().enumerate() {
         match plex
             .refresh_path(&batch.section_key, &batch.refresh_path)
             .await
@@ -695,6 +709,10 @@ async fn trigger_plex_refresh(
                 ));
                 telemetry.skipped_batches += 1;
             }
+        }
+
+        if refresh_delay > Duration::ZERO && idx + 1 < batch_count {
+            sleep(refresh_delay).await;
         }
     }
 
@@ -718,6 +736,19 @@ async fn trigger_plex_refresh(
     }
 
     Ok(telemetry)
+}
+
+fn enforce_refresh_batch_limit(
+    mut plan: crate::api::plex::PlexRefreshPlan,
+    max_batches: usize,
+) -> (crate::api::plex::PlexRefreshPlan, usize) {
+    if max_batches == 0 || plan.batches.len() <= max_batches {
+        return (plan, 0);
+    }
+
+    let dropped_batches = plan.batches.len().saturating_sub(max_batches);
+    plan.batches.truncate(max_batches);
+    (plan, dropped_batches)
 }
 
 fn build_missing_search_query(item: &LibraryItem) -> Option<String> {
@@ -746,6 +777,7 @@ pub(crate) async fn lookup_item_imdb_id(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::plex::PlexRefreshPlan;
     use crate::config::ContentType;
 
     #[test]
@@ -783,5 +815,68 @@ mod tests {
         };
 
         assert_eq!(telemetry.cache_hit_ratio(), Some(0.8));
+    }
+
+    #[test]
+    fn enforce_refresh_batch_limit_keeps_small_plans_intact() {
+        let plan = PlexRefreshPlan {
+            batches: vec![
+                crate::api::plex::PlexRefreshBatch {
+                    section_key: "1".to_string(),
+                    section_title: "Anime".to_string(),
+                    refresh_path: PathBuf::from("/library/a"),
+                    covered_paths: 1,
+                    coalesced_to_root: false,
+                },
+                crate::api::plex::PlexRefreshBatch {
+                    section_key: "1".to_string(),
+                    section_title: "Anime".to_string(),
+                    refresh_path: PathBuf::from("/library/b"),
+                    covered_paths: 1,
+                    coalesced_to_root: false,
+                },
+            ],
+            ..PlexRefreshPlan::default()
+        };
+
+        let (limited, dropped) = enforce_refresh_batch_limit(plan, 2);
+        assert_eq!(limited.batches.len(), 2);
+        assert_eq!(dropped, 0);
+    }
+
+    #[test]
+    fn enforce_refresh_batch_limit_truncates_large_plans() {
+        let plan = PlexRefreshPlan {
+            batches: vec![
+                crate::api::plex::PlexRefreshBatch {
+                    section_key: "1".to_string(),
+                    section_title: "Anime".to_string(),
+                    refresh_path: PathBuf::from("/library/a"),
+                    covered_paths: 1,
+                    coalesced_to_root: false,
+                },
+                crate::api::plex::PlexRefreshBatch {
+                    section_key: "1".to_string(),
+                    section_title: "Anime".to_string(),
+                    refresh_path: PathBuf::from("/library/b"),
+                    covered_paths: 1,
+                    coalesced_to_root: false,
+                },
+                crate::api::plex::PlexRefreshBatch {
+                    section_key: "1".to_string(),
+                    section_title: "Anime".to_string(),
+                    refresh_path: PathBuf::from("/library/c"),
+                    covered_paths: 1,
+                    coalesced_to_root: false,
+                },
+            ],
+            ..PlexRefreshPlan::default()
+        };
+
+        let (limited, dropped) = enforce_refresh_batch_limit(plan, 2);
+        assert_eq!(limited.batches.len(), 2);
+        assert_eq!(limited.batches[0].refresh_path, PathBuf::from("/library/a"));
+        assert_eq!(limited.batches[1].refresh_path, PathBuf::from("/library/b"));
+        assert_eq!(dropped, 1);
     }
 }

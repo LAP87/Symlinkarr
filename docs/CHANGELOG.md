@@ -28,6 +28,9 @@
 - `report` can now emit the full anime duplicate backlog on demand instead of sample-limited slices.
   - `--full-anime-duplicates` is intended for remediation exports where the default top-N sample would hide part of the mixed-root or Hama-split worklist
   - files: `src/main.rs`, `src/commands/report.rs`
+- Plex refreshes now have first-class pacing controls.
+  - `plex.refresh_delay_ms`, `plex.refresh_coalesce_threshold`, and `plex.max_refresh_batches_per_run` let operators slow or cap queued refreshes to avoid overloading Plex during larger relink waves
+  - files: `src/config.rs`, `src/commands/scan.rs`, `config.example.yaml`, `config.docker.yaml`
 
 ### Docs
 
