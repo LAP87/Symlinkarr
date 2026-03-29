@@ -3,8 +3,8 @@
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    routing::{get, post},
     response::IntoResponse,
+    routing::{get, post},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
@@ -698,18 +698,16 @@ pub async fn api_post_cleanup_prune(
     )
     .await
     {
-        Ok(outcome) => {
-            Json(ApiCleanupPruneResponse {
-                success: true,
-                message: "Prune applied".to_string(),
-                candidates: outcome.candidates,
-                managed_candidates: outcome.managed_candidates,
-                foreign_candidates: outcome.foreign_candidates,
-                removed: outcome.removed,
-                quarantined: outcome.quarantined,
-                skipped: outcome.skipped,
-            })
-        }
+        Ok(outcome) => Json(ApiCleanupPruneResponse {
+            success: true,
+            message: "Prune applied".to_string(),
+            candidates: outcome.candidates,
+            managed_candidates: outcome.managed_candidates,
+            foreign_candidates: outcome.foreign_candidates,
+            removed: outcome.removed,
+            quarantined: outcome.quarantined,
+            skipped: outcome.skipped,
+        }),
         Err(e) => Json(ApiCleanupPruneResponse {
             success: false,
             message: format!("Prune failed: {}", e),
@@ -898,7 +896,9 @@ mod tests {
 
     async fn test_state() -> WebState {
         let dir = tempfile::tempdir().unwrap();
-        let cfg = test_config(dir.path());
+        let root = dir.path().to_path_buf();
+        std::mem::forget(dir);
+        let cfg = test_config(&root);
         let db = Database::new(&cfg.db_path).await.unwrap();
 
         db.record_scan_run(&ScanRunRecord {
@@ -1195,16 +1195,9 @@ mod tests {
         let report_path = dir.path().join("report.json");
         std::fs::write(&report_path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
 
-        let preview = crate::cleanup_audit::run_prune(
-            &cfg,
-            &db,
-            &report_path,
-            false,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
+        let preview = crate::cleanup_audit::run_prune(&cfg, &db, &report_path, false, None, None)
+            .await
+            .unwrap();
 
         let state = WebState::new(cfg, db);
         let Json(response) = api_post_cleanup_prune(

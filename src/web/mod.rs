@@ -302,14 +302,15 @@ mod tests {
 
     async fn test_router() -> Router {
         let dir = tempfile::tempdir().unwrap();
-        let cfg = test_config(dir.path());
+        let root = dir.path().to_path_buf();
+        std::mem::forget(dir);
+        let cfg = test_config(&root);
         let db = Database::new(&cfg.db_path).await.unwrap();
 
         db.insert_link(&LinkRecord {
             id: None,
-            source_path: dir.path().join("source").join("show.mkv"),
-            target_path: dir
-                .path()
+            source_path: root.join("source").join("show.mkv"),
+            target_path: root
                 .join("library")
                 .join("Show (2024) {tvdb-1}")
                 .join("Season 01")
