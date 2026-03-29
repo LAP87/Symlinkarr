@@ -1,13 +1,13 @@
 use anyhow::Result;
 use serde::Serialize;
 
+use crate::OutputFormat;
 use crate::commands::{
-    print_json, runtime_source_health, runtime_source_probe_path, DIRECTORY_PROBE_TIMEOUT,
+    DIRECTORY_PROBE_TIMEOUT, print_json, runtime_source_health, runtime_source_probe_path,
 };
 use crate::config::Config;
 use crate::db::Database;
 use crate::utils::directory_path_health_with_timeout;
-use crate::OutputFormat;
 
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct DoctorCheckResult {
@@ -193,13 +193,7 @@ fn can_write_in_directory(path: &std::path::Path) -> bool {
 
 fn inspect_directory_without_write_probe(path: &std::path::Path) -> (bool, String) {
     match std::fs::metadata(path) {
-        Ok(metadata) if metadata.is_dir() => (
-            true,
-            format!(
-                "exists (write probe skipped in read-only mode): {}",
-                path.display()
-            ),
-        ),
+        Ok(metadata) if metadata.is_dir() => read_only_directory_signal(path, &metadata),
         Ok(_) => (
             false,
             format!(
@@ -222,6 +216,63 @@ fn inspect_directory_without_write_probe(path: &std::path::Path) -> (bool, Strin
                 err
             ),
         ),
+    }
+}
+
+#[cfg(unix)]
+fn read_only_directory_signal(
+    path: &std::path::Path,
+    metadata: &std::fs::Metadata,
+) -> (bool, String) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mode = metadata.permissions().mode() & 0o777;
+    let writable = mode & 0o222 != 0;
+
+    if writable {
+        (
+            true,
+            format!(
+                "exists (write probe skipped in read-only mode; permission bits suggest writable, mode={:03o}): {}",
+                mode,
+                path.display()
+            ),
+        )
+    } else {
+        (
+            false,
+            format!(
+                "exists but permission bits suggest not writable (write probe skipped in read-only mode; mode={:03o}): {}",
+                mode,
+                path.display()
+            ),
+        )
+    }
+}
+
+#[cfg(not(unix))]
+fn read_only_directory_signal(
+    path: &std::path::Path,
+    metadata: &std::fs::Metadata,
+) -> (bool, String) {
+    let writable = !metadata.permissions().readonly();
+
+    if writable {
+        (
+            true,
+            format!(
+                "exists (write probe skipped in read-only mode; readonly flag not set): {}",
+                path.display()
+            ),
+        )
+    } else {
+        (
+            false,
+            format!(
+                "exists but readonly flag is set (write probe skipped in read-only mode): {}",
+                path.display()
+            ),
+        )
     }
 }
 
@@ -263,6 +314,40 @@ mod tests {
         assert!(!ok);
         assert!(detail.contains("write probe skipped in read-only mode"));
         assert!(!nested.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inspect_directory_without_write_probe_flags_non_writable_existing_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("readonly");
+        std::fs::create_dir(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let (ok, detail) = inspect_directory_without_write_probe(&path);
+
+        assert!(!ok);
+        assert!(detail.contains("not writable"));
+        assert!(detail.contains("mode=555"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inspect_directory_without_write_probe_preserves_positive_signal_for_writable_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("writable");
+        std::fs::create_dir(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let (ok, detail) = inspect_directory_without_write_probe(&path);
+
+        assert!(ok);
+        assert!(detail.contains("suggest writable"));
+        assert!(detail.contains("mode=755"));
     }
 
     #[test]

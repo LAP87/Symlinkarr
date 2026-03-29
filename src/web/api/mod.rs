@@ -1,25 +1,25 @@
 //! JSON API endpoints for automation
 
 use axum::{
+    Json, Router,
     extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
-    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
+use crate::OutputFormat;
 use crate::backup::BackupManager;
 use crate::cleanup_audit::{self, CleanupAuditor, CleanupReport, CleanupScope};
 use crate::commands::config::validate_config_report;
 use crate::commands::discover::load_discovery_snapshot;
-use crate::commands::doctor::{collect_doctor_checks, DoctorCheckMode};
+use crate::commands::doctor::{DoctorCheckMode, collect_doctor_checks};
 use crate::commands::repair::{execute_repair_auto, summarize_repair_results};
 use crate::commands::scan::run_scan;
 use crate::config::Config;
 use crate::db::{Database, ScanHistoryRecord};
-use crate::OutputFormat;
 
 use super::WebState;
 
@@ -983,7 +983,7 @@ pub async fn api_get_doctor(State(state): State<WebState>) -> Json<ApiDoctorResp
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::{to_bytes, Body};
+    use axum::body::{Body, to_bytes};
     use axum::http::Request;
     use axum::response::IntoResponse;
     use serde_json::Value;
@@ -1299,11 +1299,18 @@ mod tests {
         assert_eq!(json.items.len(), 1);
         assert_eq!(json.items[0].rd_torrent_id, "rd-1");
         assert_eq!(json.items[0].parsed_title, "Missing Show");
-        assert!(json
-            .status_message
-            .as_deref()
-            .unwrap_or_default()
-            .contains("cached RD results only"));
+        assert!(
+            json.status_message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Real-Debrid API key not configured")
+        );
+        assert!(
+            json.status_message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("live refresh is unavailable")
+        );
     }
 
     #[tokio::test]
@@ -1323,10 +1330,12 @@ mod tests {
         let body = body.into_response();
         let bytes = to_bytes(body.into_body(), usize::MAX).await.unwrap();
         let json: Value = serde_json::from_slice(&bytes).unwrap();
-        assert!(json["error"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("Unknown library filter"));
+        assert!(
+            json["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("Unknown library filter")
+        );
     }
 
     #[tokio::test]
@@ -1337,18 +1346,21 @@ mod tests {
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let json: ApiDoctorResponse = serde_json::from_slice(&bytes).unwrap();
 
-        assert!(json
-            .checks
-            .iter()
-            .any(|check| check.check == "db_schema_version"));
-        assert!(json
-            .checks
-            .iter()
-            .any(|check| check.check == "config_validation"));
-        assert!(json
-            .checks
-            .iter()
-            .any(|check| check.check == "cleanup.prune.enforce_policy"));
+        assert!(
+            json.checks
+                .iter()
+                .any(|check| check.check == "db_schema_version")
+        );
+        assert!(
+            json.checks
+                .iter()
+                .any(|check| check.check == "config_validation")
+        );
+        assert!(
+            json.checks
+                .iter()
+                .any(|check| check.check == "cleanup.prune.enforce_policy")
+        );
     }
 
     #[tokio::test]
@@ -1363,12 +1375,38 @@ mod tests {
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let json: ApiDoctorResponse = serde_json::from_slice(&bytes).unwrap();
 
-        assert!(json
-            .checks
-            .iter()
-            .any(|check| check.check == "backup_dir"
-                && check.message.contains("write probe skipped in read-only mode")));
+        assert!(json.checks.iter().any(|check| {
+            check.check == "backup_dir"
+                && check
+                    .message
+                    .contains("write probe skipped in read-only mode")
+        }));
         assert!(!backup_dir.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn api_get_doctor_flags_existing_non_writable_backup_dir() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = test_config(dir.path());
+        let backup_dir = cfg.backup.path.clone();
+        std::fs::set_permissions(&backup_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let db = Database::new(&cfg.db_path).await.unwrap();
+        let state = WebState::new(cfg, db);
+
+        let response = api_get_doctor(State(state)).await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: ApiDoctorResponse = serde_json::from_slice(&bytes).unwrap();
+
+        assert!(json.checks.iter().any(|check| {
+            check.check == "backup_dir"
+                && !check.passed
+                && check.message.contains("not writable")
+                && check.message.contains("mode=555")
+        }));
     }
 
     #[cfg(unix)]
@@ -1484,10 +1522,12 @@ mod tests {
 
         let Json(response) = api_get_config_validate(State(state)).await;
 
-        assert!(response
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("web.allow_remote=true")));
+        assert!(
+            response
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("web.allow_remote=true"))
+        );
     }
 
     #[tokio::test]
@@ -1669,8 +1709,10 @@ mod tests {
         let bytes = to_bytes(body.into_body(), usize::MAX).await.unwrap();
         let response: ApiCleanupPruneResponse = serde_json::from_slice(&bytes).unwrap();
         assert!(!response.success);
-        assert!(response
-            .message
-            .contains("Cleanup report must be inside the configured backup directory"));
+        assert!(
+            response
+                .message
+                .contains("Cleanup report must be inside the configured backup directory")
+        );
     }
 }

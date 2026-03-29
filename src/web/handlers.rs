@@ -12,18 +12,18 @@ use std::collections::HashMap;
 use std::path::{Component, Path as StdPath, PathBuf};
 use tracing::{error, info};
 
+use crate::OutputFormat;
 use crate::backup::BackupManager;
 use crate::cleanup_audit::{self, CleanupAuditor, CleanupScope};
 use crate::commands::config::validate_config_report;
 use crate::commands::discover::load_discovery_snapshot;
-use crate::commands::doctor::{collect_doctor_checks, DoctorCheckMode};
+use crate::commands::doctor::{DoctorCheckMode, collect_doctor_checks};
 use crate::commands::repair::{execute_repair_auto, summarize_repair_results};
 use crate::commands::scan::run_scan;
 use crate::db::{AcquisitionJobCounts, ScanHistoryRecord};
-use crate::OutputFormat;
 
-use super::templates::*;
 use super::WebState;
+use super::templates::*;
 
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct ScanHistoryQuery {
@@ -1586,6 +1586,22 @@ mod tests {
         assert!(!backup_dir.exists());
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn doctor_page_flags_existing_non_writable_backup_dir() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let ctx = test_context().await;
+        let backup_dir = ctx.state.config.backup.path.clone();
+        std::fs::set_permissions(&backup_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let body = render_body(get_doctor(State(ctx.state)).await).await;
+
+        assert!(body.contains("backup_dir"));
+        assert!(body.contains("not writable"));
+        assert!(body.contains("mode=555"));
+    }
+
     #[tokio::test]
     async fn discover_page_renders_cached_gap_items() {
         let dir = tempfile::tempdir().unwrap();
@@ -1612,7 +1628,8 @@ mod tests {
 
         assert!(body.contains("Discovered Items (1)"));
         assert!(body.contains("Missing Show"));
-        assert!(body.contains("cached RD results only"));
+        assert!(body.contains("Real-Debrid API key not configured"));
+        assert!(body.contains("live refresh is unavailable"));
     }
 
     #[tokio::test]
