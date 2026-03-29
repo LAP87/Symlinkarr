@@ -9,18 +9,18 @@ use crate::db::Database;
 use crate::utils::directory_path_health_with_timeout;
 use crate::OutputFormat;
 
-pub(crate) async fn run_doctor(cfg: &Config, db: &Database, output: OutputFormat) -> Result<()> {
-    #[derive(Serialize)]
-    struct DoctorCheck {
-        name: String,
-        ok: bool,
-        detail: String,
-    }
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct DoctorCheckResult {
+    pub name: String,
+    pub ok: bool,
+    pub detail: String,
+}
 
+pub(crate) async fn collect_doctor_checks(cfg: &Config, db: &Database) -> Vec<DoctorCheckResult> {
     let mut checks = Vec::new();
 
     match db.get_stats().await {
-        Ok((active, dead, total)) => checks.push(DoctorCheck {
+        Ok((active, dead, total)) => checks.push(DoctorCheckResult {
             name: "database".to_string(),
             ok: true,
             detail: format!(
@@ -28,19 +28,19 @@ pub(crate) async fn run_doctor(cfg: &Config, db: &Database, output: OutputFormat
                 active, dead, total
             ),
         }),
-        Err(e) => checks.push(DoctorCheck {
+        Err(e) => checks.push(DoctorCheckResult {
             name: "database".to_string(),
             ok: false,
             detail: format!("unreachable: {}", e),
         }),
     }
     match db.schema_version().await {
-        Ok(version) => checks.push(DoctorCheck {
+        Ok(version) => checks.push(DoctorCheckResult {
             name: "db_schema_version".to_string(),
             ok: version >= 1,
             detail: version.to_string(),
         }),
-        Err(e) => checks.push(DoctorCheck {
+        Err(e) => checks.push(DoctorCheckResult {
             name: "db_schema_version".to_string(),
             ok: false,
             detail: e.to_string(),
@@ -49,7 +49,7 @@ pub(crate) async fn run_doctor(cfg: &Config, db: &Database, output: OutputFormat
     let db_parent = std::path::Path::new(&cfg.db_path)
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."));
-    checks.push(DoctorCheck {
+    checks.push(DoctorCheckResult {
         name: "db_parent_dir".to_string(),
         ok: can_write_in_directory(db_parent),
         detail: db_parent.display().to_string(),
@@ -58,7 +58,7 @@ pub(crate) async fn run_doctor(cfg: &Config, db: &Database, output: OutputFormat
     for lib in &cfg.libraries {
         let health =
             directory_path_health_with_timeout(lib.path.clone(), DIRECTORY_PROBE_TIMEOUT).await;
-        checks.push(DoctorCheck {
+        checks.push(DoctorCheckResult {
             name: format!("library:{}", lib.name),
             ok: health.is_healthy(),
             detail: health.describe(&lib.path),
@@ -68,46 +68,52 @@ pub(crate) async fn run_doctor(cfg: &Config, db: &Database, output: OutputFormat
     for src in &cfg.sources {
         let probe_path = runtime_source_probe_path(&src.path);
         let health = runtime_source_health(&src.path, &probe_path).await;
-        checks.push(DoctorCheck {
+        checks.push(DoctorCheckResult {
             name: format!("source:{}", src.name),
             ok: health.is_healthy(),
             detail: health.describe(&probe_path),
         });
     }
 
-    checks.push(DoctorCheck {
+    checks.push(DoctorCheckResult {
         name: "backup_dir".to_string(),
         ok: can_write_in_directory(&cfg.backup.path),
         detail: cfg.backup.path.display().to_string(),
     });
-    checks.push(DoctorCheck {
+    checks.push(DoctorCheckResult {
         name: "backup.max_safety_backups".to_string(),
         ok: cfg.backup.max_safety_backups > 0,
         detail: cfg.backup.max_safety_backups.to_string(),
     });
 
-    checks.push(DoctorCheck {
+    checks.push(DoctorCheckResult {
         name: "security.enforce_roots".to_string(),
         ok: cfg.security.enforce_roots,
         detail: cfg.security.enforce_roots.to_string(),
     });
-    checks.push(DoctorCheck {
+    checks.push(DoctorCheckResult {
         name: "security.require_secret_provider".to_string(),
         ok: cfg.security.require_secret_provider,
         detail: cfg.security.require_secret_provider.to_string(),
     });
-    checks.push(DoctorCheck {
+    checks.push(DoctorCheckResult {
         name: "cleanup.prune.enforce_policy".to_string(),
         ok: cfg.cleanup.prune.enforce_policy,
         detail: cfg.cleanup.prune.enforce_policy.to_string(),
     });
 
     let validation = cfg.validate();
-    checks.push(DoctorCheck {
+    checks.push(DoctorCheckResult {
         name: "config_validation".to_string(),
         ok: validation.errors.is_empty(),
         detail: format_validation_detail(&validation),
     });
+
+    checks
+}
+
+pub(crate) async fn run_doctor(cfg: &Config, db: &Database, output: OutputFormat) -> Result<()> {
+    let checks = collect_doctor_checks(cfg, db).await;
 
     if output == OutputFormat::Json {
         let failed = checks.iter().filter(|c| !c.ok).count();

@@ -13,6 +13,7 @@ use tracing::info;
 use crate::backup::BackupManager;
 use crate::cleanup_audit::{self, CleanupAuditor, CleanupReport, CleanupScope};
 use crate::commands::discover::load_discovery_snapshot;
+use crate::commands::doctor::collect_doctor_checks;
 use crate::commands::repair::{execute_repair_auto, summarize_repair_results};
 use crate::commands::scan::run_scan;
 use crate::config::Config;
@@ -245,14 +246,14 @@ pub struct ApiConfigValidateResponse {
     pub warnings: Vec<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ApiDoctorCheck {
     pub check: String,
     pub passed: bool,
     pub message: String,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ApiDoctorResponse {
     pub all_passed: bool,
     pub checks: Vec<ApiDoctorCheck>,
@@ -898,40 +899,15 @@ pub async fn api_get_config_validate(
 
 /// GET /api/v1/doctor
 pub async fn api_get_doctor(State(state): State<WebState>) -> Json<ApiDoctorResponse> {
-    let mut checks = vec![];
-
-    for lib in &state.config.libraries {
-        let exists = lib.path.exists();
-        checks.push(ApiDoctorCheck {
-            check: format!("Library '{}' exists", lib.name),
-            passed: exists,
-            message: if exists {
-                format!("{}: exists", lib.path.display())
-            } else {
-                format!("{}: NOT FOUND", lib.path.display())
-            },
-        });
-    }
-
-    for source in &state.config.sources {
-        let exists = source.path.exists();
-        checks.push(ApiDoctorCheck {
-            check: format!("Source '{}' exists", source.name),
-            passed: exists,
-            message: if exists {
-                format!("{}: exists", source.path.display())
-            } else {
-                format!("{}: NOT FOUND", source.path.display())
-            },
-        });
-    }
-
-    let db_ok = state.database.get_web_stats().await.is_ok();
-    checks.push(ApiDoctorCheck {
-        check: "Database connection".to_string(),
-        passed: db_ok,
-        message: if db_ok { "Connected" } else { "Failed" }.to_string(),
-    });
+    let checks = collect_doctor_checks(&state.config, &state.database)
+        .await
+        .into_iter()
+        .map(|check| ApiDoctorCheck {
+            check: check.name,
+            passed: check.ok,
+            message: check.detail,
+        })
+        .collect::<Vec<_>>();
 
     let all_passed = checks.iter().all(|c| c.passed);
 
@@ -1283,6 +1259,28 @@ mod tests {
             .as_str()
             .unwrap_or_default()
             .contains("Unknown library filter"));
+    }
+
+    #[tokio::test]
+    async fn api_get_doctor_uses_full_doctor_checks() {
+        let ctx = test_state().await;
+        let response = api_get_doctor(State(ctx)).await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: ApiDoctorResponse = serde_json::from_slice(&bytes).unwrap();
+
+        assert!(json
+            .checks
+            .iter()
+            .any(|check| check.check == "db_schema_version"));
+        assert!(json
+            .checks
+            .iter()
+            .any(|check| check.check == "config_validation"));
+        assert!(json
+            .checks
+            .iter()
+            .any(|check| check.check == "cleanup.prune.enforce_policy"));
     }
 
     #[cfg(unix)]

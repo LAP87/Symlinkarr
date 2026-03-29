@@ -15,6 +15,7 @@ use tracing::{error, info};
 use crate::backup::BackupManager;
 use crate::cleanup_audit::{self, CleanupAuditor, CleanupScope};
 use crate::commands::discover::load_discovery_snapshot;
+use crate::commands::doctor::collect_doctor_checks;
 use crate::commands::repair::{execute_repair_auto, summarize_repair_results};
 use crate::commands::scan::run_scan;
 use crate::db::{AcquisitionJobCounts, ScanHistoryRecord};
@@ -933,65 +934,15 @@ pub async fn post_config_validate(State(state): State<WebState>) -> impl IntoRes
 
 /// GET /doctor - Doctor page
 pub async fn get_doctor(State(state): State<WebState>) -> impl IntoResponse {
-    let mut checks = vec![];
-
-    // Check libraries exist
-    for lib in &state.config.libraries {
-        let exists = lib.path.exists();
-        checks.push(DoctorCheck {
-            check: format!("Library '{}' exists", lib.name),
-            passed: exists,
-            message: if exists {
-                format!("{}: exists", lib.path.display())
-            } else {
-                format!("{}: NOT FOUND", lib.path.display())
-            },
-        });
-    }
-
-    // Check sources exist
-    for source in &state.config.sources {
-        let exists = source.path.exists();
-        checks.push(DoctorCheck {
-            check: format!("Source '{}' exists", source.name),
-            passed: exists,
-            message: if exists {
-                format!("{}: exists", source.path.display())
-            } else {
-                format!("{}: NOT FOUND", source.path.display())
-            },
-        });
-    }
-
-    // Check database
-    let db_ok = state.database.get_web_stats().await.is_ok();
-    checks.push(DoctorCheck {
-        check: "Database connection".to_string(),
-        passed: db_ok,
-        message: if db_ok { "Connected" } else { "Failed" }.to_string(),
-    });
-
-    // Check API keys
-    let has_tmdb = state.config.has_tmdb();
-    checks.push(DoctorCheck {
-        check: "TMDB API key".to_string(),
-        passed: has_tmdb,
-        message: if has_tmdb { "Configured" } else { "Missing" }.to_string(),
-    });
-
-    let has_tvdb = state.config.has_tvdb();
-    checks.push(DoctorCheck {
-        check: "TVDB API key".to_string(),
-        passed: has_tvdb,
-        message: if has_tvdb { "Configured" } else { "Missing" }.to_string(),
-    });
-
-    let has_rd = state.config.has_realdebrid();
-    checks.push(DoctorCheck {
-        check: "Real-Debrid API token".to_string(),
-        passed: has_rd,
-        message: if has_rd { "Configured" } else { "Missing" }.to_string(),
-    });
+    let checks = collect_doctor_checks(&state.config, &state.database)
+        .await
+        .into_iter()
+        .map(|check| DoctorCheck {
+            check: check.name,
+            passed: check.ok,
+            message: check.detail,
+        })
+        .collect::<Vec<_>>();
 
     let all_passed = checks.iter().all(|c| c.passed);
 
@@ -1526,6 +1477,16 @@ mod tests {
         assert!(body.contains("Recent Links"));
         assert!(body.contains("tvdb-1"));
         assert!(body.contains("Queued"));
+    }
+
+    #[tokio::test]
+    async fn doctor_page_uses_full_doctor_checks() {
+        let ctx = test_context().await;
+        let body = render_body(get_doctor(State(ctx.state)).await).await;
+
+        assert!(body.contains("db_schema_version"));
+        assert!(body.contains("config_validation"));
+        assert!(body.contains("cleanup.prune.enforce_policy"));
     }
 
     #[tokio::test]
