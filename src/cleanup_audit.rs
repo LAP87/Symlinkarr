@@ -171,6 +171,7 @@ pub struct PruneOutcome {
     pub safe_warning_duplicate_candidates: usize,
     pub managed_candidates: usize,
     pub foreign_candidates: usize,
+    pub reason_counts: Vec<PruneReasonCount>,
     pub removed: usize,
     pub quarantined: usize,
     pub skipped: usize,
@@ -190,8 +191,17 @@ pub(crate) struct PrunePlan {
     pub safe_warning_duplicate_candidates: usize,
     pub managed_candidates: usize,
     pub foreign_candidates: usize,
+    pub reason_counts: Vec<PruneReasonCount>,
     pub confirmation_token: String,
     dispositions: HashMap<PathBuf, PruneDisposition>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PruneReasonCount {
+    pub reason: FindingReason,
+    pub total: usize,
+    pub managed: usize,
+    pub foreign: usize,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -983,6 +993,7 @@ pub async fn run_prune(
             safe_warning_duplicate_candidates: plan.safe_warning_duplicate_candidates,
             managed_candidates: plan.managed_candidates,
             foreign_candidates: plan.foreign_candidates,
+            reason_counts: plan.reason_counts.clone(),
             removed: 0,
             quarantined: 0,
             skipped: 0,
@@ -1216,6 +1227,7 @@ pub async fn run_prune(
         safe_warning_duplicate_candidates: plan.safe_warning_duplicate_candidates,
         managed_candidates: plan.managed_candidates,
         foreign_candidates: plan.foreign_candidates,
+        reason_counts: plan.reason_counts,
         removed,
         quarantined,
         skipped,
@@ -2029,6 +2041,35 @@ pub(crate) fn build_prune_plan(report: &CleanupReport, quarantine_foreign: bool)
 
     candidate_paths.retain(|path| dispositions.contains_key(path));
 
+    let candidate_set: HashSet<_> = candidate_paths.iter().cloned().collect();
+    let mut reason_counts: HashMap<FindingReason, PruneReasonCount> = HashMap::new();
+    for finding in &report.findings {
+        if !candidate_set.contains(&finding.symlink_path) {
+            continue;
+        }
+
+        let ownership = ownership_by_path
+            .get(&finding.symlink_path)
+            .copied()
+            .unwrap_or(CleanupOwnership::Foreign);
+        for reason in &finding.reasons {
+            let entry = reason_counts.entry(*reason).or_insert(PruneReasonCount {
+                reason: *reason,
+                total: 0,
+                managed: 0,
+                foreign: 0,
+            });
+            entry.total += 1;
+            match ownership {
+                CleanupOwnership::Managed => entry.managed += 1,
+                CleanupOwnership::Foreign => entry.foreign += 1,
+            }
+        }
+    }
+
+    let mut reason_counts: Vec<_> = reason_counts.into_values().collect();
+    reason_counts.sort_by(|a, b| b.total.cmp(&a.total).then_with(|| a.reason.cmp(&b.reason)));
+
     PrunePlan {
         confirmation_token: prune_confirmation_token(report, &candidate_paths),
         candidate_paths,
@@ -2036,6 +2077,7 @@ pub(crate) fn build_prune_plan(report: &CleanupReport, quarantine_foreign: bool)
         safe_warning_duplicate_candidates: safe_duplicate_plan.prune_paths.len(),
         managed_candidates,
         foreign_candidates,
+        reason_counts,
         dispositions,
     }
 }

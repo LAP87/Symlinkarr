@@ -56,6 +56,16 @@
                 <strong>Yes</strong>
             </div>
         </div>
+        {% if reason_counts|length > 0 %}
+        <div class="mt-2">
+            <p class="section-kicker">Candidate Reasons</p>
+            <div class="badge-stack">
+                {% for bucket in reason_counts %}
+                <span class="badge badge-info">{{ bucket.reason }}: {{ bucket.total }} (m {{ bucket.managed }} / f {{ bucket.foreign }})</span>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
 
         {% match report_path %}
         {% when Some with (path) %}
@@ -102,6 +112,16 @@
             <strong class="mono">{{ path.display() }}</strong>
         </div>
     </div>
+    {% if reason_counts|length > 0 %}
+    <div class="alert alert-info mb-2">
+        <strong>Candidate reason mix:</strong>
+        <span class="badge-stack">
+            {% for bucket in reason_counts %}
+            <span class="badge badge-info">{{ bucket.reason }}: {{ bucket.total }} (m {{ bucket.managed }} / f {{ bucket.foreign }})</span>
+            {% endfor %}
+        </span>
+    </div>
+    {% endif %}
     <table class="data-table dense-table">
         <thead>
             <tr>

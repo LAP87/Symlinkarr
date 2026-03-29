@@ -217,6 +217,7 @@ pub(crate) async fn run_cleanup_prune(
             "safe_warning_duplicate_candidates": outcome.safe_warning_duplicate_candidates,
             "managed_candidates": outcome.managed_candidates,
             "foreign_candidates": outcome.foreign_candidates,
+            "reason_counts": outcome.reason_counts,
             "removed": outcome.removed,
             "quarantined": outcome.quarantined,
             "skipped": outcome.skipped,
@@ -245,6 +246,15 @@ pub(crate) async fn run_cleanup_prune(
             "   Foreign quarantine candidates: {}",
             outcome.foreign_candidates
         );
+        if !outcome.reason_counts.is_empty() {
+            println!("   Top candidate reasons:");
+            for bucket in outcome.reason_counts.iter().take(6) {
+                println!(
+                    "      - {}: {} (managed {}, foreign {})",
+                    bucket.reason, bucket.total, bucket.managed, bucket.foreign
+                );
+            }
+        }
         println!("   Removed: {}", outcome.removed);
         println!("   Quarantined: {}", outcome.quarantined);
         println!("   Skipped: {}", outcome.skipped);

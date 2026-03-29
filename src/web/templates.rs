@@ -305,6 +305,7 @@ pub struct PrunePreviewTemplate {
     pub warning: usize,
     pub managed_candidates: usize,
     pub foreign_candidates: usize,
+    pub reason_counts: Vec<crate::cleanup_audit::PruneReasonCount>,
     pub report_path: Option<PathBuf>,
     pub confirmation_token: Option<String>,
 }
@@ -410,7 +411,7 @@ mod tests {
 
     use crate::cleanup_audit::{
         AlternateMatchContext, CleanupFinding, CleanupOwnership, FindingReason, FindingSeverity,
-        ParsedContext,
+        ParsedContext, PruneReasonCount,
     };
     use crate::models::{LinkStatus, MediaType};
 
@@ -567,6 +568,12 @@ mod tests {
             warning: 0,
             managed_candidates: 1,
             foreign_candidates: 0,
+            reason_counts: vec![PruneReasonCount {
+                reason: FindingReason::AlternateLibraryMatch,
+                total: 1,
+                managed: 1,
+                foreign: 0,
+            }],
             report_path: Some(PathBuf::from("/tmp/cleanup-audit-all.json")),
             confirmation_token: Some("abcdef1234567890".to_string()),
         };

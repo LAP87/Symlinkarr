@@ -541,6 +541,7 @@ pub async fn get_cleanup_prune(
                 warning: 0,
                 managed_candidates: 0,
                 foreign_candidates: 0,
+                reason_counts: vec![],
                 report_path: None,
                 confirmation_token: None,
             }
@@ -561,6 +562,7 @@ pub async fn get_cleanup_prune(
                 warning: 0,
                 managed_candidates: 0,
                 foreign_candidates: 0,
+                reason_counts: vec![],
                 report_path: None,
                 confirmation_token: None,
             }
@@ -583,6 +585,7 @@ pub async fn get_cleanup_prune(
                     warning: 0,
                     managed_candidates: 0,
                     foreign_candidates: 0,
+                    reason_counts: vec![],
                     report_path: None,
                     confirmation_token: None,
                 }
@@ -605,6 +608,7 @@ pub async fn get_cleanup_prune(
                     warning: 0,
                     managed_candidates: 0,
                     foreign_candidates: 0,
+                    reason_counts: vec![],
                     report_path: None,
                     confirmation_token: None,
                 }
@@ -640,6 +644,10 @@ pub async fn get_cleanup_prune(
             .as_ref()
             .map(|plan| plan.foreign_candidates)
             .unwrap_or(0),
+        reason_counts: prune_plan
+            .as_ref()
+            .map(|plan| plan.reason_counts.clone())
+            .unwrap_or_default(),
         report_path: Some(report_path.to_path_buf()),
         confirmation_token: prune_plan.map(|plan| plan.confirmation_token),
     };
