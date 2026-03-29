@@ -15,12 +15,12 @@ use crate::backup::BackupManager;
 use crate::cleanup_audit::{self, CleanupScope};
 use crate::commands::config::validate_config_report;
 use crate::commands::discover::load_discovery_snapshot;
-use crate::commands::doctor::{collect_doctor_checks, DoctorCheckMode};
+use crate::commands::doctor::{DoctorCheckMode, collect_doctor_checks};
 use crate::commands::repair::{execute_repair_auto, summarize_repair_results};
 use crate::db::{AcquisitionJobCounts, ScanHistoryRecord};
 
-use super::templates::*;
 use super::WebState;
+use super::templates::*;
 
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct ScanHistoryQuery {
@@ -336,6 +336,16 @@ pub async fn get_scan(
     }
     let (filters, history) = filtered_scan_history(&state, &scan_query).await;
     let latest_run = history.first().cloned();
+    let active_scan = state.active_scan().await.map(Into::into);
+    let last_scan_outcome = if active_scan.is_none() {
+        state
+            .last_scan_outcome()
+            .await
+            .filter(|outcome| !outcome.success || latest_run.is_none())
+            .map(Into::into)
+    } else {
+        None
+    };
     let queue = match state.database.get_acquisition_job_counts().await {
         Ok(counts) => queue_overview_from_counts(counts),
         Err(e) => {
@@ -346,7 +356,8 @@ pub async fn get_scan(
 
     let template = ScanTemplate {
         libraries: state.config.libraries.clone(),
-        active_scan: state.active_scan().await.map(Into::into),
+        active_scan,
+        last_scan_outcome,
         latest_run,
         history,
         queue,
@@ -385,6 +396,7 @@ pub async fn post_scan_trigger(
                         job.scope_label
                     ),
                     active_scan: Some(job.into()),
+                    last_scan_outcome: None,
                     latest_run: None,
                     dry_run: form.dry_run,
                 }
@@ -402,6 +414,7 @@ pub async fn post_scan_trigger(
                         success: false,
                         message: format!("Scan not started: {}", e),
                         active_scan: state.active_scan().await.map(Into::into),
+                        last_scan_outcome: state.last_scan_outcome().await.map(Into::into),
                         latest_run: None,
                         dry_run: form.dry_run,
                     }
@@ -485,10 +498,21 @@ pub async fn get_cleanup(State(state): State<WebState>) -> impl IntoResponse {
     let last_report_summary = last_report
         .as_deref()
         .and_then(cleanup_report_summary_from_path);
+    let active_cleanup_audit = state.active_cleanup_audit().await.map(Into::into);
+    let last_cleanup_audit_outcome = if active_cleanup_audit.is_none() {
+        state
+            .last_cleanup_audit_outcome()
+            .await
+            .filter(|outcome| !outcome.success || last_report_summary.is_none())
+            .map(Into::into)
+    } else {
+        None
+    };
 
     let template = CleanupTemplate {
         libraries: state.config.libraries.clone(),
-        active_cleanup_audit: state.active_cleanup_audit().await.map(Into::into),
+        active_cleanup_audit,
+        last_cleanup_audit_outcome,
         last_report: last_report_summary,
         last_report_path: last_report,
     };
@@ -517,6 +541,10 @@ pub async fn post_cleanup_audit(
                         success: false,
                         message: format!("Invalid scope: {}", e),
                         active_cleanup_audit: state.active_cleanup_audit().await.map(Into::into),
+                        last_cleanup_audit_outcome: state
+                            .last_cleanup_audit_outcome()
+                            .await
+                            .map(Into::into),
                         report_path: None,
                         report_summary: None,
                     }
@@ -540,6 +568,7 @@ pub async fn post_cleanup_audit(
                         job.scope_label, job.libraries_label
                     ),
                     active_cleanup_audit: Some(job.into()),
+                    last_cleanup_audit_outcome: None,
                     report_path: None,
                     report_summary: None,
                 }
@@ -557,6 +586,10 @@ pub async fn post_cleanup_audit(
                         success: false,
                         message: format!("Cleanup audit not started: {}", e),
                         active_cleanup_audit: state.active_cleanup_audit().await.map(Into::into),
+                        last_cleanup_audit_outcome: state
+                            .last_cleanup_audit_outcome()
+                            .await
+                            .map(Into::into),
                         report_path: None,
                         report_summary: None,
                     }
@@ -732,6 +765,7 @@ pub async fn post_cleanup_prune(
                 success: false,
                 message: "Report path is required".to_string(),
                 active_cleanup_audit: None,
+                last_cleanup_audit_outcome: None,
                 report_path: None,
                 report_summary: None,
             }
@@ -746,6 +780,7 @@ pub async fn post_cleanup_prune(
                 success: false,
                 message: "Confirmation token is required".to_string(),
                 active_cleanup_audit: None,
+                last_cleanup_audit_outcome: None,
                 report_path: None,
                 report_summary: None,
             }
@@ -763,6 +798,7 @@ pub async fn post_cleanup_prune(
                     success: false,
                     message: err.to_string(),
                     active_cleanup_audit: None,
+                    last_cleanup_audit_outcome: None,
                     report_path: None,
                     report_summary: None,
                 }
@@ -777,6 +813,7 @@ pub async fn post_cleanup_prune(
                 success: false,
                 message: format!("Report not found: {}", report_path.display()),
                 active_cleanup_audit: None,
+                last_cleanup_audit_outcome: None,
                 report_path: None,
                 report_summary: None,
             }
@@ -794,6 +831,7 @@ pub async fn post_cleanup_prune(
                     success: false,
                     message: format!("Failed to read report: {}", e),
                     active_cleanup_audit: None,
+                    last_cleanup_audit_outcome: None,
                     report_path: None,
                     report_summary: None,
                 }
@@ -812,6 +850,7 @@ pub async fn post_cleanup_prune(
                     success: false,
                     message: format!("Failed to parse report: {}", e),
                     active_cleanup_audit: None,
+                    last_cleanup_audit_outcome: None,
                     report_path: None,
                     report_summary: None,
                 }
@@ -840,6 +879,7 @@ pub async fn post_cleanup_prune(
                     success: false,
                     message: format!("Prune failed: {}", e),
                     active_cleanup_audit: None,
+                    last_cleanup_audit_outcome: None,
                     report_path: None,
                     report_summary: None,
                 }
@@ -862,6 +902,7 @@ pub async fn post_cleanup_prune(
         success: true,
         message,
         active_cleanup_audit: None,
+        last_cleanup_audit_outcome: None,
         report_summary: cleanup_report_summary_from_path(&report_path),
         report_path: Some(report_path.to_path_buf()),
     };
@@ -1289,7 +1330,9 @@ mod tests {
     };
     use crate::db::{AcquisitionJobSeed, AcquisitionRelinkKind, Database, ScanRunRecord};
     use crate::models::{LinkRecord, LinkStatus, MediaType};
-    use crate::web::{ActiveCleanupAuditJob, ActiveScanJob};
+    use crate::web::{
+        ActiveCleanupAuditJob, ActiveScanJob, LastCleanupAuditOutcome, LastScanOutcome,
+    };
 
     struct TestWebContext {
         _dir: TempDir,
@@ -1486,6 +1529,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn scan_page_renders_last_failed_background_scan_outcome() {
+        let ctx = test_context().await;
+        ctx.state
+            .set_last_scan_outcome_for_test(Some(LastScanOutcome {
+                finished_at: "2026-03-29 23:58:00 UTC".to_string(),
+                scope_label: "Anime".to_string(),
+                dry_run: false,
+                search_missing: true,
+                success: false,
+                message: "RD cache sync failed".to_string(),
+            }))
+            .await;
+
+        let body = render_body(
+            get_scan(State(ctx.state.clone()), Query(ScanHistoryQuery::default())).await,
+        )
+        .await;
+
+        assert!(body.contains("Background scan failed"));
+        assert!(body.contains("RD cache sync failed"));
+        assert!(body.contains("2026-03-29 23:58:00 UTC"));
+    }
+
+    #[tokio::test]
     async fn cleanup_page_renders_active_background_audit_banner() {
         let ctx = test_context().await;
         ctx.state
@@ -1501,6 +1568,27 @@ mod tests {
         assert!(body.contains("Background cleanup audit running"));
         assert!(body.contains("2026-03-29 23:59:00 UTC"));
         assert!(body.contains("Anime across Anime"));
+    }
+
+    #[tokio::test]
+    async fn cleanup_page_renders_last_failed_background_audit_outcome() {
+        let ctx = test_context().await;
+        ctx.state
+            .set_last_cleanup_audit_outcome_for_test(Some(LastCleanupAuditOutcome {
+                finished_at: "2026-03-29 23:58:00 UTC".to_string(),
+                scope_label: "Anime".to_string(),
+                libraries_label: "Anime".to_string(),
+                success: false,
+                message: "source root unhealthy".to_string(),
+                report_path: None,
+            }))
+            .await;
+
+        let body = render_body(get_cleanup(State(ctx.state.clone())).await).await;
+
+        assert!(body.contains("Background cleanup audit failed"));
+        assert!(body.contains("source root unhealthy"));
+        assert!(body.contains("2026-03-29 23:58:00 UTC"));
     }
 
     #[tokio::test]

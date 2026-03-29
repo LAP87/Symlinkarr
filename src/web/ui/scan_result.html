@@ -27,6 +27,17 @@
 </div>
 {% when None %}{% endmatch %}
 
+{% match last_scan_outcome %}
+{% when Some with (outcome) %}
+<div class="alert {% if outcome.success %}alert-success{% else %}alert-error{% endif %}">
+    <strong>{% if outcome.success %}Last background scan completed.{% else %}Last background scan failed.{% endif %}</strong>
+    {{ outcome.scope_label }} finished {{ outcome.finished_at }}.
+    {% if outcome.dry_run %} Dry run.{% endif %}
+    {% if outcome.search_missing %} Search missing enabled.{% endif %}
+    {{ outcome.message }}
+</div>
+{% when None %}{% endmatch %}
+
 {% if success %}
 <div class="alert alert-success">
     {% match active_scan %}

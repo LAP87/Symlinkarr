@@ -10,15 +10,15 @@ pub mod templates;
 
 use anyhow::Result;
 use axum::{
+    Json, Router,
     extract::State,
     http::{
-        header::{COOKIE, HOST, ORIGIN, REFERER, SET_COOKIE},
         HeaderMap, HeaderValue, Method, StatusCode, Uri,
+        header::{COOKIE, HOST, ORIGIN, REFERER, SET_COOKIE},
     },
     middleware::{self, Next},
     response::IntoResponse,
     routing::{get, post},
-    Json, Router,
 };
 use chrono::Utc;
 use serde_json::json;
@@ -47,10 +47,32 @@ pub(crate) struct ActiveCleanupAuditJob {
     pub libraries_label: String,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct LastScanOutcome {
+    pub finished_at: String,
+    pub scope_label: String,
+    pub dry_run: bool,
+    pub search_missing: bool,
+    pub success: bool,
+    pub message: String,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct LastCleanupAuditOutcome {
+    pub finished_at: String,
+    pub scope_label: String,
+    pub libraries_label: String,
+    pub success: bool,
+    pub message: String,
+    pub report_path: Option<String>,
+}
+
 #[derive(Clone, Debug, Default)]
 struct BackgroundJobState {
     active_scan: Option<ActiveScanJob>,
     active_cleanup_audit: Option<ActiveCleanupAuditJob>,
+    last_scan_outcome: Option<LastScanOutcome>,
+    last_cleanup_audit_outcome: Option<LastCleanupAuditOutcome>,
 }
 
 /// Shared application state passed to handlers
@@ -85,6 +107,18 @@ impl WebState {
             .lock()
             .await
             .active_cleanup_audit
+            .clone()
+    }
+
+    pub(crate) async fn last_scan_outcome(&self) -> Option<LastScanOutcome> {
+        self.background_jobs.lock().await.last_scan_outcome.clone()
+    }
+
+    pub(crate) async fn last_cleanup_audit_outcome(&self) -> Option<LastCleanupAuditOutcome> {
+        self.background_jobs
+            .lock()
+            .await
+            .last_cleanup_audit_outcome
             .clone()
     }
 
@@ -141,26 +175,53 @@ impl WebState {
             )
             .await;
 
+            let finished_at = Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string();
             match result {
-                Ok((added, removed)) => info!(
-                    "Background scan completed (scope={}, dry_run={}, search_missing={}): added_or_updated={}, removed={}",
-                    background_job.scope_label,
-                    background_job.dry_run,
-                    background_job.search_missing,
-                    added,
-                    removed
-                ),
-                Err(err) => error!(
-                    "Background scan failed (scope={}, dry_run={}, search_missing={}): {}",
-                    background_job.scope_label,
-                    background_job.dry_run,
-                    background_job.search_missing,
-                    err
-                ),
-            }
+                Ok((added, removed)) => {
+                    info!(
+                        "Background scan completed (scope={}, dry_run={}, search_missing={}): added_or_updated={}, removed={}",
+                        background_job.scope_label,
+                        background_job.dry_run,
+                        background_job.search_missing,
+                        added,
+                        removed
+                    );
 
-            let mut background_jobs = background_jobs.lock().await;
-            background_jobs.active_scan = None;
+                    let mut background_jobs = background_jobs.lock().await;
+                    background_jobs.last_scan_outcome = Some(LastScanOutcome {
+                        finished_at,
+                        scope_label: background_job.scope_label.clone(),
+                        dry_run: background_job.dry_run,
+                        search_missing: background_job.search_missing,
+                        success: true,
+                        message: format!(
+                            "Completed: {} added or updated, {} removed.",
+                            added, removed
+                        ),
+                    });
+                    background_jobs.active_scan = None;
+                }
+                Err(err) => {
+                    error!(
+                        "Background scan failed (scope={}, dry_run={}, search_missing={}): {}",
+                        background_job.scope_label,
+                        background_job.dry_run,
+                        background_job.search_missing,
+                        err
+                    );
+
+                    let mut background_jobs = background_jobs.lock().await;
+                    background_jobs.last_scan_outcome = Some(LastScanOutcome {
+                        finished_at,
+                        scope_label: background_job.scope_label.clone(),
+                        dry_run: background_job.dry_run,
+                        search_missing: background_job.search_missing,
+                        success: false,
+                        message: err.to_string(),
+                    });
+                    background_jobs.active_scan = None;
+                }
+            }
         });
 
         Ok(job)
@@ -222,21 +283,45 @@ impl WebState {
                 )
                 .await;
 
+            let finished_at = Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string();
             match result {
-                Ok(report_path) => info!(
-                    "Background cleanup audit completed (scope={}, libraries={}): {}",
-                    background_job.scope_label,
-                    background_job.libraries_label,
-                    report_path.display()
-                ),
-                Err(err) => error!(
-                    "Background cleanup audit failed (scope={}, libraries={}): {}",
-                    background_job.scope_label, background_job.libraries_label, err
-                ),
-            }
+                Ok(report_path) => {
+                    info!(
+                        "Background cleanup audit completed (scope={}, libraries={}): {}",
+                        background_job.scope_label,
+                        background_job.libraries_label,
+                        report_path.display()
+                    );
 
-            let mut background_jobs = background_jobs.lock().await;
-            background_jobs.active_cleanup_audit = None;
+                    let mut background_jobs = background_jobs.lock().await;
+                    background_jobs.last_cleanup_audit_outcome = Some(LastCleanupAuditOutcome {
+                        finished_at,
+                        scope_label: background_job.scope_label.clone(),
+                        libraries_label: background_job.libraries_label.clone(),
+                        success: true,
+                        message: format!("Report written to {}", report_path.display()),
+                        report_path: Some(report_path.to_string_lossy().to_string()),
+                    });
+                    background_jobs.active_cleanup_audit = None;
+                }
+                Err(err) => {
+                    error!(
+                        "Background cleanup audit failed (scope={}, libraries={}): {}",
+                        background_job.scope_label, background_job.libraries_label, err
+                    );
+
+                    let mut background_jobs = background_jobs.lock().await;
+                    background_jobs.last_cleanup_audit_outcome = Some(LastCleanupAuditOutcome {
+                        finished_at,
+                        scope_label: background_job.scope_label.clone(),
+                        libraries_label: background_job.libraries_label.clone(),
+                        success: false,
+                        message: err.to_string(),
+                        report_path: None,
+                    });
+                    background_jobs.active_cleanup_audit = None;
+                }
+            }
         });
 
         Ok(job)
@@ -253,6 +338,19 @@ impl WebState {
         job: Option<ActiveCleanupAuditJob>,
     ) {
         self.background_jobs.lock().await.active_cleanup_audit = job;
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn set_last_scan_outcome_for_test(&self, outcome: Option<LastScanOutcome>) {
+        self.background_jobs.lock().await.last_scan_outcome = outcome;
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn set_last_cleanup_audit_outcome_for_test(
+        &self,
+        outcome: Option<LastCleanupAuditOutcome>,
+    ) {
+        self.background_jobs.lock().await.last_cleanup_audit_outcome = outcome;
     }
 }
 
@@ -602,8 +700,8 @@ fn static_dir() -> std::path::PathBuf {
 mod tests {
     use super::*;
     use axum::{
-        body::{to_bytes, Body},
-        http::{header, Request},
+        body::{Body, to_bytes},
+        http::{Request, header},
     };
     use tower::ServiceExt;
 

@@ -16,6 +16,10 @@
   - `GET /api/v1/cleanup/audit/jobs` exposes the currently running audit job
   - scan and cleanup audit now share one background-job gate so they cannot start concurrently by racing separate mutexes
   - files: `src/web/mod.rs`, `src/web/templates.rs`, `src/web/handlers.rs`, `src/web/api/mod.rs`, `src/web/ui/cleanup.html`, `src/web/ui/cleanup_result.html`
+- web/API background scan and cleanup audit now retain the last completed or failed outcome in-memory so operators can see the latest failure without digging through logs.
+  - added `GET /api/v1/scan/status` and `GET /api/v1/cleanup/audit/status`
+  - web scan/cleanup pages now show the most recent failed background outcome directly
+  - files: `src/web/mod.rs`, `src/web/templates.rs`, `src/web/handlers.rs`, `src/web/api/mod.rs`, `src/web/ui/scan.html`, `src/web/ui/scan_result.html`, `src/web/ui/cleanup.html`, `src/web/ui/cleanup_result.html`
 
 ### Docs
 

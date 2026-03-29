@@ -8,7 +8,7 @@ use std::time::SystemTime;
 #[allow(unused_imports)]
 use super::filters;
 
-use super::{ActiveCleanupAuditJob, ActiveScanJob};
+use super::{ActiveCleanupAuditJob, ActiveScanJob, LastCleanupAuditOutcome, LastScanOutcome};
 use crate::cleanup_audit::{CleanupReport, CleanupScope};
 use crate::config::Config;
 use crate::db::{AcquisitionJobCounts, ScanHistoryRecord};
@@ -91,6 +91,52 @@ impl From<ActiveCleanupAuditJob> for ActiveCleanupAuditView {
             started_at: value.started_at,
             scope_label: value.scope_label,
             libraries_label: value.libraries_label,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BackgroundScanOutcomeView {
+    pub finished_at: String,
+    pub scope_label: String,
+    pub dry_run: bool,
+    pub search_missing: bool,
+    pub success: bool,
+    pub message: String,
+}
+
+impl From<LastScanOutcome> for BackgroundScanOutcomeView {
+    fn from(value: LastScanOutcome) -> Self {
+        Self {
+            finished_at: value.finished_at,
+            scope_label: value.scope_label,
+            dry_run: value.dry_run,
+            search_missing: value.search_missing,
+            success: value.success,
+            message: value.message,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BackgroundCleanupAuditOutcomeView {
+    pub finished_at: String,
+    pub scope_label: String,
+    pub libraries_label: String,
+    pub success: bool,
+    pub message: String,
+    pub report_path: Option<String>,
+}
+
+impl From<LastCleanupAuditOutcome> for BackgroundCleanupAuditOutcomeView {
+    fn from(value: LastCleanupAuditOutcome) -> Self {
+        Self {
+            finished_at: value.finished_at,
+            scope_label: value.scope_label,
+            libraries_label: value.libraries_label,
+            success: value.success,
+            message: value.message,
+            report_path: value.report_path,
         }
     }
 }
@@ -260,6 +306,7 @@ use crate::config::LibraryConfig;
 pub struct ScanTemplate {
     pub libraries: Vec<LibraryConfig>,
     pub active_scan: Option<ActiveScanView>,
+    pub last_scan_outcome: Option<BackgroundScanOutcomeView>,
     pub latest_run: Option<ScanRunView>,
     pub history: Vec<ScanRunView>,
     pub queue: QueueOverview,
@@ -272,6 +319,7 @@ pub struct ScanResultTemplate {
     pub success: bool,
     pub message: String,
     pub active_scan: Option<ActiveScanView>,
+    pub last_scan_outcome: Option<BackgroundScanOutcomeView>,
     pub latest_run: Option<ScanRunView>,
     pub dry_run: bool,
 }
@@ -297,6 +345,7 @@ pub struct ScanRunDetailTemplate {
 pub struct CleanupTemplate {
     pub libraries: Vec<LibraryConfig>,
     pub active_cleanup_audit: Option<ActiveCleanupAuditView>,
+    pub last_cleanup_audit_outcome: Option<BackgroundCleanupAuditOutcomeView>,
     pub last_report: Option<CleanupReportSummaryView>,
     pub last_report_path: Option<PathBuf>,
 }
@@ -332,6 +381,7 @@ pub struct CleanupResultTemplate {
     pub success: bool,
     pub message: String,
     pub active_cleanup_audit: Option<ActiveCleanupAuditView>,
+    pub last_cleanup_audit_outcome: Option<BackgroundCleanupAuditOutcomeView>,
     pub report_path: Option<PathBuf>,
     pub report_summary: Option<CleanupReportSummaryView>,
 }
@@ -560,6 +610,7 @@ mod tests {
             success: true,
             message: "Audit complete".to_string(),
             active_cleanup_audit: None,
+            last_cleanup_audit_outcome: None,
             report_path: Some(PathBuf::from("/tmp/cleanup-audit-anime.json")),
             report_summary: Some(CleanupReportSummaryView {
                 path: PathBuf::from("/tmp/cleanup-audit-anime.json"),
@@ -590,6 +641,7 @@ mod tests {
                 scope_label: "Anime".to_string(),
                 libraries_label: "Anime".to_string(),
             }),
+            last_cleanup_audit_outcome: None,
             report_path: None,
             report_summary: None,
         };
@@ -598,6 +650,29 @@ mod tests {
         assert!(html.contains("Background cleanup audit running"));
         assert!(html.contains("Background Audit Accepted"));
         assert!(html.contains("2026-03-29 23:59:00 UTC"));
+    }
+
+    #[test]
+    fn cleanup_result_template_renders_last_failed_audit_outcome() {
+        let template = CleanupResultTemplate {
+            success: false,
+            message: "Cleanup audit not started".to_string(),
+            active_cleanup_audit: None,
+            last_cleanup_audit_outcome: Some(BackgroundCleanupAuditOutcomeView {
+                finished_at: "2026-03-29 23:59:59 UTC".to_string(),
+                scope_label: "Anime".to_string(),
+                libraries_label: "Anime".to_string(),
+                success: false,
+                message: "source root unhealthy".to_string(),
+                report_path: None,
+            }),
+            report_path: None,
+            report_summary: None,
+        };
+
+        let html = template.render().unwrap();
+        assert!(html.contains("Last background cleanup audit failed"));
+        assert!(html.contains("source root unhealthy"));
     }
 
     #[test]

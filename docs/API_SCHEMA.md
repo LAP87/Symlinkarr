@@ -145,6 +145,48 @@ Notes:
 - Web/API scan now returns immediately instead of holding the request open for the full run.
 - Poll `GET /api/v1/scan/jobs` for the active background scan and `GET /api/v1/scan/history` / `GET /api/v1/scan/:id` for completed runs.
 
+## `GET /api/v1/scan/status`
+
+Returns the current in-memory background scan state plus the latest completed or failed background-scan outcome.
+
+Status codes:
+
+- `200 OK`
+
+Response schema:
+
+```json
+{
+  "active_job": {
+    "id": 0,
+    "status": "running",
+    "started_at": "2026-03-29 23:59:00 UTC",
+    "scope_label": "Anime",
+    "search_missing": true,
+    "dry_run": false,
+    "library_items_found": 0,
+    "source_items_found": 0,
+    "matches_found": 0,
+    "links_created": 0,
+    "links_updated": 0,
+    "dead_marked": 0
+  },
+  "last_outcome": {
+    "finished_at": "2026-03-29 23:58:00 UTC",
+    "scope_label": "Anime",
+    "dry_run": false,
+    "search_missing": true,
+    "success": false,
+    "message": "RD cache sync failed"
+  }
+}
+```
+
+Notes:
+
+- `active_job` is `null` when no background scan is currently running.
+- `last_outcome` carries the latest background-scan success or failure, including failures that do not produce a durable scan-history row.
+
 ## `GET /api/v1/scan/jobs`
 
 Returns the active background scan first when one is running, followed by recent completed scan history in compact form.
@@ -341,6 +383,40 @@ Notes:
 - `scope` currently supports `anime`, `tv`, `movie`, and `all`.
 - `report_path` stays empty until the background audit has finished and produced a report.
 - `report_path` in follow-up prune requests must resolve inside the configured Symlinkarr backup directory.
+
+## `GET /api/v1/cleanup/audit/status`
+
+Returns the current in-memory cleanup-audit state plus the latest completed or failed background-audit outcome.
+
+Status codes:
+
+- `200 OK`
+
+Response schema:
+
+```json
+{
+  "active_job": {
+    "status": "running",
+    "started_at": "2026-03-29 12:34:56 UTC",
+    "scope_label": "Anime",
+    "libraries_label": "All Libraries"
+  },
+  "last_outcome": {
+    "finished_at": "2026-03-29 12:40:00 UTC",
+    "scope_label": "Anime",
+    "libraries_label": "All Libraries",
+    "success": true,
+    "message": "Report written to /path/to/report.json",
+    "report_path": "/path/to/report.json"
+  }
+}
+```
+
+Notes:
+
+- `active_job` is `null` when no cleanup audit is currently running.
+- `last_outcome` carries the latest background cleanup-audit success or failure, including failures that never produced a report file.
 
 ## `GET /api/v1/cleanup/audit/jobs`
 
