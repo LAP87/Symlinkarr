@@ -1,13 +1,24 @@
 use anyhow::Result;
 
 use crate::commands::print_json;
-use crate::config::Config;
+use crate::config::{Config, ValidationReport};
 use crate::{ConfigAction, OutputFormat};
+
+pub(crate) async fn validate_config_report(cfg: &Config) -> ValidationReport {
+    let cfg = cfg.clone();
+    match tokio::task::spawn_blocking(move || cfg.validate()).await {
+        Ok(report) => report,
+        Err(err) => ValidationReport {
+            errors: vec![format!("Configuration validation task failed: {}", err)],
+            warnings: Vec::new(),
+        },
+    }
+}
 
 pub(crate) async fn run_config(cfg: &Config, action: ConfigAction) -> Result<()> {
     match action {
         ConfigAction::Validate { output } => {
-            let report = cfg.validate();
+            let report = validate_config_report(cfg).await;
             if output == OutputFormat::Json {
                 print_json(&serde_json::json!({
                     "ok": report.errors.is_empty(),

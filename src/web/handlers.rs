@@ -14,8 +14,9 @@ use tracing::{error, info};
 
 use crate::backup::BackupManager;
 use crate::cleanup_audit::{self, CleanupAuditor, CleanupScope};
+use crate::commands::config::validate_config_report;
 use crate::commands::discover::load_discovery_snapshot;
-use crate::commands::doctor::collect_doctor_checks;
+use crate::commands::doctor::{collect_doctor_checks, DoctorCheckMode};
 use crate::commands::repair::{execute_repair_auto, summarize_repair_results};
 use crate::commands::scan::run_scan;
 use crate::db::{AcquisitionJobCounts, ScanHistoryRecord};
@@ -993,7 +994,7 @@ pub async fn get_config(State(state): State<WebState>) -> impl IntoResponse {
 
 /// POST /config/validate - Validate config
 pub async fn post_config_validate(State(state): State<WebState>) -> impl IntoResponse {
-    let report = state.config.validate();
+    let report = validate_config_report(&state.config).await;
     let result = Some(ValidationResult {
         valid: report.errors.is_empty(),
         errors: report.errors,
@@ -1009,7 +1010,7 @@ pub async fn post_config_validate(State(state): State<WebState>) -> impl IntoRes
 
 /// GET /doctor - Doctor page
 pub async fn get_doctor(State(state): State<WebState>) -> impl IntoResponse {
-    let checks = collect_doctor_checks(&state.config, &state.database)
+    let checks = collect_doctor_checks(&state.config, &state.database, DoctorCheckMode::ReadOnly)
         .await
         .into_iter()
         .map(|check| DoctorCheck {
@@ -1569,6 +1570,20 @@ mod tests {
         assert!(body.contains("db_schema_version"));
         assert!(body.contains("config_validation"));
         assert!(body.contains("cleanup.prune.enforce_policy"));
+    }
+
+    #[tokio::test]
+    async fn doctor_page_does_not_create_missing_backup_dir_in_read_only_mode() {
+        let ctx = test_context().await;
+        let backup_dir = ctx.state.config.backup.path.clone();
+        std::fs::remove_dir(&backup_dir).unwrap();
+        assert!(!backup_dir.exists());
+
+        let body = render_body(get_doctor(State(ctx.state)).await).await;
+
+        assert!(body.contains("backup_dir"));
+        assert!(body.contains("write probe skipped in read-only mode"));
+        assert!(!backup_dir.exists());
     }
 
     #[tokio::test]

@@ -16,7 +16,17 @@ pub(crate) struct DoctorCheckResult {
     pub detail: String,
 }
 
-pub(crate) async fn collect_doctor_checks(cfg: &Config, db: &Database) -> Vec<DoctorCheckResult> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DoctorCheckMode {
+    Full,
+    ReadOnly,
+}
+
+pub(crate) async fn collect_doctor_checks(
+    cfg: &Config,
+    db: &Database,
+    mode: DoctorCheckMode,
+) -> Vec<DoctorCheckResult> {
     let mut checks = Vec::new();
 
     match db.get_stats().await {
@@ -49,10 +59,17 @@ pub(crate) async fn collect_doctor_checks(cfg: &Config, db: &Database) -> Vec<Do
     let db_parent = std::path::Path::new(&cfg.db_path)
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."));
+    let (db_parent_ok, db_parent_detail) = match mode {
+        DoctorCheckMode::Full => (
+            can_write_in_directory(db_parent),
+            db_parent.display().to_string(),
+        ),
+        DoctorCheckMode::ReadOnly => inspect_directory_without_write_probe(db_parent),
+    };
     checks.push(DoctorCheckResult {
         name: "db_parent_dir".to_string(),
-        ok: can_write_in_directory(db_parent),
-        detail: db_parent.display().to_string(),
+        ok: db_parent_ok,
+        detail: db_parent_detail,
     });
 
     for lib in &cfg.libraries {
@@ -75,10 +92,17 @@ pub(crate) async fn collect_doctor_checks(cfg: &Config, db: &Database) -> Vec<Do
         });
     }
 
+    let (backup_ok, backup_detail) = match mode {
+        DoctorCheckMode::Full => (
+            can_write_in_directory(&cfg.backup.path),
+            cfg.backup.path.display().to_string(),
+        ),
+        DoctorCheckMode::ReadOnly => inspect_directory_without_write_probe(&cfg.backup.path),
+    };
     checks.push(DoctorCheckResult {
         name: "backup_dir".to_string(),
-        ok: can_write_in_directory(&cfg.backup.path),
-        detail: cfg.backup.path.display().to_string(),
+        ok: backup_ok,
+        detail: backup_detail,
     });
     checks.push(DoctorCheckResult {
         name: "backup.max_safety_backups".to_string(),
@@ -102,18 +126,26 @@ pub(crate) async fn collect_doctor_checks(cfg: &Config, db: &Database) -> Vec<Do
         detail: cfg.cleanup.prune.enforce_policy.to_string(),
     });
 
-    let validation = cfg.validate();
+    let validation = match mode {
+        DoctorCheckMode::Full => cfg.validate(),
+        DoctorCheckMode::ReadOnly => cfg.validate_runtime_settings(),
+    };
+    let validation_detail = if matches!(mode, DoctorCheckMode::ReadOnly) {
+        format!("read_only; {}", format_validation_detail(&validation))
+    } else {
+        format_validation_detail(&validation)
+    };
     checks.push(DoctorCheckResult {
         name: "config_validation".to_string(),
         ok: validation.errors.is_empty(),
-        detail: format_validation_detail(&validation),
+        detail: validation_detail,
     });
 
     checks
 }
 
 pub(crate) async fn run_doctor(cfg: &Config, db: &Database, output: OutputFormat) -> Result<()> {
-    let checks = collect_doctor_checks(cfg, db).await;
+    let checks = collect_doctor_checks(cfg, db, DoctorCheckMode::Full).await;
 
     if output == OutputFormat::Json {
         let failed = checks.iter().filter(|c| !c.ok).count();
@@ -159,6 +191,40 @@ fn can_write_in_directory(path: &std::path::Path) -> bool {
     }
 }
 
+fn inspect_directory_without_write_probe(path: &std::path::Path) -> (bool, String) {
+    match std::fs::metadata(path) {
+        Ok(metadata) if metadata.is_dir() => (
+            true,
+            format!(
+                "exists (write probe skipped in read-only mode): {}",
+                path.display()
+            ),
+        ),
+        Ok(_) => (
+            false,
+            format!(
+                "not a directory (write probe skipped in read-only mode): {}",
+                path.display()
+            ),
+        ),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => (
+            false,
+            format!(
+                "missing (write probe skipped in read-only mode): {}",
+                path.display()
+            ),
+        ),
+        Err(err) => (
+            false,
+            format!(
+                "could not inspect (write probe skipped in read-only mode): {} ({})",
+                path.display(),
+                err
+            ),
+        ),
+    }
+}
+
 fn format_validation_detail(report: &crate::config::ValidationReport) -> String {
     let mut detail = format!(
         "errors={}, warnings={}",
@@ -187,6 +253,16 @@ mod tests {
         let nested = dir.path().join("doctor").join("probe");
         assert!(can_write_in_directory(&nested));
         assert!(nested.exists());
+    }
+
+    #[test]
+    fn inspect_directory_without_write_probe_does_not_create_missing_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("doctor").join("probe");
+        let (ok, detail) = inspect_directory_without_write_probe(&nested);
+        assert!(!ok);
+        assert!(detail.contains("write probe skipped in read-only mode"));
+        assert!(!nested.exists());
     }
 
     #[test]

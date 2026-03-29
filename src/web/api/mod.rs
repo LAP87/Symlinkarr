@@ -12,8 +12,9 @@ use tracing::info;
 
 use crate::backup::BackupManager;
 use crate::cleanup_audit::{self, CleanupAuditor, CleanupReport, CleanupScope};
+use crate::commands::config::validate_config_report;
 use crate::commands::discover::load_discovery_snapshot;
-use crate::commands::doctor::collect_doctor_checks;
+use crate::commands::doctor::{collect_doctor_checks, DoctorCheckMode};
 use crate::commands::repair::{execute_repair_auto, summarize_repair_results};
 use crate::commands::scan::run_scan;
 use crate::config::Config;
@@ -953,7 +954,7 @@ pub async fn api_get_links(
 pub async fn api_get_config_validate(
     State(state): State<WebState>,
 ) -> Json<ApiConfigValidateResponse> {
-    let report = state.config.validate();
+    let report = validate_config_report(&state.config).await;
 
     Json(ApiConfigValidateResponse {
         valid: report.errors.is_empty(),
@@ -964,7 +965,7 @@ pub async fn api_get_config_validate(
 
 /// GET /api/v1/doctor
 pub async fn api_get_doctor(State(state): State<WebState>) -> Json<ApiDoctorResponse> {
-    let checks = collect_doctor_checks(&state.config, &state.database)
+    let checks = collect_doctor_checks(&state.config, &state.database, DoctorCheckMode::ReadOnly)
         .await
         .into_iter()
         .map(|check| ApiDoctorCheck {
@@ -1348,6 +1349,26 @@ mod tests {
             .checks
             .iter()
             .any(|check| check.check == "cleanup.prune.enforce_policy"));
+    }
+
+    #[tokio::test]
+    async fn api_get_doctor_does_not_create_missing_backup_dir_in_read_only_mode() {
+        let ctx = test_state().await;
+        let backup_dir = ctx.config.backup.path.clone();
+        std::fs::remove_dir(&backup_dir).unwrap();
+        assert!(!backup_dir.exists());
+
+        let response = api_get_doctor(State(ctx)).await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: ApiDoctorResponse = serde_json::from_slice(&bytes).unwrap();
+
+        assert!(json
+            .checks
+            .iter()
+            .any(|check| check.check == "backup_dir"
+                && check.message.contains("write probe skipped in read-only mode")));
+        assert!(!backup_dir.exists());
     }
 
     #[cfg(unix)]
