@@ -94,8 +94,8 @@
     <div class="section-head">
         <div>
             <p class="section-kicker">Apply Gate</p>
-            <h2 class="section-title">Use the same report and token</h2>
-            <p class="text-muted">If you rerun the audit, the preview token changes. Treat the report path below as the exact input to the prune page.</p>
+            <h2 class="section-title">Apply only from preview</h2>
+            <p class="text-muted">If you rerun the audit, the preview token changes. Open prune preview from the button below and apply only from that page.</p>
         </div>
     </div>
     <p class="mb-1">Report file: <code class="mono">{{ report.path.display() }}</code></p>
@@ -103,16 +103,9 @@
         <a href="/cleanup/prune?report={{ report.path.display() }}" class="btn btn-secondary">
             &#128064; Preview Prune Actions
         </a>
-        <form action="/cleanup/prune" method="post" class="inline-token-form">
-            <input type="hidden" name="report" value="{{ report.path.display() }}">
-            <input type="password" name="token" class="form-control field-max-md" placeholder="Confirmation token" required>
-            <button type="submit" class="btn btn-danger">
-                &#9888;&#65039; Apply Cleanup
-            </button>
-        </form>
     </div>
     <small class="text-muted mt-1">
-        &#9888;&#65039; Prune is permanent. The preview is the gate, not the report list itself.
+        &#9888;&#65039; Prune is permanent. Preview is the only place where the report token should be used.
     </small>
 </div>
 {% when None %}

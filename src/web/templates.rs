@@ -307,6 +307,7 @@ pub struct PrunePreviewTemplate {
     pub foreign_candidates: usize,
     pub report_path: Option<PathBuf>,
     pub confirmation_token: Option<String>,
+    pub error_message: Option<String>,
 }
 
 // ─── Links ──────────────────────────────────────────────────────────
@@ -571,6 +572,7 @@ mod tests {
             foreign_candidates: 0,
             report_path: Some(PathBuf::from("/tmp/cleanup-audit-all.json")),
             confirmation_token: Some("abcdef1234567890".to_string()),
+            error_message: None,
         };
 
         let html = template.render().unwrap();

@@ -204,6 +204,44 @@ fn repair_error_status(message: &str) -> StatusCode {
     }
 }
 
+fn resolve_cleanup_report_path(
+    backup_dir: &std::path::Path,
+    report: &str,
+) -> anyhow::Result<std::path::PathBuf> {
+    let trimmed = report.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("Cleanup report path is required");
+    }
+
+    let requested = std::path::Path::new(trimmed);
+    let backup_root = backup_dir
+        .canonicalize()
+        .unwrap_or_else(|_| backup_dir.to_path_buf());
+
+    if requested.is_absolute() {
+        let canonical = requested
+            .canonicalize()
+            .map_err(|_| anyhow::anyhow!("Cleanup report not found: {}", requested.display()))?;
+        if !canonical.starts_with(&backup_root) {
+            anyhow::bail!("Cleanup report must be inside the configured backup directory");
+        }
+        return Ok(canonical);
+    }
+
+    if requested.components().any(|component| {
+        matches!(
+            component,
+            std::path::Component::ParentDir
+                | std::path::Component::RootDir
+                | std::path::Component::Prefix(_)
+        )
+    }) {
+        anyhow::bail!("Cleanup report path escapes the configured backup directory");
+    }
+
+    Ok(backup_dir.join(requested))
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct ApiCleanupAuditResponse {
     pub success: bool,
@@ -806,10 +844,30 @@ pub async fn api_post_cleanup_prune(
 ) -> impl IntoResponse {
     info!("API: Applying prune");
 
+    let report_path = match resolve_cleanup_report_path(&state.config.backup.path, &req.report_path)
+    {
+        Ok(path) => path,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ApiCleanupPruneResponse {
+                    success: false,
+                    message: format!("Prune failed: {}", err),
+                    candidates: 0,
+                    managed_candidates: 0,
+                    foreign_candidates: 0,
+                    removed: 0,
+                    quarantined: 0,
+                    skipped: 0,
+                }),
+            );
+        }
+    };
+
     match cleanup_audit::run_prune(
         &state.config,
         &state.database,
-        std::path::Path::new(&req.report_path),
+        &report_path,
         true,
         req.max_delete,
         Some(&req.token),
@@ -1486,7 +1544,7 @@ mod tests {
                 warning: 0,
             },
         };
-        let report_path = dir.path().join("report.json");
+        let report_path = cfg.backup.path.join("report.json");
         std::fs::write(&report_path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
 
         let preview = crate::cleanup_audit::run_prune(&cfg, &db, &report_path, false, None, None)
@@ -1555,5 +1613,33 @@ mod tests {
         let response: ApiCleanupPruneResponse = serde_json::from_slice(&bytes).unwrap();
         assert!(!response.success);
         assert!(response.message.contains("Prune failed"));
+    }
+
+    #[tokio::test]
+    async fn api_post_cleanup_prune_rejects_report_outside_backup_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = test_config(dir.path());
+        let db = Database::new(&cfg.db_path).await.unwrap();
+        let outside_report = dir.path().join("outside-report.json");
+        std::fs::write(&outside_report, "{}").unwrap();
+
+        let state = WebState::new(cfg, db);
+        let response = api_post_cleanup_prune(
+            State(state),
+            Json(ApiCleanupPruneRequest {
+                report_path: outside_report.to_string_lossy().to_string(),
+                token: "bad-token".to_string(),
+                max_delete: None,
+            }),
+        )
+        .await;
+        let body = response.into_response();
+        assert_eq!(body.status(), StatusCode::BAD_REQUEST);
+        let bytes = to_bytes(body.into_body(), usize::MAX).await.unwrap();
+        let response: ApiCleanupPruneResponse = serde_json::from_slice(&bytes).unwrap();
+        assert!(!response.success);
+        assert!(response
+            .message
+            .contains("Cleanup report must be inside the configured backup directory"));
     }
 }

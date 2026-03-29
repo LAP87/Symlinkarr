@@ -98,6 +98,39 @@ fn resolve_backup_restore_path(backup_dir: &StdPath, backup_file: &str) -> anyho
     Ok(backup_dir.join(requested))
 }
 
+fn resolve_cleanup_report_path(backup_dir: &StdPath, report: &str) -> anyhow::Result<PathBuf> {
+    let trimmed = report.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("Cleanup report path is required");
+    }
+
+    let requested = StdPath::new(trimmed);
+    let backup_root = backup_dir
+        .canonicalize()
+        .unwrap_or_else(|_| backup_dir.to_path_buf());
+
+    if requested.is_absolute() {
+        let canonical = requested
+            .canonicalize()
+            .map_err(|_| anyhow::anyhow!("Cleanup report not found: {}", requested.display()))?;
+        if !canonical.starts_with(&backup_root) {
+            anyhow::bail!("Cleanup report must be inside the configured backup directory");
+        }
+        return Ok(canonical);
+    }
+
+    if requested.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
+        anyhow::bail!("Cleanup report path escapes the configured backup directory");
+    }
+
+    Ok(backup_dir.join(requested))
+}
+
 fn repair_error_status(message: &str) -> StatusCode {
     if message.contains("Refusing repair auto") || message.contains("Unknown library filter") {
         StatusCode::BAD_REQUEST
@@ -568,9 +601,7 @@ pub async fn get_cleanup_prune(
     State(state): State<WebState>,
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let report_path = params.get("report").map(|p| p.as_str());
-
-    if report_path.is_none() {
+    let Some(raw_report) = params.get("report").map(|p| p.as_str()) else {
         return Html(
             PrunePreviewTemplate {
                 findings: vec![],
@@ -582,14 +613,35 @@ pub async fn get_cleanup_prune(
                 foreign_candidates: 0,
                 report_path: None,
                 confirmation_token: None,
+                error_message: None,
             }
             .render()
             .unwrap_or_else(|e| e.to_string()),
         );
-    }
+    };
 
-    // Read the report and show preview
-    let report_path = std::path::Path::new(report_path.unwrap());
+    let report_path = match resolve_cleanup_report_path(&state.config.backup.path, raw_report) {
+        Ok(path) => path,
+        Err(err) => {
+            return Html(
+                PrunePreviewTemplate {
+                    findings: vec![],
+                    total: 0,
+                    critical: 0,
+                    high: 0,
+                    warning: 0,
+                    managed_candidates: 0,
+                    foreign_candidates: 0,
+                    report_path: None,
+                    confirmation_token: None,
+                    error_message: Some(err.to_string()),
+                }
+                .render()
+                .unwrap_or_else(|e| e.to_string()),
+            );
+        }
+    };
+
     if !report_path.exists() {
         return Html(
             PrunePreviewTemplate {
@@ -602,6 +654,10 @@ pub async fn get_cleanup_prune(
                 foreign_candidates: 0,
                 report_path: None,
                 confirmation_token: None,
+                error_message: Some(format!(
+                    "Cleanup report not found: {}",
+                    report_path.display()
+                )),
             }
             .render()
             .unwrap_or_else(|e| e.to_string()),
@@ -609,7 +665,7 @@ pub async fn get_cleanup_prune(
     }
 
     // Parse the JSON report to show actual preview data
-    let json = match std::fs::read_to_string(report_path) {
+    let json = match std::fs::read_to_string(&report_path) {
         Ok(j) => j,
         Err(e) => {
             error!("Failed to read cleanup report: {}", e);
@@ -624,6 +680,7 @@ pub async fn get_cleanup_prune(
                     foreign_candidates: 0,
                     report_path: None,
                     confirmation_token: None,
+                    error_message: Some(format!("Failed to read report: {}", e)),
                 }
                 .render()
                 .unwrap_or_else(|e| e.to_string()),
@@ -646,6 +703,7 @@ pub async fn get_cleanup_prune(
                     foreign_candidates: 0,
                     report_path: None,
                     confirmation_token: None,
+                    error_message: Some(format!("Failed to parse report: {}", e)),
                 }
                 .render()
                 .unwrap_or_else(|e| e.to_string()),
@@ -681,6 +739,7 @@ pub async fn get_cleanup_prune(
             .unwrap_or(0),
         report_path: Some(report_path.to_path_buf()),
         confirmation_token: prune_plan.map(|plan| plan.confirmation_token),
+        error_message: None,
     };
 
     Html(template.render().unwrap_or_else(|e| e.to_string()))
@@ -721,12 +780,26 @@ pub async fn post_cleanup_prune(
     }
 
     // Read the report
-    let report_path = std::path::Path::new(&form.report);
+    let report_path = match resolve_cleanup_report_path(&state.config.backup.path, &form.report) {
+        Ok(path) => path,
+        Err(err) => {
+            return Html(
+                CleanupResultTemplate {
+                    success: false,
+                    message: err.to_string(),
+                    report_path: None,
+                    report_summary: None,
+                }
+                .render()
+                .unwrap_or_else(|e| e.to_string()),
+            );
+        }
+    };
     if !report_path.exists() {
         return Html(
             CleanupResultTemplate {
                 success: false,
-                message: format!("Report not found: {}", form.report),
+                message: format!("Report not found: {}", report_path.display()),
                 report_path: None,
                 report_summary: None,
             }
@@ -735,7 +808,7 @@ pub async fn post_cleanup_prune(
         );
     }
 
-    let json = match std::fs::read_to_string(report_path) {
+    let json = match std::fs::read_to_string(&report_path) {
         Ok(j) => j,
         Err(e) => {
             error!("Failed to read cleanup report: {}", e);
@@ -773,7 +846,7 @@ pub async fn post_cleanup_prune(
     let outcome = match cleanup_audit::run_prune(
         &state.config,
         &state.database,
-        report_path,
+        &report_path,
         true,              // apply
         None,              // max_delete
         Some(&form.token), // confirmation_token
@@ -808,7 +881,7 @@ pub async fn post_cleanup_prune(
     let template = CleanupResultTemplate {
         success: true,
         message,
-        report_summary: cleanup_report_summary_from_path(report_path),
+        report_summary: cleanup_report_summary_from_path(&report_path),
         report_path: Some(report_path.to_path_buf()),
     };
 
@@ -1631,7 +1704,8 @@ mod tests {
         assert!(body.contains("Last Report"));
         assert!(body.contains("12"));
         assert!(body.contains("Open Prune Preview"));
-        assert!(body.contains("Apply Cleanup"));
+        assert!(!body.contains("Apply Cleanup"));
+        assert!(body.contains("Apply only from preview"));
     }
 
     #[test]
@@ -1704,5 +1778,25 @@ mod tests {
         let backup_dir = PathBuf::from("/srv/symlinkarr/backups");
         let path = resolve_backup_restore_path(&backup_dir, "backup-20260329.json").unwrap();
         assert_eq!(path, backup_dir.join("backup-20260329.json"));
+    }
+
+    #[test]
+    fn resolve_cleanup_report_path_rejects_absolute_outside_backup_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let backup_dir = dir.path().join("backups");
+        let outside = dir.path().join("outside.json");
+        std::fs::create_dir_all(&backup_dir).unwrap();
+        std::fs::write(&outside, "{}").unwrap();
+
+        let err = resolve_cleanup_report_path(&backup_dir, outside.to_string_lossy().as_ref())
+            .unwrap_err();
+        assert!(err.to_string().contains("configured backup directory"));
+    }
+
+    #[test]
+    fn resolve_cleanup_report_path_accepts_plain_filename() {
+        let backup_dir = PathBuf::from("/srv/symlinkarr/backups");
+        let path = resolve_cleanup_report_path(&backup_dir, "cleanup-audit-anime.json").unwrap();
+        assert_eq!(path, backup_dir.join("cleanup-audit-anime.json"));
     }
 }

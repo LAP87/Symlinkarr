@@ -303,6 +303,7 @@ Response schema:
 Notes:
 
 - `scope` currently supports `anime`, `tv`, `movie`, and `all`.
+- `report_path` in follow-up prune requests must resolve inside the configured Symlinkarr backup directory.
 
 ## `POST /api/v1/cleanup/prune`
 
@@ -321,6 +322,10 @@ Request body:
   "token": "confirmation-token"
 }
 ```
+
+Notes:
+
+- `report_path` must resolve inside the configured Symlinkarr backup directory. Arbitrary filesystem paths are rejected.
 
 Response schema:
 
