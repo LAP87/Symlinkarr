@@ -303,7 +303,7 @@ pub async fn process_auto_acquire_queue(
 
         while downloading.len() < cfg.decypharr.max_in_flight && !pending.is_empty() {
             let queued = pending.pop_front().unwrap();
-            match submit_request(
+            let submit_attempt = match submit_request(
                 cfg,
                 &decypharr,
                 dmm.as_ref(),
@@ -311,8 +311,21 @@ pub async fn process_auto_acquire_queue(
                 &queued.request,
                 dry_run,
             )
-            .await?
+            .await
             {
+                Ok(attempt) => attempt,
+                Err(err) => {
+                    let outcome = request_error_outcome(err);
+                    if !dry_run {
+                        persist_terminal_outcome(db, queued.job_id, queued.attempts, &outcome)
+                            .await?;
+                    }
+                    print_terminal_outcome(&queued.request, &outcome);
+                    record_terminal_outcome(&mut summary, &outcome);
+                    continue;
+                }
+            };
+            match submit_attempt {
                 SubmitAttempt::Immediate(outcome) => {
                     if !dry_run {
                         persist_terminal_outcome(db, queued.job_id, queued.attempts, &outcome)
@@ -385,7 +398,7 @@ pub async fn process_auto_acquire_queue(
 
         if dry_run {
             while let Some(queued) = pending.pop_front() {
-                match submit_request(
+                let submit_attempt = match submit_request(
                     cfg,
                     &decypharr,
                     dmm.as_ref(),
@@ -393,8 +406,17 @@ pub async fn process_auto_acquire_queue(
                     &queued.request,
                     true,
                 )
-                .await?
+                .await
                 {
+                    Ok(attempt) => attempt,
+                    Err(err) => {
+                        let outcome = request_error_outcome(err);
+                        print_terminal_outcome(&queued.request, &outcome);
+                        record_terminal_outcome(&mut summary, &outcome);
+                        continue;
+                    }
+                };
+                match submit_attempt {
                     SubmitAttempt::Immediate(outcome) => {
                         print_terminal_outcome(&queued.request, &outcome);
                         record_terminal_outcome(&mut summary, &outcome);
@@ -2344,6 +2366,14 @@ fn record_terminal_outcome(summary: &mut AutoAcquireBatchSummary, outcome: &Auto
     }
 }
 
+fn request_error_outcome(err: anyhow::Error) -> AutoAcquireOutcome {
+    AutoAcquireOutcome {
+        status: AutoAcquireStatus::Failed,
+        release_title: None,
+        message: err.to_string(),
+    }
+}
+
 fn print_progress(
     progress: &mut ProgressLine,
     summary: &AutoAcquireBatchSummary,
@@ -2529,6 +2559,15 @@ mod tests {
         assert_eq!(completed_unlinked_retry_minutes(5), 120); // capped
                                                               // Edge: 0 or negative treated as attempt 1
         assert_eq!(completed_unlinked_retry_minutes(0), 5);
+    }
+
+    #[test]
+    fn request_error_outcome_maps_submit_errors_to_failed_terminal_outcomes() {
+        let outcome =
+            request_error_outcome(anyhow::anyhow!("DMM tv lookup error 429 Too Many Requests"));
+        assert_eq!(outcome.status, AutoAcquireStatus::Failed);
+        assert!(outcome.release_title.is_none());
+        assert!(outcome.message.contains("429 Too Many Requests"));
     }
 
     #[test]
@@ -2949,9 +2988,7 @@ mod tests {
         let request = AutoAcquireRequest {
             label: "My Hero Academia S05E21".to_string(),
             query: "My Hero Academia S05E21".to_string(),
-            query_hints: vec![
-                "Boku no Hero Academia 21".to_string(),
-            ],
+            query_hints: vec!["Boku no Hero Academia 21".to_string()],
             imdb_id: None,
             categories: vec![5070],
             arr: "sonarr-anime".to_string(),
@@ -2985,7 +3022,10 @@ mod tests {
         // "Frieren S01E05" → ["Frieren S01", "Frieren"]
         // parse_season_token reformats as "S{:02}" (drops episode part)
         let fallbacks = anime_batch_fallbacks("Frieren S01E05");
-        assert_eq!(fallbacks, vec!["Frieren S01".to_string(), "Frieren".to_string()]);
+        assert_eq!(
+            fallbacks,
+            vec!["Frieren S01".to_string(), "Frieren".to_string()]
+        );
     }
 
     #[test]
@@ -2999,7 +3039,11 @@ mod tests {
     fn anime_batch_fallbacks_ignores_year_token() {
         // "Frieren 2023" → standalone year is not a batch marker, so no fallback
         let fallbacks = anime_batch_fallbacks("Frieren 2023");
-        assert!(fallbacks.is_empty(), "standalone year is not a batch marker: {:?}", fallbacks);
+        assert!(
+            fallbacks.is_empty(),
+            "standalone year is not a batch marker: {:?}",
+            fallbacks
+        );
     }
 
     #[test]
@@ -3018,22 +3062,45 @@ mod tests {
         );
     }
 
-
     #[test]
     fn is_numbering_token_rejects_release_format_tokens() {
         // BD, BDRip, HDRip, DVDR, BRRip are format tokens treated as noise in query tokens
         // They are filtered out when building title tokens for cleaner DMM queries
-        assert!(is_numbering_token("BD"), "BD should be treated as a noise token");
-        assert!(is_numbering_token("BDRip"), "BDRip should be treated as a noise token");
-        assert!(is_numbering_token("HDRip"), "HDRip should be treated as a noise token");
-        assert!(is_numbering_token("DVDR"), "DVDR should be treated as a noise token");
-        assert!(is_numbering_token("BRRip"), "BRRip should be treated as a noise token");
-        assert!(is_numbering_token("HDRip"), "HDRip should be treated as a noise token");
+        assert!(
+            is_numbering_token("BD"),
+            "BD should be treated as a noise token"
+        );
+        assert!(
+            is_numbering_token("BDRip"),
+            "BDRip should be treated as a noise token"
+        );
+        assert!(
+            is_numbering_token("HDRip"),
+            "HDRip should be treated as a noise token"
+        );
+        assert!(
+            is_numbering_token("DVDR"),
+            "DVDR should be treated as a noise token"
+        );
+        assert!(
+            is_numbering_token("BRRip"),
+            "BRRip should be treated as a noise token"
+        );
+        assert!(
+            is_numbering_token("HDRip"),
+            "HDRip should be treated as a noise token"
+        );
         // Year and season/episode tokens are also noise
         assert!(is_numbering_token("2020"), "2020 is a year/numbering token");
-        assert!(is_numbering_token("s01e05"), "s01e05 is a season+episode token");
+        assert!(
+            is_numbering_token("s01e05"),
+            "s01e05 is a season+episode token"
+        );
         assert!(is_numbering_token("05"), "05 is a standalone episode token");
-        assert!(is_numbering_token("upgrade"), "upgrade is a numbering token");
+        assert!(
+            is_numbering_token("upgrade"),
+            "upgrade is a numbering token"
+        );
     }
 
     #[test]
@@ -3041,7 +3108,10 @@ mod tests {
         assert_eq!(clean_request_label("Show S01E05"), "Show S01E05");
         assert_eq!(clean_request_label("Show S01E05 (unlinked)"), "Show S01E05");
         assert_eq!(clean_request_label("Show S01E05 upgrade"), "Show S01E05");
-        assert_eq!(clean_request_label("Show S01E05 upgrade (unlinked)"), "Show S01E05");
+        assert_eq!(
+            clean_request_label("Show S01E05 upgrade (unlinked)"),
+            "Show S01E05"
+        );
         assert_eq!(clean_request_label("Show S01E05 (new)"), "Show S01E05");
         assert_eq!(clean_request_label("  Show S01E05  "), "Show S01E05");
     }
@@ -3049,10 +3119,14 @@ mod tests {
     #[test]
     fn anime_quality_bonus_for_upgrade() {
         // Upgrade: prefer higher quality
-        assert!(anime_quality_bonus(Some("2160p"), true) > anime_quality_bonus(Some("1080p"), true));
+        assert!(
+            anime_quality_bonus(Some("2160p"), true) > anime_quality_bonus(Some("1080p"), true)
+        );
         assert!(anime_quality_bonus(Some("1080p"), true) > anime_quality_bonus(Some("720p"), true));
         // Non-upgrade: prefer higher quality (get the best available)
-        assert!(anime_quality_bonus(Some("1080p"), false) > anime_quality_bonus(Some("720p"), false));
+        assert!(
+            anime_quality_bonus(Some("1080p"), false) > anime_quality_bonus(Some("720p"), false)
+        );
     }
 
     #[test]
