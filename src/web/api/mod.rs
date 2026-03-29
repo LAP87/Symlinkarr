@@ -195,7 +195,7 @@ pub struct ApiCleanupPruneResponse {
     pub skipped: usize,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct ApiLink {
     pub id: i64,
     pub source_path: String,
@@ -763,11 +763,14 @@ pub async fn api_get_links(
     let status_filter = params.get("status").map(|s| s.as_str());
 
     let links = match status_filter {
-        Some("dead") => state.database.get_dead_links().await.unwrap_or_default(),
-        _ => state.database.get_active_links().await.unwrap_or_default(),
+        Some("dead") => state.database.get_dead_links_limited(limit).await.unwrap_or_default(),
+        _ => state
+            .database
+            .get_active_links_limited(limit)
+            .await
+            .unwrap_or_default(),
     }
     .into_iter()
-    .take(limit as usize)
     .map(|l| ApiLink {
         id: l.id.unwrap_or(0),
         source_path: l.source_path.to_string_lossy().to_string(),
@@ -862,7 +865,7 @@ mod tests {
     use axum::http::Request;
     use axum::response::IntoResponse;
     use serde_json::Value;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use tempfile::TempDir;
 
     use crate::config::{
@@ -1139,6 +1142,53 @@ mod tests {
         assert_eq!(json[0].scope_label, "Movies");
         assert!(!json[0].dry_run);
         assert!(!json[0].search_missing);
+    }
+
+    #[tokio::test]
+    async fn api_get_links_respects_limit_without_loading_full_result_in_handler() {
+        let ctx = test_state().await;
+        ctx.database
+            .insert_link(&LinkRecord {
+                id: None,
+                source_path: PathBuf::from("/mnt/rd/show/ep01.mkv"),
+                target_path: PathBuf::from("/plex/show/S01E01.mkv"),
+                media_id: "tvdb-1".to_string(),
+                media_type: MediaType::Tv,
+                status: LinkStatus::Active,
+                created_at: None,
+                updated_at: None,
+            })
+            .await
+            .unwrap();
+        ctx.database
+            .insert_link(&LinkRecord {
+                id: None,
+                source_path: PathBuf::from("/mnt/rd/show/ep02.mkv"),
+                target_path: PathBuf::from("/plex/show/S01E02.mkv"),
+                media_id: "tvdb-1".to_string(),
+                media_type: MediaType::Tv,
+                status: LinkStatus::Active,
+                created_at: None,
+                updated_at: None,
+            })
+            .await
+            .unwrap();
+
+        let response = api_get_links(
+            State(ctx),
+            Query(std::collections::HashMap::from([(
+                "limit".to_string(),
+                "1".to_string(),
+            )])),
+        )
+        .await;
+        let body = response.into_response();
+        assert_eq!(body.status(), StatusCode::OK);
+        let bytes = to_bytes(body.into_body(), usize::MAX).await.unwrap();
+        let links: Vec<ApiLink> = serde_json::from_slice(&bytes).unwrap();
+
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].target_path, "/plex/show/S01E02.mkv");
     }
 
     #[tokio::test]

@@ -185,8 +185,8 @@ pub async fn get_status(State(state): State<WebState>) -> impl IntoResponse {
     };
 
     // Get recent links
-    let recent_links = match state.database.get_active_links().await {
-        Ok(links) => links.into_iter().take(50).collect(),
+    let recent_links = match state.database.get_active_links_limited(50).await {
+        Ok(links) => links,
         Err(e) => {
             error!("Failed to get links: {}", e);
             vec![]
@@ -811,13 +811,18 @@ pub async fn get_links(
         .unwrap_or(100);
 
     let links = match filter {
-        Some("dead") => state.database.get_dead_links().await.unwrap_or_default(),
-        Some("active") => state.database.get_active_links().await.unwrap_or_default(),
-        _ => state.database.get_active_links().await.unwrap_or_default(),
-    }
-    .into_iter()
-    .take(limit as usize)
-    .collect::<Vec<_>>();
+        Some("dead") => state.database.get_dead_links_limited(limit).await.unwrap_or_default(),
+        Some("active") => state
+            .database
+            .get_active_links_limited(limit)
+            .await
+            .unwrap_or_default(),
+        _ => state
+            .database
+            .get_active_links_limited(limit)
+            .await
+            .unwrap_or_default(),
+    };
 
     let template = LinksTemplate {
         links,
