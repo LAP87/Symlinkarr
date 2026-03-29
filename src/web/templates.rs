@@ -371,7 +371,9 @@ use crate::discovery::DiscoveredItem;
 #[template(path = "web/ui/discover.html")]
 pub struct DiscoverTemplate {
     pub libraries: Vec<LibraryConfig>,
+    pub selected_library: String,
     pub discovered_items: Vec<DiscoveredItem>,
+    pub status_message: Option<String>,
 }
 
 #[derive(Template)]

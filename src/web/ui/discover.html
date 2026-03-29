@@ -9,17 +9,28 @@
     <p>Find Real-Debrid content not yet in your library.</p>
 </div>
 
+{% match status_message %}
+{% when Some with (message) %}
+<div class="alert alert-info">
+    <strong>&#8505;&#65039; Discover status</strong><br>
+    {{ message }}
+</div>
+{% when None %}{% endmatch %}
+
 <div class="card">
     <h2 class="section-title">Filter by Library</h2>
-    <form action="/discover/add" method="post" id="discover-form">
+    <form action="/discover" method="get" id="discover-form">
         <div class="form-group">
             <label class="form-label" for="library">Target Library:</label>
             <select id="library" name="library" class="form-control" style="max-width:350px;">
-                <option value="">All Libraries</option>
+                <option value="" {% if selected_library.is_empty() %}selected{% endif %}>All Libraries</option>
                 {% for lib in libraries %}
-                <option value="{{ lib.name }}">{{ lib.name }}</option>
+                <option value="{{ lib.name }}" {% if selected_library == lib.name %}selected{% endif %}>{{ lib.name }}</option>
                 {% endfor %}
             </select>
+        </div>
+        <div class="actions mt-2">
+            <button type="submit" class="btn btn-primary">&#128269; Refresh Discover</button>
         </div>
     </form>
 </div>
@@ -48,7 +59,7 @@
                 <td>
                     <form action="/discover/add" method="post" style="display:inline;">
                         <input type="hidden" name="torrent_id" value="{{ item.rd_torrent_id }}">
-                        <input type="hidden" name="library" value="">
+                        <input type="hidden" name="library" value="{{ selected_library }}">
                         <button type="submit" class="btn btn-primary" style="padding:0.4rem 0.8rem;font-size:0.8rem;">
                             &#10133; Add
                         </button>
@@ -61,7 +72,7 @@
 </div>
 {% else %}
 <div class="card">
-    <p class="text-muted">No undiscovered items found. All Real-Debrid content may already be in your library, or no RD cache is available.</p>
+    <p class="text-muted">No undiscovered items were found in the current RD cache for this library scope.</p>
 </div>
 {% endif %}
 {% endblock %}
