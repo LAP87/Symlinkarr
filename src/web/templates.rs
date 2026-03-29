@@ -8,6 +8,7 @@ use std::time::SystemTime;
 #[allow(unused_imports)]
 use super::filters;
 
+use super::ActiveScanJob;
 use crate::cleanup_audit::{CleanupReport, CleanupScope};
 use crate::config::Config;
 use crate::db::{AcquisitionJobCounts, ScanHistoryRecord};
@@ -56,6 +57,25 @@ pub struct ScanHistoryFilters {
     pub mode: String,
     pub search_missing: String,
     pub limit: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ActiveScanView {
+    pub started_at: String,
+    pub scope_label: String,
+    pub dry_run: bool,
+    pub search_missing: bool,
+}
+
+impl From<ActiveScanJob> for ActiveScanView {
+    fn from(value: ActiveScanJob) -> Self {
+        Self {
+            started_at: value.started_at,
+            scope_label: value.scope_label,
+            dry_run: value.dry_run,
+            search_missing: value.search_missing,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -222,6 +242,7 @@ use crate::config::LibraryConfig;
 #[template(path = "web/ui/scan.html")]
 pub struct ScanTemplate {
     pub libraries: Vec<LibraryConfig>,
+    pub active_scan: Option<ActiveScanView>,
     pub latest_run: Option<ScanRunView>,
     pub history: Vec<ScanRunView>,
     pub queue: QueueOverview,
@@ -233,6 +254,7 @@ pub struct ScanTemplate {
 pub struct ScanResultTemplate {
     pub success: bool,
     pub message: String,
+    pub active_scan: Option<ActiveScanView>,
     pub latest_run: Option<ScanRunView>,
     pub dry_run: bool,
 }

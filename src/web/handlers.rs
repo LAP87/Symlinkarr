@@ -12,14 +12,12 @@ use std::collections::HashMap;
 use std::path::{Component, Path as StdPath, PathBuf};
 use tracing::{error, info};
 
-use crate::OutputFormat;
 use crate::backup::BackupManager;
 use crate::cleanup_audit::{self, CleanupAuditor, CleanupScope};
 use crate::commands::config::validate_config_report;
 use crate::commands::discover::load_discovery_snapshot;
 use crate::commands::doctor::{DoctorCheckMode, collect_doctor_checks};
 use crate::commands::repair::{execute_repair_auto, summarize_repair_results};
-use crate::commands::scan::run_scan;
 use crate::db::{AcquisitionJobCounts, ScanHistoryRecord};
 
 use super::WebState;
@@ -349,6 +347,7 @@ pub async fn get_scan(
 
     let template = ScanTemplate {
         libraries: state.config.libraries.clone(),
+        active_scan: state.active_scan().await.map(Into::into),
         latest_run,
         history,
         queue,
@@ -369,51 +368,51 @@ pub async fn post_scan_trigger(
 
     let library_name = form.library.as_deref().filter(|l| !l.is_empty());
 
-    let (added, removed) = match run_scan(
-        &state.config,
-        &state.database,
-        form.dry_run,
-        form.search_missing,
-        OutputFormat::Text,
-        library_name,
-    )
-    .await
+    match state
+        .start_scan(
+            form.dry_run,
+            form.search_missing,
+            library_name.map(|value| value.to_string()),
+        )
+        .await
     {
-        Ok(result) => result,
-        Err(e) => {
-            error!("Scan failed: {}", e);
-            return Html(
+        Ok(job) => (
+            StatusCode::ACCEPTED,
+            Html(
                 ScanResultTemplate {
-                    success: false,
-                    message: format!("Scan failed: {}", e),
+                    success: true,
+                    message: format!(
+                        "Scan started in background for {}. Refresh /scan or /scan/history for the finished run.",
+                        job.scope_label
+                    ),
+                    active_scan: Some(job.into()),
                     latest_run: None,
                     dry_run: form.dry_run,
                 }
                 .render()
                 .unwrap_or_else(|e| e.to_string()),
-            );
-        }
-    };
-
-    let latest_run = match state.database.get_scan_history(1).await {
-        Ok(mut history) => history.drain(..).next().map(ScanRunView::from_record),
+            ),
+        )
+            .into_response(),
         Err(e) => {
-            error!("Failed to load latest scan history after scan: {}", e);
-            None
+            error!("Scan rejected: {}", e);
+            (
+                StatusCode::CONFLICT,
+                Html(
+                    ScanResultTemplate {
+                        success: false,
+                        message: format!("Scan not started: {}", e),
+                        active_scan: state.active_scan().await.map(Into::into),
+                        latest_run: None,
+                        dry_run: form.dry_run,
+                    }
+                    .render()
+                    .unwrap_or_else(|e| e.to_string()),
+                ),
+            )
+                .into_response()
         }
-    };
-
-    let template = ScanResultTemplate {
-        success: true,
-        message: format!(
-            "Scan complete: {} added/updated, {} removed",
-            added, removed
-        ),
-        latest_run,
-        dry_run: form.dry_run,
-    };
-
-    Html(template.render().unwrap_or_else(|e| e.to_string()))
+    }
 }
 
 /// GET /scan/history - Scan history
@@ -1311,6 +1310,7 @@ mod tests {
     };
     use crate::db::{AcquisitionJobSeed, AcquisitionRelinkKind, Database, ScanRunRecord};
     use crate::models::{LinkRecord, LinkStatus, MediaType};
+    use crate::web::ActiveScanJob;
 
     struct TestWebContext {
         _dir: TempDir,
@@ -1481,6 +1481,29 @@ mod tests {
         assert!(body.contains("Candidate Slots"));
         assert!(body.contains("1024"));
         assert!(body.contains("4/6"));
+    }
+
+    #[tokio::test]
+    async fn scan_page_renders_active_background_scan_banner() {
+        let ctx = test_context().await;
+        ctx.state
+            .set_active_scan_for_test(Some(ActiveScanJob {
+                started_at: "2026-03-29 23:59:00 UTC".to_string(),
+                scope_label: "Anime".to_string(),
+                dry_run: true,
+                search_missing: true,
+            }))
+            .await;
+
+        let body = render_body(
+            get_scan(State(ctx.state.clone()), Query(ScanHistoryQuery::default())).await,
+        )
+        .await;
+
+        assert!(body.contains("Background scan running"));
+        assert!(body.contains("2026-03-29 23:59:00 UTC"));
+        assert!(body.contains("Anime"));
+        assert!(body.contains("Search missing enabled"));
     }
 
     #[tokio::test]

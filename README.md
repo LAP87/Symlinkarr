@@ -288,7 +288,7 @@ For the full command matrix, see [CLI_MANUAL.md](docs/CLI_MANUAL.md).
 The built-in web UI exposes:
 
 - dashboard and status pages
-- scan history and per-run telemetry
+- background scan triggering, scan history, and per-run telemetry
 - cleanup audit and prune preview flows
 - dead-link review
 - JSON API endpoints under `/api/v1`

@@ -8,7 +8,7 @@
     <div>
         <p class="page-kicker">Result</p>
         <h1>&#128269; Scan Result</h1>
-        <p class="page-lead">The web trigger now runs the same pipeline as the CLI path.</p>
+        <p class="page-lead">The web trigger schedules the same scan pipeline as the CLI path, without blocking the browser.</p>
     </div>
     <div class="header-badges">
         {% if dry_run %}
@@ -17,14 +17,34 @@
     </div>
 </div>
 
+{% match active_scan %}
+{% when Some with (job) %}
+<div class="alert alert-info">
+    <strong>&#9203; Background scan running.</strong>
+    {{ job.scope_label }} started {{ job.started_at }}.
+    {% if job.dry_run %} Dry run.{% endif %}
+    {% if job.search_missing %} Search missing enabled.{% endif %}
+</div>
+{% when None %}{% endmatch %}
+
 {% if success %}
 <div class="alert alert-success">
+    {% match active_scan %}
+    {% when Some with (_) %}
+    <strong>&#9989; Background scan accepted.</strong>
+    {% when None %}
     <strong>&#9989; Scan completed.</strong>
+    {% endmatch %}
     {{ message }}
 </div>
 {% else %}
 <div class="alert alert-error">
+    {% match active_scan %}
+    {% when Some with (_) %}
+    <strong>&#10060; Scan not started.</strong>
+    {% when None %}
     <strong>&#10060; Scan failed.</strong>
+    {% endmatch %}
     {{ message }}
 </div>
 {% endif %}

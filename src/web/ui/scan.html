@@ -17,6 +17,16 @@
     </div>
 </div>
 
+{% match active_scan %}
+{% when Some with (job) %}
+<div class="alert alert-info">
+    <strong>Background scan running.</strong>
+    {{ job.scope_label }} started {{ job.started_at }}.
+    {% if job.dry_run %} Dry run.{% endif %}
+    {% if job.search_missing %} Search missing enabled.{% endif %}
+</div>
+{% when None %}{% endmatch %}
+
 <div class="split-grid">
     <section class="card">
         <div class="section-head">

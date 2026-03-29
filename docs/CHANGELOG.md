@@ -6,6 +6,32 @@
 - posture: `stable core, evolving ops`
 - intended use: local-first host or Docker installs, with Windows 11 users running through WSL2 or a Linux container
 
+## 2026-03-29 - Web Scan Backgrounding + Discover/Doctor Honesty
+
+### Code Changes
+
+- web/API scan triggering now runs in the background instead of holding the request open for the full scan.
+  - web pages show an active background-scan banner
+  - `POST /api/v1/scan` now returns `202 Accepted`
+  - `GET /api/v1/scan/jobs` now prepends a synthetic `running` row when a background scan is active
+  - files: `src/web/mod.rs`, `src/web/templates.rs`, `src/web/handlers.rs`, `src/web/api/mod.rs`, `src/web/ui/scan.html`, `src/web/ui/scan_result.html`
+- read-only doctor checks now preserve a non-writable signal for existing directories without doing a write probe.
+  - files: `src/commands/doctor.rs`, `src/web/handlers.rs`, `src/web/api/mod.rs`
+- discover JSON output remains machine-parseable on RD cache sync failure, and cached-only discover now explicitly surfaces missing RD credentials.
+  - files: `src/commands/discover.rs`, `src/web/handlers.rs`, `src/web/api/mod.rs`
+
+### Docs
+
+- documented the new background web/API scan posture and updated web/API wording.
+  - files: `README.md`, `docs/API_SCHEMA.md`
+
+### Validation
+
+- `CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-rc-safety cargo test -q`
+  - result: `453 passed; 0 failed`
+- `CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-rc-safety cargo clippy --all-targets --all-features -- -D warnings`
+  - result: passed
+
 ## 2026-03-22 - WSL2 Development Guide
 
 ### Docs

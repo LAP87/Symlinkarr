@@ -106,19 +106,20 @@ Notes:
 
 ## `POST /api/v1/scan`
 
-Triggers the scan pipeline.
+Starts the scan pipeline in the background.
 
 Status codes:
 
-- `200 OK` when the scan completes and records a new history row
-- `500 Internal Server Error` when the scan fails or completes without a durable history row
+- `202 Accepted` when the scan was accepted and is now running in the background
+- `409 Conflict` when another web/API-triggered scan is already running
 
 Request body:
 
 ```json
 {
   "dry_run": true,
-  "library": "Anime"
+  "library": "Anime",
+  "search_missing": false
 }
 ```
 
@@ -127,23 +128,36 @@ Response:
 ```json
 {
   "success": true,
-  "message": "Scan complete: 3 created, 1 updated, 17 skipped",
-  "created": 3,
-  "updated": 1,
-  "skipped": 17
+  "message": "Scan started in background for Anime. Poll /api/v1/scan/jobs or /api/v1/scan/history for completion.",
+  "created": 0,
+  "updated": 0,
+  "skipped": 0,
+  "running": true,
+  "started_at": "2026-03-29 23:59:00 UTC",
+  "scope_label": "Anime",
+  "search_missing": false,
+  "dry_run": true
 }
 ```
 
+Notes:
+
+- Web/API scan now returns immediately instead of holding the request open for the full run.
+- Poll `GET /api/v1/scan/jobs` for the active background scan and `GET /api/v1/scan/history` / `GET /api/v1/scan/:id` for completed runs.
+
 ## `GET /api/v1/scan/jobs`
 
-Returns the most recent scan jobs in compact form.
+Returns the active background scan first when one is running, followed by recent completed scan history in compact form.
 
 Response element schema:
 
 ```json
 {
-  "id": 42,
+  "id": 0,
+  "status": "running",
   "started_at": "2026-03-21 21:11:00",
+  "scope_label": "Anime",
+  "search_missing": true,
   "dry_run": true,
   "library_items_found": 3906,
   "source_items_found": 101542,
@@ -153,6 +167,11 @@ Response element schema:
   "dead_marked": 15
 }
 ```
+
+Notes:
+
+- `status` is `running` for the synthetic in-memory active row and `completed` for history-backed rows.
+- Running rows use `id: 0` until a durable history row exists at completion time.
 
 ## `GET /api/v1/scan/history`
 

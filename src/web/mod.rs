@@ -10,24 +10,34 @@ pub mod templates;
 
 use anyhow::Result;
 use axum::{
+    Json, Router,
     extract::State,
     http::{
-        header::{COOKIE, HOST, ORIGIN, REFERER, SET_COOKIE},
         HeaderMap, HeaderValue, Method, StatusCode, Uri,
+        header::{COOKIE, HOST, ORIGIN, REFERER, SET_COOKIE},
     },
     middleware::{self, Next},
     response::IntoResponse,
     routing::{get, post},
-    Json, Router,
 };
+use chrono::Utc;
 use serde_json::json;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::Mutex;
 use tower_http::{services::ServeDir, trace::TraceLayer};
 use tracing::{error, info, warn};
 
 use crate::config::Config;
 use crate::db::Database;
+
+#[derive(Clone, Debug)]
+pub(crate) struct ActiveScanJob {
+    pub started_at: String,
+    pub scope_label: String,
+    pub dry_run: bool,
+    pub search_missing: bool,
+}
 
 /// Shared application state passed to handlers
 #[derive(Clone)]
@@ -35,6 +45,7 @@ pub struct WebState {
     pub config: Arc<Config>,
     pub database: Arc<Database>,
     browser_session_token: Arc<String>,
+    active_scan: Arc<Mutex<Option<ActiveScanJob>>>,
 }
 
 impl WebState {
@@ -43,11 +54,93 @@ impl WebState {
             config: Arc::new(config),
             database: Arc::new(database),
             browser_session_token: Arc::new(generate_browser_session_token()),
+            active_scan: Arc::new(Mutex::new(None)),
         }
     }
 
     fn browser_session_token(&self) -> &str {
         self.browser_session_token.as_str()
+    }
+
+    pub(crate) async fn active_scan(&self) -> Option<ActiveScanJob> {
+        self.active_scan.lock().await.clone()
+    }
+
+    pub(crate) async fn start_scan(
+        &self,
+        dry_run: bool,
+        search_missing: bool,
+        library_filter: Option<String>,
+    ) -> std::result::Result<ActiveScanJob, String> {
+        let library_filter = library_filter
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+
+        crate::commands::selected_libraries(self.config.as_ref(), library_filter.as_deref())
+            .map_err(|err| err.to_string())?;
+
+        let mut active_scan = self.active_scan.lock().await;
+        if let Some(job) = active_scan.clone() {
+            return Err(format!(
+                "A scan is already running for {} (started {}).",
+                job.scope_label, job.started_at
+            ));
+        }
+
+        let job = ActiveScanJob {
+            started_at: Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+            scope_label: library_filter
+                .clone()
+                .unwrap_or_else(|| "All Libraries".to_string()),
+            dry_run,
+            search_missing,
+        };
+        *active_scan = Some(job.clone());
+        drop(active_scan);
+
+        let config = self.config.clone();
+        let database = self.database.clone();
+        let active_scan = self.active_scan.clone();
+        let background_job = job.clone();
+        tokio::spawn(async move {
+            let result = crate::commands::scan::run_scan(
+                config.as_ref(),
+                database.as_ref(),
+                dry_run,
+                search_missing,
+                crate::OutputFormat::Json,
+                library_filter.as_deref(),
+            )
+            .await;
+
+            match result {
+                Ok((added, removed)) => info!(
+                    "Background scan completed (scope={}, dry_run={}, search_missing={}): added_or_updated={}, removed={}",
+                    background_job.scope_label,
+                    background_job.dry_run,
+                    background_job.search_missing,
+                    added,
+                    removed
+                ),
+                Err(err) => error!(
+                    "Background scan failed (scope={}, dry_run={}, search_missing={}): {}",
+                    background_job.scope_label,
+                    background_job.dry_run,
+                    background_job.search_missing,
+                    err
+                ),
+            }
+
+            let mut active_scan = active_scan.lock().await;
+            *active_scan = None;
+        });
+
+        Ok(job)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn set_active_scan_for_test(&self, job: Option<ActiveScanJob>) {
+        *self.active_scan.lock().await = job;
     }
 }
 
@@ -168,9 +261,7 @@ fn request_cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
 }
 
 fn browser_session_cookie_header(token: &str) -> String {
-    format!(
-        "{BROWSER_SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict"
-    )
+    format!("{BROWSER_SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict")
 }
 
 fn is_same_origin_browser_mutation(headers: &HeaderMap) -> bool {
@@ -255,12 +346,9 @@ async fn guard_browser_mutations(
     let host = request.headers().get(HOST).and_then(header_value_str);
     let has_browser_metadata = request_has_browser_metadata(request.headers());
     let has_valid_session = has_valid_browser_session(request.headers(), &state);
-    let should_issue_session =
-        method_receives_browser_session(&method) && !has_valid_session;
+    let should_issue_session = method_receives_browser_session(&method) && !has_valid_session;
 
-    if method_requires_same_origin(&method)
-        && has_browser_metadata
-    {
+    if method_requires_same_origin(&method) && has_browser_metadata {
         if !is_same_origin_browser_mutation(request.headers()) {
             warn!(
                 method = %method,
@@ -288,9 +376,9 @@ async fn guard_browser_mutations(
 
     let mut response = next.run(request).await;
     if should_issue_session {
-        if let Ok(value) =
-            HeaderValue::from_str(&browser_session_cookie_header(state.browser_session_token()))
-        {
+        if let Ok(value) = HeaderValue::from_str(&browser_session_cookie_header(
+            state.browser_session_token(),
+        )) {
             response.headers_mut().append(SET_COOKIE, value);
         }
     }
@@ -347,8 +435,8 @@ fn static_dir() -> std::path::PathBuf {
 mod tests {
     use super::*;
     use axum::{
-        body::{to_bytes, Body},
-        http::{header, Request},
+        body::{Body, to_bytes},
+        http::{Request, header},
     };
     use tower::ServiceExt;
 
@@ -534,13 +622,7 @@ mod tests {
                     .to_str()
                     .ok()
                     .filter(|cookie| cookie.starts_with("symlinkarr_browser_session="))
-                    .map(|cookie| {
-                        cookie
-                            .split(';')
-                            .next()
-                            .unwrap_or(cookie)
-                            .to_string()
-                    })
+                    .map(|cookie| cookie.split(';').next().unwrap_or(cookie).to_string())
             })
             .expect("expected symlinkarr browser session cookie")
     }

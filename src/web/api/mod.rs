@@ -10,14 +10,12 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
-use crate::OutputFormat;
 use crate::backup::BackupManager;
 use crate::cleanup_audit::{self, CleanupAuditor, CleanupReport, CleanupScope};
 use crate::commands::config::validate_config_report;
 use crate::commands::discover::load_discovery_snapshot;
 use crate::commands::doctor::{DoctorCheckMode, collect_doctor_checks};
 use crate::commands::repair::{execute_repair_auto, summarize_repair_results};
-use crate::commands::scan::run_scan;
 use crate::config::Config;
 use crate::db::{Database, ScanHistoryRecord};
 
@@ -82,19 +80,27 @@ pub struct ApiHealth {
     pub realdebrid: String,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ApiScanResponse {
     pub success: bool,
     pub message: String,
     pub created: u64,
     pub updated: u64,
     pub skipped: u64,
+    pub running: bool,
+    pub started_at: Option<String>,
+    pub scope_label: Option<String>,
+    pub search_missing: bool,
+    pub dry_run: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ApiScanJob {
     pub id: i64,
+    pub status: String,
     pub started_at: String,
+    pub scope_label: String,
+    pub search_missing: bool,
     pub dry_run: bool,
     pub library_items_found: i64,
     pub source_items_found: i64,
@@ -421,68 +427,47 @@ pub async fn api_post_scan(
     let dry_run = req.dry_run.unwrap_or(false);
     let library_name = req.library.filter(|l| !l.is_empty());
     let search_missing = req.search_missing.unwrap_or(false);
-    let before_latest_id = state
-        .database
-        .get_scan_history(1)
-        .await
-        .ok()
-        .and_then(|history| history.first().map(|record| record.id));
 
-    if let Err(e) = run_scan(
-        &state.config,
-        &state.database,
-        dry_run,
-        search_missing,
-        OutputFormat::Json,
-        library_name.as_deref(),
-    )
-    .await
+    match state
+        .start_scan(dry_run, search_missing, library_name.clone())
+        .await
     {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiScanResponse {
-                success: false,
-                message: format!("Scan failed: {}", e),
-                created: 0,
-                updated: 0,
-                skipped: 0,
-            }),
-        );
-    }
-
-    let latest_run = state
-        .database
-        .get_scan_history(1)
-        .await
-        .ok()
-        .and_then(|history| history.into_iter().next())
-        .filter(|record| before_latest_id.is_none_or(|before| record.id > before));
-
-    if let Some(record) = latest_run {
-        (
-            StatusCode::OK,
+        Ok(job) => (
+            StatusCode::ACCEPTED,
             Json(ApiScanResponse {
                 success: true,
                 message: format!(
-                    "Scan complete: {} created, {} updated, {} skipped",
-                    record.links_created, record.links_updated, record.links_skipped
+                    "Scan started in background for {}. Poll /api/v1/scan/jobs or /api/v1/scan/history for completion.",
+                    job.scope_label
                 ),
-                created: record.links_created as u64,
-                updated: record.links_updated as u64,
-                skipped: record.links_skipped as u64,
-            }),
-        )
-    } else {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiScanResponse {
-                success: false,
-                message: "Scan completed, but no new history row was recorded".to_string(),
                 created: 0,
                 updated: 0,
                 skipped: 0,
+                running: true,
+                started_at: Some(job.started_at),
+                scope_label: Some(job.scope_label),
+                search_missing: job.search_missing,
+                dry_run: job.dry_run,
             }),
-        )
+        ),
+        Err(e) => {
+            let active_scan = state.active_scan().await;
+            (
+                StatusCode::CONFLICT,
+                Json(ApiScanResponse {
+                    success: false,
+                    message: format!("Scan not started: {}", e),
+                    created: 0,
+                    updated: 0,
+                    skipped: 0,
+                    running: active_scan.is_some(),
+                    started_at: active_scan.as_ref().map(|job| job.started_at.clone()),
+                    scope_label: active_scan.as_ref().map(|job| job.scope_label.clone()),
+                    search_missing: active_scan.as_ref().is_some_and(|job| job.search_missing),
+                    dry_run: active_scan.as_ref().is_some_and(|job| job.dry_run),
+                }),
+            )
+        }
     }
 }
 
@@ -494,11 +479,34 @@ pub async fn api_get_scan_jobs(State(state): State<WebState>) -> Json<Vec<ApiSca
         .await
         .unwrap_or_default();
 
-    let jobs = history
-        .into_iter()
-        .map(|h| ApiScanJob {
+    let mut jobs = Vec::new();
+    if let Some(active_scan) = state.active_scan().await {
+        jobs.push(ApiScanJob {
+            id: 0,
+            status: "running".to_string(),
+            started_at: active_scan.started_at,
+            scope_label: active_scan.scope_label,
+            search_missing: active_scan.search_missing,
+            dry_run: active_scan.dry_run,
+            library_items_found: 0,
+            source_items_found: 0,
+            matches_found: 0,
+            links_created: 0,
+            links_updated: 0,
+            dead_marked: 0,
+        });
+    }
+
+    jobs.extend(history.into_iter().map(|h| {
+        ApiScanJob {
             id: h.id,
+            status: "completed".to_string(),
             started_at: h.started_at.to_string(),
+            scope_label: h
+                .library_filter
+                .clone()
+                .unwrap_or_else(|| "All Libraries".to_string()),
+            search_missing: h.search_missing,
             dry_run: h.dry_run,
             library_items_found: h.library_items_found,
             source_items_found: h.source_items_found,
@@ -506,8 +514,8 @@ pub async fn api_get_scan_jobs(State(state): State<WebState>) -> Json<Vec<ApiSca
             links_created: h.links_created,
             links_updated: h.links_updated,
             dead_marked: h.dead_marked,
-        })
-        .collect();
+        }
+    }));
 
     Json(jobs)
 }
@@ -998,6 +1006,7 @@ mod tests {
     };
     use crate::db::{Database, ScanRunRecord};
     use crate::models::{LinkRecord, LinkStatus, MediaType};
+    use crate::web::ActiveScanJob;
 
     fn test_config(root: &Path) -> Config {
         let library_root = root.join("library");
@@ -1264,6 +1273,61 @@ mod tests {
         assert_eq!(json[0].scope_label, "Movies");
         assert!(!json[0].dry_run);
         assert!(!json[0].search_missing);
+    }
+
+    #[tokio::test]
+    async fn api_get_scan_jobs_includes_active_background_scan() {
+        let ctx = test_state().await;
+        ctx.set_active_scan_for_test(Some(ActiveScanJob {
+            started_at: "2026-03-29 23:59:00 UTC".to_string(),
+            scope_label: "Anime".to_string(),
+            dry_run: true,
+            search_missing: true,
+        }))
+        .await;
+
+        let response = api_get_scan_jobs(State(ctx)).await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&bytes).unwrap();
+        let jobs = json.as_array().unwrap();
+
+        assert_eq!(jobs[0]["status"], "running");
+        assert_eq!(jobs[0]["scope_label"], "Anime");
+        assert_eq!(jobs[0]["search_missing"], true);
+        assert_eq!(jobs[0]["dry_run"], true);
+    }
+
+    #[tokio::test]
+    async fn api_post_scan_rejects_when_background_scan_is_already_running() {
+        let ctx = test_state().await;
+        ctx.set_active_scan_for_test(Some(ActiveScanJob {
+            started_at: "2026-03-29 23:59:00 UTC".to_string(),
+            scope_label: "Anime".to_string(),
+            dry_run: true,
+            search_missing: false,
+        }))
+        .await;
+
+        let response = api_post_scan(
+            State(ctx),
+            Json(ApiScanRequest {
+                dry_run: Some(false),
+                library: Some("Anime".to_string()),
+                search_missing: Some(true),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: ApiScanResponse = serde_json::from_slice(&bytes).unwrap();
+
+        assert!(!json.success);
+        assert!(json.running);
+        assert_eq!(json.scope_label.as_deref(), Some("Anime"));
+        assert!(json.message.contains("already running"));
     }
 
     #[tokio::test]
