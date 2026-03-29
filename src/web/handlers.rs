@@ -14,6 +14,7 @@ use tracing::{error, info};
 
 use crate::backup::BackupManager;
 use crate::cleanup_audit::{self, CleanupAuditor, CleanupScope};
+use crate::commands::repair::{execute_repair_auto, summarize_repair_results};
 use crate::commands::scan::run_scan;
 use crate::db::{AcquisitionJobCounts, ScanHistoryRecord};
 use crate::OutputFormat;
@@ -88,6 +89,14 @@ fn resolve_backup_restore_path(backup_dir: &StdPath, backup_file: &str) -> anyho
     }
 
     Ok(backup_dir.join(requested))
+}
+
+fn repair_error_status(message: &str) -> StatusCode {
+    if message.contains("Refusing repair auto") || message.contains("Unknown library filter") {
+        StatusCode::BAD_REQUEST
+    } else {
+        StatusCode::INTERNAL_SERVER_ERROR
+    }
 }
 
 async fn filtered_scan_history(
@@ -811,7 +820,11 @@ pub async fn get_links(
         .unwrap_or(100);
 
     let links = match filter {
-        Some("dead") => state.database.get_dead_links_limited(limit).await.unwrap_or_default(),
+        Some("dead") => state
+            .database
+            .get_dead_links_limited(limit)
+            .await
+            .unwrap_or_default(),
         Some("active") => state
             .database
             .get_active_links_limited(limit)
@@ -849,16 +862,42 @@ pub async fn get_dead_links(State(state): State<WebState>) -> impl IntoResponse 
 pub async fn post_repair(State(state): State<WebState>) -> impl IntoResponse {
     info!("Running auto repair");
 
-    // Use the repair module
-    // This would call crate::repair::auto_repair
-    let template = RepairResultTemplate {
-        success: true,
-        message: "Repair completed".to_string(),
-        repaired: 0,
-        failed: 0,
-    };
-
-    Html(template.render().unwrap_or_else(|e| e.to_string()))
+    match execute_repair_auto(&state.config, &state.database, None, false).await {
+        Ok(results) => {
+            let (repaired, failed, skipped, stale) = summarize_repair_results(&results);
+            let message = if repaired == 0 && failed == 0 && skipped == 0 && stale == 0 {
+                "Repair completed. No dead links required action.".to_string()
+            } else {
+                format!(
+                    "Repair completed: {} repaired, {} unrepairable, {} skipped, {} stale record(s).",
+                    repaired, failed, skipped, stale
+                )
+            };
+            let template = RepairResultTemplate {
+                success: true,
+                message,
+                repaired,
+                failed,
+            };
+            (
+                StatusCode::OK,
+                Html(template.render().unwrap_or_else(|e| e.to_string())),
+            )
+        }
+        Err(err) => {
+            let message = err.to_string();
+            let template = RepairResultTemplate {
+                success: false,
+                message: message.clone(),
+                repaired: 0,
+                failed: 0,
+            };
+            (
+                repair_error_status(&message),
+                Html(template.render().unwrap_or_else(|e| e.to_string())),
+            )
+        }
+    }
 }
 
 /// GET /config - Config page
@@ -965,18 +1004,23 @@ pub async fn get_discover(State(state): State<WebState>) -> impl IntoResponse {
 
 /// POST /discover/add - Add torrent to library
 pub async fn post_discover_add(
-    State(state): State<WebState>,
+    State(_state): State<WebState>,
     Form(form): Form<DiscoverAddForm>,
 ) -> impl IntoResponse {
-    info!("Adding torrent {} to library", form.torrent_id);
-
-    // This would integrate with the auto_acquire system
+    info!(
+        "Rejecting web discover-add for torrent {} (library='{}') until safe Arr selection is wired",
+        form.torrent_id, form.library
+    );
     let template = DiscoverResultTemplate {
-        success: true,
-        message: format!("Torrent {} queued for download", form.torrent_id),
+        success: false,
+        message: "Web discover/add is not wired to a safe Decypharr routing flow yet. Use the CLI: `symlinkarr discover add <torrent_id> --arr <arr-name>`."
+            .to_string(),
     };
 
-    Html(template.render().unwrap_or_else(|e| e.to_string()))
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Html(template.render().unwrap_or_else(|e| e.to_string())),
+    )
 }
 
 /// GET /backup - Backup page
@@ -1055,18 +1099,22 @@ pub async fn post_backup_restore(
     info!("Restoring backup: {}", form.backup_file);
 
     let backup_manager = BackupManager::new(&state.config.backup);
-    let backup_path = match resolve_backup_restore_path(&state.config.backup.path, &form.backup_file)
-    {
-        Ok(path) => path,
-        Err(e) => {
-            let template = BackupResultTemplate {
-                success: false,
-                message: format!("Restore failed: {}", e),
-                backup_path: None,
-            };
-            return Html(template.render().unwrap_or_else(|render_err| render_err.to_string()));
-        }
-    };
+    let backup_path =
+        match resolve_backup_restore_path(&state.config.backup.path, &form.backup_file) {
+            Ok(path) => path,
+            Err(e) => {
+                let template = BackupResultTemplate {
+                    success: false,
+                    message: format!("Restore failed: {}", e),
+                    backup_path: None,
+                };
+                return Html(
+                    template
+                        .render()
+                        .unwrap_or_else(|render_err| render_err.to_string()),
+                );
+            }
+        };
 
     let allowed_roots: Vec<PathBuf> = state
         .config
@@ -1433,6 +1481,72 @@ mod tests {
         assert!(body.contains("Queued"));
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn post_repair_runs_real_repair_flow() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = test_config(dir.path());
+        let db = Database::new(&cfg.db_path).await.unwrap();
+
+        let library_root = cfg.libraries[0].path.clone();
+        let source_root = cfg.sources[0].path.clone();
+        let target_path = library_root.join("Show/Season 01/Show - S01E01.mkv");
+        let missing_source = source_root.join("missing/Show.S01E01.mkv");
+        let replacement = source_root.join("Show.S01E01.mkv");
+
+        std::fs::create_dir_all(target_path.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(missing_source.parent().unwrap()).unwrap();
+        std::fs::write(&replacement, b"video").unwrap();
+        std::os::unix::fs::symlink(&missing_source, &target_path).unwrap();
+
+        db.insert_link(&LinkRecord {
+            id: None,
+            source_path: missing_source.clone(),
+            target_path: target_path.clone(),
+            media_id: "tvdb-99".to_string(),
+            media_type: MediaType::Tv,
+            status: LinkStatus::Dead,
+            created_at: None,
+            updated_at: None,
+        })
+        .await
+        .unwrap();
+
+        let state = WebState::new(cfg, db);
+        let response = post_repair(State(state.clone())).await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+
+        assert!(body.contains("Repair completed: 1 repaired, 0 unrepairable"));
+
+        let repaired = state.database.get_active_links().await.unwrap();
+        let repaired = repaired
+            .into_iter()
+            .find(|link| link.target_path == target_path)
+            .expect("expected repaired active link");
+        assert_eq!(repaired.source_path, replacement);
+    }
+
+    #[tokio::test]
+    async fn post_discover_add_returns_not_implemented_failure() {
+        let ctx = test_context().await;
+        let response = post_discover_add(
+            State(ctx.state),
+            Form(DiscoverAddForm {
+                torrent_id: "rd-123".to_string(),
+                library: "Anime".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(body.contains("not wired to a safe Decypharr routing flow"));
+    }
+
     #[tokio::test]
     async fn cleanup_page_renders_latest_report_summary() {
         let ctx = test_context().await;
@@ -1519,9 +1633,7 @@ mod tests {
     fn resolve_backup_restore_path_rejects_absolute_input() {
         let backup_dir = PathBuf::from("/srv/symlinkarr/backups");
         let err = resolve_backup_restore_path(&backup_dir, "/tmp/evil.json").unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("configured backup directory"));
+        assert!(err.to_string().contains("configured backup directory"));
     }
 
     #[test]

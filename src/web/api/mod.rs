@@ -12,6 +12,7 @@ use tracing::info;
 
 use crate::backup::BackupManager;
 use crate::cleanup_audit::{self, CleanupAuditor, CleanupReport, CleanupScope};
+use crate::commands::repair::{execute_repair_auto, summarize_repair_results};
 use crate::commands::scan::run_scan;
 use crate::config::Config;
 use crate::db::{Database, ScanHistoryRecord};
@@ -164,12 +165,20 @@ pub struct ApiErrorResponse {
     pub error: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct ApiRepairResponse {
     pub success: bool,
     pub message: String,
     pub repaired: usize,
     pub failed: usize,
+}
+
+fn repair_error_status(message: &str) -> StatusCode {
+    if message.contains("Refusing repair auto") || message.contains("Unknown library filter") {
+        StatusCode::BAD_REQUEST
+    } else {
+        StatusCode::INTERNAL_SERVER_ERROR
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -589,20 +598,43 @@ pub async fn api_get_scan_run(
 }
 
 /// POST /api/v1/repair/auto
-pub async fn api_post_repair_auto(State(_state): State<WebState>) -> impl IntoResponse {
+pub async fn api_post_repair_auto(State(state): State<WebState>) -> impl IntoResponse {
     info!("API: Running auto repair");
 
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(ApiRepairResponse {
-            success: false,
-            message:
-                "repair/auto is not wired to the full CLI repair flow yet; use the CLI or web UI flow"
-                    .to_string(),
-            repaired: 0,
-            failed: 0,
-        }),
-    )
+    match execute_repair_auto(&state.config, &state.database, None, false).await {
+        Ok(results) => {
+            let (repaired, failed, skipped, stale) = summarize_repair_results(&results);
+            let message = if repaired == 0 && failed == 0 && skipped == 0 && stale == 0 {
+                "Repair completed. No dead links required action.".to_string()
+            } else {
+                format!(
+                    "Repair completed: {} repaired, {} unrepairable, {} skipped, {} stale record(s).",
+                    repaired, failed, skipped, stale
+                )
+            };
+            (
+                StatusCode::OK,
+                Json(ApiRepairResponse {
+                    success: true,
+                    message,
+                    repaired,
+                    failed,
+                }),
+            )
+        }
+        Err(err) => {
+            let message = err.to_string();
+            (
+                repair_error_status(&message),
+                Json(ApiRepairResponse {
+                    success: false,
+                    message,
+                    repaired: 0,
+                    failed: 0,
+                }),
+            )
+        }
+    }
 }
 
 /// POST /api/v1/cleanup/audit
@@ -763,7 +795,11 @@ pub async fn api_get_links(
     let status_filter = params.get("status").map(|s| s.as_str());
 
     let links = match status_filter {
-        Some("dead") => state.database.get_dead_links_limited(limit).await.unwrap_or_default(),
+        Some("dead") => state
+            .database
+            .get_dead_links_limited(limit)
+            .await
+            .unwrap_or_default(),
         _ => state
             .database
             .get_active_links_limited(limit)
@@ -1125,6 +1161,58 @@ mod tests {
         assert_eq!(json[0].scope_label, "Movies");
         assert!(!json[0].dry_run);
         assert!(!json[0].search_missing);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn api_post_repair_auto_runs_real_repair_flow() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = test_config(dir.path());
+        let db = Database::new(&cfg.db_path).await.unwrap();
+
+        let library_root = cfg.libraries[0].path.clone();
+        let source_root = cfg.sources[0].path.clone();
+        let target_path = library_root.join("Show/Season 01/Show - S01E01.mkv");
+        let missing_source = source_root.join("missing/Show.S01E01.mkv");
+        let replacement = source_root.join("Show.S01E01.mkv");
+
+        std::fs::create_dir_all(target_path.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(missing_source.parent().unwrap()).unwrap();
+        std::fs::write(&replacement, b"video").unwrap();
+        std::os::unix::fs::symlink(&missing_source, &target_path).unwrap();
+
+        db.insert_link(&LinkRecord {
+            id: None,
+            source_path: missing_source.clone(),
+            target_path: target_path.clone(),
+            media_id: "tvdb-99".to_string(),
+            media_type: MediaType::Tv,
+            status: LinkStatus::Dead,
+            created_at: None,
+            updated_at: None,
+        })
+        .await
+        .unwrap();
+
+        let state = WebState::new(cfg, db);
+        let response = api_post_repair_auto(State(state.clone()))
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: ApiRepairResponse = serde_json::from_slice(&bytes).unwrap();
+
+        assert!(json.success);
+        assert_eq!(json.repaired, 1);
+        assert_eq!(json.failed, 0);
+        assert!(json.message.contains("1 repaired, 0 unrepairable"));
+
+        let repaired = state.database.get_active_links().await.unwrap();
+        let repaired = repaired
+            .into_iter()
+            .find(|link| link.target_path == target_path)
+            .expect("expected repaired active link");
+        assert_eq!(repaired.source_path, replacement);
     }
 
     #[tokio::test]

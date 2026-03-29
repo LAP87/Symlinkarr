@@ -24,13 +24,12 @@ pub(crate) async fn run_repair(
     action: RepairAction,
     library_filter: Option<&str>,
 ) -> Result<()> {
-    let repairer = repair::Repairer::new();
-    let selected = selected_libraries(cfg, library_filter)?;
-    let selected_library_paths: Vec<_> = selected.iter().map(|l| l.path.clone()).collect();
-
     match action {
         RepairAction::Scan => {
             info!("=== Symlinkarr Repair Scan ===");
+            let repairer = repair::Repairer::new();
+            let selected = selected_libraries(cfg, library_filter)?;
+            let selected_library_paths: Vec<_> = selected.iter().map(|l| l.path.clone()).collect();
             let dead = repairer.scan_for_dead_symlinks(&selected_library_paths);
 
             if dead.is_empty() {
@@ -49,94 +48,7 @@ pub(crate) async fn run_repair(
                     "   ⚠️  --self-heal may trigger external downloads via Prowlarr/Decypharr."
                 );
             }
-            ensure_runtime_directories_healthy(&selected, &cfg.sources, "repair auto").await?;
-
-            if cfg.backup.enabled {
-                if dry_run {
-                    println!("   ℹ️  Skipping safety snapshot in --dry-run mode");
-                } else {
-                    println!("   🛡️ Creating safety snapshot before repair...");
-                    let started = Instant::now();
-                    let bm = crate::backup::BackupManager::new(&cfg.backup);
-                    bm.create_safety_snapshot(db, "repair").await?;
-                    println!(
-                        "   ✅ Safety snapshot created in {:.1}s",
-                        started.elapsed().as_secs_f64()
-                    );
-                }
-            }
-
-            let skip_paths = if cfg.has_tautulli() {
-                let tautulli = TautulliClient::new(&cfg.tautulli);
-                match tautulli.get_active_file_paths().await {
-                    Ok(paths) => {
-                        if !paths.is_empty() {
-                            println!(
-                                "   🎬 Tautulli: {} active streams detected — protecting those files",
-                                paths.len()
-                            );
-                        }
-                        paths
-                    }
-                    Err(e) => {
-                        println!(
-                            "   ⚠️  Tautulli query failed ({}), proceeding without guard",
-                            e
-                        );
-                        vec![]
-                    }
-                }
-            } else {
-                vec![]
-            };
-
-            let source_paths: Vec<_> = cfg.sources.iter().map(|s| s.path.clone()).collect();
-
-            let rd_client = if cfg.has_realdebrid() {
-                Some(crate::api::realdebrid::RealDebridClient::from_config(
-                    &cfg.realdebrid,
-                ))
-            } else {
-                None
-            };
-            let torrent_cache = rd_client
-                .as_ref()
-                .map(|rd| crate::cache::TorrentCache::new(db, rd));
-            const REPAIR_CACHE_COVERAGE: f64 = 0.80;
-            let cache_ref = if let Some(ref tc) = torrent_cache {
-                match db.get_rd_torrent_counts().await {
-                    Ok((cached, total)) if total > 0 => {
-                        let coverage = cached as f64 / total as f64;
-                        if coverage >= REPAIR_CACHE_COVERAGE {
-                            println!(
-                                "   ⚡ Using RD cache for repair catalog ({:.0}% coverage)",
-                                coverage * 100.0
-                            );
-                            Some(tc)
-                        } else {
-                            println!(
-                                "   ℹ️  RD cache coverage {:.0}% < 80%, using filesystem walk",
-                                coverage * 100.0
-                            );
-                            None
-                        }
-                    }
-                    _ => None,
-                }
-            } else {
-                None
-            };
-
-            let results = repairer
-                .repair_all(
-                    db,
-                    &source_paths,
-                    dry_run,
-                    &skip_paths,
-                    Some(&selected_library_paths),
-                    cache_ref,
-                )
-                .await?;
+            let results = execute_repair_auto(cfg, db, library_filter, dry_run).await?;
 
             let repaired: Vec<_> = results
                 .iter()
@@ -293,6 +205,144 @@ pub(crate) async fn run_repair(
     }
 
     Ok(())
+}
+
+pub(crate) async fn execute_repair_auto(
+    cfg: &Config,
+    db: &Database,
+    library_filter: Option<&str>,
+    dry_run: bool,
+) -> Result<Vec<repair::RepairResult>> {
+    let repairer = repair::Repairer::new();
+    let selected = selected_libraries(cfg, library_filter)?;
+    let selected_library_paths: Vec<_> = selected.iter().map(|l| l.path.clone()).collect();
+
+    ensure_runtime_directories_healthy(&selected, &cfg.sources, "repair auto").await?;
+
+    if cfg.backup.enabled {
+        if dry_run {
+            println!("   ℹ️  Skipping safety snapshot in --dry-run mode");
+        } else {
+            println!("   🛡️ Creating safety snapshot before repair...");
+            let started = Instant::now();
+            let bm = crate::backup::BackupManager::new(&cfg.backup);
+            bm.create_safety_snapshot(db, "repair").await?;
+            println!(
+                "   ✅ Safety snapshot created in {:.1}s",
+                started.elapsed().as_secs_f64()
+            );
+        }
+    }
+
+    let skip_paths = if cfg.has_tautulli() {
+        let tautulli = TautulliClient::new(&cfg.tautulli);
+        match tautulli.get_active_file_paths().await {
+            Ok(paths) => {
+                if !paths.is_empty() {
+                    println!(
+                        "   🎬 Tautulli: {} active streams detected — protecting those files",
+                        paths.len()
+                    );
+                }
+                paths
+            }
+            Err(e) => {
+                println!(
+                    "   ⚠️  Tautulli query failed ({}), proceeding without guard",
+                    e
+                );
+                vec![]
+            }
+        }
+    } else {
+        vec![]
+    };
+
+    let source_paths: Vec<_> = cfg.sources.iter().map(|s| s.path.clone()).collect();
+
+    let rd_client = if cfg.has_realdebrid() {
+        Some(crate::api::realdebrid::RealDebridClient::from_config(
+            &cfg.realdebrid,
+        ))
+    } else {
+        None
+    };
+    let torrent_cache = rd_client
+        .as_ref()
+        .map(|rd| crate::cache::TorrentCache::new(db, rd));
+    const REPAIR_CACHE_COVERAGE: f64 = 0.80;
+    let cache_ref = if let Some(ref tc) = torrent_cache {
+        match db.get_rd_torrent_counts().await {
+            Ok((cached, total)) if total > 0 => {
+                let coverage = cached as f64 / total as f64;
+                if coverage >= REPAIR_CACHE_COVERAGE {
+                    println!(
+                        "   ⚡ Using RD cache for repair catalog ({:.0}% coverage)",
+                        coverage * 100.0
+                    );
+                    Some(tc)
+                } else {
+                    println!(
+                        "   ℹ️  RD cache coverage {:.0}% < 80%, using filesystem walk",
+                        coverage * 100.0
+                    );
+                    None
+                }
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+
+    let results = repairer
+        .repair_all(
+            db,
+            &source_paths,
+            dry_run,
+            &skip_paths,
+            Some(&selected_library_paths),
+            cache_ref,
+        )
+        .await?;
+
+    let repaired_count = results
+        .iter()
+        .filter(|r| matches!(r, repair::RepairResult::Repaired { .. }))
+        .count();
+    if repaired_count > 0 && cfg.has_bazarr() && !dry_run {
+        let bazarr = BazarrClient::new(&cfg.bazarr);
+        println!(
+            "\n   📝 Notifying Bazarr about {} repaired files...",
+            repaired_count
+        );
+        info!("Bazarr integration ready — needs Sonarr/Radarr IDs in future");
+        let _ = bazarr;
+    }
+
+    Ok(results)
+}
+
+pub(crate) fn summarize_repair_results(
+    results: &[repair::RepairResult],
+) -> (usize, usize, usize, usize) {
+    let repaired = results
+        .iter()
+        .filter(|r| matches!(r, repair::RepairResult::Repaired { .. }))
+        .count();
+    let failed = results
+        .iter()
+        .filter(|r| matches!(r, repair::RepairResult::Unrepairable { .. }))
+        .count();
+    let skipped = results
+        .iter()
+        .filter(|r| matches!(r, repair::RepairResult::Skipped { .. }))
+        .count();
+    let stale = results
+        .iter()
+        .filter(|r| matches!(r, repair::RepairResult::Stale { .. }))
+        .count();
+    (repaired, failed, skipped, stale)
 }
 
 fn build_repair_self_heal_query(dead_link: &repair::DeadLink) -> Option<String> {

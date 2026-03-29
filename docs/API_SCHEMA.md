@@ -220,20 +220,22 @@ Runs the web API repair action.
 
 Status codes:
 
-- `501 Not Implemented` because the JSON endpoint is not yet wired to the full repair workflow
+- `200 OK` when the repair flow completed
+- `400 Bad Request` when safety gates reject the run, for example unhealthy source roots
+- `500 Internal Server Error` for unexpected repair failures
 
 Response schema:
 
 ```json
 {
-  "success": false,
-  "message": "repair/auto is not wired to the full CLI repair flow yet; use the CLI or web UI flow",
-  "repaired": 0,
+  "success": true,
+  "message": "Repair completed: 1 repaired, 0 unrepairable, 0 skipped, 0 stale record(s).",
+  "repaired": 1,
   "failed": 0
 }
 ```
 
-Note: this endpoint is intentionally a thin placeholder compared to the richer CLI repair paths.
+This endpoint now runs the same core repair flow as the CLI repair path, without the CLI-only self-heal prompt/output layer.
 
 ## `POST /api/v1/cleanup/audit`
 
