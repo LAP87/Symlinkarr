@@ -317,7 +317,7 @@ The built-in web UI exposes:
 - background scan triggering, scan history, and per-run telemetry
 - cleanup audit and prune preview flows
 - dead-link review
-- anime remediation backlog via a read-only cleanup page and the JSON API
+- anime remediation backlog via a read-only cleanup page and JSON preview/apply endpoints
 - JSON API endpoints under `/api/v1`
 
 Current API coverage is documented in [API_SCHEMA.md](docs/API_SCHEMA.md).

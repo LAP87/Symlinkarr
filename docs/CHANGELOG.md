@@ -23,6 +23,8 @@
   - files: `src/commands/scan.rs`, `src/db.rs`
 - scan history/detail views and `/api/v1/scan/history` / `/api/v1/scan/:id` now expose the persisted Plex refresh plan so operators can see when throttling or capping protected Plex.
   - files: `src/web/templates.rs`, `src/web/ui/scan_history.html`, `src/web/ui/scan_run.html`, `src/web/api/mod.rs`, `docs/API_SCHEMA.md`
+- added narrow JSON endpoints for guarded anime remediation preview/apply, both backed by the same saved-plan/token workflow as the CLI path.
+  - files: `src/commands/cleanup.rs`, `src/web/api/mod.rs`, `docs/API_SCHEMA.md`
 
 ### Validation
 

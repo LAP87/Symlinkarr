@@ -43,6 +43,12 @@ What it should include:
 - more live validation against the full correlated backlog
 - eventual Plex refresh strategy after apply without overload
 
+Progress so far:
+
+- CLI preview/apply exists
+- JSON API preview/apply now exists on the same saved-plan/token model
+- web UI is still intentionally read-only for this workflow
+
 ### 2. Plex Overload Detection and Throttling
 
 Plex instability is still a real RC blocker.

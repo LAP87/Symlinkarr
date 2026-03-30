@@ -60,17 +60,17 @@ pub(crate) struct AnimeRemediationPlanGroup {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct AnimeRemediationPlanReport {
-    version: u32,
-    created_at: DateTime<Utc>,
-    plex_db_path: PathBuf,
-    title_filter: Option<String>,
-    total_groups: usize,
-    eligible_groups: usize,
-    blocked_groups: usize,
-    cleanup_candidates: usize,
-    confirmation_token: String,
-    groups: Vec<AnimeRemediationPlanGroup>,
-    cleanup_report: cleanup_audit::CleanupReport,
+    pub(crate) version: u32,
+    pub(crate) created_at: DateTime<Utc>,
+    pub(crate) plex_db_path: PathBuf,
+    pub(crate) title_filter: Option<String>,
+    pub(crate) total_groups: usize,
+    pub(crate) eligible_groups: usize,
+    pub(crate) blocked_groups: usize,
+    pub(crate) cleanup_candidates: usize,
+    pub(crate) confirmation_token: String,
+    pub(crate) groups: Vec<AnimeRemediationPlanGroup>,
+    pub(crate) cleanup_report: cleanup_audit::CleanupReport,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -399,16 +399,6 @@ async fn run_cleanup_anime_remediation(
         );
     }
 
-    let selected = selected_libraries(cfg, args.library_filter)?;
-    let anime_libraries: Vec<_> = selected
-        .into_iter()
-        .filter(|lib| lib.content_type == Some(crate::config::ContentType::Anime))
-        .collect();
-
-    if anime_libraries.is_empty() {
-        anyhow::bail!("No anime libraries matched the current library filter");
-    }
-
     if args.apply {
         if args.report.is_none() {
             anyhow::bail!("Anime remediation apply requires --report");
@@ -418,57 +408,16 @@ async fn run_cleanup_anime_remediation(
                 "Anime remediation apply only accepts --report, --confirm-token, --max-delete, and the shared --library filter"
             );
         }
-        if !cfg.cleanup.prune.quarantine_foreign {
-            anyhow::bail!(
-                "Anime remediation apply requires cleanup.prune.quarantine_foreign=true because this workflow quarantines foreign legacy symlinks"
-            );
-        }
-
-        ensure_runtime_directories_healthy(
-            &anime_libraries,
-            &cfg.sources,
-            "cleanup anime remediation apply",
-        )
-        .await?;
-
         let report_path = Path::new(args.report.unwrap());
-        let plan = load_anime_remediation_plan_report(report_path)?;
-        validate_anime_remediation_plan_report(&plan)?;
-
-        let safety_snapshot = if cfg.backup.enabled {
-            let extra_symlink_paths: Vec<_> = plan
-                .cleanup_report
-                .findings
-                .iter()
-                .map(|finding| finding.symlink_path.clone())
-                .collect();
-            Some(
-                crate::backup::BackupManager::new(&cfg.backup)
-                    .create_safety_snapshot_with_extras(
-                        db,
-                        "anime-remediation",
-                        &extra_symlink_paths,
-                    )
-                    .await?,
-            )
-        } else {
-            None
-        };
-
-        let temp_cleanup_report_path =
-            write_temp_cleanup_report(&cfg.backup.path, &plan.cleanup_report)?;
-        let outcome = cleanup_audit::run_prune(
+        let (plan, outcome, safety_snapshot) = apply_anime_remediation_plan(
             cfg,
             db,
-            &temp_cleanup_report_path,
-            true,
-            true,
-            args.max_delete,
+            args.library_filter,
+            report_path,
             args.confirm_token,
+            args.max_delete,
         )
-        .await;
-        let _ = std::fs::remove_file(&temp_cleanup_report_path);
-        let outcome = outcome?;
+        .await?;
 
         if args.output == OutputFormat::Json {
             print_json(&serde_json::json!({
@@ -511,21 +460,16 @@ async fn run_cleanup_anime_remediation(
             "Plex DB path is required or must exist at a standard local path for anime remediation"
         );
     };
-
-    let plan =
-        build_anime_remediation_plan_report(cfg, db, &anime_libraries, &plex_db_path, args.title)
-            .await?;
-    let out_path = args
-        .out
-        .map(PathBuf::from)
-        .unwrap_or_else(|| default_anime_remediation_report_path(cfg));
-
-    if let Some(parent) = out_path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
-        }
-    }
-    std::fs::write(&out_path, serde_json::to_string_pretty(&plan)?)?;
+    let requested_out = args.out.map(PathBuf::from);
+    let (plan, out_path) = preview_anime_remediation_plan(
+        cfg,
+        db,
+        args.library_filter,
+        &plex_db_path,
+        args.title,
+        requested_out.as_deref(),
+    )
+    .await?;
 
     if args.output == OutputFormat::Json {
         print_json(&serde_json::json!({
@@ -578,6 +522,112 @@ async fn run_cleanup_anime_remediation(
     }
 
     Ok(())
+}
+
+pub(crate) async fn preview_anime_remediation_plan(
+    cfg: &Config,
+    db: &Database,
+    library_filter: Option<&str>,
+    plex_db_path: &Path,
+    title_filter: Option<&str>,
+    out_path: Option<&Path>,
+) -> Result<(AnimeRemediationPlanReport, PathBuf)> {
+    let selected = selected_libraries(cfg, library_filter)?;
+    let anime_libraries: Vec<_> = selected
+        .into_iter()
+        .filter(|lib| lib.content_type == Some(crate::config::ContentType::Anime))
+        .collect();
+
+    if anime_libraries.is_empty() {
+        anyhow::bail!("No anime libraries matched the current library filter");
+    }
+
+    let plan =
+        build_anime_remediation_plan_report(cfg, db, &anime_libraries, plex_db_path, title_filter)
+            .await?;
+    let output_path = out_path
+        .map(PathBuf::from)
+        .unwrap_or_else(|| default_anime_remediation_report_path(cfg));
+
+    if let Some(parent) = output_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    std::fs::write(&output_path, serde_json::to_string_pretty(&plan)?)?;
+
+    Ok((plan, output_path))
+}
+
+pub(crate) async fn apply_anime_remediation_plan(
+    cfg: &Config,
+    db: &Database,
+    library_filter: Option<&str>,
+    report_path: &Path,
+    confirm_token: Option<&str>,
+    max_delete: Option<usize>,
+) -> Result<(
+    AnimeRemediationPlanReport,
+    cleanup_audit::PruneOutcome,
+    Option<PathBuf>,
+)> {
+    let selected = selected_libraries(cfg, library_filter)?;
+    let anime_libraries: Vec<_> = selected
+        .into_iter()
+        .filter(|lib| lib.content_type == Some(crate::config::ContentType::Anime))
+        .collect();
+
+    if anime_libraries.is_empty() {
+        anyhow::bail!("No anime libraries matched the current library filter");
+    }
+    if !cfg.cleanup.prune.quarantine_foreign {
+        anyhow::bail!(
+            "Anime remediation apply requires cleanup.prune.quarantine_foreign=true because this workflow quarantines foreign legacy symlinks"
+        );
+    }
+
+    ensure_runtime_directories_healthy(
+        &anime_libraries,
+        &cfg.sources,
+        "cleanup anime remediation apply",
+    )
+    .await?;
+
+    let plan = load_anime_remediation_plan_report(report_path)?;
+    validate_anime_remediation_plan_report(&plan)?;
+
+    let safety_snapshot = if cfg.backup.enabled {
+        let extra_symlink_paths: Vec<_> = plan
+            .cleanup_report
+            .findings
+            .iter()
+            .map(|finding| finding.symlink_path.clone())
+            .collect();
+        Some(
+            crate::backup::BackupManager::new(&cfg.backup)
+                .create_safety_snapshot_with_extras(db, "anime-remediation", &extra_symlink_paths)
+                .await?,
+        )
+    } else {
+        None
+    };
+
+    let temp_cleanup_report_path =
+        write_temp_cleanup_report(&cfg.backup.path, &plan.cleanup_report)?;
+    let outcome = cleanup_audit::run_prune(
+        cfg,
+        db,
+        &temp_cleanup_report_path,
+        true,
+        true,
+        max_delete,
+        confirm_token,
+    )
+    .await;
+    let _ = std::fs::remove_file(&temp_cleanup_report_path);
+    let outcome = outcome?;
+
+    Ok((plan, outcome, safety_snapshot))
 }
 
 fn default_plex_db_candidates() -> [&'static str; 3] {

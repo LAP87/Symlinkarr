@@ -12,6 +12,7 @@ use tracing::info;
 
 use crate::backup::BackupManager;
 use crate::cleanup_audit::{self, CleanupReport, CleanupScope};
+use crate::commands::cleanup::{apply_anime_remediation_plan, preview_anime_remediation_plan};
 use crate::commands::config::validate_config_report;
 use crate::commands::discover::load_discovery_snapshot;
 use crate::commands::doctor::{collect_doctor_checks, DoctorCheckMode};
@@ -36,6 +37,14 @@ pub fn create_router(state: WebState) -> Router<WebState> {
         .route("/scan/history", get(api_get_scan_history))
         .route("/scan/:id", get(api_get_scan_run))
         .route("/report/anime-remediation", get(api_get_anime_remediation))
+        .route(
+            "/cleanup/anime-remediation/preview",
+            post(api_post_anime_remediation_preview),
+        )
+        .route(
+            "/cleanup/anime-remediation/apply",
+            post(api_post_anime_remediation_apply),
+        )
         .route("/repair/auto", post(api_post_repair_auto))
         .route("/repair/status", get(api_get_repair_status))
         .route("/cleanup/audit", post(api_post_cleanup_audit))
@@ -257,6 +266,50 @@ pub struct ApiAnimeRemediationResponse {
     pub remediation_groups: usize,
     pub returned_groups: usize,
     pub groups: Vec<AnimeRemediationSample>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ApiAnimeRemediationPreviewRequest {
+    pub plex_db: Option<String>,
+    pub title: Option<String>,
+    pub library: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApiAnimeRemediationPreviewResponse {
+    pub success: bool,
+    pub message: String,
+    pub report_path: String,
+    pub plex_db_path: String,
+    pub title_filter: Option<String>,
+    pub total_groups: usize,
+    pub eligible_groups: usize,
+    pub blocked_groups: usize,
+    pub cleanup_candidates: usize,
+    pub confirmation_token: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ApiAnimeRemediationApplyRequest {
+    pub report_path: String,
+    pub token: String,
+    pub max_delete: Option<usize>,
+    pub library: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApiAnimeRemediationApplyResponse {
+    pub success: bool,
+    pub message: String,
+    pub report_path: String,
+    pub total_groups: usize,
+    pub eligible_groups: usize,
+    pub blocked_groups: usize,
+    pub candidates: usize,
+    pub quarantined: usize,
+    pub removed: usize,
+    pub skipped: usize,
+    pub safety_snapshot: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -940,6 +993,150 @@ pub async fn api_get_anime_remediation(
                 error: format!("Failed to build anime remediation report: {}", e),
             }),
         )),
+    }
+}
+
+/// POST /api/v1/cleanup/anime-remediation/preview
+pub async fn api_post_anime_remediation_preview(
+    State(state): State<WebState>,
+    Json(req): Json<ApiAnimeRemediationPreviewRequest>,
+) -> impl IntoResponse {
+    let Some(plex_db_path) = resolve_plex_db_path(req.plex_db.as_deref()) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ApiAnimeRemediationPreviewResponse {
+                success: false,
+                message: "Anime remediation preview failed: Plex DB path is required or must exist at a standard local path".to_string(),
+                report_path: String::new(),
+                plex_db_path: String::new(),
+                title_filter: req.title.clone(),
+                total_groups: 0,
+                eligible_groups: 0,
+                blocked_groups: 0,
+                cleanup_candidates: 0,
+                confirmation_token: String::new(),
+            }),
+        );
+    };
+
+    match preview_anime_remediation_plan(
+        &state.config,
+        &state.database,
+        req.library.as_deref(),
+        &plex_db_path,
+        req.title.as_deref(),
+        None,
+    )
+    .await
+    {
+        Ok((plan, report_path)) => (
+            StatusCode::OK,
+            Json(ApiAnimeRemediationPreviewResponse {
+                success: true,
+                message: format!(
+                    "Anime remediation preview saved. Review {} before applying.",
+                    report_path.display()
+                ),
+                report_path: report_path.to_string_lossy().to_string(),
+                plex_db_path: plan.plex_db_path.to_string_lossy().to_string(),
+                title_filter: plan.title_filter.clone(),
+                total_groups: plan.total_groups,
+                eligible_groups: plan.eligible_groups,
+                blocked_groups: plan.blocked_groups,
+                cleanup_candidates: plan.cleanup_candidates,
+                confirmation_token: plan.confirmation_token.clone(),
+            }),
+        ),
+        Err(err) => (
+            StatusCode::BAD_REQUEST,
+            Json(ApiAnimeRemediationPreviewResponse {
+                success: false,
+                message: format!("Anime remediation preview failed: {}", err),
+                report_path: String::new(),
+                plex_db_path: plex_db_path.to_string_lossy().to_string(),
+                title_filter: req.title.clone(),
+                total_groups: 0,
+                eligible_groups: 0,
+                blocked_groups: 0,
+                cleanup_candidates: 0,
+                confirmation_token: String::new(),
+            }),
+        ),
+    }
+}
+
+/// POST /api/v1/cleanup/anime-remediation/apply
+pub async fn api_post_anime_remediation_apply(
+    State(state): State<WebState>,
+    Json(req): Json<ApiAnimeRemediationApplyRequest>,
+) -> impl IntoResponse {
+    let report_path = match resolve_cleanup_report_path(&state.config.backup.path, &req.report_path)
+    {
+        Ok(path) => path,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ApiAnimeRemediationApplyResponse {
+                    success: false,
+                    message: format!("Anime remediation apply failed: {}", err),
+                    report_path: String::new(),
+                    total_groups: 0,
+                    eligible_groups: 0,
+                    blocked_groups: 0,
+                    candidates: 0,
+                    quarantined: 0,
+                    removed: 0,
+                    skipped: 0,
+                    safety_snapshot: None,
+                }),
+            );
+        }
+    };
+
+    match apply_anime_remediation_plan(
+        &state.config,
+        &state.database,
+        req.library.as_deref(),
+        &report_path,
+        Some(&req.token),
+        req.max_delete,
+    )
+    .await
+    {
+        Ok((plan, outcome, safety_snapshot)) => (
+            StatusCode::OK,
+            Json(ApiAnimeRemediationApplyResponse {
+                success: true,
+                message: "Anime remediation applied".to_string(),
+                report_path: report_path.to_string_lossy().to_string(),
+                total_groups: plan.total_groups,
+                eligible_groups: plan.eligible_groups,
+                blocked_groups: plan.blocked_groups,
+                candidates: outcome.candidates,
+                quarantined: outcome.quarantined,
+                removed: outcome.removed,
+                skipped: outcome.skipped,
+                safety_snapshot: safety_snapshot
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().to_string()),
+            }),
+        ),
+        Err(err) => (
+            StatusCode::BAD_REQUEST,
+            Json(ApiAnimeRemediationApplyResponse {
+                success: false,
+                message: format!("Anime remediation apply failed: {}", err),
+                report_path: report_path.to_string_lossy().to_string(),
+                total_groups: 0,
+                eligible_groups: 0,
+                blocked_groups: 0,
+                candidates: 0,
+                quarantined: 0,
+                removed: 0,
+                skipped: 0,
+                safety_snapshot: None,
+            }),
+        ),
     }
 }
 
@@ -2400,5 +2597,193 @@ mod tests {
         assert_eq!(json.returned_groups, 1);
         assert_eq!(json.groups[0].recommended_tagged_root.path, tagged_root);
         assert_eq!(json.groups[0].legacy_roots[0].path, legacy_root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn api_post_anime_remediation_preview_saves_plan_in_backup_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let mut cfg = test_config(&root);
+        let anime_root = cfg.libraries[0].path.clone();
+        let tagged_root = anime_root.join("Show A (2024) {tvdb-1}");
+        let legacy_root = anime_root.join("Show A");
+
+        std::fs::create_dir_all(tagged_root.join("Season 01")).unwrap();
+        std::fs::create_dir_all(legacy_root.join("Season 01")).unwrap();
+
+        let db = Database::new(&cfg.db_path).await.unwrap();
+        let tracked_source = cfg.sources[0].path.join("Show.A.S01E01.mkv");
+        let tracked_target = tagged_root.join("Season 01/Show A - S01E01.mkv");
+        std::fs::write(&tracked_source, b"video").unwrap();
+        db.insert_link(&LinkRecord {
+            id: None,
+            source_path: tracked_source,
+            target_path: tracked_target,
+            media_id: "tvdb-1".to_string(),
+            media_type: MediaType::Tv,
+            status: LinkStatus::Active,
+            created_at: None,
+            updated_at: None,
+        })
+        .await
+        .unwrap();
+
+        let legacy_target = legacy_root.join("Season 01/Show A - S01E01.mkv");
+        std::os::unix::fs::symlink("/tmp/source-a.mkv", &legacy_target).unwrap();
+
+        let plex_db_path = root.join("plex.db");
+        create_test_plex_duplicate_db(&plex_db_path).await;
+        let options = SqliteConnectOptions::from_str(plex_db_path.to_str().unwrap()).unwrap();
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO section_locations (id, library_section_id, root_path) VALUES (1, 1, ?)",
+        )
+        .bind(anime_root.to_string_lossy().to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO metadata_items (id, library_section_id, metadata_type, title, original_title, year, guid, deleted_at)
+             VALUES (1, 1, 2, 'Show A', '', 2024, 'com.plexapp.agents.hama://anidb-100', NULL),
+                    (2, 1, 2, 'Show A', '', 2024, 'com.plexapp.agents.hama://tvdb-1', NULL)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        cfg.libraries[0].path = anime_root;
+        let state = WebState::new(cfg, db);
+        let response = api_post_anime_remediation_preview(
+            State(state.clone()),
+            Json(ApiAnimeRemediationPreviewRequest {
+                plex_db: Some(plex_db_path.to_string_lossy().to_string()),
+                title: None,
+                library: Some("Anime".to_string()),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: ApiAnimeRemediationPreviewResponse = serde_json::from_slice(&bytes).unwrap();
+
+        assert!(json.success);
+        assert_eq!(json.total_groups, 1);
+        assert_eq!(json.eligible_groups, 1);
+        assert_eq!(json.cleanup_candidates, 1);
+        let report_path = std::path::PathBuf::from(&json.report_path);
+        assert!(report_path.starts_with(&state.config.backup.path));
+        assert!(report_path.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn api_post_anime_remediation_apply_uses_saved_plan_and_quarantines_legacy_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let mut cfg = test_config(&root);
+        cfg.cleanup.prune.quarantine_path = root.join("quarantine");
+        let anime_root = cfg.libraries[0].path.clone();
+        let tagged_root = anime_root.join("Show A (2024) {tvdb-1}");
+        let legacy_root = anime_root.join("Show A");
+
+        std::fs::create_dir_all(tagged_root.join("Season 01")).unwrap();
+        std::fs::create_dir_all(legacy_root.join("Season 01")).unwrap();
+
+        let db = Database::new(&cfg.db_path).await.unwrap();
+        let tracked_source = cfg.sources[0].path.join("Show.A.S01E01.mkv");
+        let tracked_target = tagged_root.join("Season 01/Show A - S01E01.mkv");
+        std::fs::write(&tracked_source, b"video").unwrap();
+        db.insert_link(&LinkRecord {
+            id: None,
+            source_path: tracked_source.clone(),
+            target_path: tracked_target,
+            media_id: "tvdb-1".to_string(),
+            media_type: MediaType::Tv,
+            status: LinkStatus::Active,
+            created_at: None,
+            updated_at: None,
+        })
+        .await
+        .unwrap();
+
+        let legacy_target = legacy_root.join("Season 01/Show A - S01E01.mkv");
+        std::os::unix::fs::symlink(&tracked_source, &legacy_target).unwrap();
+
+        let plex_db_path = root.join("plex.db");
+        create_test_plex_duplicate_db(&plex_db_path).await;
+        let options = SqliteConnectOptions::from_str(plex_db_path.to_str().unwrap()).unwrap();
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO section_locations (id, library_section_id, root_path) VALUES (1, 1, ?)",
+        )
+        .bind(anime_root.to_string_lossy().to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO metadata_items (id, library_section_id, metadata_type, title, original_title, year, guid, deleted_at)
+             VALUES (1, 1, 2, 'Show A', '', 2024, 'com.plexapp.agents.hama://anidb-100', NULL),
+                    (2, 1, 2, 'Show A', '', 2024, 'com.plexapp.agents.hama://tvdb-1', NULL)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        cfg.libraries[0].path = anime_root;
+        let state = WebState::new(cfg, db);
+
+        let preview = api_post_anime_remediation_preview(
+            State(state.clone()),
+            Json(ApiAnimeRemediationPreviewRequest {
+                plex_db: Some(plex_db_path.to_string_lossy().to_string()),
+                title: None,
+                library: Some("Anime".to_string()),
+            }),
+        )
+        .await
+        .into_response();
+        let preview_bytes = to_bytes(preview.into_body(), usize::MAX).await.unwrap();
+        let preview_json: ApiAnimeRemediationPreviewResponse =
+            serde_json::from_slice(&preview_bytes).unwrap();
+
+        let response = api_post_anime_remediation_apply(
+            State(state.clone()),
+            Json(ApiAnimeRemediationApplyRequest {
+                report_path: preview_json.report_path.clone(),
+                token: preview_json.confirmation_token.clone(),
+                max_delete: None,
+                library: Some("Anime".to_string()),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: ApiAnimeRemediationApplyResponse = serde_json::from_slice(&bytes).unwrap();
+
+        assert!(json.success);
+        assert_eq!(json.candidates, 1);
+        assert_eq!(json.quarantined, 1);
+        assert_eq!(json.removed, 0);
+        assert!(!legacy_target.exists());
+        let quarantined_entries =
+            walkdir::WalkDir::new(&state.config.cleanup.prune.quarantine_path)
+                .into_iter()
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| entry.path().is_symlink())
+                .count();
+        assert!(quarantined_entries >= 1);
     }
 }

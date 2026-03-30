@@ -365,6 +365,81 @@ Query params:
 - `plex_db=<PATH>` optional override for Plex's library database path
 - `full=true|false` optional; when `true`, returns the full backlog instead of the default sample-limited slice
 
+## `POST /api/v1/cleanup/anime-remediation/preview`
+
+Builds and saves a guarded anime remediation plan under the configured backup directory.
+
+Request body:
+
+```json
+{
+  "plex_db": "/var/lib/plex/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db",
+  "title": "Gundam",
+  "library": "Anime"
+}
+```
+
+Response:
+
+```json
+{
+  "success": true,
+  "message": "Anime remediation preview saved. Review /home/lenny/apps/Symlinkarr/backups/anime-remediation-20260330-201658.json before applying.",
+  "report_path": "/home/lenny/apps/Symlinkarr/backups/anime-remediation-20260330-201658.json",
+  "plex_db_path": "/var/lib/plex/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db",
+  "title_filter": "Gundam",
+  "total_groups": 12,
+  "eligible_groups": 1,
+  "blocked_groups": 11,
+  "cleanup_candidates": 16,
+  "confirmation_token": "02e1e466038800b0"
+}
+```
+
+Notes:
+
+- The API does not accept an arbitrary output path; preview plans are always written under the configured backup directory.
+- This endpoint is the JSON/API analogue of `cleanup remediate-anime` preview and keeps the same eligibility gate.
+
+## `POST /api/v1/cleanup/anime-remediation/apply`
+
+Applies a previously saved guarded anime remediation plan using its saved report path and confirmation token.
+
+Request body:
+
+```json
+{
+  "report_path": "/home/lenny/apps/Symlinkarr/backups/anime-remediation-20260330-201658.json",
+  "token": "02e1e466038800b0",
+  "max_delete": 50,
+  "library": "Anime"
+}
+```
+
+Response:
+
+```json
+{
+  "success": true,
+  "message": "Anime remediation applied",
+  "report_path": "/home/lenny/apps/Symlinkarr/backups/anime-remediation-20260330-201658.json",
+  "total_groups": 12,
+  "eligible_groups": 1,
+  "blocked_groups": 11,
+  "candidates": 16,
+  "quarantined": 16,
+  "removed": 0,
+  "skipped": 0,
+  "safety_snapshot": "/home/lenny/apps/Symlinkarr/backups/safety-anime-remediation-20260330-201702.json"
+}
+```
+
+Notes:
+
+- `report_path` must resolve inside the configured backup directory.
+- Apply keeps the same runtime safety gates as the CLI path.
+- `cleanup.prune.quarantine_foreign` must be enabled; this workflow is intentionally quarantine-first.
+
 If `plex_db` is omitted, Symlinkarr tries a few common local Plex DB paths first.
 
 Example:
