@@ -831,6 +831,10 @@ fn create_router(state: WebState) -> Router {
         .route("/scan/history/:id", get(handlers::get_scan_run_detail))
         // Cleanup
         .route("/cleanup", get(handlers::get_cleanup))
+        .route(
+            "/cleanup/anime-remediation",
+            get(handlers::get_cleanup_anime_remediation),
+        )
         .route("/cleanup/audit", post(handlers::post_cleanup_audit))
         .route("/cleanup/prune", get(handlers::get_cleanup_prune))
         .route("/cleanup/prune", post(handlers::post_cleanup_prune))
@@ -1383,6 +1387,10 @@ mod tests {
         assert!(scan_page.contains("Start Real Scan"));
         assert!(scan_page.contains("Search Missing"));
         assert!(scan_page.contains("Latest Run"));
+
+        let (status, cleanup_page) = get_html(&router, "/cleanup").await;
+        assert_eq!(status, 200);
+        assert!(cleanup_page.contains("Anime Remediation Backlog"));
     }
 
     #[tokio::test]

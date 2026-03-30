@@ -16,6 +16,7 @@ use crate::cleanup_audit::{self, CleanupScope};
 use crate::commands::config::validate_config_report;
 use crate::commands::discover::load_discovery_snapshot;
 use crate::commands::doctor::{collect_doctor_checks, DoctorCheckMode};
+use crate::commands::report::build_anime_remediation_report;
 use crate::db::{AcquisitionJobCounts, ScanHistoryRecord};
 
 use super::templates::*;
@@ -37,6 +38,13 @@ pub struct DiscoverQuery {
     pub library: Option<String>,
     #[serde(default)]
     pub refresh_cache: bool,
+}
+
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct AnimeRemediationQuery {
+    #[serde(default)]
+    pub full: bool,
+    pub plex_db: Option<String>,
 }
 
 fn dashboard_stats_from_web_stats(stats: crate::db::WebStats) -> DashboardStats {
@@ -74,6 +82,26 @@ fn cleanup_report_summary_from_path(path: &StdPath) -> Option<CleanupReportSumma
         path.to_path_buf(),
         report,
     ))
+}
+
+fn default_plex_db_candidates() -> [&'static str; 3] {
+    [
+        "/var/lib/plex/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db",
+        "/var/lib/plexmediaserver/Library/Application Support/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db",
+        "/config/Library/Application Support/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db",
+    ]
+}
+
+fn resolve_plex_db_path(query_path: Option<&str>) -> Option<PathBuf> {
+    query_path
+        .map(PathBuf::from)
+        .filter(|path| path.exists())
+        .or_else(|| {
+            default_plex_db_candidates()
+                .into_iter()
+                .map(PathBuf::from)
+                .find(|path| path.exists())
+        })
 }
 
 async fn visible_last_scan_outcome(state: &WebState) -> Option<BackgroundScanOutcomeView> {
@@ -514,6 +542,76 @@ pub async fn get_cleanup(State(state): State<WebState>) -> impl IntoResponse {
     };
 
     Html(template.render().unwrap_or_else(|e| e.to_string()))
+}
+
+/// GET /cleanup/anime-remediation - Read-only anime remediation backlog
+pub async fn get_cleanup_anime_remediation(
+    State(state): State<WebState>,
+    Query(query): Query<AnimeRemediationQuery>,
+) -> impl IntoResponse {
+    let Some(plex_db_path) = resolve_plex_db_path(query.plex_db.as_deref()) else {
+        return Html(
+            AnimeRemediationTemplate {
+                summary: None,
+                groups: vec![],
+                error_message: Some(
+                    "Plex DB path is required or must exist at a standard local path".to_string(),
+                ),
+            }
+            .render()
+            .unwrap_or_else(|e| e.to_string()),
+        );
+    };
+
+    match build_anime_remediation_report(&state.config, &state.database, &plex_db_path, query.full)
+        .await
+    {
+        Ok(Some(report)) => Html(
+            AnimeRemediationTemplate {
+                summary: Some(AnimeRemediationSummaryView {
+                    generated_at: report.generated_at,
+                    plex_db_path: plex_db_path.display().to_string(),
+                    full: query.full,
+                    filesystem_mixed_root_groups: report.filesystem_mixed_root_groups,
+                    plex_duplicate_show_groups: report.plex_duplicate_show_groups,
+                    plex_hama_anidb_tvdb_groups: report.plex_hama_anidb_tvdb_groups,
+                    correlated_hama_split_groups: report.correlated_hama_split_groups,
+                    remediation_groups: report.remediation_groups,
+                    returned_groups: report.returned_groups,
+                }),
+                groups: report.groups.into_iter().map(Into::into).collect(),
+                error_message: None,
+            }
+            .render()
+            .unwrap_or_else(|e| e.to_string()),
+        ),
+        Ok(None) => Html(
+            AnimeRemediationTemplate {
+                summary: None,
+                groups: vec![],
+                error_message: Some(
+                    "No anime libraries are configured for remediation reporting".to_string(),
+                ),
+            }
+            .render()
+            .unwrap_or_else(|e| e.to_string()),
+        ),
+        Err(err) => {
+            error!("Failed to build anime remediation report: {}", err);
+            Html(
+                AnimeRemediationTemplate {
+                    summary: None,
+                    groups: vec![],
+                    error_message: Some(format!(
+                        "Failed to build anime remediation report: {}",
+                        err
+                    )),
+                }
+                .render()
+                .unwrap_or_else(|e| e.to_string()),
+            )
+        }
+    }
 }
 
 /// POST /cleanup/audit - Run audit
@@ -1345,6 +1443,10 @@ pub struct BackupRestoreForm {
 mod tests {
     use super::*;
     use axum::body::to_bytes;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use sqlx::Executor;
+    use std::path::Path;
+    use std::str::FromStr;
     use tempfile::TempDir;
 
     use crate::cleanup_audit::{CleanupReport, CleanupSummary};
@@ -1496,6 +1598,66 @@ mod tests {
             _dir: dir,
             state: WebState::new(cfg, db),
         }
+    }
+
+    async fn create_test_plex_duplicate_db(path: &Path) {
+        let options = SqliteConnectOptions::from_str(path.to_str().unwrap())
+            .unwrap()
+            .create_if_missing(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap();
+
+        pool.execute(
+            "CREATE TABLE section_locations (
+                id INTEGER PRIMARY KEY,
+                library_section_id INTEGER,
+                root_path TEXT,
+                available BOOLEAN,
+                scanned_at INTEGER,
+                created_at INTEGER,
+                updated_at INTEGER
+            );",
+        )
+        .await
+        .unwrap();
+        pool.execute(
+            "CREATE TABLE metadata_items (
+                id INTEGER PRIMARY KEY,
+                library_section_id INTEGER,
+                metadata_type INTEGER,
+                title TEXT,
+                original_title TEXT,
+                year INTEGER,
+                guid TEXT,
+                deleted_at INTEGER
+            );",
+        )
+        .await
+        .unwrap();
+        pool.execute(
+            "CREATE TABLE media_items (
+                id INTEGER PRIMARY KEY,
+                library_section_id INTEGER,
+                section_location_id INTEGER,
+                metadata_item_id INTEGER,
+                deleted_at INTEGER
+            );",
+        )
+        .await
+        .unwrap();
+        pool.execute(
+            "CREATE TABLE media_parts (
+                id INTEGER PRIMARY KEY,
+                media_item_id INTEGER,
+                file TEXT,
+                deleted_at INTEGER
+            );",
+        )
+        .await
+        .unwrap();
     }
 
     async fn render_body(response: impl IntoResponse) -> String {
@@ -1679,6 +1841,87 @@ mod tests {
         assert!(!body.contains("Background cleanup audit failed"));
         assert!(!body.contains("stale cleanup failure"));
         assert!(body.contains("Last Report"));
+    }
+
+    #[tokio::test]
+    async fn anime_remediation_page_renders_ranked_groups() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let cfg = test_config(&root);
+        let anime_root = cfg.libraries[0].path.clone();
+        let tagged_root = anime_root.join("Show A (2024) {tvdb-1}");
+        let legacy_root = anime_root.join("Show A");
+
+        std::fs::create_dir_all(tagged_root.join("Season 01")).unwrap();
+        std::fs::create_dir_all(legacy_root.join("Season 01")).unwrap();
+
+        let db = Database::new(&cfg.db_path).await.unwrap();
+        let tracked_source = cfg.sources[0].path.join("Show.A.S01E01.mkv");
+        let tracked_target = tagged_root.join("Season 01/Show A - S01E01.mkv");
+        std::fs::write(&tracked_source, b"video").unwrap();
+        db.insert_link(&LinkRecord {
+            id: None,
+            source_path: tracked_source,
+            target_path: tracked_target,
+            media_id: "tvdb-1".to_string(),
+            media_type: MediaType::Tv,
+            status: LinkStatus::Active,
+            created_at: None,
+            updated_at: None,
+        })
+        .await
+        .unwrap();
+
+        let legacy_target = legacy_root.join("Season 01/Show A - S01E01.mkv");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("/tmp/source-a.mkv", &legacy_target).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file("C:\\source-a.mkv", &legacy_target).unwrap();
+
+        let plex_db_path = root.join("plex.db");
+        create_test_plex_duplicate_db(&plex_db_path).await;
+        let options = SqliteConnectOptions::from_str(plex_db_path.to_str().unwrap()).unwrap();
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO section_locations (id, library_section_id, root_path) VALUES (1, 1, ?)",
+        )
+        .bind(anime_root.to_string_lossy().to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO metadata_items (id, library_section_id, metadata_type, title, original_title, year, guid, deleted_at)
+             VALUES (1, 1, 2, 'Show A', '', 2024, 'com.plexapp.agents.hama://anidb-100', NULL),
+                    (2, 1, 2, 'Show A', '', 2024, 'com.plexapp.agents.hama://tvdb-1', NULL)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let state = WebState::new(cfg, db);
+        let body = render_body(
+            get_cleanup_anime_remediation(
+                State(state),
+                Query(AnimeRemediationQuery {
+                    full: true,
+                    plex_db: Some(plex_db_path.to_string_lossy().to_string()),
+                }),
+            )
+            .await,
+        )
+        .await;
+
+        assert!(body.contains("Anime Remediation Backlog"));
+        assert!(body.contains("Show A"));
+        assert!(body.contains("Show Full Backlog") || body.contains("Show Sample"));
+        assert!(
+            body.contains("com.plexapp.agents.hama://anidb-100") || body.contains("hama-anidb")
+        );
+        assert!(body.contains("/tmp") || body.contains("/Show A (2024) {tvdb-1}"));
     }
 
     #[tokio::test]

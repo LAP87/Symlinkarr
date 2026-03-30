@@ -1,0 +1,176 @@
+{% extends "web/ui/base.html" %}
+
+{% block title %}Anime Remediation - Symlinkarr{% endblock %}
+{% block nav_cleanup %}active{% endblock %}
+
+{% block content %}
+<div class="page-header page-header--split">
+    <div>
+        <p class="page-kicker">Cleanup</p>
+        <h1>&#127909; Anime Remediation Backlog</h1>
+        <p class="page-lead">Read-only worklist for mixed anime roots and Plex Hama split groups. Use it to see which tagged root should survive before any future remediation/apply flow.</p>
+    </div>
+    <div class="header-badges">
+        {% match summary %}
+        {% when Some with (data) %}
+        <span class="badge badge-danger">{{ data.remediation_groups }} remediation groups</span>
+        <span class="badge badge-warning">{{ data.correlated_hama_split_groups }} correlated splits</span>
+        <span class="badge badge-info">{% if data.full %}Full View{% else %}Sample View{% endif %}</span>
+        {% when None %}
+        <span class="badge badge-info">Read only</span>
+        {% endmatch %}
+    </div>
+</div>
+
+{% match error_message %}
+{% when Some with (message) %}
+<div class="alert alert-error">
+    <strong>&#10060; Backlog unavailable.</strong><br>
+    {{ message }}
+</div>
+{% when None %}{% endmatch %}
+
+{% match summary %}
+{% when Some with (data) %}
+<div class="split-grid">
+    <section class="card hero-card hero-card--accent">
+        <p class="hero-label">Current backlog</p>
+        <div class="hero-value">{{ data.returned_groups }}</div>
+        <p class="hero-copy">These groups are the titles where legacy anime roots and Plex metadata splits overlap strongly enough to justify operator review.</p>
+        <div class="hero-inline-stats">
+            <span>Generated <strong>{{ data.generated_at }}</strong></span>
+        </div>
+    </section>
+
+    <section class="card">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Context</p>
+                <h2 class="section-title">Why this page exists</h2>
+            </div>
+        </div>
+        <p class="text-muted">This page is intentionally read-only. It answers three questions: which tagged root should win, how much legacy symlink drift still exists, and whether Plex still has a live AniDB/TVDB split for that title.</p>
+        <div class="metric-grid metric-grid--compact mt-2">
+            <div class="metric-card">
+                <span class="metric-label">Mixed roots</span>
+                <strong>{{ data.filesystem_mixed_root_groups }}</strong>
+            </div>
+            <div class="metric-card">
+                <span class="metric-label">Plex duplicates</span>
+                <strong>{{ data.plex_duplicate_show_groups }}</strong>
+            </div>
+            <div class="metric-card">
+                <span class="metric-label">Hama splits</span>
+                <strong>{{ data.plex_hama_anidb_tvdb_groups }}</strong>
+            </div>
+            <div class="metric-card">
+                <span class="metric-label">Plex DB</span>
+                <strong class="mono">{{ data.plex_db_path }}</strong>
+            </div>
+        </div>
+    </section>
+</div>
+
+<div class="card">
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Groups</p>
+            <h2 class="section-title">Recommended remediation order</h2>
+            <p class="text-muted">The queue is already ranked by legacy impact. Titles near the top usually have the largest pile of untracked symlinks or the most drift between Plex and the tagged root.</p>
+        </div>
+        <div class="actions">
+            {% if data.full %}
+            <a href="/cleanup/anime-remediation" class="btn btn-secondary">Show Sample</a>
+            {% else %}
+            <a href="/cleanup/anime-remediation?full=true" class="btn btn-secondary">Show Full Backlog</a>
+            {% endif %}
+            <a href="/cleanup" class="btn btn-secondary">&#8592; Back to Cleanup</a>
+        </div>
+    </div>
+
+    {% if groups|length > 0 %}
+    <table class="data-table dense-table">
+        <thead>
+            <tr>
+                <th>Title</th>
+                <th>Recommended tagged root</th>
+                <th>Legacy roots</th>
+                <th>Legacy symlinks</th>
+                <th>Tracked DB links</th>
+                <th>Plex rows</th>
+                <th>GUID kinds</th>
+                <th>Alt tagged roots</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for group in groups %}
+            <tr>
+                <td>
+                    <strong>{{ group.normalized_title }}</strong>
+                </td>
+                <td>
+                    <div class="badge-stack">
+                        <code class="mono">{{ group.recommended_tagged_root.display() }}</code>
+                        <span class="badge badge-info">fs {{ group.recommended_filesystem_symlinks }}</span>
+                        <span class="badge badge-info">db {{ group.recommended_db_active_links }}</span>
+                    </div>
+                </td>
+                <td>
+                    <div class="badge-stack">
+                        {% for root in group.legacy_roots %}
+                        <code class="mono">{{ root.display() }}</code>
+                        {% endfor %}
+                    </div>
+                </td>
+                <td><strong>{{ group.legacy_symlink_total }}</strong></td>
+                <td><strong>{{ group.legacy_db_total }}</strong></td>
+                <td>
+                    <div class="badge-stack">
+                        <span class="badge badge-info">total {{ group.plex_total_rows }}</span>
+                        <span class="badge badge-warning">live {{ group.plex_live_rows }}</span>
+                        <span class="badge badge-danger">deleted {{ group.plex_deleted_rows }}</span>
+                    </div>
+                </td>
+                <td>
+                    <div class="badge-stack">
+                        {% for kind in group.plex_guid_kinds %}
+                        <span class="badge badge-info">{{ kind }}</span>
+                        {% endfor %}
+                    </div>
+                </td>
+                <td>
+                    <div class="badge-stack">
+                        {% for root in group.alternate_tagged_roots %}
+                        <code class="mono">{{ root.display() }}</code>
+                        {% endfor %}
+                        {% if group.alternate_tagged_roots|length == 0 %}
+                        <span class="text-muted">None</span>
+                        {% endif %}
+                    </div>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="alert alert-success">
+        <strong>&#9989; No remediation groups found.</strong>
+        The current report did not find any correlated anime duplicate groups that need operator review.
+    </div>
+    {% endif %}
+</div>
+{% when None %}
+<div class="card">
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Backlog</p>
+            <h2 class="section-title">Nothing to show yet</h2>
+        </div>
+    </div>
+    <p class="text-muted">No anime remediation data could be built from the current configuration.</p>
+    <div class="actions mt-2">
+        <a href="/cleanup" class="btn btn-secondary">&#8592; Back to Cleanup</a>
+    </div>
+</div>
+{% endmatch %}
+{% endblock %}

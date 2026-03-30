@@ -13,6 +13,7 @@ use super::{
     LastRepairOutcome, LastScanOutcome,
 };
 use crate::cleanup_audit::{CleanupReport, CleanupScope};
+use crate::commands::report::AnimeRemediationSample;
 use crate::config::Config;
 use crate::db::{AcquisitionJobCounts, ScanHistoryRecord};
 use crate::models::LinkRecord;
@@ -448,6 +449,83 @@ pub struct PrunePreviewTemplate {
     pub error_message: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct AnimeRemediationSummaryView {
+    pub generated_at: String,
+    pub plex_db_path: String,
+    pub full: bool,
+    pub filesystem_mixed_root_groups: usize,
+    pub plex_duplicate_show_groups: usize,
+    pub plex_hama_anidb_tvdb_groups: usize,
+    pub correlated_hama_split_groups: usize,
+    pub remediation_groups: usize,
+    pub returned_groups: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct AnimeRemediationGroupView {
+    pub normalized_title: String,
+    pub recommended_tagged_root: PathBuf,
+    pub recommended_filesystem_symlinks: usize,
+    pub recommended_db_active_links: usize,
+    pub alternate_tagged_roots: Vec<PathBuf>,
+    pub legacy_roots: Vec<PathBuf>,
+    pub legacy_symlink_total: usize,
+    pub legacy_db_total: usize,
+    pub plex_total_rows: usize,
+    pub plex_live_rows: usize,
+    pub plex_deleted_rows: usize,
+    pub plex_guid_kinds: Vec<String>,
+    pub plex_guids: Vec<String>,
+}
+
+impl From<AnimeRemediationSample> for AnimeRemediationGroupView {
+    fn from(value: AnimeRemediationSample) -> Self {
+        let legacy_symlink_total = value
+            .legacy_roots
+            .iter()
+            .map(|root| root.filesystem_symlinks)
+            .sum();
+        let legacy_db_total = value
+            .legacy_roots
+            .iter()
+            .map(|root| root.db_active_links)
+            .sum();
+
+        Self {
+            normalized_title: value.normalized_title,
+            recommended_tagged_root: value.recommended_tagged_root.path,
+            recommended_filesystem_symlinks: value.recommended_tagged_root.filesystem_symlinks,
+            recommended_db_active_links: value.recommended_tagged_root.db_active_links,
+            alternate_tagged_roots: value
+                .alternate_tagged_roots
+                .into_iter()
+                .map(|root| root.path)
+                .collect(),
+            legacy_roots: value
+                .legacy_roots
+                .into_iter()
+                .map(|root| root.path)
+                .collect(),
+            legacy_symlink_total,
+            legacy_db_total,
+            plex_total_rows: value.plex_total_rows,
+            plex_live_rows: value.plex_live_rows,
+            plex_deleted_rows: value.plex_deleted_rows,
+            plex_guid_kinds: value.plex_guid_kinds,
+            plex_guids: value.plex_guids,
+        }
+    }
+}
+
+#[derive(Template)]
+#[template(path = "web/ui/anime_remediation.html")]
+pub struct AnimeRemediationTemplate {
+    pub summary: Option<AnimeRemediationSummaryView>,
+    pub groups: Vec<AnimeRemediationGroupView>,
+    pub error_message: Option<String>,
+}
+
 // ─── Links ──────────────────────────────────────────────────────────
 
 #[derive(Template)]
@@ -558,6 +636,7 @@ mod tests {
         AlternateMatchContext, CleanupFinding, CleanupOwnership, FindingReason, FindingSeverity,
         ParsedContext, PruneReasonCount,
     };
+    use crate::commands::report::{AnimeRemediationSample, AnimeRootUsageSample};
     use crate::models::{LinkStatus, MediaType};
 
     fn sample_scan_run_view() -> ScanRunView {
@@ -836,5 +915,52 @@ mod tests {
         assert!(html.contains("Legacy Anime Root Groups"));
         assert!(html.contains("/plex/Show (2024) {tvdb-123}"));
         assert!(html.contains("legacy root"));
+    }
+
+    #[test]
+    fn anime_remediation_template_renders_backlog_summary() {
+        let template = AnimeRemediationTemplate {
+            summary: Some(AnimeRemediationSummaryView {
+                generated_at: "2026-03-30T02:00:00Z".to_string(),
+                plex_db_path: "/tmp/plex.db".to_string(),
+                full: false,
+                filesystem_mixed_root_groups: 582,
+                plex_duplicate_show_groups: 373,
+                plex_hama_anidb_tvdb_groups: 371,
+                correlated_hama_split_groups: 106,
+                remediation_groups: 106,
+                returned_groups: 50,
+            }),
+            groups: vec![AnimeRemediationGroupView::from(AnimeRemediationSample {
+                normalized_title: "Mobile Suit Gundam SEED".to_string(),
+                recommended_tagged_root: AnimeRootUsageSample {
+                    path: PathBuf::from("/plex/anime/Mobile Suit Gundam SEED (2002) {tvdb-123}"),
+                    filesystem_symlinks: 49,
+                    db_active_links: 49,
+                },
+                alternate_tagged_roots: vec![],
+                legacy_roots: vec![AnimeRootUsageSample {
+                    path: PathBuf::from("/plex/anime/Mobile Suit Gundam SEED"),
+                    filesystem_symlinks: 99,
+                    db_active_links: 0,
+                }],
+                plex_total_rows: 2,
+                plex_live_rows: 2,
+                plex_deleted_rows: 0,
+                plex_guid_kinds: vec!["hama-anidb".to_string(), "hama-tvdb".to_string()],
+                plex_guids: vec![
+                    "com.plexapp.agents.hama://anidb-1".to_string(),
+                    "com.plexapp.agents.hama://tvdb-2".to_string(),
+                ],
+            })],
+            error_message: None,
+        };
+
+        let html = template.render().unwrap();
+        assert!(html.contains("Anime Remediation Backlog"));
+        assert!(html.contains("Mobile Suit Gundam SEED"));
+        assert!(html.contains("Recommended tagged root"));
+        assert!(html.contains("Sample View"));
+        assert!(html.contains("hama-anidb"));
     }
 }

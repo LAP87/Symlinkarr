@@ -18,6 +18,7 @@
   - ranked remediation queue
   - TSV export
   - JSON API surface at `GET /api/v1/report/anime-remediation`
+  - new read-only cleanup page at `GET /cleanup/anime-remediation` for operators who want the ranked remediation backlog without reaching for the CLI or JSON API first
   - files: `src/commands/report.rs`, `src/main.rs`, `src/web/api/mod.rs`
 - cleanup prune keeps the legacy anime-root context and reason buckets while also restoring safer prune-token behavior and safer quarantine target handling.
   - tokens now stay tied to candidate dispositions
