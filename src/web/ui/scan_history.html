@@ -108,6 +108,9 @@
                     {% if run.plex_refresh_capped_batches > 0 %}
                     <span class="badge badge-warning">cap {{ run.plex_refresh_capped_batches }}</span>
                     {% endif %}
+                    {% if run.plex_refresh_aborted_due_to_cap %}
+                    <span class="badge badge-danger">guard abort</span>
+                    {% endif %}
                     {% if run.plex_refresh_skipped_batches > 0 %}
                     <span class="badge badge-danger">skip {{ run.plex_refresh_skipped_batches }}</span>
                     {% endif %}

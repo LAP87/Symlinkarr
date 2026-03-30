@@ -260,6 +260,7 @@ Response element schema:
     "skipped_batches": 1,
     "unresolved_paths": 0,
     "capped_batches": 1,
+    "aborted_due_to_cap": true,
     "failed_batches": 0
   },
   "auto_acquire": {
@@ -280,7 +281,7 @@ Response element schema:
 
 Notes:
 
-- `plex_refresh` makes refresh throttling observable in persisted history, including capped or skipped batches that previously only appeared in logs.
+- `plex_refresh` makes refresh throttling observable in persisted history, including whether the cap guard aborted the entire Plex refresh phase instead of partially queueing requests.
 
 ## `GET /api/v1/scan/:id`
 
@@ -324,6 +325,7 @@ Response schema:
     "skipped_batches": 1,
     "unresolved_paths": 0,
     "capped_batches": 1,
+    "aborted_due_to_cap": true,
     "failed_batches": 0
   },
   "dead_link_sweep_ms": 700,
@@ -354,7 +356,7 @@ Not found:
 
 Notes:
 
-- `plex_refresh_ms` remains the phase runtime for compatibility, while the nested `plex_refresh` object exposes request pressure, coalescing, capping, failures, and actual queued coverage.
+- `plex_refresh_ms` remains the phase runtime for compatibility, while the nested `plex_refresh` object exposes request pressure, coalescing, capping, cap-guard aborts, failures, and actual queued coverage.
 
 ## `GET /api/v1/report/anime-remediation`
 

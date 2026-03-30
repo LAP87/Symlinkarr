@@ -29,11 +29,13 @@
   - files: `src/web/ui/dashboard.html`, `src/web/ui/scan.html`, `src/web/handlers.rs`
 - explicit `plex_db` overrides for anime remediation/reporting are now strict: wrong override paths fail instead of silently falling back to a default local Plex DB.
   - files: `src/commands/cleanup.rs`, `src/web/api/mod.rs`, `src/web/handlers.rs`, `docs/API_SCHEMA.md`, `docs/CLI_MANUAL.md`
+- Plex refresh capping now has an explicit fail-closed guard. When the planned batch count exceeds `plex.max_refresh_batches_per_run`, Symlinkarr can abort the entire Plex refresh phase and persist that state through scan history, API, and UI.
+  - files: `src/commands/scan.rs`, `src/config.rs`, `src/db.rs`, `src/web/api/mod.rs`, `src/web/templates.rs`, `src/web/ui/dashboard.html`, `src/web/ui/scan.html`, `src/web/ui/scan_history.html`, `src/web/ui/scan_run.html`
 
 ### Validation
 
 - `CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-merge cargo test -q`
-  - result: `502 passed; 0 failed`
+  - result: `509 passed; 0 failed`
 - `LD_LIBRARY_PATH=/usr/lib:/usr/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-merge cargo clippy --all-targets --all-features -- -D warnings`
   - result: passed
 - `cargo run -- cleanup --library Anime --output json remediate-anime --plex-db "/var/lib/plex/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db" --out /tmp/symlinkarr-anime-remediation-preview.json`

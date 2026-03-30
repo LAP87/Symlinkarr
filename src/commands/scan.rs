@@ -58,6 +58,7 @@ struct PlexRefreshTelemetry {
     skipped_batches: usize,
     unresolved_paths: usize,
     capped_batches: usize,
+    aborted_due_to_cap: bool,
     failed_batches: usize,
 }
 
@@ -448,6 +449,7 @@ pub(crate) async fn run_scan(
         plex_refresh_skipped_batches: telemetry.plex_refresh_stats.skipped_batches as i64,
         plex_refresh_unresolved_paths: telemetry.plex_refresh_stats.unresolved_paths as i64,
         plex_refresh_capped_batches: telemetry.plex_refresh_stats.capped_batches as i64,
+        plex_refresh_aborted_due_to_cap: telemetry.plex_refresh_stats.aborted_due_to_cap,
         plex_refresh_failed_batches: telemetry.plex_refresh_stats.failed_batches as i64,
         dead_link_sweep_ms: duration_ms_i64(telemetry.dead_link_sweep),
         cache_hit_ratio: telemetry.source_inventory_stats.cache_hit_ratio(),
@@ -595,7 +597,7 @@ fn log_scan_telemetry(
     );
 
     info!(
-        "Scan telemetry details: cache_hit_ratio={}, cached_items={}, filesystem_items={}, metadata_alias_prep={}, candidate_scan={}, destination_reduce={}, metadata_errors={}, worker_count={}, candidate_slots={}, scored_candidates={}, exact_id_hits={}, ambiguous_skipped={}, refresh_requested_paths={}, refresh_unique_paths={}, refresh_batches={}, coalesced_batches={}, refreshed_batches={}, refreshed_paths_covered={}, skipped_refresh_batches={}, capped_refresh_batches={}, failed_refresh_batches={}, unresolved_refresh_paths={}",
+        "Scan telemetry details: cache_hit_ratio={}, cached_items={}, filesystem_items={}, metadata_alias_prep={}, candidate_scan={}, destination_reduce={}, metadata_errors={}, worker_count={}, candidate_slots={}, scored_candidates={}, exact_id_hits={}, ambiguous_skipped={}, refresh_requested_paths={}, refresh_unique_paths={}, refresh_batches={}, coalesced_batches={}, refreshed_batches={}, refreshed_paths_covered={}, skipped_refresh_batches={}, capped_refresh_batches={}, refresh_aborted_due_to_cap={}, failed_refresh_batches={}, unresolved_refresh_paths={}",
         telemetry
             .source_inventory_stats
             .cache_hit_ratio()
@@ -620,6 +622,7 @@ fn log_scan_telemetry(
         telemetry.plex_refresh_stats.refreshed_paths_covered,
         telemetry.plex_refresh_stats.skipped_batches,
         telemetry.plex_refresh_stats.capped_batches,
+        telemetry.plex_refresh_stats.aborted_due_to_cap,
         telemetry.plex_refresh_stats.failed_batches,
         telemetry.plex_refresh_stats.unresolved_paths,
     );
@@ -636,7 +639,7 @@ fn log_scan_telemetry(
         fmt_duration(telemetry.dead_link_sweep),
     ));
     user_println(format!(
-        "   📊 Scan details: matches={} created={} updated={} skipped={} ambiguous={} candidates={} scored={} exact-id={} cache-hit={} refresh={}/{} skipped={} capped={}",
+        "   📊 Scan details: matches={} created={} updated={} skipped={} ambiguous={} candidates={} scored={} exact-id={} cache-hit={} refresh={}/{} skipped={} capped={}{}",
         matches.len(),
         link_summary.created,
         link_summary.updated,
@@ -654,6 +657,11 @@ fn log_scan_telemetry(
         telemetry.plex_refresh_stats.planned_batches,
         telemetry.plex_refresh_stats.skipped_batches,
         telemetry.plex_refresh_stats.capped_batches,
+        if telemetry.plex_refresh_stats.aborted_due_to_cap {
+            " aborted"
+        } else {
+            ""
+        },
     ));
 }
 
@@ -708,6 +716,28 @@ async fn trigger_plex_refresh(
     }
     telemetry.skipped_batches += plan.unresolved_paths.len();
     if dropped_batches > 0 {
+        if cfg.plex.abort_refresh_when_capped {
+            telemetry.aborted_due_to_cap = true;
+            telemetry.skipped_batches += telemetry.planned_batches;
+            user_println(format!(
+                "   ⚠️  Plex: refresh plan needed {} request(s), exceeding cap {}. Aborted all targeted refreshes to protect Plex.",
+                telemetry.planned_batches, cfg.plex.max_refresh_batches_per_run
+            ));
+            if telemetry.coalesced_batches > 0 {
+                user_println(format!(
+                    "   📺 Plex: coalesced {} path(s) into {} library-root refresh(es) before the cap guard stopped the run",
+                    telemetry.coalesced_paths, telemetry.coalesced_batches
+                ));
+            }
+            if telemetry.skipped_batches > 0 {
+                user_println(format!(
+                    "   ⚠️  Plex: {} refresh request(s) were not queued",
+                    telemetry.skipped_batches
+                ));
+            }
+            return Ok(telemetry);
+        }
+
         telemetry.skipped_batches += dropped_batches;
         user_println(format!(
             "   ⚠️  Plex: capped refresh plan at {} request(s); {} request(s) skipped to reduce load",
@@ -905,5 +935,34 @@ mod tests {
         assert_eq!(limited.batches[0].refresh_path, PathBuf::from("/library/a"));
         assert_eq!(limited.batches[1].refresh_path, PathBuf::from("/library/b"));
         assert_eq!(dropped, 1);
+    }
+
+    #[test]
+    fn scan_telemetry_summary_marks_aborted_refreshes() {
+        let telemetry = ScanTelemetry {
+            plex_refresh_stats: PlexRefreshTelemetry {
+                planned_batches: 4,
+                refreshed_batches: 0,
+                skipped_batches: 4,
+                capped_batches: 2,
+                aborted_due_to_cap: true,
+                ..PlexRefreshTelemetry::default()
+            },
+            ..ScanTelemetry::default()
+        };
+        let summary = format!(
+            "refresh={}/{} skipped={} capped={}{}",
+            telemetry.plex_refresh_stats.refreshed_batches,
+            telemetry.plex_refresh_stats.planned_batches,
+            telemetry.plex_refresh_stats.skipped_batches,
+            telemetry.plex_refresh_stats.capped_batches,
+            if telemetry.plex_refresh_stats.aborted_due_to_cap {
+                " aborted"
+            } else {
+                ""
+            }
+        );
+
+        assert!(summary.ends_with("capped=2 aborted"));
     }
 }

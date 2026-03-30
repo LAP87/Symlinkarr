@@ -84,6 +84,7 @@ tautulli:
 #   refresh_delay_ms: 250
 #   refresh_coalesce_threshold: 8
 #   max_refresh_batches_per_run: 12
+#   abort_refresh_when_capped: true
 
 radarr:
   url: "http://host.docker.internal:7878"

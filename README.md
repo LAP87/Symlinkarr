@@ -222,9 +222,10 @@ plex:
   refresh_delay_ms: 250
   refresh_coalesce_threshold: 8
   max_refresh_batches_per_run: 12
+  abort_refresh_when_capped: true
 ```
 
-If Plex becomes unstable under refresh load, raise `refresh_delay_ms`, lower `max_refresh_batches_per_run`, or temporarily set `refresh_enabled: false`.
+If Plex becomes unstable under refresh load, keep `abort_refresh_when_capped: true`, raise `refresh_delay_ms`, lower `max_refresh_batches_per_run`, or temporarily set `refresh_enabled: false`.
 
 When `--config` is omitted, Symlinkarr searches:
 

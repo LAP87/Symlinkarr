@@ -179,6 +179,7 @@ pub struct ApiPlexRefreshSummary {
     pub skipped_batches: i64,
     pub unresolved_paths: i64,
     pub capped_batches: i64,
+    pub aborted_due_to_cap: bool,
     pub failed_batches: i64,
 }
 
@@ -793,6 +794,7 @@ fn plex_refresh_summary_from_record(record: &ScanHistoryRecord) -> ApiPlexRefres
         skipped_batches: record.plex_refresh_skipped_batches,
         unresolved_paths: record.plex_refresh_unresolved_paths,
         capped_batches: record.plex_refresh_capped_batches,
+        aborted_due_to_cap: record.plex_refresh_aborted_due_to_cap,
         failed_batches: record.plex_refresh_failed_batches,
     }
 }
@@ -1575,6 +1577,7 @@ mod tests {
             plex_refresh_skipped_batches: 1,
             plex_refresh_unresolved_paths: 0,
             plex_refresh_capped_batches: 1,
+            plex_refresh_aborted_due_to_cap: true,
             plex_refresh_failed_batches: 0,
             dead_link_sweep_ms: 700,
             cache_hit_ratio: Some(0.94),
@@ -1696,6 +1699,7 @@ mod tests {
         assert_eq!(json.plex_refresh.planned_batches, 5);
         assert_eq!(json.plex_refresh.refreshed_batches, 4);
         assert_eq!(json.plex_refresh.capped_batches, 1);
+        assert!(json.plex_refresh.aborted_due_to_cap);
         assert_eq!(json.auto_acquire_successes, 4);
         assert_eq!(json.auto_acquire_requests, 10);
         assert!(json.search_missing);
@@ -1788,6 +1792,7 @@ mod tests {
         assert_eq!(run.plex_refresh.planned_batches, 5);
         assert_eq!(run.plex_refresh.refreshed_batches, 4);
         assert_eq!(run.plex_refresh.capped_batches, 1);
+        assert!(run.plex_refresh.aborted_due_to_cap);
         assert_eq!(run.auto_acquire.requests, 10);
         assert_eq!(run.auto_acquire.successes, 4);
     }

@@ -535,6 +535,9 @@ pub struct PlexConfig {
     /// Maximum Plex refresh batches queued per scan (0 = unlimited)
     #[serde(default = "default_plex_max_refresh_batches_per_run")]
     pub max_refresh_batches_per_run: usize,
+    /// Abort the entire Plex refresh phase when the planned batch count exceeds the limit
+    #[serde(default = "default_plex_abort_refresh_when_capped")]
+    pub abort_refresh_when_capped: bool,
 }
 
 fn default_plex_refresh_enabled() -> bool {
@@ -553,6 +556,10 @@ fn default_plex_max_refresh_batches_per_run() -> usize {
     12
 }
 
+fn default_plex_abort_refresh_when_capped() -> bool {
+    true
+}
+
 impl Default for PlexConfig {
     fn default() -> Self {
         Self {
@@ -562,6 +569,7 @@ impl Default for PlexConfig {
             refresh_delay_ms: default_plex_refresh_delay_ms(),
             refresh_coalesce_threshold: default_plex_refresh_coalesce_threshold(),
             max_refresh_batches_per_run: default_plex_max_refresh_batches_per_run(),
+            abort_refresh_when_capped: default_plex_abort_refresh_when_capped(),
         }
     }
 }
@@ -2079,6 +2087,7 @@ realdebrid:
         assert_eq!(plex.refresh_delay_ms, 250);
         assert_eq!(plex.refresh_coalesce_threshold, 8);
         assert_eq!(plex.max_refresh_batches_per_run, 12);
+        assert!(plex.abort_refresh_when_capped);
     }
 
     #[test]

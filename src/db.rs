@@ -50,6 +50,7 @@ pub struct ScanRunRecord {
     pub plex_refresh_skipped_batches: i64,
     pub plex_refresh_unresolved_paths: i64,
     pub plex_refresh_capped_batches: i64,
+    pub plex_refresh_aborted_due_to_cap: bool,
     pub plex_refresh_failed_batches: i64,
     pub dead_link_sweep_ms: i64,
     pub cache_hit_ratio: Option<f64>,
@@ -289,6 +290,7 @@ pub struct ScanHistoryRecord {
     pub plex_refresh_skipped_batches: i64,
     pub plex_refresh_unresolved_paths: i64,
     pub plex_refresh_capped_batches: i64,
+    pub plex_refresh_aborted_due_to_cap: bool,
     pub plex_refresh_failed_batches: i64,
     pub dead_link_sweep_ms: i64,
     pub cache_hit_ratio: Option<f64>,
@@ -313,7 +315,7 @@ pub struct Database {
     pool: SqlitePool,
 }
 
-const LATEST_SCHEMA_VERSION: i64 = 10;
+const LATEST_SCHEMA_VERSION: i64 = 11;
 
 // SqlitePool is Clone (wraps Arc), so Database can safely be Clone
 impl Clone for Database {
@@ -496,6 +498,7 @@ impl Database {
             8 => self.migration_v8_tx(tx).await,
             9 => self.migration_v9_tx(tx).await,
             10 => self.migration_v10_tx(tx).await,
+            11 => self.migration_v11_tx(tx).await,
             _ => anyhow::bail!("Unknown migration version {}", version),
         }
     }
@@ -806,9 +809,36 @@ impl Database {
         Ok(())
     }
 
+    async fn migration_v11_tx(&self, tx: &mut sqlx::Transaction<'_, Sqlite>) -> Result<()> {
+        match sqlx::query(
+            "ALTER TABLE scan_runs ADD COLUMN plex_refresh_aborted_due_to_cap INTEGER NOT NULL DEFAULT 0",
+        )
+        .execute(&mut **tx)
+        .await
+        {
+            Ok(_) => {}
+            Err(err) if err.to_string().contains("duplicate column name") => {}
+            Err(err) => return Err(err.into()),
+        }
+
+        Ok(())
+    }
+
     #[cfg(test)]
     async fn migrate_down_one(&self, current_version: i64) -> Result<()> {
         match current_version {
+            11 => {
+                if self
+                    .column_exists("scan_runs", "plex_refresh_aborted_due_to_cap")
+                    .await?
+                {
+                    sqlx::query(
+                        "ALTER TABLE scan_runs DROP COLUMN plex_refresh_aborted_due_to_cap",
+                    )
+                    .execute(&self.pool)
+                    .await?;
+                }
+            }
             10 => {
                 let columns = [
                     "plex_refresh_failed_batches",
@@ -1825,6 +1855,7 @@ impl Database {
                 plex_refresh_skipped_batches,
                 plex_refresh_unresolved_paths,
                 plex_refresh_capped_batches,
+                plex_refresh_aborted_due_to_cap,
                 plex_refresh_failed_batches,
                 dead_link_sweep_ms,
                 cache_hit_ratio,
@@ -1841,7 +1872,7 @@ impl Database {
                 auto_acquire_failed,
                 auto_acquire_completed_linked,
                 auto_acquire_completed_unlinked
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(if run.dry_run { 1 } else { 0 })
         .bind(run.library_filter.as_deref())
@@ -1872,6 +1903,11 @@ impl Database {
         .bind(run.plex_refresh_skipped_batches)
         .bind(run.plex_refresh_unresolved_paths)
         .bind(run.plex_refresh_capped_batches)
+        .bind(if run.plex_refresh_aborted_due_to_cap {
+            1
+        } else {
+            0
+        })
         .bind(run.plex_refresh_failed_batches)
         .bind(run.dead_link_sweep_ms)
         .bind(run.cache_hit_ratio)
@@ -2202,6 +2238,7 @@ impl Database {
                     plex_refresh_coalesced_paths, plex_refresh_refreshed_batches,
                     plex_refresh_refreshed_paths_covered, plex_refresh_skipped_batches,
                     plex_refresh_unresolved_paths, plex_refresh_capped_batches,
+                    plex_refresh_aborted_due_to_cap,
                     plex_refresh_failed_batches,
                     dead_link_sweep_ms, cache_hit_ratio, candidate_slots,
                     scored_candidates, exact_id_hits, auto_acquire_requests,
@@ -2234,6 +2271,7 @@ impl Database {
                     plex_refresh_coalesced_paths, plex_refresh_refreshed_batches,
                     plex_refresh_refreshed_paths_covered, plex_refresh_skipped_batches,
                     plex_refresh_unresolved_paths, plex_refresh_capped_batches,
+                    plex_refresh_aborted_due_to_cap,
                     plex_refresh_failed_batches,
                     dead_link_sweep_ms, cache_hit_ratio, candidate_slots,
                     scored_candidates, exact_id_hits, auto_acquire_requests,
@@ -2312,6 +2350,8 @@ impl Database {
             plex_refresh_skipped_batches: row.get("plex_refresh_skipped_batches"),
             plex_refresh_unresolved_paths: row.get("plex_refresh_unresolved_paths"),
             plex_refresh_capped_batches: row.get("plex_refresh_capped_batches"),
+            plex_refresh_aborted_due_to_cap: row.get::<i64, _>("plex_refresh_aborted_due_to_cap")
+                != 0,
             plex_refresh_failed_batches: row.get("plex_refresh_failed_batches"),
             dead_link_sweep_ms: row.get("dead_link_sweep_ms"),
             cache_hit_ratio: row.get("cache_hit_ratio"),
@@ -2752,6 +2792,19 @@ mod tests {
         .unwrap();
 
         assert_eq!(index_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_latest_migration_creates_plex_refresh_abort_column() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        assert!(db
+            .column_exists("scan_runs", "plex_refresh_aborted_due_to_cap")
+            .await
+            .unwrap());
     }
 
     #[tokio::test]
@@ -3613,6 +3666,7 @@ mod tests {
             plex_refresh_skipped_batches: 1,
             plex_refresh_unresolved_paths: 0,
             plex_refresh_capped_batches: 1,
+            plex_refresh_aborted_due_to_cap: true,
             plex_refresh_failed_batches: 0,
             dead_link_sweep_ms: 88,
             cache_hit_ratio: Some(1.0),
@@ -3637,6 +3691,7 @@ mod tests {
             "SELECT dry_run, library_filter, search_missing, library_items_found, source_items_found, matches_found, \
              links_created, links_updated, dead_marked, links_removed, links_skipped, \
              ambiguous_skipped, runtime_checks_ms, plex_refresh_planned_batches, plex_refresh_capped_batches, \
+             plex_refresh_aborted_due_to_cap, \
              cache_hit_ratio, candidate_slots, auto_acquire_requests, auto_acquire_dry_run_hits, auto_acquire_no_result \
              FROM scan_runs ORDER BY id DESC LIMIT 1",
         )
@@ -3674,6 +3729,8 @@ mod tests {
         assert_eq!(planned_batches, 5);
         let capped_batches: i64 = row.get("plex_refresh_capped_batches");
         assert_eq!(capped_batches, 1);
+        let aborted_due_to_cap: i64 = row.get("plex_refresh_aborted_due_to_cap");
+        assert_eq!(aborted_due_to_cap, 1);
         let cache_hit_ratio: f64 = row.get("cache_hit_ratio");
         assert_eq!(cache_hit_ratio, 1.0);
         let candidate_slots: i64 = row.get("candidate_slots");

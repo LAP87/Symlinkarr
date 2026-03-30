@@ -1570,6 +1570,7 @@ mod tests {
             plex_refresh_skipped_batches: 1,
             plex_refresh_unresolved_paths: 0,
             plex_refresh_capped_batches: 1,
+            plex_refresh_aborted_due_to_cap: true,
             plex_refresh_failed_batches: 0,
             dead_link_sweep_ms: 80,
             cache_hit_ratio: Some(0.85),
