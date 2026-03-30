@@ -225,6 +225,10 @@ symlinkarr backup list --output json
 symlinkarr backup restore backups/backup-20260321-010203.json --dry-run
 ```
 
+Notes:
+
+- `backup restore` now uses the same runtime safety gate as scan/repair/cleanup apply: if configured library roots or source mounts are unhealthy, the restore is refused before any symlink or DB mutation happens.
+
 ### `cache`
 
 Manage the Real-Debrid cache layer.

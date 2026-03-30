@@ -31,6 +31,8 @@
   - files: `src/commands/cleanup.rs`, `src/web/api/mod.rs`, `src/web/handlers.rs`, `docs/API_SCHEMA.md`, `docs/CLI_MANUAL.md`
 - Plex refresh capping now has an explicit fail-closed guard. When the planned batch count exceeds `plex.max_refresh_batches_per_run`, Symlinkarr can abort the entire Plex refresh phase and persist that state through scan history, API, and UI.
   - files: `src/commands/scan.rs`, `src/config.rs`, `src/db.rs`, `src/web/api/mod.rs`, `src/web/templates.rs`, `src/web/ui/dashboard.html`, `src/web/ui/scan.html`, `src/web/ui/scan_history.html`, `src/web/ui/scan_run.html`
+- `backup restore` now uses the same runtime mount/library health gate as other mutating flows, both in CLI and web restore.
+  - files: `src/commands/backup.rs`, `src/web/handlers.rs`, `docs/CLI_MANUAL.md`
 
 ### Validation
 

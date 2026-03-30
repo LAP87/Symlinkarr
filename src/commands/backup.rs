@@ -2,10 +2,18 @@ use anyhow::Result;
 use tracing::info;
 
 use crate::backup;
-use crate::commands::print_json;
+use crate::commands::{ensure_runtime_directories_healthy, print_json};
 use crate::config::Config;
 use crate::db::Database;
 use crate::OutputFormat;
+
+pub(crate) async fn ensure_backup_restore_runtime_healthy(
+    cfg: &Config,
+    operation: &str,
+) -> Result<()> {
+    let selected_libraries: Vec<_> = cfg.libraries.iter().collect();
+    ensure_runtime_directories_healthy(&selected_libraries, &cfg.sources, operation).await
+}
 
 pub(crate) async fn run_backup(
     cfg: &Config,
@@ -66,6 +74,7 @@ pub(crate) async fn run_backup(
             if !path.exists() {
                 anyhow::bail!("Backup file not found: {}", file);
             }
+            ensure_backup_restore_runtime_healthy(cfg, "backup restore").await?;
 
             let library_roots: Vec<_> = cfg.libraries.iter().map(|l| l.path.clone()).collect();
             let source_roots: Vec<_> = cfg.sources.iter().map(|s| s.path.clone()).collect();
@@ -99,4 +108,80 @@ pub(crate) async fn run_backup(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{
+        ApiConfig, BackupConfig, BazarrConfig, CleanupPolicyConfig, Config, ContentType,
+        DaemonConfig, DecypharrConfig, DmmConfig, FeaturesConfig, LibraryConfig, MatchingConfig,
+        PlexConfig, ProwlarrConfig, RadarrConfig, RealDebridConfig, SecurityConfig, SonarrConfig,
+        SourceConfig, SymlinkConfig, TautulliConfig, WebConfig,
+    };
+    fn restore_test_config(root: &std::path::Path) -> Config {
+        Config {
+            libraries: vec![LibraryConfig {
+                name: "Anime".to_string(),
+                path: root.join("library"),
+                media_type: crate::models::MediaType::Tv,
+                content_type: Some(ContentType::Anime),
+                depth: 1,
+            }],
+            sources: vec![SourceConfig {
+                name: "RD".to_string(),
+                path: root.join("source"),
+                media_type: "auto".to_string(),
+            }],
+            realdebrid: RealDebridConfig::default(),
+            decypharr: DecypharrConfig::default(),
+            dmm: DmmConfig::default(),
+            api: ApiConfig::default(),
+            db_path: root.join("test.db").display().to_string(),
+            log_level: "info".to_string(),
+            daemon: DaemonConfig::default(),
+            symlink: SymlinkConfig::default(),
+            matching: MatchingConfig::default(),
+            prowlarr: ProwlarrConfig::default(),
+            bazarr: BazarrConfig::default(),
+            tautulli: TautulliConfig::default(),
+            plex: PlexConfig::default(),
+            radarr: RadarrConfig::default(),
+            sonarr: SonarrConfig::default(),
+            sonarr_anime: SonarrConfig::default(),
+            features: FeaturesConfig::default(),
+            security: SecurityConfig::default(),
+            cleanup: CleanupPolicyConfig::default(),
+            backup: BackupConfig::default(),
+            web: WebConfig::default(),
+            loaded_from: None,
+            secret_files: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn ensure_backup_restore_runtime_healthy_rejects_missing_mounts() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = restore_test_config(dir.path());
+
+        let err = ensure_backup_restore_runtime_healthy(&cfg, "backup restore")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("Refusing backup restore"));
+    }
+
+    #[tokio::test]
+    async fn ensure_backup_restore_runtime_healthy_accepts_existing_roots() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = restore_test_config(dir.path());
+        std::fs::create_dir_all(dir.path().join("library")).unwrap();
+        std::fs::create_dir_all(dir.path().join("source")).unwrap();
+
+        cfg.libraries[0].path = dir.path().join("library");
+        cfg.sources[0].path = dir.path().join("source");
+
+        ensure_backup_restore_runtime_healthy(&cfg, "backup restore")
+            .await
+            .unwrap();
+    }
 }

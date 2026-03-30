@@ -13,6 +13,7 @@ use tracing::{error, info};
 
 use crate::backup::BackupManager;
 use crate::cleanup_audit::{self, CleanupScope};
+use crate::commands::backup::ensure_backup_restore_runtime_healthy;
 use crate::commands::config::validate_config_report;
 use crate::commands::discover::load_discovery_snapshot;
 use crate::commands::doctor::{collect_doctor_checks, DoctorCheckMode};
@@ -1340,6 +1341,19 @@ pub async fn post_backup_restore(
             }
         };
 
+    if let Err(e) = ensure_backup_restore_runtime_healthy(&state.config, "backup restore").await {
+        let template = BackupResultTemplate {
+            success: false,
+            message: format!("Restore failed: {}", e),
+            backup_path: Some(backup_path),
+        };
+        return Html(
+            template
+                .render()
+                .unwrap_or_else(|render_err| render_err.to_string()),
+        );
+    }
+
     let allowed_roots: Vec<PathBuf> = state
         .config
         .libraries
@@ -2294,6 +2308,29 @@ mod tests {
         let backup_dir = PathBuf::from("/srv/symlinkarr/backups");
         let path = resolve_backup_restore_path(&backup_dir, "backup-20260329.json").unwrap();
         assert_eq!(path, backup_dir.join("backup-20260329.json"));
+    }
+
+    #[tokio::test]
+    async fn post_backup_restore_rejects_unhealthy_runtime_roots() {
+        let ctx = test_context().await;
+        let backup_file = "backup-20260330.json";
+        let backup_path = ctx.state.config.backup.path.join(backup_file);
+        std::fs::write(&backup_path, "{}").unwrap();
+        std::fs::remove_dir_all(&ctx.state.config.sources[0].path).unwrap();
+
+        let response = post_backup_restore(
+            State(ctx.state),
+            Form(BackupRestoreForm {
+                backup_file: backup_file.to_string(),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(body.contains("Restore failed: Refusing backup restore"));
     }
 
     #[test]
