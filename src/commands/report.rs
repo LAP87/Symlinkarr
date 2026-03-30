@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use chrono::Utc;
 use rayon::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
 use crate::anime_roots::collect_anime_root_duplicate_groups;
@@ -104,24 +104,24 @@ struct CorrelatedAnimeDuplicateSample {
     plex_guids: Vec<String>,
 }
 
-#[derive(Serialize, Debug, Default, Clone, PartialEq, Eq)]
-struct AnimeRootUsageSample {
-    path: PathBuf,
-    filesystem_symlinks: usize,
-    db_active_links: usize,
+#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct AnimeRootUsageSample {
+    pub path: PathBuf,
+    pub filesystem_symlinks: usize,
+    pub db_active_links: usize,
 }
 
-#[derive(Serialize, Debug, Default, Clone, PartialEq, Eq)]
-struct AnimeRemediationSample {
-    normalized_title: String,
-    recommended_tagged_root: AnimeRootUsageSample,
-    alternate_tagged_roots: Vec<AnimeRootUsageSample>,
-    legacy_roots: Vec<AnimeRootUsageSample>,
-    plex_total_rows: usize,
-    plex_live_rows: usize,
-    plex_deleted_rows: usize,
-    plex_guid_kinds: Vec<String>,
-    plex_guids: Vec<String>,
+#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct AnimeRemediationSample {
+    pub normalized_title: String,
+    pub recommended_tagged_root: AnimeRootUsageSample,
+    pub alternate_tagged_roots: Vec<AnimeRootUsageSample>,
+    pub legacy_roots: Vec<AnimeRootUsageSample>,
+    pub plex_total_rows: usize,
+    pub plex_live_rows: usize,
+    pub plex_deleted_rows: usize,
+    pub plex_guid_kinds: Vec<String>,
+    pub plex_guids: Vec<String>,
 }
 
 #[derive(Serialize, Debug, Default, Clone, PartialEq, Eq)]
@@ -136,6 +136,19 @@ struct AnimeDuplicateAuditOutput {
     correlated_sample_groups: Option<Vec<CorrelatedAnimeDuplicateSample>>,
     remediation_groups: Option<usize>,
     remediation_sample_groups: Option<Vec<AnimeRemediationSample>>,
+}
+
+#[derive(Serialize, Debug, Default, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) struct AnimeRemediationReportOutput {
+    pub generated_at: String,
+    pub filesystem_mixed_root_groups: usize,
+    pub plex_duplicate_show_groups: usize,
+    pub plex_hama_anidb_tvdb_groups: usize,
+    pub correlated_hama_split_groups: usize,
+    pub remediation_groups: usize,
+    pub returned_groups: usize,
+    pub groups: Vec<AnimeRemediationSample>,
 }
 
 struct LibraryScannerItem {
@@ -156,6 +169,7 @@ pub(crate) struct ReportOptions<'a> {
     pub(crate) library_filter: Option<&'a str>,
     pub(crate) plex_db_path: Option<&'a Path>,
     pub(crate) full_anime_duplicates: bool,
+    pub(crate) anime_remediation_tsv_path: Option<&'a Path>,
     pub(crate) pretty: bool,
 }
 
@@ -164,15 +178,21 @@ pub(crate) async fn run_report(
     db: &Database,
     options: ReportOptions<'_>,
 ) -> Result<()> {
+    let effective_full_anime_duplicates =
+        options.full_anime_duplicates || options.anime_remediation_tsv_path.is_some();
     let report = build_report(
         cfg,
         db,
         options.filter,
         options.library_filter,
         options.plex_db_path,
-        options.full_anime_duplicates,
+        effective_full_anime_duplicates,
     )
     .await?;
+
+    if let Some(tsv_path) = options.anime_remediation_tsv_path {
+        write_anime_remediation_tsv(tsv_path, &report)?;
+    }
 
     match options.output_format {
         OutputFormat::Json => {
@@ -186,11 +206,55 @@ pub(crate) async fn run_report(
                 println!("{}", serde_json::to_string(&report).unwrap_or_default());
             }
         }
-        OutputFormat::Text => emit_text_report(&report),
+        OutputFormat::Text => emit_text_report(&report, options.anime_remediation_tsv_path),
     }
 
     Ok(())
 }
+
+#[allow(dead_code)]
+pub(crate) async fn build_anime_remediation_report(
+    cfg: &Config,
+    db: &Database,
+    plex_db_path: &Path,
+    full: bool,
+) -> Result<Option<AnimeRemediationReportOutput>> {
+    let anime_libraries: Vec<&LibraryConfig> = cfg
+        .libraries
+        .iter()
+        .filter(|lib| lib.content_type == Some(ContentType::Anime))
+        .collect();
+    if anime_libraries.is_empty() {
+        return Ok(None);
+    }
+
+    let roots: Vec<PathBuf> = anime_libraries.iter().map(|lib| lib.path.clone()).collect();
+    let link_records = db.get_links_scoped(Some(&roots)).await?;
+    let generated_at = Utc::now().to_rfc3339();
+    let anime_duplicates =
+        build_anime_duplicate_audit(&anime_libraries, &link_records, Some(plex_db_path), full)
+            .await?;
+    let Some(anime_duplicates) = anime_duplicates else {
+        return Ok(None);
+    };
+
+    Ok(Some(AnimeRemediationReportOutput {
+        generated_at,
+        filesystem_mixed_root_groups: anime_duplicates.filesystem_mixed_root_groups,
+        plex_duplicate_show_groups: anime_duplicates.plex_duplicate_show_groups.unwrap_or(0),
+        plex_hama_anidb_tvdb_groups: anime_duplicates.plex_hama_anidb_tvdb_groups.unwrap_or(0),
+        correlated_hama_split_groups: anime_duplicates.correlated_hama_split_groups.unwrap_or(0),
+        remediation_groups: anime_duplicates.remediation_groups.unwrap_or(0),
+        returned_groups: anime_duplicates
+            .remediation_sample_groups
+            .as_ref()
+            .map_or(0, Vec::len),
+        groups: anime_duplicates
+            .remediation_sample_groups
+            .unwrap_or_default(),
+    }))
+}
+
 async fn build_report(
     cfg: &Config,
     db: &Database,
@@ -913,7 +977,72 @@ fn symlink_source_missing(path: &Path) -> bool {
     !resolved.exists()
 }
 
-fn emit_text_report(report: &ReportOutput) {
+fn write_anime_remediation_tsv(path: &Path, report: &ReportOutput) -> Result<()> {
+    let Some(anime_duplicates) = &report.anime_duplicates else {
+        anyhow::bail!("Anime remediation TSV export requires an anime library selection");
+    };
+    let Some(samples) = &anime_duplicates.remediation_sample_groups else {
+        anyhow::bail!(
+            "Anime remediation TSV export requires --plex-db so correlated groups can be resolved"
+        );
+    };
+
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+
+    let mut out = String::from(
+        "normalized_title\tlegacy_root_paths\tlegacy_filesystem_symlinks\tlegacy_db_active_links\trecommended_tagged_root\trecommended_tagged_root_fs\trecommended_tagged_root_db\tplex_live_rows\tplex_deleted_rows\tplex_guid_kinds\tplex_guids\n",
+    );
+
+    for sample in samples {
+        let legacy_paths = sample
+            .legacy_roots
+            .iter()
+            .map(|root| root.path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        let legacy_fs: usize = sample
+            .legacy_roots
+            .iter()
+            .map(|root| root.filesystem_symlinks)
+            .sum();
+        let legacy_db: usize = sample
+            .legacy_roots
+            .iter()
+            .map(|root| root.db_active_links)
+            .sum();
+        let guid_kinds = sample.plex_guid_kinds.join(" | ");
+        let guids = sample.plex_guids.join(" | ");
+
+        out.push_str(&format!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            sample.normalized_title.replace('\t', " "),
+            legacy_paths.replace('\t', " "),
+            legacy_fs,
+            legacy_db,
+            sample
+                .recommended_tagged_root
+                .path
+                .display()
+                .to_string()
+                .replace('\t', " "),
+            sample.recommended_tagged_root.filesystem_symlinks,
+            sample.recommended_tagged_root.db_active_links,
+            sample.plex_live_rows,
+            sample.plex_deleted_rows,
+            guid_kinds.replace('\t', " "),
+            guids.replace('\t', " "),
+        ));
+    }
+
+    std::fs::write(path, out)?;
+    Ok(())
+}
+
+fn emit_text_report(report: &ReportOutput, anime_remediation_tsv_path: Option<&Path>) {
     println!();
     panel_border('╔', '═', '╗');
     panel_title("Symlinkarr Report");
@@ -1117,6 +1246,9 @@ fn emit_text_report(report: &ReportOutput) {
     }
 
     panel_border('╚', '═', '╝');
+    if let Some(path) = anime_remediation_tsv_path {
+        println!("  Anime remediation TSV: {}", path.display());
+    }
     println!();
 }
 
@@ -1593,6 +1725,53 @@ mod tests {
         assert_eq!(samples[0].legacy_roots.len(), 1);
         assert_eq!(samples[0].legacy_roots[0].path, legacy);
         assert_eq!(samples[0].legacy_roots[0].filesystem_symlinks, 7);
+    }
+
+    #[test]
+    fn test_write_anime_remediation_tsv_outputs_expected_columns() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let out = dir.path().join("remediation.tsv");
+        let report = ReportOutput {
+            generated_at: "2026-03-30T18:00:00Z".to_string(),
+            summary: Summary::default(),
+            by_media_type: BTreeMap::new(),
+            top_libraries: Vec::new(),
+            path_compare: PathCompareOutput::default(),
+            anime_duplicates: Some(AnimeDuplicateAuditOutput {
+                remediation_groups: Some(1),
+                remediation_sample_groups: Some(vec![AnimeRemediationSample {
+                    normalized_title: "Show A".to_string(),
+                    recommended_tagged_root: AnimeRootUsageSample {
+                        path: PathBuf::from("/anime/Show A (2024) {tvdb-1}"),
+                        filesystem_symlinks: 12,
+                        db_active_links: 10,
+                    },
+                    alternate_tagged_roots: Vec::new(),
+                    legacy_roots: vec![AnimeRootUsageSample {
+                        path: PathBuf::from("/anime/Show A"),
+                        filesystem_symlinks: 7,
+                        db_active_links: 2,
+                    }],
+                    plex_total_rows: 2,
+                    plex_live_rows: 2,
+                    plex_deleted_rows: 0,
+                    plex_guid_kinds: vec!["hama-anidb".to_string(), "hama-tvdb".to_string()],
+                    plex_guids: vec![
+                        "com.plexapp.agents.hama://anidb-100?lang=en".to_string(),
+                        "com.plexapp.agents.hama://tvdb-200?lang=en".to_string(),
+                    ],
+                }]),
+                ..Default::default()
+            }),
+        };
+
+        write_anime_remediation_tsv(&out, &report).unwrap();
+        let tsv = std::fs::read_to_string(out).unwrap();
+        assert!(tsv.contains("normalized_title\tlegacy_root_paths"));
+        assert!(tsv.contains("Show A"));
+        assert!(tsv.contains("/anime/Show A"));
+        assert!(tsv.contains("/anime/Show A (2024) {tvdb-1}"));
+        assert!(tsv.contains("hama-anidb | hama-tvdb"));
     }
 
     #[test]

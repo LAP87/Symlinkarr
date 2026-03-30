@@ -202,6 +202,9 @@ enum Commands {
         /// Include all anime duplicate groups instead of the default sample-limited output
         #[arg(long)]
         full_anime_duplicates: bool,
+        /// Optional TSV export path for the anime remediation queue
+        #[arg(long)]
+        anime_remediation_tsv: Option<String>,
         /// Pretty-print JSON output
         #[arg(long)]
         pretty: bool,
@@ -410,6 +413,7 @@ async fn main() -> Result<()> {
             library,
             plex_db,
             full_anime_duplicates,
+            anime_remediation_tsv,
             pretty,
         } => {
             let media_type_filter = match filter.as_deref() {
@@ -430,6 +434,9 @@ async fn main() -> Result<()> {
                     library_filter: library.as_deref(),
                     plex_db_path: plex_db.as_deref().map(std::path::Path::new),
                     full_anime_duplicates,
+                    anime_remediation_tsv_path: anime_remediation_tsv
+                        .as_deref()
+                        .map(std::path::Path::new),
                     pretty,
                 },
             )
@@ -502,6 +509,37 @@ mod tests {
                 );
                 assert!(full_anime_duplicates);
                 assert!(pretty);
+            }
+            _ => panic!("expected report command"),
+        }
+    }
+
+    #[test]
+    fn cli_accepts_report_with_anime_remediation_tsv() {
+        let cli = Cli::try_parse_from([
+            "symlinkarr",
+            "report",
+            "--library",
+            "Anime",
+            "--plex-db",
+            "/tmp/plex.db",
+            "--anime-remediation-tsv",
+            "/tmp/anime-remediation.tsv",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Report {
+                library,
+                plex_db,
+                anime_remediation_tsv,
+                ..
+            } => {
+                assert_eq!(library.as_deref(), Some("Anime"));
+                assert_eq!(plex_db.as_deref(), Some("/tmp/plex.db"));
+                assert_eq!(
+                    anime_remediation_tsv.as_deref(),
+                    Some("/tmp/anime-remediation.tsv")
+                );
             }
             _ => panic!("expected report command"),
         }

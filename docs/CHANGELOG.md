@@ -34,6 +34,12 @@
 - anime duplicate exports now also emit a prioritized remediation queue for the correlated legacy-root/Hama-split set.
   - the queue ranks titles by legacy-root filesystem/DB impact and points at the recommended tagged root to keep, which turns the raw duplicate counters into an operator worklist
   - files: `src/commands/report.rs`
+- the web API can now expose the anime remediation backlog directly, with a local Plex DB path auto-discovery fallback for common host installs.
+  - this gives operators a stable JSON surface for the ranked remediation queue instead of requiring direct CLI report parsing every time
+  - files: `src/web/api/mod.rs`, `src/commands/report.rs`, `docs/API_SCHEMA.md`
+- `report` can now export the anime remediation queue directly as TSV for spreadsheet/ops workflows.
+  - `--anime-remediation-tsv` writes the ranked queue to disk and implicitly lifts the queue sample cap, so operators can work through the full correlated anime backlog without custom `jq` glue
+  - files: `src/main.rs`, `src/commands/report.rs`
 - Plex refreshes now have first-class pacing controls.
   - `plex.refresh_delay_ms`, `plex.refresh_coalesce_threshold`, and `plex.max_refresh_batches_per_run` let operators slow or cap queued refreshes to avoid overloading Plex during larger relink waves
   - files: `src/config.rs`, `src/commands/scan.rs`, `config.example.yaml`, `config.docker.yaml`

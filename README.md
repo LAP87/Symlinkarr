@@ -261,10 +261,11 @@ symlinkarr status --health
 symlinkarr doctor --output json
 symlinkarr report --plex-db "/var/lib/plex/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db"
 symlinkarr report --library Anime --plex-db "/var/lib/plex/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db" --full-anime-duplicates --output json --pretty
+symlinkarr report --library Anime --plex-db "/var/lib/plex/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db" --anime-remediation-tsv /tmp/anime-remediation.tsv
 ```
 
 For Plex drift analysis, treat Plex `deleted_at` as a hint, not as truth. Symlinkarr only considers `Plex deleted + known missing source` to be a strong removal signal, which protects against mass false deletes when Plex scans while the RD mount is temporarily down.
-For anime remediation exports, `--full-anime-duplicates` disables the default sample cap so the report contains the full backlog of mixed legacy roots and correlated Hama AniDB/TVDB split groups. When you also pass `--plex-db`, the report now ranks a remediation queue so you can start with the heaviest legacy-root/Hama-split collisions first.
+For anime remediation exports, `--full-anime-duplicates` disables the default sample cap so the report contains the full backlog of mixed legacy roots and correlated Hama AniDB/TVDB split groups. When you also pass `--plex-db`, the report now ranks a remediation queue so you can start with the heaviest legacy-root/Hama-split collisions first. `--anime-remediation-tsv` writes that queue as a spreadsheet-friendly worklist on disk.
 
 Manage auto-acquire queue:
 
@@ -310,6 +311,7 @@ The built-in web UI exposes:
 - scan history and per-run telemetry
 - cleanup audit and prune preview flows
 - dead-link review
+- anime remediation backlog via the JSON API
 - JSON API endpoints under `/api/v1`
 
 Current API coverage is documented in [API_SCHEMA.md](docs/API_SCHEMA.md).
