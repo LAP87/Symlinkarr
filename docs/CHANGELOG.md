@@ -25,6 +25,8 @@
   - files: `src/web/templates.rs`, `src/web/ui/scan_history.html`, `src/web/ui/scan_run.html`, `src/web/api/mod.rs`, `docs/API_SCHEMA.md`
 - added narrow JSON endpoints for guarded anime remediation preview/apply, both backed by the same saved-plan/token workflow as the CLI path.
   - files: `src/commands/cleanup.rs`, `src/web/api/mod.rs`, `docs/API_SCHEMA.md`
+- dashboard and scan pages now surface Plex refresh protection warnings directly when the latest run hit caps, skips, unresolved paths, or refresh failures.
+  - files: `src/web/ui/dashboard.html`, `src/web/ui/scan.html`, `src/web/handlers.rs`
 
 ### Validation
 

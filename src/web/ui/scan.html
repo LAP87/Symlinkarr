@@ -148,6 +148,17 @@
         <div class="telemetry-item"><span>Dead Sweep</span><strong>{{ run.dead_link_sweep }}</strong></div>
     </div>
 
+    {% if run.plex_refresh_capped_batches > 0 || run.plex_refresh_skipped_batches > 0 || run.plex_refresh_failed_batches > 0 || run.plex_refresh_unresolved_paths > 0 %}
+    <div class="alert alert-warning mt-2">
+        <strong>Plex refresh protections activated.</strong>
+        Refreshed {{ run.plex_refresh_refreshed_batches }}/{{ run.plex_refresh_planned_batches }} batches.
+        {% if run.plex_refresh_capped_batches > 0 %}Capped {{ run.plex_refresh_capped_batches }}.{% endif %}
+        {% if run.plex_refresh_skipped_batches > 0 %}Skipped {{ run.plex_refresh_skipped_batches }}.{% endif %}
+        {% if run.plex_refresh_failed_batches > 0 %}Failed {{ run.plex_refresh_failed_batches }}.{% endif %}
+        {% if run.plex_refresh_unresolved_paths > 0 %}Unresolved paths {{ run.plex_refresh_unresolved_paths }}.{% endif %}
+    </div>
+    {% endif %}
+
     <div class="split-grid split-grid--tight mt-2">
         <div class="card card--nested">
             <h3 class="subsection-title">Matcher Signals</h3>
@@ -232,6 +243,7 @@
                 <th>Matches</th>
                 <th>Created</th>
                 <th>Updated</th>
+                <th>Plex</th>
                 <th>Acquire</th>
                 <th>Dead</th>
             </tr>
@@ -255,6 +267,19 @@
                 <td>{{ run.matches_found }}</td>
                 <td class="text-success">{{ run.links_created }}</td>
                 <td>{{ run.links_updated }}</td>
+                <td>
+                    {% if run.plex_refresh_planned_batches > 0 || run.plex_refresh_requested_paths > 0 %}
+                    {{ run.plex_refresh_refreshed_batches }}/{{ run.plex_refresh_planned_batches }}
+                    {% if run.plex_refresh_capped_batches > 0 %}
+                    <span class="badge badge-warning">cap {{ run.plex_refresh_capped_batches }}</span>
+                    {% endif %}
+                    {% if run.plex_refresh_skipped_batches > 0 %}
+                    <span class="badge badge-danger">skip {{ run.plex_refresh_skipped_batches }}</span>
+                    {% endif %}
+                    {% else %}
+                    <span class="text-muted">n/a</span>
+                    {% endif %}
+                </td>
                 <td>
                     {% if run.auto_acquire_requests > 0 %}
                     {{ run.auto_acquire_successes }}/{{ run.auto_acquire_requests }}

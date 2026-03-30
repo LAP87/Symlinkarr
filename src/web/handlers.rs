@@ -1687,6 +1687,7 @@ mod tests {
         assert!(body.contains("Auto-Acquire Queue"));
         assert!(body.contains("Queue 1"));
         assert!(body.contains("Cache Hit"));
+        assert!(body.contains("Plex refresh protections activated"));
     }
 
     #[tokio::test]
@@ -1702,6 +1703,7 @@ mod tests {
         assert!(body.contains("Candidate Slots"));
         assert!(body.contains("1024"));
         assert!(body.contains("4/6"));
+        assert!(body.contains("Plex refresh protections activated"));
     }
 
     #[tokio::test]
