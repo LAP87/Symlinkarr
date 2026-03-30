@@ -264,7 +264,7 @@ symlinkarr report --library Anime --plex-db "/var/lib/plex/Plex Media Server/Plu
 ```
 
 For Plex drift analysis, treat Plex `deleted_at` as a hint, not as truth. Symlinkarr only considers `Plex deleted + known missing source` to be a strong removal signal, which protects against mass false deletes when Plex scans while the RD mount is temporarily down.
-For anime remediation exports, `--full-anime-duplicates` disables the default sample cap so the report contains the full backlog of mixed legacy roots and correlated Hama AniDB/TVDB split groups.
+For anime remediation exports, `--full-anime-duplicates` disables the default sample cap so the report contains the full backlog of mixed legacy roots and correlated Hama AniDB/TVDB split groups. When you also pass `--plex-db`, the report now ranks a remediation queue so you can start with the heaviest legacy-root/Hama-split collisions first.
 
 Manage auto-acquire queue:
 

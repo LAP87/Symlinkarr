@@ -105,6 +105,26 @@ struct CorrelatedAnimeDuplicateSample {
 }
 
 #[derive(Serialize, Debug, Default, Clone, PartialEq, Eq)]
+struct AnimeRootUsageSample {
+    path: PathBuf,
+    filesystem_symlinks: usize,
+    db_active_links: usize,
+}
+
+#[derive(Serialize, Debug, Default, Clone, PartialEq, Eq)]
+struct AnimeRemediationSample {
+    normalized_title: String,
+    recommended_tagged_root: AnimeRootUsageSample,
+    alternate_tagged_roots: Vec<AnimeRootUsageSample>,
+    legacy_roots: Vec<AnimeRootUsageSample>,
+    plex_total_rows: usize,
+    plex_live_rows: usize,
+    plex_deleted_rows: usize,
+    plex_guid_kinds: Vec<String>,
+    plex_guids: Vec<String>,
+}
+
+#[derive(Serialize, Debug, Default, Clone, PartialEq, Eq)]
 struct AnimeDuplicateAuditOutput {
     filesystem_mixed_root_groups: usize,
     filesystem_sample_groups: Vec<AnimeRootDuplicateSample>,
@@ -114,6 +134,8 @@ struct AnimeDuplicateAuditOutput {
     plex_sample_groups: Option<Vec<PlexDuplicateShowSample>>,
     correlated_hama_split_groups: Option<usize>,
     correlated_sample_groups: Option<Vec<CorrelatedAnimeDuplicateSample>>,
+    remediation_groups: Option<usize>,
+    remediation_sample_groups: Option<Vec<AnimeRemediationSample>>,
 }
 
 struct LibraryScannerItem {
@@ -291,9 +313,13 @@ async fn build_report(
     top_libraries.sort_by(|a, b| b.items.cmp(&a.items).then_with(|| a.name.cmp(&b.name)));
     top_libraries.truncate(10);
 
-    let anime_duplicates =
-        build_anime_duplicate_audit(&selected_libraries, plex_db_path, full_anime_duplicates)
-            .await?;
+    let anime_duplicates = build_anime_duplicate_audit(
+        &selected_libraries,
+        &link_records,
+        plex_db_path,
+        full_anime_duplicates,
+    )
+    .await?;
     let path_compare = build_path_compare(
         &selected_libraries,
         &selected_roots,
@@ -453,6 +479,7 @@ async fn build_path_compare(
 
 async fn build_anime_duplicate_audit(
     libraries: &[&LibraryConfig],
+    link_records: &[crate::models::LinkRecord],
     plex_db_path: Option<&Path>,
     full_anime_duplicates: bool,
 ) -> Result<Option<AnimeDuplicateAuditOutput>> {
@@ -489,6 +516,8 @@ async fn build_anime_duplicate_audit(
         plex_sample_groups,
         correlated_hama_split_groups,
         correlated_sample_groups,
+        remediation_groups,
+        remediation_sample_groups,
     ) = if let Some(db_path) = plex_db_path {
         let roots: Vec<PathBuf> = anime_libraries.iter().map(|lib| lib.path.clone()).collect();
         let records = plex_db::load_duplicate_show_records(db_path, &roots).await?;
@@ -496,6 +525,10 @@ async fn build_anime_duplicate_audit(
         let correlated_groups = correlate_anime_duplicate_groups(
             &collect_anime_root_duplicate_groups(&anime_libraries),
             &summary.all_groups,
+        );
+        let remediation_groups_all = build_anime_remediation_samples(
+            &correlated_groups,
+            &collect_anime_root_usage(&anime_libraries, link_records),
         );
         (
             Some(summary.total_groups),
@@ -509,9 +542,16 @@ async fn build_anime_duplicate_audit(
                     .take(anime_sample_limit)
                     .collect(),
             ),
+            Some(remediation_groups_all.len()),
+            Some(
+                remediation_groups_all
+                    .into_iter()
+                    .take(anime_sample_limit)
+                    .collect(),
+            ),
         )
     } else {
-        (None, None, None, None, None, None)
+        (None, None, None, None, None, None, None, None)
     };
 
     Ok(Some(AnimeDuplicateAuditOutput {
@@ -523,6 +563,8 @@ async fn build_anime_duplicate_audit(
         plex_sample_groups,
         correlated_hama_split_groups,
         correlated_sample_groups,
+        remediation_groups,
+        remediation_sample_groups,
     }))
 }
 
@@ -651,6 +693,142 @@ fn correlate_anime_duplicate_groups(
             .then_with(|| a.normalized_title.cmp(&b.normalized_title))
     });
     correlated
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct AnimeRootUsage {
+    filesystem_symlinks: usize,
+    db_active_links: usize,
+}
+
+fn collect_anime_root_usage(
+    anime_libraries: &[&LibraryConfig],
+    link_records: &[crate::models::LinkRecord],
+) -> HashMap<PathBuf, AnimeRootUsage> {
+    let mut by_root: HashMap<PathBuf, AnimeRootUsage> = HashMap::new();
+
+    for library in anime_libraries {
+        for entry in WalkDir::new(&library.path).follow_links(false) {
+            let Ok(entry) = entry else {
+                continue;
+            };
+            if !entry.file_type().is_symlink() {
+                continue;
+            }
+            let Some(root) = anime_show_root_for_path(anime_libraries, entry.path()) else {
+                continue;
+            };
+            by_root.entry(root).or_default().filesystem_symlinks += 1;
+        }
+    }
+
+    for link in link_records
+        .iter()
+        .filter(|link| link.status == crate::models::LinkStatus::Active)
+    {
+        let Some(root) = anime_show_root_for_path(anime_libraries, &link.target_path) else {
+            continue;
+        };
+        by_root.entry(root).or_default().db_active_links += 1;
+    }
+
+    by_root
+}
+
+fn anime_show_root_for_path(anime_libraries: &[&LibraryConfig], path: &Path) -> Option<PathBuf> {
+    let library = anime_libraries
+        .iter()
+        .filter(|lib| path.starts_with(&lib.path))
+        .max_by_key(|lib| lib.path.components().count())?;
+    let first_component = path.strip_prefix(&library.path).ok()?.components().next()?;
+    Some(library.path.join(first_component.as_os_str()))
+}
+
+fn build_anime_remediation_samples(
+    correlated_groups: &[CorrelatedAnimeDuplicateSample],
+    root_usage: &HashMap<PathBuf, AnimeRootUsage>,
+) -> Vec<AnimeRemediationSample> {
+    let mut samples = Vec::new();
+
+    for group in correlated_groups {
+        let mut tagged_roots: Vec<_> = group
+            .tagged_roots
+            .iter()
+            .map(|path| AnimeRootUsageSample {
+                path: path.clone(),
+                filesystem_symlinks: root_usage
+                    .get(path)
+                    .map_or(0, |usage| usage.filesystem_symlinks),
+                db_active_links: root_usage
+                    .get(path)
+                    .map_or(0, |usage| usage.db_active_links),
+            })
+            .collect();
+        tagged_roots.sort_by(compare_root_usage);
+
+        let Some(recommended_tagged_root) = tagged_roots.first().cloned() else {
+            continue;
+        };
+
+        let mut legacy_roots: Vec<_> = group
+            .untagged_roots
+            .iter()
+            .map(|path| AnimeRootUsageSample {
+                path: path.clone(),
+                filesystem_symlinks: root_usage
+                    .get(path)
+                    .map_or(0, |usage| usage.filesystem_symlinks),
+                db_active_links: root_usage
+                    .get(path)
+                    .map_or(0, |usage| usage.db_active_links),
+            })
+            .collect();
+        legacy_roots.sort_by(compare_root_usage);
+
+        samples.push(AnimeRemediationSample {
+            normalized_title: group.normalized_title.clone(),
+            recommended_tagged_root,
+            alternate_tagged_roots: tagged_roots.into_iter().skip(1).collect(),
+            legacy_roots,
+            plex_total_rows: group.plex_total_rows,
+            plex_live_rows: group.plex_live_rows,
+            plex_deleted_rows: group.plex_deleted_rows,
+            plex_guid_kinds: group.plex_guid_kinds.clone(),
+            plex_guids: group.plex_guids.clone(),
+        });
+    }
+
+    samples.sort_by(|left, right| {
+        remediation_impact(right)
+            .cmp(&remediation_impact(left))
+            .then_with(|| left.normalized_title.cmp(&right.normalized_title))
+    });
+    samples
+}
+
+fn compare_root_usage(
+    left: &AnimeRootUsageSample,
+    right: &AnimeRootUsageSample,
+) -> std::cmp::Ordering {
+    right
+        .db_active_links
+        .cmp(&left.db_active_links)
+        .then_with(|| right.filesystem_symlinks.cmp(&left.filesystem_symlinks))
+        .then_with(|| left.path.cmp(&right.path))
+}
+
+fn remediation_impact(sample: &AnimeRemediationSample) -> (usize, usize, usize) {
+    let legacy_fs = sample
+        .legacy_roots
+        .iter()
+        .map(|root| root.filesystem_symlinks)
+        .sum();
+    let legacy_db = sample
+        .legacy_roots
+        .iter()
+        .map(|root| root.db_active_links)
+        .sum();
+    (legacy_fs, legacy_db, sample.plex_live_rows)
 }
 
 struct FilesystemSymlinkScan {
@@ -833,6 +1011,9 @@ fn emit_text_report(report: &ReportOutput) {
         if let Some(groups) = anime_duplicates.correlated_hama_split_groups {
             panel_kv_row("  Correlated HAMA+FS:", groups);
         }
+        if let Some(groups) = anime_duplicates.remediation_groups {
+            panel_kv_row("  Remediation groups:", groups);
+        }
 
         if !anime_duplicates.filesystem_sample_groups.is_empty() {
             println!("  Sample mixed roots:");
@@ -887,6 +1068,48 @@ fn emit_text_report(report: &ReportOutput) {
                     }
                     if let Some(path) = sample.tagged_roots.first() {
                         println!("      tagged: {}", path.display());
+                    }
+                }
+            }
+        }
+
+        if let Some(samples) = &anime_duplicates.remediation_sample_groups {
+            if !samples.is_empty() {
+                println!("  Sample remediation plan:");
+                for sample in samples {
+                    let legacy_fs: usize = sample
+                        .legacy_roots
+                        .iter()
+                        .map(|root| root.filesystem_symlinks)
+                        .sum();
+                    let legacy_db: usize = sample
+                        .legacy_roots
+                        .iter()
+                        .map(|root| root.db_active_links)
+                        .sum();
+                    println!(
+                        "    - {} [legacy fs={}, legacy db={}]",
+                        sample.normalized_title, legacy_fs, legacy_db
+                    );
+                    println!(
+                        "      keep: {} (fs={}, db={})",
+                        sample.recommended_tagged_root.path.display(),
+                        sample.recommended_tagged_root.filesystem_symlinks,
+                        sample.recommended_tagged_root.db_active_links
+                    );
+                    if let Some(root) = sample.legacy_roots.first() {
+                        println!(
+                            "      legacy: {} (fs={}, db={})",
+                            root.path.display(),
+                            root.filesystem_symlinks,
+                            root.db_active_links
+                        );
+                    }
+                    if !sample.alternate_tagged_roots.is_empty() {
+                        println!(
+                            "      alt tagged roots: {}",
+                            sample.alternate_tagged_roots.len()
+                        );
                     }
                 }
             }
@@ -1132,6 +1355,244 @@ mod tests {
                 ],
             }]
         );
+    }
+
+    #[test]
+    fn test_collect_anime_root_usage_counts_filesystem_and_db_activity() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let anime = dir.path().join("anime");
+        let source = dir.path().join("rd");
+        std::fs::create_dir_all(&anime).unwrap();
+        std::fs::create_dir_all(&source).unwrap();
+
+        let legacy_root = anime.join("Show A");
+        let tagged_root = anime.join("Show A (2024) {tvdb-1}");
+        std::fs::create_dir_all(legacy_root.join("Season 01")).unwrap();
+        std::fs::create_dir_all(tagged_root.join("Season 01")).unwrap();
+
+        let source_a = source.join("show-a-e01.mkv");
+        let source_b = source.join("show-a-e02.mkv");
+        std::fs::write(&source_a, b"a").unwrap();
+        std::fs::write(&source_b, b"b").unwrap();
+
+        let legacy_link = legacy_root.join("Season 01/Show A - S01E01.mkv");
+        let tagged_link = tagged_root.join("Season 01/Show A - S01E02.mkv");
+        symlink(&source_a, &legacy_link).unwrap();
+        symlink(&source_b, &tagged_link).unwrap();
+
+        let library = LibraryConfig {
+            name: "Anime".to_string(),
+            path: anime.clone(),
+            media_type: MediaType::Tv,
+            content_type: Some(ContentType::Anime),
+            depth: 1,
+        };
+        let link_records = vec![LinkRecord {
+            id: None,
+            source_path: source_b,
+            target_path: tagged_link.clone(),
+            media_id: "tvdb-1".to_string(),
+            media_type: MediaType::Tv,
+            status: LinkStatus::Active,
+            created_at: None,
+            updated_at: None,
+        }];
+
+        let usage = collect_anime_root_usage(&[&library], &link_records);
+        assert_eq!(usage.get(&legacy_root).unwrap().filesystem_symlinks, 1);
+        assert_eq!(usage.get(&legacy_root).unwrap().db_active_links, 0);
+        assert_eq!(usage.get(&tagged_root).unwrap().filesystem_symlinks, 1);
+        assert_eq!(usage.get(&tagged_root).unwrap().db_active_links, 1);
+    }
+
+    #[test]
+    fn test_build_anime_remediation_samples_prioritizes_heaviest_legacy_root() {
+        let correlated_groups = vec![
+            CorrelatedAnimeDuplicateSample {
+                normalized_title: "Show A".to_string(),
+                tagged_roots: vec![PathBuf::from("/anime/Show A (2024) {tvdb-1}")],
+                untagged_roots: vec![PathBuf::from("/anime/Show A")],
+                plex_total_rows: 2,
+                plex_live_rows: 2,
+                plex_deleted_rows: 0,
+                plex_guid_kinds: vec!["hama-anidb".to_string(), "hama-tvdb".to_string()],
+                plex_guids: vec![],
+            },
+            CorrelatedAnimeDuplicateSample {
+                normalized_title: "Show B".to_string(),
+                tagged_roots: vec![PathBuf::from("/anime/Show B (2024) {tvdb-2}")],
+                untagged_roots: vec![PathBuf::from("/anime/Show B")],
+                plex_total_rows: 2,
+                plex_live_rows: 1,
+                plex_deleted_rows: 1,
+                plex_guid_kinds: vec!["hama-anidb".to_string(), "hama-tvdb".to_string()],
+                plex_guids: vec![],
+            },
+        ];
+        let root_usage = HashMap::from([
+            (
+                PathBuf::from("/anime/Show A"),
+                AnimeRootUsage {
+                    filesystem_symlinks: 12,
+                    db_active_links: 0,
+                },
+            ),
+            (
+                PathBuf::from("/anime/Show A (2024) {tvdb-1}"),
+                AnimeRootUsage {
+                    filesystem_symlinks: 8,
+                    db_active_links: 8,
+                },
+            ),
+            (
+                PathBuf::from("/anime/Show B"),
+                AnimeRootUsage {
+                    filesystem_symlinks: 3,
+                    db_active_links: 2,
+                },
+            ),
+            (
+                PathBuf::from("/anime/Show B (2024) {tvdb-2}"),
+                AnimeRootUsage {
+                    filesystem_symlinks: 5,
+                    db_active_links: 5,
+                },
+            ),
+        ]);
+
+        let remediation = build_anime_remediation_samples(&correlated_groups, &root_usage);
+        assert_eq!(remediation.len(), 2);
+        assert_eq!(remediation[0].normalized_title, "Show A");
+        assert_eq!(remediation[0].legacy_roots[0].filesystem_symlinks, 12);
+        assert_eq!(
+            remediation[0].recommended_tagged_root.path,
+            PathBuf::from("/anime/Show A (2024) {tvdb-1}")
+        );
+    }
+
+    #[test]
+    fn test_collect_anime_root_usage_counts_fs_and_db_links_per_show_root() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let anime = dir.path().join("anime");
+        let rd = dir.path().join("rd");
+        std::fs::create_dir_all(&anime).unwrap();
+        std::fs::create_dir_all(&rd).unwrap();
+
+        let tagged_root = anime.join("Show A (2024) {tvdb-1}");
+        let legacy_root = anime.join("Show A");
+        let tagged_season = tagged_root.join("Season 01");
+        let legacy_season = legacy_root.join("Season 01");
+        std::fs::create_dir_all(&tagged_season).unwrap();
+        std::fs::create_dir_all(&legacy_season).unwrap();
+
+        let tagged_source = rd.join("tagged.mkv");
+        let legacy_source = rd.join("legacy.mkv");
+        std::fs::write(&tagged_source, b"a").unwrap();
+        std::fs::write(&legacy_source, b"b").unwrap();
+
+        let tagged_link = tagged_season.join("Show A - S01E01.mkv");
+        let legacy_link = legacy_season.join("Show A - S01E01.mkv");
+        symlink(&tagged_source, &tagged_link).unwrap();
+        symlink(&legacy_source, &legacy_link).unwrap();
+
+        let library = LibraryConfig {
+            name: "Anime".to_string(),
+            path: anime.clone(),
+            media_type: MediaType::Tv,
+            content_type: Some(ContentType::Anime),
+            depth: 1,
+        };
+        let link_records = vec![
+            LinkRecord {
+                id: None,
+                source_path: tagged_source,
+                target_path: tagged_link,
+                media_id: "tvdb-1".to_string(),
+                media_type: MediaType::Tv,
+                status: LinkStatus::Active,
+                created_at: None,
+                updated_at: None,
+            },
+            LinkRecord {
+                id: None,
+                source_path: legacy_source,
+                target_path: legacy_link,
+                media_id: "tvdb-1".to_string(),
+                media_type: MediaType::Tv,
+                status: LinkStatus::Active,
+                created_at: None,
+                updated_at: None,
+            },
+        ];
+
+        let usage = collect_anime_root_usage(&[&library], &link_records);
+        assert_eq!(
+            usage.get(&tagged_root),
+            Some(&AnimeRootUsage {
+                filesystem_symlinks: 1,
+                db_active_links: 1,
+            })
+        );
+        assert_eq!(
+            usage.get(&legacy_root),
+            Some(&AnimeRootUsage {
+                filesystem_symlinks: 1,
+                db_active_links: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn test_build_anime_remediation_samples_prefers_tagged_root_with_more_tracked_links() {
+        let tagged_a = PathBuf::from("/anime/Show A (2024) {tvdb-1}");
+        let tagged_b = PathBuf::from("/anime/Show A (2024) {tvdb-2}");
+        let legacy = PathBuf::from("/anime/Show A");
+        let correlated = vec![CorrelatedAnimeDuplicateSample {
+            normalized_title: "Show A".to_string(),
+            tagged_roots: vec![tagged_a.clone(), tagged_b.clone()],
+            untagged_roots: vec![legacy.clone()],
+            plex_total_rows: 2,
+            plex_live_rows: 2,
+            plex_deleted_rows: 0,
+            plex_guid_kinds: vec!["hama-anidb".to_string(), "hama-tvdb".to_string()],
+            plex_guids: vec![
+                "com.plexapp.agents.hama://anidb-100?lang=en".to_string(),
+                "com.plexapp.agents.hama://tvdb-200?lang=en".to_string(),
+            ],
+        }];
+        let usage = HashMap::from([
+            (
+                tagged_a.clone(),
+                AnimeRootUsage {
+                    filesystem_symlinks: 2,
+                    db_active_links: 1,
+                },
+            ),
+            (
+                tagged_b.clone(),
+                AnimeRootUsage {
+                    filesystem_symlinks: 1,
+                    db_active_links: 3,
+                },
+            ),
+            (
+                legacy.clone(),
+                AnimeRootUsage {
+                    filesystem_symlinks: 7,
+                    db_active_links: 2,
+                },
+            ),
+        ]);
+
+        let samples = build_anime_remediation_samples(&correlated, &usage);
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].recommended_tagged_root.path, tagged_b);
+        assert_eq!(samples[0].recommended_tagged_root.db_active_links, 3);
+        assert_eq!(samples[0].alternate_tagged_roots.len(), 1);
+        assert_eq!(samples[0].alternate_tagged_roots[0].path, tagged_a);
+        assert_eq!(samples[0].legacy_roots.len(), 1);
+        assert_eq!(samples[0].legacy_roots[0].path, legacy);
+        assert_eq!(samples[0].legacy_roots[0].filesystem_symlinks, 7);
     }
 
     #[test]
@@ -1915,6 +2376,8 @@ mod tests {
         assert_eq!(anime_duplicates.plex_duplicate_show_groups, None);
         assert_eq!(anime_duplicates.correlated_hama_split_groups, None);
         assert_eq!(anime_duplicates.correlated_sample_groups, None);
+        assert_eq!(anime_duplicates.remediation_groups, None);
+        assert_eq!(anime_duplicates.remediation_sample_groups, None);
     }
 
     #[tokio::test]

@@ -282,6 +282,7 @@ Notes:
 - with `--plex-db`, the report adds a path-set compare against Plex-indexed files under the selected library roots
 - Plex `deleted_at` is treated as advisory only; the only strong cleanup signal is `Plex deleted + known missing source`, because Plex can mark paths deleted during transient RD-mount outages
 - `--full-anime-duplicates` disables the default sample cap for anime duplicate sections so you can export the full mixed-root and Hama-split remediation backlog
+- when `--plex-db` is present, the anime section now includes a remediation queue that ranks correlated legacy-root/Hama-split titles by filesystem and DB impact, so you can work the backlog in a sensible order
 
 ## JSON-Capable Commands
 

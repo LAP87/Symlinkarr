@@ -31,6 +31,9 @@
 - anime duplicate exports now include richer Plex duplicate metadata for remediation.
   - correlated and Plex sample groups now carry total/live/deleted row counts plus exact Plex GUIDs, which makes it much easier to separate stale metadata ghosts from still-live duplicate trees
   - files: `src/commands/report.rs`
+- anime duplicate exports now also emit a prioritized remediation queue for the correlated legacy-root/Hama-split set.
+  - the queue ranks titles by legacy-root filesystem/DB impact and points at the recommended tagged root to keep, which turns the raw duplicate counters into an operator worklist
+  - files: `src/commands/report.rs`
 - Plex refreshes now have first-class pacing controls.
   - `plex.refresh_delay_ms`, `plex.refresh_coalesce_threshold`, and `plex.max_refresh_batches_per_run` let operators slow or cap queued refreshes to avoid overloading Plex during larger relink waves
   - files: `src/config.rs`, `src/commands/scan.rs`, `config.example.yaml`, `config.docker.yaml`
