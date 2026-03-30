@@ -209,6 +209,71 @@ Not found:
 { "error": "Scan run 9999 not found" }
 ```
 
+## `GET /api/v1/report/anime-remediation`
+
+Returns the ranked remediation backlog for correlated anime legacy-root and Plex Hama AniDB/TVDB split groups.
+
+Query params:
+
+- `plex_db=<PATH>` optional override for Plex's library database path
+- `full=true|false` optional; when `true`, returns the full backlog instead of the default sample-limited slice
+
+If `plex_db` is omitted, Symlinkarr tries a few common local Plex DB paths first.
+
+Example:
+
+```text
+/api/v1/report/anime-remediation?full=true
+```
+
+Response schema:
+
+```json
+{
+  "generated_at": "2026-03-30T19:47:32+02:00",
+  "plex_db_path": "/var/lib/plex/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db",
+  "full": true,
+  "filesystem_mixed_root_groups": 582,
+  "plex_duplicate_show_groups": 373,
+  "plex_hama_anidb_tvdb_groups": 371,
+  "correlated_hama_split_groups": 106,
+  "remediation_groups": 106,
+  "returned_groups": 106,
+  "groups": [
+    {
+      "normalized_title": "Mobile Suit Gundam SEED",
+      "recommended_tagged_root": {
+        "path": "/mnt/storage/plex/anime/Mobile Suit Gundam SEED (2002) {tvdb-254931}",
+        "filesystem_symlinks": 49,
+        "db_active_links": 49
+      },
+      "alternate_tagged_roots": [],
+      "legacy_roots": [
+        {
+          "path": "/mnt/storage/plex/anime/Mobile Suit Gundam SEED",
+          "filesystem_symlinks": 99,
+          "db_active_links": 0
+        }
+      ],
+      "plex_total_rows": 2,
+      "plex_live_rows": 2,
+      "plex_deleted_rows": 0,
+      "plex_guid_kinds": ["hama-anidb", "hama-tvdb"],
+      "plex_guids": [
+        "com.plexapp.agents.hama://anidb-252?lang=en",
+        "com.plexapp.agents.hama://tvdb-254931?lang=en"
+      ]
+    }
+  ]
+}
+```
+
+Error example when no Plex DB path can be resolved:
+
+```json
+{ "error": "Plex DB path is required or must exist at a standard local path" }
+```
+
 ## `POST /api/v1/repair/auto`
 
 Runs the web API repair action.

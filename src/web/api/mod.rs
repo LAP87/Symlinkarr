@@ -11,6 +11,7 @@ use tracing::info;
 
 use crate::backup::BackupManager;
 use crate::cleanup_audit::{CleanupAuditor, CleanupReport, CleanupScope};
+use crate::commands::report::{build_anime_remediation_report, AnimeRemediationSample};
 use crate::config::Config;
 use crate::db::{Database, ScanHistoryRecord};
 use crate::library_scanner::LibraryScanner;
@@ -29,6 +30,7 @@ pub fn create_router(state: WebState) -> Router<WebState> {
         .route("/scan/jobs", get(api_get_scan_jobs))
         .route("/scan/history", get(api_get_scan_history))
         .route("/scan/:id", get(api_get_scan_run))
+        .route("/report/anime-remediation", get(api_get_anime_remediation))
         .route("/repair/auto", post(api_post_repair_auto))
         .route("/cleanup/audit", post(api_post_cleanup_audit))
         .route("/cleanup/prune", post(api_post_cleanup_prune))
@@ -163,6 +165,26 @@ pub struct ApiScanRunDetail {
 #[derive(Serialize, Deserialize)]
 pub struct ApiErrorResponse {
     pub error: String,
+}
+
+#[derive(Debug, Default, Clone, Deserialize)]
+pub struct ApiAnimeRemediationQuery {
+    pub plex_db: Option<String>,
+    pub full: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ApiAnimeRemediationResponse {
+    pub generated_at: String,
+    pub plex_db_path: String,
+    pub full: bool,
+    pub filesystem_mixed_root_groups: usize,
+    pub plex_duplicate_show_groups: usize,
+    pub plex_hama_anidb_tvdb_groups: usize,
+    pub correlated_hama_split_groups: usize,
+    pub remediation_groups: usize,
+    pub returned_groups: usize,
+    pub groups: Vec<AnimeRemediationSample>,
 }
 
 #[derive(Serialize)]
@@ -577,6 +599,26 @@ fn scan_run_detail_from_record(record: ScanHistoryRecord) -> ApiScanRunDetail {
     }
 }
 
+fn default_plex_db_candidates() -> [&'static str; 3] {
+    [
+        "/var/lib/plex/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db",
+        "/var/lib/plexmediaserver/Library/Application Support/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db",
+        "/config/Library/Application Support/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db",
+    ]
+}
+
+fn resolve_plex_db_path(query_path: Option<&str>) -> Option<std::path::PathBuf> {
+    query_path
+        .map(std::path::PathBuf::from)
+        .filter(|path| path.exists())
+        .or_else(|| {
+            default_plex_db_candidates()
+                .into_iter()
+                .map(std::path::PathBuf::from)
+                .find(|path| path.exists())
+        })
+}
+
 /// GET /api/v1/scan/history
 pub async fn api_get_scan_history(
     State(state): State<WebState>,
@@ -618,6 +660,50 @@ pub async fn api_get_scan_run(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiErrorResponse {
                 error: format!("Failed to load scan run {}: {}", id, e),
+            }),
+        )),
+    }
+}
+
+/// GET /api/v1/report/anime-remediation
+pub async fn api_get_anime_remediation(
+    State(state): State<WebState>,
+    Query(query): Query<ApiAnimeRemediationQuery>,
+) -> Result<Json<ApiAnimeRemediationResponse>, (StatusCode, Json<ApiErrorResponse>)> {
+    let Some(plex_db_path) = resolve_plex_db_path(query.plex_db.as_deref()) else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ApiErrorResponse {
+                error: "Plex DB path is required or must exist at a standard local path".to_string(),
+            }),
+        ));
+    };
+
+    let full = query.full.unwrap_or(false);
+    match build_anime_remediation_report(&state.config, &state.database, &plex_db_path, full).await
+    {
+        Ok(Some(report)) => Ok(Json(ApiAnimeRemediationResponse {
+            generated_at: report.generated_at,
+            plex_db_path: plex_db_path.to_string_lossy().to_string(),
+            full,
+            filesystem_mixed_root_groups: report.filesystem_mixed_root_groups,
+            plex_duplicate_show_groups: report.plex_duplicate_show_groups,
+            plex_hama_anidb_tvdb_groups: report.plex_hama_anidb_tvdb_groups,
+            correlated_hama_split_groups: report.correlated_hama_split_groups,
+            remediation_groups: report.remediation_groups,
+            returned_groups: report.returned_groups,
+            groups: report.groups,
+        })),
+        Ok(None) => Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiErrorResponse {
+                error: "No anime libraries are configured for remediation reporting".to_string(),
+            }),
+        )),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiErrorResponse {
+                error: format!("Failed to build anime remediation report: {}", e),
             }),
         )),
     }
@@ -858,6 +944,9 @@ mod tests {
         SourceConfig, SymlinkConfig, TautulliConfig, WebConfig,
     };
     use crate::db::{Database, ScanRunRecord};
+    use crate::models::{LinkRecord, LinkStatus, MediaType};
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use sqlx::Executor;
 
     fn test_config(root: &Path) -> Config {
         let library_root = root.join("library");
@@ -954,6 +1043,82 @@ mod tests {
         .unwrap();
 
         WebState::new(cfg, db)
+    }
+
+    async fn create_test_plex_duplicate_db(
+        db_path: &Path,
+        root: &Path,
+        tagged_file: &Path,
+        legacy_file: &Path,
+    ) {
+        let options = SqliteConnectOptions::new()
+            .filename(db_path)
+            .create_if_missing(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap();
+
+        for statement in [
+            "CREATE TABLE section_locations (id INTEGER PRIMARY KEY, library_section_id INTEGER, root_path TEXT)",
+            "CREATE TABLE metadata_items (id INTEGER PRIMARY KEY, library_section_id INTEGER, metadata_type INTEGER, title TEXT, original_title TEXT, year INTEGER, guid TEXT, deleted_at INTEGER)",
+            "CREATE TABLE media_items (id INTEGER PRIMARY KEY, library_section_id INTEGER, section_location_id INTEGER, metadata_item_id INTEGER, deleted_at INTEGER)",
+            "CREATE TABLE media_parts (id INTEGER PRIMARY KEY, media_item_id INTEGER, file TEXT, deleted_at INTEGER)",
+        ] {
+            pool.execute(statement).await.unwrap();
+        }
+
+        sqlx::query(
+            "INSERT INTO section_locations (id, library_section_id, root_path) VALUES (1, 1, ?)",
+        )
+        .bind(root.to_string_lossy().to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        for (id, guid, file) in [
+            (
+                1_i64,
+                "com.plexapp.agents.hama://anidb-100?lang=en",
+                tagged_file,
+            ),
+            (
+                2_i64,
+                "com.plexapp.agents.hama://tvdb-1?lang=en",
+                legacy_file,
+            ),
+        ] {
+            sqlx::query(
+                "INSERT INTO metadata_items (id, library_section_id, metadata_type, title, original_title, year, guid, deleted_at) VALUES (?, 1, 2, 'Show A', '', 2024, ?, NULL)",
+            )
+            .bind(id)
+            .bind(guid)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            sqlx::query(
+                "INSERT INTO media_items (id, library_section_id, section_location_id, metadata_item_id, deleted_at) VALUES (?, 1, 1, ?, NULL)",
+            )
+            .bind(id)
+            .bind(id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            sqlx::query(
+                "INSERT INTO media_parts (id, media_item_id, file, deleted_at) VALUES (?, ?, ?, NULL)",
+            )
+            .bind(id)
+            .bind(id)
+            .bind(file.to_string_lossy().to_string())
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        pool.close().await;
     }
 
     fn make_scan_history_query(
@@ -1122,6 +1287,75 @@ mod tests {
         assert_eq!(json[0].scope_label, "Movies");
         assert!(!json[0].dry_run);
         assert!(!json[0].search_missing);
+    }
+
+    #[tokio::test]
+    async fn api_get_anime_remediation_returns_ranked_groups() {
+        let dir = TempDir::new().unwrap();
+        let cfg = test_config(dir.path());
+        let db = Database::new(&cfg.db_path).await.unwrap();
+        let anime_root = cfg.libraries[0].path.clone();
+        let source_root = cfg.sources[0].path.clone();
+        let plex_db_path = dir.path().join("plex.db");
+
+        let tagged_root = anime_root.join("Show A (2024) {tvdb-1}");
+        let legacy_root = anime_root.join("Show A");
+        let tagged_season = tagged_root.join("Season 01");
+        let legacy_season = legacy_root.join("Season 01");
+        std::fs::create_dir_all(&tagged_season).unwrap();
+        std::fs::create_dir_all(&legacy_season).unwrap();
+
+        let tagged_source = source_root.join("show-a-tagged.mkv");
+        let legacy_source = source_root.join("show-a-legacy.mkv");
+        std::fs::write(&tagged_source, b"tagged").unwrap();
+        std::fs::write(&legacy_source, b"legacy").unwrap();
+
+        let tagged_file = tagged_season.join("Show A - S01E01.mkv");
+        let legacy_file = legacy_season.join("Show A - S01E01.mkv");
+        std::os::unix::fs::symlink(&tagged_source, &tagged_file).unwrap();
+        std::os::unix::fs::symlink(&legacy_source, &legacy_file).unwrap();
+
+        db.insert_link(&LinkRecord {
+            id: None,
+            source_path: tagged_source,
+            target_path: tagged_file.clone(),
+            media_id: "tvdb-1".to_string(),
+            media_type: MediaType::Tv,
+            status: LinkStatus::Active,
+            created_at: None,
+            updated_at: None,
+        })
+        .await
+        .unwrap();
+
+        create_test_plex_duplicate_db(&plex_db_path, &anime_root, &tagged_file, &legacy_file).await;
+
+        let state = WebState::new(cfg, db);
+        let response = api_get_anime_remediation(
+            State(state),
+            Query(ApiAnimeRemediationQuery {
+                plex_db: Some(plex_db_path.to_string_lossy().to_string()),
+                full: Some(true),
+            }),
+        )
+        .await;
+
+        let body = match response {
+            Ok(json) => json.into_response(),
+            Err((status, _json)) => panic!("unexpected error {}", status),
+        };
+        assert_eq!(body.status(), StatusCode::OK);
+        let bytes = to_bytes(body.into_body(), usize::MAX).await.unwrap();
+        let json: ApiAnimeRemediationResponse = serde_json::from_slice(&bytes).unwrap();
+
+        assert_eq!(json.filesystem_mixed_root_groups, 1);
+        assert_eq!(json.plex_hama_anidb_tvdb_groups, 1);
+        assert_eq!(json.correlated_hama_split_groups, 1);
+        assert_eq!(json.remediation_groups, 1);
+        assert_eq!(json.returned_groups, 1);
+        assert_eq!(json.groups[0].normalized_title, "Show A");
+        assert_eq!(json.groups[0].recommended_tagged_root.path, tagged_root);
+        assert_eq!(json.groups[0].legacy_roots[0].path, legacy_root);
     }
 
     #[tokio::test]
