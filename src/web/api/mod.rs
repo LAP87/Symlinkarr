@@ -386,7 +386,15 @@ fn resolve_cleanup_report_path(
         anyhow::bail!("Cleanup report path escapes the configured backup directory");
     }
 
-    Ok(backup_dir.join(requested))
+    let joined = backup_dir.join(requested);
+    let canonical = joined
+        .canonicalize()
+        .map_err(|_| anyhow::anyhow!("Cleanup report not found: {}", joined.display()))?;
+    if !canonical.starts_with(&backup_root) {
+        anyhow::bail!("Cleanup report must be inside the configured backup directory");
+    }
+
+    Ok(canonical)
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1039,7 +1047,11 @@ pub async fn api_post_anime_remediation_preview(
                     "Anime remediation preview saved. Review {} before applying.",
                     report_path.display()
                 ),
-                report_path: report_path.to_string_lossy().to_string(),
+                report_path: report_path
+                    .canonicalize()
+                    .unwrap_or(report_path)
+                    .to_string_lossy()
+                    .to_string(),
                 plex_db_path: plan.plex_db_path.to_string_lossy().to_string(),
                 title_filter: plan.title_filter.clone(),
                 total_groups: plan.total_groups,
@@ -2607,9 +2619,11 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn api_post_anime_remediation_preview_saves_plan_in_backup_dir() {
-        let dir = tempfile::tempdir().unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        let dir = tempfile::tempdir_in(&cwd).unwrap();
         let root = dir.path().to_path_buf();
         let mut cfg = test_config(&root);
+        cfg.backup.path = std::path::PathBuf::from(root.file_name().unwrap()).join("backups");
         let anime_root = cfg.libraries[0].path.clone();
         let tagged_root = anime_root.join("Show A (2024) {tvdb-1}");
         let legacy_root = anime_root.join("Show A");
@@ -2683,16 +2697,19 @@ mod tests {
         assert_eq!(json.eligible_groups, 1);
         assert_eq!(json.cleanup_candidates, 1);
         let report_path = std::path::PathBuf::from(&json.report_path);
-        assert!(report_path.starts_with(&state.config.backup.path));
+        assert!(report_path.is_absolute());
+        assert!(report_path.starts_with(root.join("backups")));
         assert!(report_path.exists());
     }
 
     #[cfg(unix)]
     #[tokio::test]
     async fn api_post_anime_remediation_apply_uses_saved_plan_and_quarantines_legacy_symlink() {
-        let dir = tempfile::tempdir().unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        let dir = tempfile::tempdir_in(&cwd).unwrap();
         let root = dir.path().to_path_buf();
         let mut cfg = test_config(&root);
+        cfg.backup.path = std::path::PathBuf::from(root.file_name().unwrap()).join("backups");
         cfg.cleanup.prune.quarantine_path = root.join("quarantine");
         let anime_root = cfg.libraries[0].path.clone();
         let tagged_root = anime_root.join("Show A (2024) {tvdb-1}");
@@ -2761,6 +2778,7 @@ mod tests {
         let preview_bytes = to_bytes(preview.into_body(), usize::MAX).await.unwrap();
         let preview_json: ApiAnimeRemediationPreviewResponse =
             serde_json::from_slice(&preview_bytes).unwrap();
+        assert!(std::path::Path::new(&preview_json.report_path).is_absolute());
 
         let response = api_post_anime_remediation_apply(
             State(state.clone()),
@@ -2826,6 +2844,39 @@ mod tests {
             State(state),
             Json(ApiAnimeRemediationApplyRequest {
                 report_path: outside_report.to_string_lossy().to_string(),
+                token: "bad-token".to_string(),
+                max_delete: None,
+                library: Some("Anime".to_string()),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: ApiAnimeRemediationApplyResponse = serde_json::from_slice(&bytes).unwrap();
+        assert!(!json.success);
+        assert!(json
+            .message
+            .contains("Cleanup report must be inside the configured backup directory"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn api_post_anime_remediation_apply_rejects_relative_symlink_escape_in_backup_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = test_config(dir.path());
+        let db = Database::new(&cfg.db_path).await.unwrap();
+        let outside_dir = dir.path().join("outside");
+        std::fs::create_dir_all(&outside_dir).unwrap();
+        std::fs::write(outside_dir.join("report.json"), "{}").unwrap();
+        std::os::unix::fs::symlink(&outside_dir, cfg.backup.path.join("linked")).unwrap();
+
+        let state = WebState::new(cfg, db);
+        let response = api_post_anime_remediation_apply(
+            State(state),
+            Json(ApiAnimeRemediationApplyRequest {
+                report_path: "linked/report.json".to_string(),
                 token: "bad-token".to_string(),
                 max_delete: None,
                 library: Some("Anime".to_string()),

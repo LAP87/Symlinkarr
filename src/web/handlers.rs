@@ -161,7 +161,23 @@ fn resolve_backup_restore_path(backup_dir: &StdPath, backup_file: &str) -> anyho
         anyhow::bail!("Backup restore path escapes the configured backup directory");
     }
 
-    Ok(backup_dir.join(requested))
+    let backup_root = backup_dir.canonicalize().map_err(|_| {
+        anyhow::anyhow!(
+            "Configured backup directory not found: {}",
+            backup_dir.display()
+        )
+    })?;
+    let canonical = backup_dir.join(requested).canonicalize().map_err(|_| {
+        anyhow::anyhow!(
+            "Backup restore file not found: {}",
+            backup_dir.join(requested).display()
+        )
+    })?;
+    if !canonical.starts_with(&backup_root) {
+        anyhow::bail!("Backup restore path escapes the configured backup directory");
+    }
+
+    Ok(canonical)
 }
 
 fn resolve_cleanup_report_path(backup_dir: &StdPath, report: &str) -> anyhow::Result<PathBuf> {
@@ -194,7 +210,15 @@ fn resolve_cleanup_report_path(backup_dir: &StdPath, report: &str) -> anyhow::Re
         anyhow::bail!("Cleanup report path escapes the configured backup directory");
     }
 
-    Ok(backup_dir.join(requested))
+    let joined = backup_dir.join(requested);
+    let canonical = joined
+        .canonicalize()
+        .map_err(|_| anyhow::anyhow!("Cleanup report not found: {}", joined.display()))?;
+    if !canonical.starts_with(&backup_root) {
+        anyhow::bail!("Cleanup report must be inside the configured backup directory");
+    }
+
+    Ok(canonical)
 }
 
 async fn filtered_scan_history(
@@ -2305,9 +2329,29 @@ mod tests {
 
     #[test]
     fn resolve_backup_restore_path_accepts_plain_filename() {
-        let backup_dir = PathBuf::from("/srv/symlinkarr/backups");
+        let dir = tempfile::tempdir().unwrap();
+        let backup_dir = dir.path().join("backups");
+        std::fs::create_dir_all(&backup_dir).unwrap();
+        let backup_file = backup_dir.join("backup-20260329.json");
+        std::fs::write(&backup_file, "{}").unwrap();
+
         let path = resolve_backup_restore_path(&backup_dir, "backup-20260329.json").unwrap();
-        assert_eq!(path, backup_dir.join("backup-20260329.json"));
+        assert_eq!(path, backup_file.canonicalize().unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_backup_restore_path_rejects_symlink_escape_inside_backup_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let backup_dir = dir.path().join("backups");
+        let outside_dir = dir.path().join("outside");
+        std::fs::create_dir_all(&backup_dir).unwrap();
+        std::fs::create_dir_all(&outside_dir).unwrap();
+        std::fs::write(outside_dir.join("backup.json"), "{}").unwrap();
+        std::os::unix::fs::symlink(&outside_dir, backup_dir.join("linked")).unwrap();
+
+        let err = resolve_backup_restore_path(&backup_dir, "linked/backup.json").unwrap_err();
+        assert!(err.to_string().contains("escapes"));
     }
 
     #[tokio::test]
@@ -2348,8 +2392,30 @@ mod tests {
 
     #[test]
     fn resolve_cleanup_report_path_accepts_plain_filename() {
-        let backup_dir = PathBuf::from("/srv/symlinkarr/backups");
+        let dir = tempfile::tempdir().unwrap();
+        let backup_dir = dir.path().join("backups");
+        std::fs::create_dir_all(&backup_dir).unwrap();
+        let report = backup_dir.join("cleanup-audit-anime.json");
+        std::fs::write(&report, "{}").unwrap();
+
         let path = resolve_cleanup_report_path(&backup_dir, "cleanup-audit-anime.json").unwrap();
-        assert_eq!(path, backup_dir.join("cleanup-audit-anime.json"));
+        assert_eq!(path, report.canonicalize().unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_cleanup_report_path_rejects_symlink_escape_inside_backup_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let backup_dir = dir.path().join("backups");
+        let outside_dir = dir.path().join("outside");
+        std::fs::create_dir_all(&backup_dir).unwrap();
+        std::fs::create_dir_all(&outside_dir).unwrap();
+        std::fs::write(outside_dir.join("report.json"), "{}").unwrap();
+        std::os::unix::fs::symlink(&outside_dir, backup_dir.join("linked")).unwrap();
+
+        let err = resolve_cleanup_report_path(&backup_dir, "linked/report.json").unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("Cleanup report must be inside the configured backup directory"));
     }
 }

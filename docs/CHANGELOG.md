@@ -33,6 +33,8 @@
   - files: `src/commands/scan.rs`, `src/config.rs`, `src/db.rs`, `src/web/api/mod.rs`, `src/web/templates.rs`, `src/web/ui/dashboard.html`, `src/web/ui/scan.html`, `src/web/ui/scan_history.html`, `src/web/ui/scan_run.html`
 - `backup restore` now uses the same runtime mount/library health gate as other mutating flows, both in CLI and web restore.
   - files: `src/commands/backup.rs`, `src/web/handlers.rs`, `docs/CLI_MANUAL.md`
+- anime remediation preview/apply now canonicalize saved plan paths and reject symlink escapes under the backup tree, closing the remaining guarded-path gaps from GitHub review.
+  - files: `src/commands/cleanup.rs`, `src/web/api/mod.rs`, `src/web/handlers.rs`, `docs/API_SCHEMA.md`
 
 ### Validation
 

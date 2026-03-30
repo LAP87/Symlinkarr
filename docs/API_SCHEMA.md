@@ -401,6 +401,7 @@ Response:
 Notes:
 
 - The API does not accept an arbitrary output path; preview plans are always written under the configured backup directory.
+- `report_path` is returned as a canonical absolute path so preview → apply round-trips keep working even when `backup.path` is configured relatively.
 - This endpoint is the JSON/API analogue of `cleanup remediate-anime` preview and keeps the same eligibility gate.
 - If `plex_db` is supplied explicitly, that exact path must exist; Symlinkarr no longer silently falls back to a default Plex DB when an override path is wrong.
 
@@ -439,7 +440,7 @@ Response:
 
 Notes:
 
-- `report_path` must resolve inside the configured backup directory.
+- `report_path` must canonicalize inside the configured backup directory; symlink escapes under the backup tree are rejected.
 - Apply keeps the same runtime safety gates as the CLI path.
 - `cleanup.prune.quarantine_foreign` must be enabled; this workflow is intentionally quarantine-first.
 

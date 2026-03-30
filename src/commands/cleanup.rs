@@ -556,7 +556,8 @@ pub(crate) async fn preview_anime_remediation_plan(
     }
     std::fs::write(&output_path, serde_json::to_string_pretty(&plan)?)?;
 
-    Ok((plan, output_path))
+    let canonical_output_path = output_path.canonicalize().unwrap_or(output_path);
+    Ok((plan, canonical_output_path))
 }
 
 pub(crate) async fn apply_anime_remediation_plan(
