@@ -1177,7 +1177,7 @@ pub async fn run_prune(
                                 continue;
                             }
 
-                            match quarantine_symlink(cfg, symlink_path) {
+                            match quarantine_symlink_for_cleanup(cfg, symlink_path) {
                                 Ok(destination) => {
                                     let note = format!("quarantined_to={}", destination.display());
                                     let _ = db
@@ -1280,7 +1280,7 @@ pub async fn run_prune(
     })
 }
 
-fn quarantine_symlink(cfg: &Config, symlink_path: &Path) -> Result<PathBuf> {
+pub(crate) fn quarantine_symlink_for_cleanup(cfg: &Config, symlink_path: &Path) -> Result<PathBuf> {
     let target = std::fs::read_link(symlink_path)?;
     let resolved_target = resolve_link_target(symlink_path, &target);
     let destination = quarantine_destination(cfg, symlink_path);

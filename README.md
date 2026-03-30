@@ -282,9 +282,14 @@ symlinkarr cleanup audit --scope anime
 symlinkarr cleanup prune --report backups/cleanup-audit-anime-YYYYMMDD-HHMMSS.json
 symlinkarr cleanup prune --report backups/cleanup-audit-anime-YYYYMMDD-HHMMSS.json --include-legacy-anime-roots
 symlinkarr cleanup prune --report backups/cleanup-audit-anime-YYYYMMDD-HHMMSS.json --apply --confirm-token <TOKEN>
+symlinkarr cleanup remediate-anime --plex-db "/var/lib/plex/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db"
+symlinkarr cleanup remediate-anime --plex-db "/var/lib/plex/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db" --title "Gundam" --out backups/anime-remediation-gundam.json
+symlinkarr cleanup remediate-anime --apply --report backups/anime-remediation-gundam.json --confirm-token <TOKEN>
 ```
 
 `--include-legacy-anime-roots` is an explicit opt-in for warning-only anime findings where a legacy untagged root coexists with a tagged `{tvdb-*}` or `{tmdb-*}` root. Those candidates stay `foreign` and are quarantined rather than deleted.
+`cleanup remediate-anime` is the safer operator path for the correlated anime backlog: preview writes a report JSON, apply requires the preview token, and eligible legacy-root symlinks are quarantined instead of deleted.
+`cleanup remediate-anime --apply` also requires `cleanup.prune.quarantine_foreign=true`, because the workflow is intentionally quarantine-first for legacy anime roots.
 Destructive cleanup commands also stop early if a configured source mount is unhealthy, so a transient RD outage does not become a cleanup event.
 
 Cache management:
@@ -312,7 +317,7 @@ The built-in web UI exposes:
 - background scan triggering, scan history, and per-run telemetry
 - cleanup audit and prune preview flows
 - dead-link review
-- anime remediation backlog via the JSON API
+- anime remediation backlog via a read-only cleanup page and the JSON API
 - JSON API endpoints under `/api/v1`
 
 Current API coverage is documented in [API_SCHEMA.md](docs/API_SCHEMA.md).

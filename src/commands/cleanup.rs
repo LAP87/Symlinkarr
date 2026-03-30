@@ -1,9 +1,14 @@
-use std::path::PathBuf;
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use tracing::info;
+use walkdir::WalkDir;
 
 use crate::cleanup_audit::{self, CleanupAuditor, CleanupScope};
+use crate::commands::report::{build_anime_remediation_report, AnimeRemediationSample};
 use crate::commands::{ensure_runtime_directories_healthy, print_json, selected_libraries};
 use crate::config::Config;
 use crate::db::Database;
@@ -21,6 +26,62 @@ pub(crate) struct CleanupPruneArgs<'a> {
     pub library_filter: Option<&'a str>,
     pub output: OutputFormat,
 }
+
+pub(crate) struct CleanupAnimeRemediationArgs<'a> {
+    pub report: Option<&'a str>,
+    pub plex_db: Option<&'a str>,
+    pub apply: bool,
+    pub title: Option<&'a str>,
+    pub out: Option<&'a str>,
+    pub confirm_token: Option<&'a str>,
+    pub max_delete: Option<usize>,
+    pub gate_mode: GateMode,
+    pub library_filter: Option<&'a str>,
+    pub output: OutputFormat,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct AnimeRemediationPlanGroup {
+    normalized_title: String,
+    eligible: bool,
+    block_reasons: Vec<String>,
+    recommended_tagged_root: crate::commands::report::AnimeRootUsageSample,
+    alternate_tagged_roots: Vec<crate::commands::report::AnimeRootUsageSample>,
+    legacy_roots: Vec<crate::commands::report::AnimeRootUsageSample>,
+    legacy_symlink_candidates: usize,
+    broken_symlink_candidates: usize,
+    legacy_media_files: usize,
+    candidate_symlink_samples: Vec<PathBuf>,
+    plex_live_rows: usize,
+    plex_deleted_rows: usize,
+    plex_guid_kinds: Vec<String>,
+    plex_guids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct AnimeRemediationPlanReport {
+    version: u32,
+    created_at: DateTime<Utc>,
+    plex_db_path: PathBuf,
+    title_filter: Option<String>,
+    total_groups: usize,
+    eligible_groups: usize,
+    blocked_groups: usize,
+    cleanup_candidates: usize,
+    confirmation_token: String,
+    groups: Vec<AnimeRemediationPlanGroup>,
+    cleanup_report: cleanup_audit::CleanupReport,
+}
+
+#[derive(Debug, Clone, Default)]
+struct LegacyRootScan {
+    symlink_paths: Vec<PathBuf>,
+    broken_symlink_paths: Vec<PathBuf>,
+    media_files: Vec<PathBuf>,
+}
+
+const ANIME_REMEDIATION_REPORT_VERSION: u32 = 1;
+const ANIME_REMEDIATION_SAMPLE_LIMIT: usize = 6;
 
 pub(crate) async fn run_cleanup(
     cfg: &Config,
@@ -61,6 +122,35 @@ pub(crate) async fn run_cleanup(
             )
             .await?;
             Ok(Some(removed))
+        }
+        Some(CleanupAction::RemediateAnime {
+            report,
+            plex_db,
+            apply,
+            title,
+            out,
+            confirm_token,
+            max_delete,
+            gate_mode,
+        }) => {
+            run_cleanup_anime_remediation(
+                cfg,
+                db,
+                CleanupAnimeRemediationArgs {
+                    report: report.as_deref(),
+                    plex_db: plex_db.as_deref(),
+                    apply,
+                    title: title.as_deref(),
+                    out: out.as_deref(),
+                    confirm_token: confirm_token.as_deref(),
+                    max_delete,
+                    gate_mode,
+                    library_filter,
+                    output,
+                },
+            )
+            .await?;
+            Ok(None)
         }
     }
 }
@@ -296,6 +386,545 @@ pub(crate) async fn run_cleanup_prune(
     Ok(outcome.removed as i64)
 }
 
+async fn run_cleanup_anime_remediation(
+    cfg: &Config,
+    db: &Database,
+    args: CleanupAnimeRemediationArgs<'_>,
+) -> Result<()> {
+    info!("=== Symlinkarr Anime Remediation ===");
+
+    if matches!(args.gate_mode, GateMode::Relaxed) {
+        tracing::warn!(
+            "gate-mode=relaxed requested; runtime safety remains enforced for anime remediation apply"
+        );
+    }
+
+    let selected = selected_libraries(cfg, args.library_filter)?;
+    let anime_libraries: Vec<_> = selected
+        .into_iter()
+        .filter(|lib| lib.content_type == Some(crate::config::ContentType::Anime))
+        .collect();
+
+    if anime_libraries.is_empty() {
+        anyhow::bail!("No anime libraries matched the current library filter");
+    }
+
+    if args.apply {
+        if args.report.is_none() {
+            anyhow::bail!("Anime remediation apply requires --report");
+        }
+        if args.plex_db.is_some() || args.title.is_some() || args.out.is_some() {
+            anyhow::bail!(
+                "Anime remediation apply only accepts --report, --confirm-token, --max-delete, and the shared --library filter"
+            );
+        }
+        if !cfg.cleanup.prune.quarantine_foreign {
+            anyhow::bail!(
+                "Anime remediation apply requires cleanup.prune.quarantine_foreign=true because this workflow quarantines foreign legacy symlinks"
+            );
+        }
+
+        ensure_runtime_directories_healthy(
+            &anime_libraries,
+            &cfg.sources,
+            "cleanup anime remediation apply",
+        )
+        .await?;
+
+        let report_path = Path::new(args.report.unwrap());
+        let plan = load_anime_remediation_plan_report(report_path)?;
+        validate_anime_remediation_plan_report(&plan)?;
+
+        let safety_snapshot = if cfg.backup.enabled {
+            let extra_symlink_paths: Vec<_> = plan
+                .cleanup_report
+                .findings
+                .iter()
+                .map(|finding| finding.symlink_path.clone())
+                .collect();
+            Some(
+                crate::backup::BackupManager::new(&cfg.backup)
+                    .create_safety_snapshot_with_extras(
+                        db,
+                        "anime-remediation",
+                        &extra_symlink_paths,
+                    )
+                    .await?,
+            )
+        } else {
+            None
+        };
+
+        let temp_cleanup_report_path =
+            write_temp_cleanup_report(&cfg.backup.path, &plan.cleanup_report)?;
+        let outcome = cleanup_audit::run_prune(
+            cfg,
+            db,
+            &temp_cleanup_report_path,
+            true,
+            true,
+            args.max_delete,
+            args.confirm_token,
+        )
+        .await;
+        let _ = std::fs::remove_file(&temp_cleanup_report_path);
+        let outcome = outcome?;
+
+        if args.output == OutputFormat::Json {
+            print_json(&serde_json::json!({
+                "apply": true,
+                "report": report_path,
+                "groups": plan.total_groups,
+                "eligible_groups": plan.eligible_groups,
+                "blocked_groups": plan.blocked_groups,
+                "candidates": outcome.candidates,
+                "quarantined": outcome.quarantined,
+                "removed": outcome.removed,
+                "skipped": outcome.skipped,
+                "safety_snapshot": safety_snapshot,
+            }));
+        } else {
+            println!("\n🎌 Anime Remediation Applied");
+            println!("   Report: {}", report_path.display());
+            println!("   Eligible groups: {}", plan.eligible_groups);
+            println!("   Blocked groups: {}", plan.blocked_groups);
+            println!("   Candidates: {}", outcome.candidates);
+            println!("   Quarantined: {}", outcome.quarantined);
+            println!("   Removed: {}", outcome.removed);
+            println!("   Skipped: {}", outcome.skipped);
+            if let Some(snapshot) = &safety_snapshot {
+                println!("   Safety snapshot: {}", snapshot.display());
+            }
+        }
+
+        return Ok(());
+    }
+
+    if args.report.is_some() || args.confirm_token.is_some() {
+        anyhow::bail!(
+            "Anime remediation preview does not accept --report or --confirm-token; use --out to choose the saved remediation plan path"
+        );
+    }
+
+    let Some(plex_db_path) = resolve_plex_db_path(args.plex_db) else {
+        anyhow::bail!(
+            "Plex DB path is required or must exist at a standard local path for anime remediation"
+        );
+    };
+
+    let plan =
+        build_anime_remediation_plan_report(cfg, db, &anime_libraries, &plex_db_path, args.title)
+            .await?;
+    let out_path = args
+        .out
+        .map(PathBuf::from)
+        .unwrap_or_else(|| default_anime_remediation_report_path(cfg));
+
+    if let Some(parent) = out_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    std::fs::write(&out_path, serde_json::to_string_pretty(&plan)?)?;
+
+    if args.output == OutputFormat::Json {
+        print_json(&serde_json::json!({
+            "apply": false,
+            "file": out_path,
+            "plex_db_path": plan.plex_db_path,
+            "title_filter": plan.title_filter,
+            "total_groups": plan.total_groups,
+            "eligible_groups": plan.eligible_groups,
+            "blocked_groups": plan.blocked_groups,
+            "cleanup_candidates": plan.cleanup_candidates,
+            "confirmation_token": plan.confirmation_token,
+            "groups": plan.groups,
+        }));
+    } else {
+        println!("\n🎌 Anime Remediation Preview");
+        println!("   Report: {}", out_path.display());
+        println!("   Plex DB: {}", plan.plex_db_path.display());
+        println!("   Groups matched: {}", plan.total_groups);
+        println!("   Eligible groups: {}", plan.eligible_groups);
+        println!("   Blocked groups: {}", plan.blocked_groups);
+        println!("   Candidate symlinks: {}", plan.cleanup_candidates);
+        println!("   Confirmation token: {}", plan.confirmation_token);
+
+        if !plan.groups.is_empty() {
+            println!("   Top groups:");
+            for group in plan.groups.iter().take(ANIME_REMEDIATION_SAMPLE_LIMIT) {
+                if group.eligible {
+                    println!(
+                        "      - {}: quarantine {} legacy symlinks -> keep {}",
+                        group.normalized_title,
+                        group.legacy_symlink_candidates,
+                        group.recommended_tagged_root.path.display()
+                    );
+                } else {
+                    println!(
+                        "      - {}: blocked ({})",
+                        group.normalized_title,
+                        group.block_reasons.join("; ")
+                    );
+                }
+            }
+        }
+
+        println!(
+            "   Next: symlinkarr cleanup remediate-anime --apply --report {} --confirm-token {}",
+            out_path.display(),
+            plan.confirmation_token
+        );
+    }
+
+    Ok(())
+}
+
+fn default_plex_db_candidates() -> [&'static str; 3] {
+    [
+        "/var/lib/plex/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db",
+        "/var/lib/plexmediaserver/Library/Application Support/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db",
+        "/config/Library/Application Support/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db",
+    ]
+}
+
+fn resolve_plex_db_path(query_path: Option<&str>) -> Option<PathBuf> {
+    query_path
+        .map(PathBuf::from)
+        .filter(|path| path.exists())
+        .or_else(|| {
+            default_plex_db_candidates()
+                .into_iter()
+                .map(PathBuf::from)
+                .find(|path| path.exists())
+        })
+}
+
+fn default_anime_remediation_report_path(cfg: &Config) -> PathBuf {
+    cfg.backup.path.join(format!(
+        "anime-remediation-{}.json",
+        Utc::now().format("%Y%m%d-%H%M%S")
+    ))
+}
+
+fn load_anime_remediation_plan_report(path: &Path) -> Result<AnimeRemediationPlanReport> {
+    let raw = std::fs::read_to_string(path)?;
+    Ok(serde_json::from_str(&raw)?)
+}
+
+fn validate_anime_remediation_plan_report(report: &AnimeRemediationPlanReport) -> Result<()> {
+    if report.version != ANIME_REMEDIATION_REPORT_VERSION {
+        anyhow::bail!(
+            "Unsupported anime remediation report version {} (expected {})",
+            report.version,
+            ANIME_REMEDIATION_REPORT_VERSION
+        );
+    }
+
+    if report.cleanup_report.scope != CleanupScope::Anime {
+        anyhow::bail!("Anime remediation report contains a non-anime cleanup payload");
+    }
+
+    if report.cleanup_report.findings.iter().any(|finding| {
+        !finding
+            .reasons
+            .contains(&cleanup_audit::FindingReason::LegacyAnimeRootDuplicate)
+            || finding.legacy_anime_root.is_none()
+    }) {
+        anyhow::bail!("Anime remediation report contains non-remediation cleanup findings");
+    }
+
+    Ok(())
+}
+
+fn write_temp_cleanup_report(
+    backup_root: &Path,
+    report: &cleanup_audit::CleanupReport,
+) -> Result<PathBuf> {
+    let temp_path = backup_root.join(format!(
+        "anime-remediation-apply-{}.tmp.json",
+        Utc::now().format("%Y%m%d-%H%M%S-%3f")
+    ));
+    if let Some(parent) = temp_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&temp_path, serde_json::to_string_pretty(report)?)?;
+    Ok(temp_path)
+}
+
+async fn build_anime_remediation_plan_report(
+    cfg: &Config,
+    db: &Database,
+    anime_libraries: &[&crate::config::LibraryConfig],
+    plex_db_path: &Path,
+    title_filter: Option<&str>,
+) -> Result<AnimeRemediationPlanReport> {
+    let mut scoped_cfg = cfg.clone();
+    scoped_cfg.libraries = anime_libraries.iter().map(|lib| (*lib).clone()).collect();
+
+    let remediation = build_anime_remediation_report(&scoped_cfg, db, plex_db_path, true)
+        .await?
+        .ok_or_else(|| {
+            anyhow::anyhow!("No anime libraries are configured for remediation reporting")
+        })?;
+
+    let title_filter = title_filter
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let filtered_groups: Vec<_> = remediation
+        .groups
+        .into_iter()
+        .filter(|group| remediation_group_matches_title_filter(group, title_filter.as_deref()))
+        .collect();
+
+    let plan_groups: Vec<_> = filtered_groups
+        .iter()
+        .map(build_anime_remediation_plan_group)
+        .collect::<Result<Vec<_>>>()?;
+
+    let eligible_groups: Vec<_> = plan_groups
+        .iter()
+        .filter(|group| group.eligible)
+        .cloned()
+        .collect();
+    let blocked_groups = plan_groups.len().saturating_sub(eligible_groups.len());
+    let cleanup_report = build_anime_remediation_cleanup_report(&eligible_groups);
+    let preview_outcome = build_anime_remediation_prune_preview(cfg, db, &cleanup_report).await?;
+
+    Ok(AnimeRemediationPlanReport {
+        version: ANIME_REMEDIATION_REPORT_VERSION,
+        created_at: Utc::now(),
+        plex_db_path: plex_db_path.to_path_buf(),
+        title_filter,
+        total_groups: plan_groups.len(),
+        eligible_groups: eligible_groups.len(),
+        blocked_groups,
+        cleanup_candidates: preview_outcome.candidates,
+        confirmation_token: preview_outcome.confirmation_token,
+        groups: plan_groups,
+        cleanup_report,
+    })
+}
+
+fn remediation_group_matches_title_filter(
+    group: &AnimeRemediationSample,
+    title_filter: Option<&str>,
+) -> bool {
+    let Some(filter) = title_filter else {
+        return true;
+    };
+
+    let haystack = crate::utils::normalize(&group.normalized_title);
+    let needle = crate::utils::normalize(filter);
+    haystack.contains(&needle)
+}
+
+fn build_anime_remediation_plan_group(
+    sample: &AnimeRemediationSample,
+) -> Result<AnimeRemediationPlanGroup> {
+    let mut candidate_paths = BTreeSet::new();
+    let mut broken_symlink_candidates = 0usize;
+    let mut legacy_media_files = 0usize;
+
+    for legacy_root in &sample.legacy_roots {
+        let scan = scan_legacy_root(&legacy_root.path);
+        broken_symlink_candidates += scan.broken_symlink_paths.len();
+        legacy_media_files += scan.media_files.len();
+        for path in scan.symlink_paths {
+            candidate_paths.insert(path);
+        }
+    }
+
+    let legacy_db_total: usize = sample
+        .legacy_roots
+        .iter()
+        .map(|root| root.db_active_links)
+        .sum();
+    let mut block_reasons = Vec::new();
+    if sample.recommended_tagged_root.db_active_links == 0 {
+        block_reasons.push("recommended tagged root has no tracked DB links".to_string());
+    }
+    if legacy_db_total > 0 {
+        block_reasons.push(format!(
+            "legacy roots still contain {} tracked DB links",
+            legacy_db_total
+        ));
+    }
+    if legacy_media_files > 0 {
+        block_reasons.push(format!(
+            "legacy roots contain {} non-symlink media files",
+            legacy_media_files
+        ));
+    }
+    if candidate_paths.is_empty() {
+        block_reasons.push("no legacy symlink candidates found under legacy roots".to_string());
+    }
+
+    let candidate_symlink_samples = candidate_paths
+        .iter()
+        .take(ANIME_REMEDIATION_SAMPLE_LIMIT)
+        .cloned()
+        .collect();
+
+    Ok(AnimeRemediationPlanGroup {
+        normalized_title: sample.normalized_title.clone(),
+        eligible: block_reasons.is_empty(),
+        block_reasons,
+        recommended_tagged_root: sample.recommended_tagged_root.clone(),
+        alternate_tagged_roots: sample.alternate_tagged_roots.clone(),
+        legacy_roots: sample.legacy_roots.clone(),
+        legacy_symlink_candidates: candidate_paths.len(),
+        broken_symlink_candidates,
+        legacy_media_files,
+        candidate_symlink_samples,
+        plex_live_rows: sample.plex_live_rows,
+        plex_deleted_rows: sample.plex_deleted_rows,
+        plex_guid_kinds: sample.plex_guid_kinds.clone(),
+        plex_guids: sample.plex_guids.clone(),
+    })
+}
+
+fn scan_legacy_root(root: &Path) -> LegacyRootScan {
+    let mut scan = LegacyRootScan::default();
+    for entry in WalkDir::new(root).follow_links(false) {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        if entry.path() == root {
+            continue;
+        }
+
+        let file_type = entry.file_type();
+        if file_type.is_symlink() {
+            let path = entry.path().to_path_buf();
+            if symlink_source_missing(&path) {
+                scan.broken_symlink_paths.push(path.clone());
+            }
+            scan.symlink_paths.push(path);
+        } else if file_type.is_file() && is_media_file_path(entry.path()) {
+            scan.media_files.push(entry.path().to_path_buf());
+        }
+    }
+
+    scan
+}
+
+fn is_media_file_path(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_ascii_lowercase())
+            .as_deref(),
+        Some(
+            "mkv"
+                | "mp4"
+                | "avi"
+                | "m4v"
+                | "mov"
+                | "wmv"
+                | "flv"
+                | "webm"
+                | "mpg"
+                | "mpeg"
+                | "ts"
+                | "m2ts"
+                | "iso"
+        )
+    )
+}
+
+fn symlink_source_missing(path: &Path) -> bool {
+    let Ok(target) = std::fs::read_link(path) else {
+        return false;
+    };
+    let resolved = resolve_link_target(path, &target);
+    !resolved.exists()
+}
+
+fn resolve_link_target(symlink_path: &Path, target: &Path) -> PathBuf {
+    if target.is_absolute() {
+        target.to_path_buf()
+    } else {
+        symlink_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(target)
+    }
+}
+
+fn build_anime_remediation_cleanup_report(
+    groups: &[AnimeRemediationPlanGroup],
+) -> cleanup_audit::CleanupReport {
+    let mut findings = Vec::new();
+
+    for group in groups {
+        let tagged_roots: Vec<_> = std::iter::once(group.recommended_tagged_root.path.clone())
+            .chain(
+                group
+                    .alternate_tagged_roots
+                    .iter()
+                    .map(|root| root.path.clone()),
+            )
+            .collect();
+
+        for legacy_root in &group.legacy_roots {
+            let scan = scan_legacy_root(&legacy_root.path);
+            for symlink_path in scan.symlink_paths {
+                let source_path = std::fs::read_link(&symlink_path)
+                    .map(|target| resolve_link_target(&symlink_path, &target))
+                    .unwrap_or_else(|_| symlink_path.clone());
+                findings.push(cleanup_audit::CleanupFinding {
+                    symlink_path,
+                    source_path,
+                    media_id: String::new(),
+                    severity: cleanup_audit::FindingSeverity::Warning,
+                    confidence: 1.0,
+                    reasons: vec![cleanup_audit::FindingReason::LegacyAnimeRootDuplicate],
+                    parsed: cleanup_audit::ParsedContext {
+                        library_title: group.normalized_title.clone(),
+                        parsed_title: group.normalized_title.clone(),
+                        season: None,
+                        episode: None,
+                    },
+                    alternate_match: None,
+                    legacy_anime_root: Some(cleanup_audit::LegacyAnimeRootDetails {
+                        normalized_title: group.normalized_title.clone(),
+                        untagged_root: legacy_root.path.clone(),
+                        tagged_roots: tagged_roots.clone(),
+                    }),
+                    db_tracked: false,
+                    ownership: cleanup_audit::CleanupOwnership::Foreign,
+                });
+            }
+        }
+    }
+
+    cleanup_audit::CleanupReport {
+        version: 1,
+        created_at: Utc::now(),
+        scope: CleanupScope::Anime,
+        summary: cleanup_audit::CleanupSummary {
+            total_findings: findings.len(),
+            critical: 0,
+            high: 0,
+            warning: findings.len(),
+        },
+        findings,
+    }
+}
+
+async fn build_anime_remediation_prune_preview(
+    cfg: &Config,
+    db: &Database,
+    report: &cleanup_audit::CleanupReport,
+) -> Result<cleanup_audit::PruneOutcome> {
+    let temp_path = write_temp_cleanup_report(&cfg.backup.path, report)?;
+    let result = cleanup_audit::run_prune(cfg, db, &temp_path, false, true, None, None).await;
+    let _ = std::fs::remove_file(&temp_path);
+    result
+}
+
 fn filter_cleanup_report_by_roots(report: &mut cleanup_audit::CleanupReport, roots: &[PathBuf]) {
     report
         .findings
@@ -316,4 +945,368 @@ fn filter_cleanup_report_by_roots(report: &mut cleanup_audit::CleanupReport, roo
         .iter()
         .filter(|f| matches!(f.severity, cleanup_audit::FindingSeverity::Warning))
         .count();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use sqlx::Executor;
+    use std::str::FromStr;
+
+    use crate::commands::report::AnimeRootUsageSample;
+    use crate::config::{
+        ApiConfig, BackupConfig, BazarrConfig, CleanupPolicyConfig, Config, ContentType,
+        DaemonConfig, DecypharrConfig, DmmConfig, FeaturesConfig, LibraryConfig, MatchingConfig,
+        PlexConfig, ProwlarrConfig, RadarrConfig, RealDebridConfig, SecurityConfig, SonarrConfig,
+        SourceConfig, SymlinkConfig, TautulliConfig, WebConfig,
+    };
+    use crate::db::Database;
+    use crate::models::{LinkRecord, MediaType};
+
+    fn test_config(root: &Path) -> Config {
+        let library = root.join("anime");
+        let source = root.join("rd");
+        let backups = root.join("backups");
+        std::fs::create_dir_all(&library).unwrap();
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&backups).unwrap();
+
+        Config {
+            libraries: vec![LibraryConfig {
+                name: "Anime".to_string(),
+                path: library,
+                media_type: MediaType::Tv,
+                content_type: Some(ContentType::Anime),
+                depth: 1,
+            }],
+            sources: vec![SourceConfig {
+                name: "RD".to_string(),
+                path: source,
+                media_type: "auto".to_string(),
+            }],
+            api: ApiConfig::default(),
+            realdebrid: RealDebridConfig::default(),
+            decypharr: DecypharrConfig::default(),
+            dmm: DmmConfig::default(),
+            backup: BackupConfig {
+                path: backups,
+                ..BackupConfig::default()
+            },
+            db_path: root.join("test.db").display().to_string(),
+            log_level: "info".to_string(),
+            daemon: DaemonConfig::default(),
+            symlink: SymlinkConfig::default(),
+            matching: MatchingConfig::default(),
+            prowlarr: ProwlarrConfig::default(),
+            bazarr: BazarrConfig::default(),
+            tautulli: TautulliConfig::default(),
+            plex: PlexConfig::default(),
+            radarr: RadarrConfig::default(),
+            sonarr: SonarrConfig::default(),
+            sonarr_anime: SonarrConfig::default(),
+            features: FeaturesConfig::default(),
+            security: SecurityConfig::default(),
+            cleanup: CleanupPolicyConfig::default(),
+            web: WebConfig::default(),
+            loaded_from: None,
+            secret_files: Vec::new(),
+        }
+    }
+
+    fn sample_group(root: &Path) -> AnimeRemediationSample {
+        AnimeRemediationSample {
+            normalized_title: "Show A".to_string(),
+            recommended_tagged_root: AnimeRootUsageSample {
+                path: root.join("anime/Show A (2024) {tvdb-1}"),
+                filesystem_symlinks: 2,
+                db_active_links: 2,
+            },
+            alternate_tagged_roots: vec![],
+            legacy_roots: vec![AnimeRootUsageSample {
+                path: root.join("anime/Show A"),
+                filesystem_symlinks: 2,
+                db_active_links: 0,
+            }],
+            plex_total_rows: 2,
+            plex_live_rows: 2,
+            plex_deleted_rows: 0,
+            plex_guid_kinds: vec!["hama-anidb".to_string(), "hama-tvdb".to_string()],
+            plex_guids: vec![],
+        }
+    }
+
+    async fn create_test_plex_duplicate_db(path: &Path) {
+        let options = SqliteConnectOptions::from_str(path.to_str().unwrap())
+            .unwrap()
+            .create_if_missing(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap();
+
+        pool.execute(
+            "CREATE TABLE section_locations (
+                id INTEGER PRIMARY KEY,
+                library_section_id INTEGER,
+                root_path TEXT,
+                available BOOLEAN,
+                scanned_at INTEGER,
+                created_at INTEGER,
+                updated_at INTEGER
+            );",
+        )
+        .await
+        .unwrap();
+        pool.execute(
+            "CREATE TABLE metadata_items (
+                id INTEGER PRIMARY KEY,
+                library_section_id INTEGER,
+                metadata_type INTEGER,
+                title TEXT,
+                original_title TEXT,
+                year INTEGER,
+                guid TEXT,
+                deleted_at INTEGER
+            );",
+        )
+        .await
+        .unwrap();
+        pool.execute(
+            "CREATE TABLE media_items (
+                id INTEGER PRIMARY KEY,
+                library_section_id INTEGER,
+                section_location_id INTEGER,
+                metadata_item_id INTEGER,
+                deleted_at INTEGER
+            );",
+        )
+        .await
+        .unwrap();
+        pool.execute(
+            "CREATE TABLE media_parts (
+                id INTEGER PRIMARY KEY,
+                media_item_id INTEGER,
+                file TEXT,
+                deleted_at INTEGER
+            );",
+        )
+        .await
+        .unwrap();
+    }
+
+    #[test]
+    fn build_anime_remediation_plan_group_marks_simple_legacy_root_as_eligible() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = test_config(dir.path());
+
+        let legacy_root = cfg.libraries[0].path.join("Show A");
+        std::fs::create_dir_all(legacy_root.join("Season 01")).unwrap();
+        let source = cfg.sources[0].path.join("Show.A.S01E01.mkv");
+        std::fs::write(&source, b"video").unwrap();
+        let legacy_symlink = legacy_root.join("Season 01/Show A - S01E01.mkv");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&source, &legacy_symlink).unwrap();
+
+        let group = build_anime_remediation_plan_group(&sample_group(dir.path())).unwrap();
+        assert!(group.eligible);
+        assert_eq!(group.legacy_symlink_candidates, 1);
+        assert!(group.block_reasons.is_empty());
+    }
+
+    #[test]
+    fn build_anime_remediation_plan_group_blocks_non_symlink_media_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = test_config(dir.path());
+
+        let legacy_root = cfg.libraries[0].path.join("Show A");
+        std::fs::create_dir_all(legacy_root.join("Season 01")).unwrap();
+        std::fs::write(legacy_root.join("Season 01/Show A - S01E01.mkv"), b"video").unwrap();
+
+        let group = build_anime_remediation_plan_group(&sample_group(dir.path())).unwrap();
+        assert!(!group.eligible);
+        assert_eq!(group.legacy_media_files, 1);
+        assert!(group
+            .block_reasons
+            .iter()
+            .any(|reason| reason.contains("non-symlink media files")));
+    }
+
+    #[tokio::test]
+    async fn cleanup_remediate_anime_preview_then_apply_quarantines_legacy_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = test_config(dir.path());
+        cfg.cleanup.prune.quarantine_path = dir.path().join("quarantine");
+
+        let anime_root = cfg.libraries[0].path.clone();
+        let tagged_root = anime_root.join("Show A (2024) {tvdb-1}");
+        let legacy_root = anime_root.join("Show A");
+        std::fs::create_dir_all(tagged_root.join("Season 01")).unwrap();
+        std::fs::create_dir_all(legacy_root.join("Season 01")).unwrap();
+
+        let db = Database::new(&cfg.db_path).await.unwrap();
+        let tracked_source = cfg.sources[0].path.join("Show.A.S01E01.mkv");
+        let tracked_target = tagged_root.join("Season 01/Show A - S01E01.mkv");
+        std::fs::write(&tracked_source, b"video").unwrap();
+        db.insert_link(&LinkRecord {
+            id: None,
+            source_path: tracked_source.clone(),
+            target_path: tracked_target,
+            media_id: "tvdb-1".to_string(),
+            media_type: MediaType::Tv,
+            status: crate::models::LinkStatus::Active,
+            created_at: None,
+            updated_at: None,
+        })
+        .await
+        .unwrap();
+
+        let legacy_symlink = legacy_root.join("Season 01/Show A - S01E01.mkv");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&tracked_source, &legacy_symlink).unwrap();
+
+        let plex_db_path = dir.path().join("plex.db");
+        create_test_plex_duplicate_db(&plex_db_path).await;
+        let options = SqliteConnectOptions::from_str(plex_db_path.to_str().unwrap()).unwrap();
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO section_locations (id, library_section_id, root_path) VALUES (1, 1, ?)",
+        )
+        .bind(anime_root.to_string_lossy().to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO metadata_items (id, library_section_id, metadata_type, title, original_title, year, guid, deleted_at)
+             VALUES (1, 1, 2, 'Show A', '', 2024, 'com.plexapp.agents.hama://anidb-100', NULL),
+                    (2, 1, 2, 'Show A', '', 2024, 'com.plexapp.agents.hama://tvdb-1', NULL)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let report_path = dir.path().join("anime-remediation-plan.json");
+        run_cleanup_anime_remediation(
+            &cfg,
+            &db,
+            CleanupAnimeRemediationArgs {
+                report: None,
+                plex_db: Some(plex_db_path.to_str().unwrap()),
+                apply: false,
+                title: None,
+                out: Some(report_path.to_str().unwrap()),
+                confirm_token: None,
+                max_delete: None,
+                gate_mode: GateMode::Enforce,
+                library_filter: Some("Anime"),
+                output: OutputFormat::Json,
+            },
+        )
+        .await
+        .unwrap();
+
+        let plan: AnimeRemediationPlanReport =
+            serde_json::from_str(&std::fs::read_to_string(&report_path).unwrap()).unwrap();
+        assert_eq!(plan.eligible_groups, 1);
+        assert_eq!(plan.cleanup_candidates, 1);
+
+        run_cleanup_anime_remediation(
+            &cfg,
+            &db,
+            CleanupAnimeRemediationArgs {
+                report: Some(report_path.to_str().unwrap()),
+                plex_db: None,
+                apply: true,
+                title: None,
+                out: None,
+                confirm_token: Some(&plan.confirmation_token),
+                max_delete: None,
+                gate_mode: GateMode::Enforce,
+                library_filter: Some("Anime"),
+                output: OutputFormat::Json,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(!legacy_symlink.exists());
+        let quarantined = cfg
+            .cleanup
+            .prune
+            .quarantine_path
+            .join("anime/Show A/Season 01/Show A - S01E01.mkv");
+        assert!(quarantined.is_symlink());
+
+        let backup_entries = std::fs::read_dir(&cfg.backup.path)
+            .unwrap()
+            .flatten()
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .collect::<Vec<_>>();
+        assert!(backup_entries
+            .iter()
+            .any(|name| name.starts_with("safety-anime-remediation-")));
+    }
+
+    #[tokio::test]
+    async fn cleanup_remediate_anime_apply_requires_foreign_quarantine() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = test_config(dir.path());
+        cfg.cleanup.prune.quarantine_foreign = false;
+
+        let db = Database::new(&cfg.db_path).await.unwrap();
+        let report_path = dir.path().join("anime-remediation-plan.json");
+        std::fs::write(
+            &report_path,
+            serde_json::to_string(&AnimeRemediationPlanReport {
+                version: ANIME_REMEDIATION_REPORT_VERSION,
+                created_at: Utc::now(),
+                plex_db_path: dir.path().join("plex.db"),
+                title_filter: None,
+                total_groups: 0,
+                eligible_groups: 0,
+                blocked_groups: 0,
+                cleanup_candidates: 0,
+                confirmation_token: "token".to_string(),
+                groups: Vec::new(),
+                cleanup_report: cleanup_audit::CleanupReport {
+                    version: 1,
+                    created_at: Utc::now(),
+                    scope: CleanupScope::Anime,
+                    summary: cleanup_audit::CleanupSummary::default(),
+                    findings: Vec::new(),
+                },
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let err = run_cleanup_anime_remediation(
+            &cfg,
+            &db,
+            CleanupAnimeRemediationArgs {
+                report: Some(report_path.to_str().unwrap()),
+                plex_db: None,
+                apply: true,
+                title: None,
+                out: None,
+                confirm_token: Some("token"),
+                max_delete: None,
+                gate_mode: GateMode::Enforce,
+                library_filter: Some("Anime"),
+                output: OutputFormat::Json,
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("cleanup.prune.quarantine_foreign=true"));
+    }
 }

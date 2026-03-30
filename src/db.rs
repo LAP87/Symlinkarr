@@ -40,6 +40,17 @@ pub struct ScanRunRecord {
     pub title_enrichment_ms: i64,
     pub linking_ms: i64,
     pub plex_refresh_ms: i64,
+    pub plex_refresh_requested_paths: i64,
+    pub plex_refresh_unique_paths: i64,
+    pub plex_refresh_planned_batches: i64,
+    pub plex_refresh_coalesced_batches: i64,
+    pub plex_refresh_coalesced_paths: i64,
+    pub plex_refresh_refreshed_batches: i64,
+    pub plex_refresh_refreshed_paths_covered: i64,
+    pub plex_refresh_skipped_batches: i64,
+    pub plex_refresh_unresolved_paths: i64,
+    pub plex_refresh_capped_batches: i64,
+    pub plex_refresh_failed_batches: i64,
     pub dead_link_sweep_ms: i64,
     pub cache_hit_ratio: Option<f64>,
     pub candidate_slots: i64,
@@ -268,6 +279,17 @@ pub struct ScanHistoryRecord {
     pub title_enrichment_ms: i64,
     pub linking_ms: i64,
     pub plex_refresh_ms: i64,
+    pub plex_refresh_requested_paths: i64,
+    pub plex_refresh_unique_paths: i64,
+    pub plex_refresh_planned_batches: i64,
+    pub plex_refresh_coalesced_batches: i64,
+    pub plex_refresh_coalesced_paths: i64,
+    pub plex_refresh_refreshed_batches: i64,
+    pub plex_refresh_refreshed_paths_covered: i64,
+    pub plex_refresh_skipped_batches: i64,
+    pub plex_refresh_unresolved_paths: i64,
+    pub plex_refresh_capped_batches: i64,
+    pub plex_refresh_failed_batches: i64,
     pub dead_link_sweep_ms: i64,
     pub cache_hit_ratio: Option<f64>,
     pub candidate_slots: i64,
@@ -291,7 +313,7 @@ pub struct Database {
     pool: SqlitePool,
 }
 
-const LATEST_SCHEMA_VERSION: i64 = 9;
+const LATEST_SCHEMA_VERSION: i64 = 10;
 
 // SqlitePool is Clone (wraps Arc), so Database can safely be Clone
 impl Clone for Database {
@@ -473,6 +495,7 @@ impl Database {
             7 => self.migration_v7_tx(tx).await,
             8 => self.migration_v8_tx(tx).await,
             9 => self.migration_v9_tx(tx).await,
+            10 => self.migration_v10_tx(tx).await,
             _ => anyhow::bail!("Unknown migration version {}", version),
         }
     }
@@ -757,9 +780,58 @@ impl Database {
         Ok(())
     }
 
+    async fn migration_v10_tx(&self, tx: &mut sqlx::Transaction<'_, Sqlite>) -> Result<()> {
+        let alter_statements = [
+            "ALTER TABLE scan_runs ADD COLUMN plex_refresh_requested_paths INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE scan_runs ADD COLUMN plex_refresh_unique_paths INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE scan_runs ADD COLUMN plex_refresh_planned_batches INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE scan_runs ADD COLUMN plex_refresh_coalesced_batches INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE scan_runs ADD COLUMN plex_refresh_coalesced_paths INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE scan_runs ADD COLUMN plex_refresh_refreshed_batches INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE scan_runs ADD COLUMN plex_refresh_refreshed_paths_covered INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE scan_runs ADD COLUMN plex_refresh_skipped_batches INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE scan_runs ADD COLUMN plex_refresh_unresolved_paths INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE scan_runs ADD COLUMN plex_refresh_capped_batches INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE scan_runs ADD COLUMN plex_refresh_failed_batches INTEGER NOT NULL DEFAULT 0",
+        ];
+
+        for statement in alter_statements {
+            match sqlx::query(statement).execute(&mut **tx).await {
+                Ok(_) => {}
+                Err(err) if err.to_string().contains("duplicate column name") => {}
+                Err(err) => return Err(err.into()),
+            }
+        }
+
+        Ok(())
+    }
+
     #[cfg(test)]
     async fn migrate_down_one(&self, current_version: i64) -> Result<()> {
         match current_version {
+            10 => {
+                let columns = [
+                    "plex_refresh_failed_batches",
+                    "plex_refresh_capped_batches",
+                    "plex_refresh_unresolved_paths",
+                    "plex_refresh_skipped_batches",
+                    "plex_refresh_refreshed_paths_covered",
+                    "plex_refresh_refreshed_batches",
+                    "plex_refresh_coalesced_paths",
+                    "plex_refresh_coalesced_batches",
+                    "plex_refresh_planned_batches",
+                    "plex_refresh_unique_paths",
+                    "plex_refresh_requested_paths",
+                ];
+
+                for column in columns {
+                    if self.column_exists("scan_runs", column).await? {
+                        sqlx::query(&format!("ALTER TABLE scan_runs DROP COLUMN {}", column))
+                            .execute(&self.pool)
+                            .await?;
+                    }
+                }
+            }
             9 => {
                 sqlx::query("DROP INDEX IF EXISTS idx_links_status_target")
                     .execute(&self.pool)
@@ -1743,6 +1815,17 @@ impl Database {
                 title_enrichment_ms,
                 linking_ms,
                 plex_refresh_ms,
+                plex_refresh_requested_paths,
+                plex_refresh_unique_paths,
+                plex_refresh_planned_batches,
+                plex_refresh_coalesced_batches,
+                plex_refresh_coalesced_paths,
+                plex_refresh_refreshed_batches,
+                plex_refresh_refreshed_paths_covered,
+                plex_refresh_skipped_batches,
+                plex_refresh_unresolved_paths,
+                plex_refresh_capped_batches,
+                plex_refresh_failed_batches,
                 dead_link_sweep_ms,
                 cache_hit_ratio,
                 candidate_slots,
@@ -1758,7 +1841,7 @@ impl Database {
                 auto_acquire_failed,
                 auto_acquire_completed_linked,
                 auto_acquire_completed_unlinked
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(if run.dry_run { 1 } else { 0 })
         .bind(run.library_filter.as_deref())
@@ -1779,6 +1862,17 @@ impl Database {
         .bind(run.title_enrichment_ms)
         .bind(run.linking_ms)
         .bind(run.plex_refresh_ms)
+        .bind(run.plex_refresh_requested_paths)
+        .bind(run.plex_refresh_unique_paths)
+        .bind(run.plex_refresh_planned_batches)
+        .bind(run.plex_refresh_coalesced_batches)
+        .bind(run.plex_refresh_coalesced_paths)
+        .bind(run.plex_refresh_refreshed_batches)
+        .bind(run.plex_refresh_refreshed_paths_covered)
+        .bind(run.plex_refresh_skipped_batches)
+        .bind(run.plex_refresh_unresolved_paths)
+        .bind(run.plex_refresh_capped_batches)
+        .bind(run.plex_refresh_failed_batches)
         .bind(run.dead_link_sweep_ms)
         .bind(run.cache_hit_ratio)
         .bind(run.candidate_slots)
@@ -2103,6 +2197,12 @@ impl Database {
                     links_removed, links_skipped, ambiguous_skipped,
                     runtime_checks_ms, library_scan_ms, source_inventory_ms,
                     matching_ms, title_enrichment_ms, linking_ms, plex_refresh_ms,
+                    plex_refresh_requested_paths, plex_refresh_unique_paths,
+                    plex_refresh_planned_batches, plex_refresh_coalesced_batches,
+                    plex_refresh_coalesced_paths, plex_refresh_refreshed_batches,
+                    plex_refresh_refreshed_paths_covered, plex_refresh_skipped_batches,
+                    plex_refresh_unresolved_paths, plex_refresh_capped_batches,
+                    plex_refresh_failed_batches,
                     dead_link_sweep_ms, cache_hit_ratio, candidate_slots,
                     scored_candidates, exact_id_hits, auto_acquire_requests,
                     auto_acquire_missing_requests, auto_acquire_cutoff_requests,
@@ -2129,6 +2229,12 @@ impl Database {
                     links_removed, links_skipped, ambiguous_skipped,
                     runtime_checks_ms, library_scan_ms, source_inventory_ms,
                     matching_ms, title_enrichment_ms, linking_ms, plex_refresh_ms,
+                    plex_refresh_requested_paths, plex_refresh_unique_paths,
+                    plex_refresh_planned_batches, plex_refresh_coalesced_batches,
+                    plex_refresh_coalesced_paths, plex_refresh_refreshed_batches,
+                    plex_refresh_refreshed_paths_covered, plex_refresh_skipped_batches,
+                    plex_refresh_unresolved_paths, plex_refresh_capped_batches,
+                    plex_refresh_failed_batches,
                     dead_link_sweep_ms, cache_hit_ratio, candidate_slots,
                     scored_candidates, exact_id_hits, auto_acquire_requests,
                     auto_acquire_missing_requests, auto_acquire_cutoff_requests,
@@ -2196,6 +2302,17 @@ impl Database {
             title_enrichment_ms: row.get("title_enrichment_ms"),
             linking_ms: row.get("linking_ms"),
             plex_refresh_ms: row.get("plex_refresh_ms"),
+            plex_refresh_requested_paths: row.get("plex_refresh_requested_paths"),
+            plex_refresh_unique_paths: row.get("plex_refresh_unique_paths"),
+            plex_refresh_planned_batches: row.get("plex_refresh_planned_batches"),
+            plex_refresh_coalesced_batches: row.get("plex_refresh_coalesced_batches"),
+            plex_refresh_coalesced_paths: row.get("plex_refresh_coalesced_paths"),
+            plex_refresh_refreshed_batches: row.get("plex_refresh_refreshed_batches"),
+            plex_refresh_refreshed_paths_covered: row.get("plex_refresh_refreshed_paths_covered"),
+            plex_refresh_skipped_batches: row.get("plex_refresh_skipped_batches"),
+            plex_refresh_unresolved_paths: row.get("plex_refresh_unresolved_paths"),
+            plex_refresh_capped_batches: row.get("plex_refresh_capped_batches"),
+            plex_refresh_failed_batches: row.get("plex_refresh_failed_batches"),
             dead_link_sweep_ms: row.get("dead_link_sweep_ms"),
             cache_hit_ratio: row.get("cache_hit_ratio"),
             candidate_slots: row.get("candidate_slots"),
@@ -3486,6 +3603,17 @@ mod tests {
             title_enrichment_ms: 55,
             linking_ms: 66,
             plex_refresh_ms: 77,
+            plex_refresh_requested_paths: 12,
+            plex_refresh_unique_paths: 10,
+            plex_refresh_planned_batches: 5,
+            plex_refresh_coalesced_batches: 2,
+            plex_refresh_coalesced_paths: 7,
+            plex_refresh_refreshed_batches: 4,
+            plex_refresh_refreshed_paths_covered: 11,
+            plex_refresh_skipped_batches: 1,
+            plex_refresh_unresolved_paths: 0,
+            plex_refresh_capped_batches: 1,
+            plex_refresh_failed_batches: 0,
             dead_link_sweep_ms: 88,
             cache_hit_ratio: Some(1.0),
             candidate_slots: 1234,
@@ -3508,8 +3636,8 @@ mod tests {
         let row = sqlx::query(
             "SELECT dry_run, library_filter, search_missing, library_items_found, source_items_found, matches_found, \
              links_created, links_updated, dead_marked, links_removed, links_skipped, \
-             ambiguous_skipped, runtime_checks_ms, cache_hit_ratio, candidate_slots, \
-             auto_acquire_requests, auto_acquire_dry_run_hits, auto_acquire_no_result \
+             ambiguous_skipped, runtime_checks_ms, plex_refresh_planned_batches, plex_refresh_capped_batches, \
+             cache_hit_ratio, candidate_slots, auto_acquire_requests, auto_acquire_dry_run_hits, auto_acquire_no_result \
              FROM scan_runs ORDER BY id DESC LIMIT 1",
         )
         .fetch_one(&db.pool)
@@ -3542,6 +3670,10 @@ mod tests {
         assert_eq!(ambiguous, 7);
         let runtime_checks_ms: i64 = row.get("runtime_checks_ms");
         assert_eq!(runtime_checks_ms, 11);
+        let planned_batches: i64 = row.get("plex_refresh_planned_batches");
+        assert_eq!(planned_batches, 5);
+        let capped_batches: i64 = row.get("plex_refresh_capped_batches");
+        assert_eq!(capped_batches, 1);
         let cache_hit_ratio: f64 = row.get("cache_hit_ratio");
         assert_eq!(cache_hit_ratio, 1.0);
         let candidate_slots: i64 = row.get("candidate_slots");

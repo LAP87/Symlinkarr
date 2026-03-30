@@ -78,6 +78,7 @@
                 <th>Matches</th>
                 <th>Links</th>
                 <th>Cache</th>
+                <th>Plex</th>
                 <th>Acquire</th>
                 <th>Dead</th>
             </tr>
@@ -101,6 +102,19 @@
                 <td>{{ run.matches_found }}</td>
                 <td class="text-success">{{ run.links_created + run.links_updated }}</td>
                 <td>{{ run.cache_hit_ratio }}</td>
+                <td>
+                    {% if run.plex_refresh_planned_batches > 0 || run.plex_refresh_requested_paths > 0 %}
+                    {{ run.plex_refresh_refreshed_batches }}/{{ run.plex_refresh_planned_batches }}
+                    {% if run.plex_refresh_capped_batches > 0 %}
+                    <span class="badge badge-warning">cap {{ run.plex_refresh_capped_batches }}</span>
+                    {% endif %}
+                    {% if run.plex_refresh_skipped_batches > 0 %}
+                    <span class="badge badge-danger">skip {{ run.plex_refresh_skipped_batches }}</span>
+                    {% endif %}
+                    {% else %}
+                    <span class="text-muted">n/a</span>
+                    {% endif %}
+                </td>
                 <td>
                     {% if run.auto_acquire_requests > 0 %}
                     {{ run.auto_acquire_successes }}/{{ run.auto_acquire_requests }}

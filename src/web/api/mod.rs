@@ -158,6 +158,22 @@ pub struct ApiScanAutoAcquireSummary {
 }
 
 #[derive(Serialize, Deserialize)]
+pub struct ApiPlexRefreshSummary {
+    pub runtime_ms: i64,
+    pub requested_paths: i64,
+    pub unique_paths: i64,
+    pub planned_batches: i64,
+    pub coalesced_batches: i64,
+    pub coalesced_paths: i64,
+    pub refreshed_batches: i64,
+    pub refreshed_paths_covered: i64,
+    pub skipped_batches: i64,
+    pub unresolved_paths: i64,
+    pub capped_batches: i64,
+    pub failed_batches: i64,
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct ApiScanHistoryEntry {
     pub id: i64,
     pub started_at: String,
@@ -170,6 +186,7 @@ pub struct ApiScanHistoryEntry {
     pub links_updated: i64,
     pub cache_hit_ratio: Option<f64>,
     pub dead_count: i64,
+    pub plex_refresh: ApiPlexRefreshSummary,
     pub auto_acquire: ApiScanAutoAcquireSummary,
 }
 
@@ -197,6 +214,7 @@ pub struct ApiScanRunDetail {
     pub title_enrichment_ms: i64,
     pub linking_ms: i64,
     pub plex_refresh_ms: i64,
+    pub plex_refresh: ApiPlexRefreshSummary,
     pub dead_link_sweep_ms: i64,
     pub total_runtime_ms: i64,
     pub cache_hit_ratio: Option<f64>,
@@ -709,12 +727,30 @@ fn scan_history_fetch_limit(query: &ApiScanHistoryQuery) -> i64 {
     (scan_history_query_limit(query) * 10).clamp(50, 1_000)
 }
 
+fn plex_refresh_summary_from_record(record: &ScanHistoryRecord) -> ApiPlexRefreshSummary {
+    ApiPlexRefreshSummary {
+        runtime_ms: record.plex_refresh_ms,
+        requested_paths: record.plex_refresh_requested_paths,
+        unique_paths: record.plex_refresh_unique_paths,
+        planned_batches: record.plex_refresh_planned_batches,
+        coalesced_batches: record.plex_refresh_coalesced_batches,
+        coalesced_paths: record.plex_refresh_coalesced_paths,
+        refreshed_batches: record.plex_refresh_refreshed_batches,
+        refreshed_paths_covered: record.plex_refresh_refreshed_paths_covered,
+        skipped_batches: record.plex_refresh_skipped_batches,
+        unresolved_paths: record.plex_refresh_unresolved_paths,
+        capped_batches: record.plex_refresh_capped_batches,
+        failed_batches: record.plex_refresh_failed_batches,
+    }
+}
+
 fn scan_history_entry_from_record(record: ScanHistoryRecord) -> ApiScanHistoryEntry {
     let scope_label = scan_scope_label(&record);
     let total_runtime_ms = scan_total_runtime_ms(&record);
     let dead_count = scan_dead_count(&record);
     let auto_acquire_successes = scan_auto_acquire_successes(&record);
     let started_at = record.started_at.clone();
+    let plex_refresh = plex_refresh_summary_from_record(&record);
 
     ApiScanHistoryEntry {
         id: record.id,
@@ -728,6 +764,7 @@ fn scan_history_entry_from_record(record: ScanHistoryRecord) -> ApiScanHistoryEn
         links_updated: record.links_updated,
         cache_hit_ratio: record.cache_hit_ratio,
         dead_count,
+        plex_refresh,
         auto_acquire: ApiScanAutoAcquireSummary {
             requests: record.auto_acquire_requests,
             missing_requests: record.auto_acquire_missing_requests,
@@ -749,6 +786,7 @@ fn scan_run_detail_from_record(record: ScanHistoryRecord) -> ApiScanRunDetail {
     let total_runtime_ms = scan_total_runtime_ms(&record);
     let auto_acquire_successes = scan_auto_acquire_successes(&record);
     let started_at = record.started_at.clone();
+    let plex_refresh = plex_refresh_summary_from_record(&record);
 
     ApiScanRunDetail {
         id: record.id,
@@ -773,6 +811,7 @@ fn scan_run_detail_from_record(record: ScanHistoryRecord) -> ApiScanRunDetail {
         title_enrichment_ms: record.title_enrichment_ms,
         linking_ms: record.linking_ms,
         plex_refresh_ms: record.plex_refresh_ms,
+        plex_refresh,
         dead_link_sweep_ms: record.dead_link_sweep_ms,
         total_runtime_ms,
         cache_hit_ratio: record.cache_hit_ratio,
@@ -1329,6 +1368,17 @@ mod tests {
             title_enrichment_ms: 16_400,
             linking_ms: 20_500,
             plex_refresh_ms: 3_100,
+            plex_refresh_requested_paths: 12,
+            plex_refresh_unique_paths: 10,
+            plex_refresh_planned_batches: 5,
+            plex_refresh_coalesced_batches: 2,
+            plex_refresh_coalesced_paths: 7,
+            plex_refresh_refreshed_batches: 4,
+            plex_refresh_refreshed_paths_covered: 12,
+            plex_refresh_skipped_batches: 1,
+            plex_refresh_unresolved_paths: 0,
+            plex_refresh_capped_batches: 1,
+            plex_refresh_failed_batches: 0,
             dead_link_sweep_ms: 700,
             cache_hit_ratio: Some(0.94),
             candidate_slots: 77_624_480,
@@ -1445,6 +1495,10 @@ mod tests {
         assert_eq!(json.library_filter.as_deref(), Some("Anime"));
         assert_eq!(json.scope_label, "Anime");
         assert_eq!(json.total_runtime_ms, 288_200);
+        assert_eq!(json.plex_refresh.runtime_ms, 3_100);
+        assert_eq!(json.plex_refresh.planned_batches, 5);
+        assert_eq!(json.plex_refresh.refreshed_batches, 4);
+        assert_eq!(json.plex_refresh.capped_batches, 1);
         assert_eq!(json.auto_acquire_successes, 4);
         assert_eq!(json.auto_acquire_requests, 10);
         assert!(json.search_missing);
@@ -1534,6 +1588,9 @@ mod tests {
         assert_eq!(run.total_runtime_ms, 288_200);
         assert_eq!(run.dead_count, 17);
         assert_eq!(run.cache_hit_ratio, Some(0.94));
+        assert_eq!(run.plex_refresh.planned_batches, 5);
+        assert_eq!(run.plex_refresh.refreshed_batches, 4);
+        assert_eq!(run.plex_refresh.capped_batches, 1);
         assert_eq!(run.auto_acquire.requests, 10);
         assert_eq!(run.auto_acquire.successes, 4);
     }

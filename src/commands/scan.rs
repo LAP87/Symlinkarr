@@ -57,6 +57,8 @@ struct PlexRefreshTelemetry {
     refreshed_paths_covered: usize,
     skipped_batches: usize,
     unresolved_paths: usize,
+    capped_batches: usize,
+    failed_batches: usize,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -435,6 +437,19 @@ pub(crate) async fn run_scan(
         title_enrichment_ms: duration_ms_i64(telemetry.episode_title_enrichment),
         linking_ms: duration_ms_i64(telemetry.linking),
         plex_refresh_ms: duration_ms_i64(telemetry.plex_refresh),
+        plex_refresh_requested_paths: telemetry.plex_refresh_stats.requested_paths as i64,
+        plex_refresh_unique_paths: telemetry.plex_refresh_stats.unique_paths as i64,
+        plex_refresh_planned_batches: telemetry.plex_refresh_stats.planned_batches as i64,
+        plex_refresh_coalesced_batches: telemetry.plex_refresh_stats.coalesced_batches as i64,
+        plex_refresh_coalesced_paths: telemetry.plex_refresh_stats.coalesced_paths as i64,
+        plex_refresh_refreshed_batches: telemetry.plex_refresh_stats.refreshed_batches as i64,
+        plex_refresh_refreshed_paths_covered: telemetry
+            .plex_refresh_stats
+            .refreshed_paths_covered as i64,
+        plex_refresh_skipped_batches: telemetry.plex_refresh_stats.skipped_batches as i64,
+        plex_refresh_unresolved_paths: telemetry.plex_refresh_stats.unresolved_paths as i64,
+        plex_refresh_capped_batches: telemetry.plex_refresh_stats.capped_batches as i64,
+        plex_refresh_failed_batches: telemetry.plex_refresh_stats.failed_batches as i64,
         dead_link_sweep_ms: duration_ms_i64(telemetry.dead_link_sweep),
         cache_hit_ratio: telemetry.source_inventory_stats.cache_hit_ratio(),
         candidate_slots: telemetry.match_stats.prefiltered_library_candidates as i64,
@@ -581,7 +596,7 @@ fn log_scan_telemetry(
     );
 
     info!(
-        "Scan telemetry details: cache_hit_ratio={}, cached_items={}, filesystem_items={}, metadata_alias_prep={}, candidate_scan={}, destination_reduce={}, metadata_errors={}, worker_count={}, candidate_slots={}, scored_candidates={}, exact_id_hits={}, ambiguous_skipped={}, refresh_batches={}, coalesced_batches={}, refreshed_paths_covered={}",
+        "Scan telemetry details: cache_hit_ratio={}, cached_items={}, filesystem_items={}, metadata_alias_prep={}, candidate_scan={}, destination_reduce={}, metadata_errors={}, worker_count={}, candidate_slots={}, scored_candidates={}, exact_id_hits={}, ambiguous_skipped={}, refresh_requested_paths={}, refresh_unique_paths={}, refresh_batches={}, coalesced_batches={}, refreshed_batches={}, refreshed_paths_covered={}, skipped_refresh_batches={}, capped_refresh_batches={}, failed_refresh_batches={}, unresolved_refresh_paths={}",
         telemetry
             .source_inventory_stats
             .cache_hit_ratio()
@@ -598,9 +613,16 @@ fn log_scan_telemetry(
         telemetry.match_stats.scored_candidates,
         telemetry.match_stats.exact_id_hits,
         telemetry.match_stats.ambiguous_skipped,
+        telemetry.plex_refresh_stats.requested_paths,
+        telemetry.plex_refresh_stats.unique_paths,
         telemetry.plex_refresh_stats.planned_batches,
         telemetry.plex_refresh_stats.coalesced_batches,
+        telemetry.plex_refresh_stats.refreshed_batches,
         telemetry.plex_refresh_stats.refreshed_paths_covered,
+        telemetry.plex_refresh_stats.skipped_batches,
+        telemetry.plex_refresh_stats.capped_batches,
+        telemetry.plex_refresh_stats.failed_batches,
+        telemetry.plex_refresh_stats.unresolved_paths,
     );
 
     user_println(format!(
@@ -615,7 +637,7 @@ fn log_scan_telemetry(
         fmt_duration(telemetry.dead_link_sweep),
     ));
     user_println(format!(
-        "   📊 Scan details: matches={} created={} updated={} skipped={} ambiguous={} candidates={} scored={} exact-id={} cache-hit={} refresh-batches={}",
+        "   📊 Scan details: matches={} created={} updated={} skipped={} ambiguous={} candidates={} scored={} exact-id={} cache-hit={} refresh={}/{} skipped={} capped={}",
         matches.len(),
         link_summary.created,
         link_summary.updated,
@@ -629,7 +651,10 @@ fn log_scan_telemetry(
             .cache_hit_ratio()
             .map(|ratio| format!("{:.0}%", ratio * 100.0))
             .unwrap_or_else(|| "n/a".to_string()),
+        telemetry.plex_refresh_stats.refreshed_batches,
         telemetry.plex_refresh_stats.planned_batches,
+        telemetry.plex_refresh_stats.skipped_batches,
+        telemetry.plex_refresh_stats.capped_batches,
     ));
 }
 
@@ -674,6 +699,7 @@ async fn trigger_plex_refresh(
     telemetry.coalesced_batches = plan.coalesced_batches;
     telemetry.coalesced_paths = plan.coalesced_paths;
     telemetry.unresolved_paths = plan.unresolved_paths.len();
+    telemetry.capped_batches = dropped_batches;
 
     for path in &plan.unresolved_paths {
         user_println(format!(
@@ -708,6 +734,7 @@ async fn trigger_plex_refresh(
                     batch.section_title,
                     err
                 ));
+                telemetry.failed_batches += 1;
                 telemetry.skipped_batches += 1;
             }
         }

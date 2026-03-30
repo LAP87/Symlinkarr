@@ -248,6 +248,20 @@ Response element schema:
   "links_updated": 164,
   "cache_hit_ratio": 0.94,
   "dead_count": 17,
+  "plex_refresh": {
+    "runtime_ms": 3100,
+    "requested_paths": 12,
+    "unique_paths": 10,
+    "planned_batches": 5,
+    "coalesced_batches": 2,
+    "coalesced_paths": 7,
+    "refreshed_batches": 4,
+    "refreshed_paths_covered": 12,
+    "skipped_batches": 1,
+    "unresolved_paths": 0,
+    "capped_batches": 1,
+    "failed_batches": 0
+  },
   "auto_acquire": {
     "requests": 10,
     "missing_requests": 5,
@@ -263,6 +277,10 @@ Response element schema:
   }
 }
 ```
+
+Notes:
+
+- `plex_refresh` makes refresh throttling observable in persisted history, including capped or skipped batches that previously only appeared in logs.
 
 ## `GET /api/v1/scan/:id`
 
@@ -294,6 +312,20 @@ Response schema:
   "title_enrichment_ms": 16400,
   "linking_ms": 20500,
   "plex_refresh_ms": 3100,
+  "plex_refresh": {
+    "runtime_ms": 3100,
+    "requested_paths": 12,
+    "unique_paths": 10,
+    "planned_batches": 5,
+    "coalesced_batches": 2,
+    "coalesced_paths": 7,
+    "refreshed_batches": 4,
+    "refreshed_paths_covered": 12,
+    "skipped_batches": 1,
+    "unresolved_paths": 0,
+    "capped_batches": 1,
+    "failed_batches": 0
+  },
   "dead_link_sweep_ms": 700,
   "total_runtime_ms": 288200,
   "cache_hit_ratio": 0.94,
@@ -319,6 +351,10 @@ Not found:
 ```json
 { "error": "Scan run 9999 not found" }
 ```
+
+Notes:
+
+- `plex_refresh_ms` remains the phase runtime for compatibility, while the nested `plex_refresh` object exposes request pressure, coalescing, capping, failures, and actual queued coverage.
 
 ## `GET /api/v1/report/anime-remediation`
 

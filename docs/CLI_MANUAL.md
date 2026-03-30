@@ -141,6 +141,8 @@ symlinkarr cleanup [--library <LIBRARY>] [--output text|json]
 symlinkarr cleanup dead [--library <LIBRARY>] [--output text|json]
 symlinkarr cleanup audit [--scope anime] [--out <PATH>]
 symlinkarr cleanup prune --report <REPORT> [--apply] [--include-legacy-anime-roots] [--max-delete <N>] [--confirm-token <TOKEN>] [--gate-mode enforce|relaxed]
+symlinkarr cleanup remediate-anime [--library <LIBRARY>] [--output text|json] [--plex-db <PATH>] [--title <FILTER>] [--out <PATH>]
+symlinkarr cleanup remediate-anime [--library <LIBRARY>] [--output text|json] --apply --report <REPORT> --confirm-token <TOKEN> [--max-delete <N>] [--gate-mode enforce|relaxed]
 ```
 
 Examples:
@@ -152,6 +154,9 @@ symlinkarr cleanup audit --scope anime --out backups/cleanup-audit-manual.json
 symlinkarr cleanup prune --report backups/cleanup-audit-anime-YYYYMMDD-HHMMSS.json
 symlinkarr cleanup prune --report backups/cleanup-audit-anime-YYYYMMDD-HHMMSS.json --include-legacy-anime-roots
 symlinkarr cleanup prune --report backups/cleanup-audit-anime-YYYYMMDD-HHMMSS.json --apply --confirm-token <TOKEN>
+symlinkarr cleanup remediate-anime --plex-db "/var/lib/plex/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db"
+symlinkarr cleanup remediate-anime --plex-db "/var/lib/plex/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db" --title "Gundam" --out backups/anime-remediation-gundam.json
+symlinkarr cleanup remediate-anime --apply --report backups/anime-remediation-gundam.json --confirm-token <TOKEN>
 ```
 
 Notes:
@@ -159,6 +164,9 @@ Notes:
 - `cleanup audit` supports `anime`, `tv`, `movie`, and `all`.
 - `cleanup prune` is intentionally two-step. Preview first, then apply.
 - `cleanup prune --include-legacy-anime-roots` opt-ins warning-only anime findings where an untagged legacy root coexists with a tagged `{tvdb-*}`/`{tmdb-*}` root. These candidates are quarantined as `foreign`, not deleted.
+- `cleanup remediate-anime` is the guarded follow-up for the correlated anime backlog from `report --plex-db ...`. Preview writes a remediation plan JSON with eligible and blocked titles, then apply reuses that exact report plus a confirmation token.
+- `cleanup remediate-anime` only auto-handles groups where the legacy roots are foreign-only, the recommended tagged root is DB-tracked, and no non-symlink media files are present under the legacy root. Everything else stays blocked for manual review.
+- `cleanup remediate-anime --apply` requires `cleanup.prune.quarantine_foreign=true`, because the workflow intentionally quarantines `foreign` legacy symlinks instead of deleting them.
 - Destructive cleanup commands refuse to run when a configured source mount is unhealthy or missing at runtime. Fix the mount first, then re-run the command.
 
 ### `repair`

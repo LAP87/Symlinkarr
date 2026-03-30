@@ -210,6 +210,17 @@ pub struct ScanRunView {
     pub title_enrichment: String,
     pub linking: String,
     pub plex_refresh: String,
+    pub plex_refresh_requested_paths: i64,
+    pub plex_refresh_unique_paths: i64,
+    pub plex_refresh_planned_batches: i64,
+    pub plex_refresh_coalesced_batches: i64,
+    pub plex_refresh_coalesced_paths: i64,
+    pub plex_refresh_refreshed_batches: i64,
+    pub plex_refresh_refreshed_paths_covered: i64,
+    pub plex_refresh_skipped_batches: i64,
+    pub plex_refresh_unresolved_paths: i64,
+    pub plex_refresh_capped_batches: i64,
+    pub plex_refresh_failed_batches: i64,
     pub dead_link_sweep: String,
     pub total_runtime: String,
     pub cache_hit_ratio: String,
@@ -269,6 +280,17 @@ impl ScanRunView {
             title_enrichment: format_duration_ms(record.title_enrichment_ms),
             linking: format_duration_ms(record.linking_ms),
             plex_refresh: format_duration_ms(record.plex_refresh_ms),
+            plex_refresh_requested_paths: record.plex_refresh_requested_paths,
+            plex_refresh_unique_paths: record.plex_refresh_unique_paths,
+            plex_refresh_planned_batches: record.plex_refresh_planned_batches,
+            plex_refresh_coalesced_batches: record.plex_refresh_coalesced_batches,
+            plex_refresh_coalesced_paths: record.plex_refresh_coalesced_paths,
+            plex_refresh_refreshed_batches: record.plex_refresh_refreshed_batches,
+            plex_refresh_refreshed_paths_covered: record.plex_refresh_refreshed_paths_covered,
+            plex_refresh_skipped_batches: record.plex_refresh_skipped_batches,
+            plex_refresh_unresolved_paths: record.plex_refresh_unresolved_paths,
+            plex_refresh_capped_batches: record.plex_refresh_capped_batches,
+            plex_refresh_failed_batches: record.plex_refresh_failed_batches,
             dead_link_sweep: format_duration_ms(record.dead_link_sweep_ms),
             total_runtime: format_duration_ms(total_runtime_ms),
             cache_hit_ratio: record
@@ -662,6 +684,17 @@ mod tests {
             title_enrichment: "16.4s".to_string(),
             linking: "20.5s".to_string(),
             plex_refresh: "3.1s".to_string(),
+            plex_refresh_requested_paths: 12,
+            plex_refresh_unique_paths: 10,
+            plex_refresh_planned_batches: 5,
+            plex_refresh_coalesced_batches: 2,
+            plex_refresh_coalesced_paths: 7,
+            plex_refresh_refreshed_batches: 4,
+            plex_refresh_refreshed_paths_covered: 12,
+            plex_refresh_skipped_batches: 1,
+            plex_refresh_unresolved_paths: 0,
+            plex_refresh_capped_batches: 1,
+            plex_refresh_failed_batches: 0,
             dead_link_sweep: "0.7s".to_string(),
             total_runtime: "288.2s".to_string(),
             cache_hit_ratio: "94%".to_string(),
@@ -735,6 +768,8 @@ mod tests {
         assert!(html.contains("Anime"));
         assert!(html.contains("Phase Telemetry"));
         assert!(html.contains("Matcher Signals"));
+        assert!(html.contains("Queue and throttle signals"));
+        assert!(html.contains("cap 1") || html.contains(">1<"));
         assert!(html.contains("Auto-Acquire"));
         assert!(html.contains("Back to Scan History"));
         assert!(html.contains("77624480"));

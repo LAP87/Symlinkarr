@@ -6,6 +6,38 @@
 - posture: `stable core, evolving ops`
 - intended use: local-first host or Docker installs, with Windows 11 users running through WSL2 or a Linux container
 
+## 2026-03-30 - Guarded Anime Remediation Workflow
+
+### Code Changes
+
+- added a first-class guarded anime remediation workflow under `cleanup remediate-anime`.
+  - preview mode writes a remediation plan JSON with eligible and blocked titles
+  - apply mode reuses that saved plan plus a confirmation token
+  - eligible legacy-root symlinks are quarantined, not deleted
+  - files: `src/commands/cleanup.rs`, `src/main.rs`
+- anime remediation apply now creates a safety snapshot before quarantining legacy-root symlinks.
+  - files: `src/commands/cleanup.rs`, `src/cleanup_audit.rs`
+- anime remediation apply now hard-fails unless `cleanup.prune.quarantine_foreign=true`, keeping the workflow honest about its quarantine-first safety model.
+  - files: `src/commands/cleanup.rs`, `README.md`, `docs/CLI_MANUAL.md`
+- persisted Plex refresh telemetry now records requested paths, planned/coalesced/refreshed batches, capped/skipped batches, unresolved paths, and refresh failures in `scan_runs`.
+  - files: `src/commands/scan.rs`, `src/db.rs`
+- scan history/detail views and `/api/v1/scan/history` / `/api/v1/scan/:id` now expose the persisted Plex refresh plan so operators can see when throttling or capping protected Plex.
+  - files: `src/web/templates.rs`, `src/web/ui/scan_history.html`, `src/web/ui/scan_run.html`, `src/web/api/mod.rs`, `docs/API_SCHEMA.md`
+
+### Validation
+
+- `CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-merge cargo test -q`
+  - result: `502 passed; 0 failed`
+- `LD_LIBRARY_PATH=/usr/lib:/usr/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-merge cargo clippy --all-targets --all-features -- -D warnings`
+  - result: passed
+- `cargo run -- cleanup --library Anime --output json remediate-anime --plex-db "/var/lib/plex/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db" --out /tmp/symlinkarr-anime-remediation-preview.json`
+  - result:
+    - total groups: `106`
+    - eligible groups: `1`
+    - blocked groups: `105`
+    - cleanup candidates: `16`
+    - current eligible title: `Angels of Death`
+
 ## 2026-03-30 - RC Branch Convergence: Anime Remediation + Safer Web Ops
 
 ### Code Changes

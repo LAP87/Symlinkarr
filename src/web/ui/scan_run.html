@@ -74,6 +74,32 @@
 <section class="card">
     <div class="section-head">
         <div>
+            <p class="section-kicker">Plex Refresh</p>
+            <h2 class="section-title">Queue and throttle signals</h2>
+        </div>
+    </div>
+
+    {% if run.plex_refresh_requested_paths > 0 || run.plex_refresh_planned_batches > 0 %}
+    <div class="metric-grid metric-grid--compact">
+        <div class="metric-card"><span class="metric-label">Requested Paths</span><strong>{{ run.plex_refresh_requested_paths }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Unique Paths</span><strong>{{ run.plex_refresh_unique_paths }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Planned Batches</span><strong>{{ run.plex_refresh_planned_batches }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Refreshed Batches</span><strong>{{ run.plex_refresh_refreshed_batches }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Coalesced</span><strong>{{ run.plex_refresh_coalesced_batches }} / {{ run.plex_refresh_coalesced_paths }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Covered Paths</span><strong>{{ run.plex_refresh_refreshed_paths_covered }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Skipped</span><strong class="{% if run.plex_refresh_skipped_batches > 0 %}text-error{% endif %}">{{ run.plex_refresh_skipped_batches }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Capped</span><strong class="{% if run.plex_refresh_capped_batches > 0 %}text-warning{% endif %}">{{ run.plex_refresh_capped_batches }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Failed</span><strong class="{% if run.plex_refresh_failed_batches > 0 %}text-error{% endif %}">{{ run.plex_refresh_failed_batches }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Unresolved</span><strong class="{% if run.plex_refresh_unresolved_paths > 0 %}text-warning{% endif %}">{{ run.plex_refresh_unresolved_paths }}</strong></div>
+    </div>
+    {% else %}
+    <p class="text-muted">This run did not attempt any Plex refresh requests.</p>
+    {% endif %}
+</section>
+
+<section class="card">
+    <div class="section-head">
+        <div>
             <p class="section-kicker">Auto-Acquire</p>
             <h2 class="section-title">Outcome summary</h2>
         </div>
