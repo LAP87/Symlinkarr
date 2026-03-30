@@ -11,11 +11,14 @@ use tracing::{debug, info, warn};
 use walkdir::WalkDir;
 
 use crate::cache::TorrentCache;
+use crate::commands::ensure_runtime_source_paths_healthy;
 use crate::config::ContentType;
 use crate::db::Database;
 use crate::models::{LinkRecord, LinkStatus, MediaType};
 use crate::source_scanner::SourceScanner;
-use crate::utils::{cached_source_exists, path_under_roots, ProgressLine, VIDEO_EXTENSIONS};
+use crate::utils::{
+    cached_source_health, path_under_roots, PathHealth, ProgressLine, VIDEO_EXTENSIONS,
+};
 
 /// Minimum score threshold for TV replacements (title + season + episode required)
 const TV_THRESHOLD: f64 = 0.75;
@@ -66,9 +69,9 @@ fn collect_fresh_dead_links_chunk(
     links: Vec<LinkRecord>,
     allowed_symlink_roots: Option<Vec<PathBuf>>,
     processed: &AtomicUsize,
-) -> Vec<DeadLink> {
-    let mut source_exists_cache: HashMap<PathBuf, bool> = HashMap::new();
-    let mut parent_exists_cache: HashMap<PathBuf, bool> = HashMap::new();
+) -> Result<Vec<DeadLink>> {
+    let mut source_health_cache: HashMap<PathBuf, PathHealth> = HashMap::new();
+    let mut parent_health_cache: HashMap<PathBuf, PathHealth> = HashMap::new();
     let mut fresh = Vec::new();
 
     for link in links {
@@ -79,11 +82,12 @@ fn collect_fresh_dead_links_chunk(
             }
         }
 
-        let source_exists = cached_source_exists(
+        let source_exists = destructive_source_exists(
+            "repair dead-link detection",
             &link.source_path,
-            &mut source_exists_cache,
-            &mut parent_exists_cache,
-        );
+            &mut source_health_cache,
+            &mut parent_health_cache,
+        )?;
         let target_ok = match std::fs::symlink_metadata(&link.target_path) {
             Ok(meta) if meta.file_type().is_symlink() => std::fs::read_link(&link.target_path)
                 .map(|resolved| resolved == link.source_path)
@@ -119,7 +123,24 @@ fn collect_fresh_dead_links_chunk(
         processed.fetch_add(1, Ordering::Relaxed);
     }
 
-    fresh
+    Ok(fresh)
+}
+
+fn destructive_source_exists(
+    operation: &str,
+    source_path: &Path,
+    source_health_cache: &mut HashMap<PathBuf, PathHealth>,
+    parent_health_cache: &mut HashMap<PathBuf, PathHealth>,
+) -> Result<bool> {
+    let source_health = cached_source_health(source_path, source_health_cache, parent_health_cache);
+    if source_health.blocks_destructive_ops() {
+        anyhow::bail!(
+            "Aborting {}: source path became unhealthy: {}",
+            operation,
+            source_health.describe(source_path)
+        );
+    }
+    Ok(source_health.is_healthy())
 }
 
 fn recommended_drift_workers(total_active: usize) -> usize {
@@ -460,8 +481,8 @@ impl Repairer {
         let total_active = active_links.len();
         let mut last_progress = Instant::now();
         let mut progress = ProgressLine::new("Fresh dead-link drift:");
-        let mut source_exists_cache: HashMap<PathBuf, bool> = HashMap::new();
-        let mut parent_exists_cache: HashMap<PathBuf, bool> = HashMap::new();
+        let mut source_health_cache: HashMap<PathBuf, PathHealth> = HashMap::new();
+        let mut parent_health_cache: HashMap<PathBuf, PathHealth> = HashMap::new();
         println!(
             "   🔎 Checking {} active link(s) for fresh dead-link drift...",
             total_active
@@ -495,7 +516,7 @@ impl Repairer {
             while !workers.is_empty() {
                 match tokio::time::timeout(Duration::from_millis(500), workers.join_next()).await {
                     Ok(Some(result)) => {
-                        let chunk_fresh = result?;
+                        let chunk_fresh = result??;
                         fresh.extend(chunk_fresh);
                     }
                     Ok(None) => break,
@@ -534,11 +555,12 @@ impl Repairer {
                     }
                 }
 
-                let source_exists = cached_source_exists(
+                let source_exists = destructive_source_exists(
+                    "repair dead-link detection",
                     &link.source_path,
-                    &mut source_exists_cache,
-                    &mut parent_exists_cache,
-                );
+                    &mut source_health_cache,
+                    &mut parent_health_cache,
+                )?;
                 let target_ok = match std::fs::symlink_metadata(&link.target_path) {
                     Ok(meta) if meta.file_type().is_symlink() => {
                         std::fs::read_link(&link.target_path)
@@ -1022,6 +1044,8 @@ impl Repairer {
         allowed_symlink_roots: Option<&[PathBuf]>,
         cache: Option<&TorrentCache<'_>>,
     ) -> Result<Vec<RepairResult>> {
+        ensure_runtime_source_paths_healthy(source_paths, "repair auto").await?;
+
         let mut dead_links = self.find_dead_links(db, allowed_symlink_roots).await?;
         let existing_dead_targets: HashSet<PathBuf> = dead_links
             .iter()
@@ -1959,11 +1983,51 @@ mod tests {
         assert_eq!(removed[0].target_path, target);
     }
 
+    #[tokio::test]
+    async fn test_repair_all_rejects_unhealthy_source_root() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("test.db");
+        let db = Database::new(db_path.to_str().unwrap()).await.unwrap();
+
+        let repairer = Repairer::new();
+        let missing_source_root = tmp.path().join("missing-rd");
+        let err = repairer
+            .repair_all(&db, &[missing_source_root], false, &[], None, None)
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("Refusing repair auto"));
+    }
+
+    #[test]
+    fn test_destructive_source_exists_rejects_unhealthy_parent() {
+        let path = PathBuf::from("/mnt/rd/file.mkv");
+        let parent = path.parent().unwrap().to_path_buf();
+        let mut source_cache = HashMap::new();
+        let mut parent_cache = HashMap::new();
+        parent_cache.insert(parent, PathHealth::TransportDisconnected);
+
+        let err = destructive_source_exists(
+            "repair dead-link detection",
+            &path,
+            &mut source_cache,
+            &mut parent_cache,
+        )
+        .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("Aborting repair dead-link detection"));
+    }
+
     // ── Pure function unit tests ──────────────────────────────────────────────
 
     #[test]
     fn test_normalize_title_removes_punctuation() {
-        assert_eq!(normalize_title("Breaking.Bad.S01E01"), "breaking bad s01e01");
+        assert_eq!(
+            normalize_title("Breaking.Bad.S01E01"),
+            "breaking bad s01e01"
+        );
         assert_eq!(normalize_title("Movie_Name_2024"), "movie name 2024");
     }
 
@@ -1979,8 +2043,14 @@ mod tests {
 
     #[test]
     fn test_extract_quality_more_formats() {
-        assert_eq!(extract_quality("Movie.2160p.WEB-DL"), Some("2160p".to_string()));
-        assert_eq!(extract_quality("Show.1080p.BluRay"), Some("1080p".to_string()));
+        assert_eq!(
+            extract_quality("Movie.2160p.WEB-DL"),
+            Some("2160p".to_string())
+        );
+        assert_eq!(
+            extract_quality("Show.1080p.BluRay"),
+            Some("1080p".to_string())
+        );
         assert_eq!(extract_quality("Video.720p.x264"), Some("720p".to_string()));
         assert_eq!(extract_quality("Video.480p.XviD"), Some("480p".to_string()));
     }
@@ -2001,7 +2071,6 @@ mod tests {
         assert_eq!(extract_year("No Year Here.mkv"), None);
     }
 
-
     #[test]
     fn test_title_tokens_filters_all_noise_tokens() {
         // More comprehensive noise token filtering
@@ -2018,8 +2087,14 @@ mod tests {
     fn test_title_tokens_minimum_length_enforced() {
         // Tokens < 2 chars should be filtered; tokens >= 2 chars are kept
         let tokens = title_tokens("a xb ccc dddd");
-        assert!(!tokens.contains(&"a".to_string()), "single char should be filtered");
-        assert!(tokens.contains(&"xb".to_string()), "two char token should be kept");
+        assert!(
+            !tokens.contains(&"a".to_string()),
+            "single char should be filtered"
+        );
+        assert!(
+            tokens.contains(&"xb".to_string()),
+            "two char token should be kept"
+        );
         assert!(tokens.contains(&"ccc".to_string()));
         assert!(tokens.contains(&"dddd".to_string()));
     }
@@ -2048,11 +2123,13 @@ mod tests {
     fn test_trash_season_episode_regex_parses_formats() {
         let re = trash_season_episode_regex();
         assert_eq!(
-            re.captures("S01E05").map(|c| (c[1].to_string(), c[2].to_string())),
+            re.captures("S01E05")
+                .map(|c| (c[1].to_string(), c[2].to_string())),
             Some(("01".to_string(), "05".to_string()))
         );
         assert_eq!(
-            re.captures("s2e10").map(|c| (c[1].to_string(), c[2].to_string())),
+            re.captures("s2e10")
+                .map(|c| (c[1].to_string(), c[2].to_string())),
             Some(("2".to_string(), "10".to_string()))
         );
     }
@@ -2069,5 +2146,4 @@ mod tests {
             Some("2160".to_string())
         );
     }
-
 }

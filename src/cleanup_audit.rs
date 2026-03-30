@@ -16,6 +16,7 @@ use crate::api::sonarr::SonarrClient;
 use crate::api::tmdb::TmdbClient;
 use crate::api::tvdb::TvdbClient;
 use crate::backup::BackupManager;
+use crate::commands::ensure_runtime_sources_healthy;
 use crate::config::{Config, ContentType, LibraryConfig, MetadataMode};
 use crate::db::Database;
 use crate::library_scanner::LibraryScanner;
@@ -189,7 +190,7 @@ pub struct PruneOutcome {
     pub confirmation_token: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum PruneDisposition {
     Delete,
     Quarantine,
@@ -998,6 +999,10 @@ pub async fn run_prune(
     max_delete: Option<usize>,
     confirmation_token: Option<&str>,
 ) -> Result<PruneOutcome> {
+    if apply {
+        ensure_runtime_sources_healthy(&cfg.sources, "cleanup prune apply").await?;
+    }
+
     let json = std::fs::read_to_string(report_path)?;
     let mut report: CleanupReport = serde_json::from_str(&json)?;
     hydrate_report_db_tracked_flags(db, &mut report).await?;
@@ -1277,11 +1282,12 @@ pub async fn run_prune(
 
 fn quarantine_symlink(cfg: &Config, symlink_path: &Path) -> Result<PathBuf> {
     let target = std::fs::read_link(symlink_path)?;
+    let resolved_target = resolve_link_target(symlink_path, &target);
     let destination = quarantine_destination(cfg, symlink_path);
     if let Some(parent) = destination.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    create_symlink_like(&target, &destination)?;
+    create_symlink_like(&resolved_target, &destination)?;
     std::fs::remove_file(symlink_path)?;
     Ok(destination)
 }
@@ -1360,7 +1366,11 @@ fn create_symlink_like(target: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn prune_confirmation_token(report: &CleanupReport, candidate_paths: &[PathBuf]) -> String {
+fn prune_confirmation_token(
+    report: &CleanupReport,
+    candidate_paths: &[PathBuf],
+    dispositions: &HashMap<PathBuf, PruneDisposition>,
+) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
@@ -1370,6 +1380,7 @@ pub fn prune_confirmation_token(report: &CleanupReport, candidate_paths: &[PathB
     report.scope.hash(&mut hasher);
     for path in candidate_paths {
         path.hash(&mut hasher);
+        dispositions.get(path).hash(&mut hasher);
     }
 
     format!("{:016x}", hasher.finish())
@@ -2151,7 +2162,7 @@ pub(crate) fn build_prune_plan(
     });
 
     PrunePlan {
-        confirmation_token: prune_confirmation_token(report, &candidate_paths),
+        confirmation_token: prune_confirmation_token(report, &candidate_paths, &dispositions),
         candidate_paths,
         high_or_critical_candidates: high_or_critical_candidates.len(),
         safe_warning_duplicate_candidates: safe_duplicate_plan.prune_paths.len(),

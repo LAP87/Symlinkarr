@@ -8,6 +8,10 @@ use std::time::SystemTime;
 #[allow(unused_imports)]
 use super::filters;
 
+use super::{
+    ActiveCleanupAuditJob, ActiveRepairJob, ActiveScanJob, LastCleanupAuditOutcome,
+    LastRepairOutcome, LastScanOutcome,
+};
 use crate::cleanup_audit::{CleanupReport, CleanupScope};
 use crate::config::Config;
 use crate::db::{AcquisitionJobCounts, ScanHistoryRecord};
@@ -56,6 +60,130 @@ pub struct ScanHistoryFilters {
     pub mode: String,
     pub search_missing: String,
     pub limit: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ActiveScanView {
+    pub started_at: String,
+    pub scope_label: String,
+    pub dry_run: bool,
+    pub search_missing: bool,
+}
+
+impl From<ActiveScanJob> for ActiveScanView {
+    fn from(value: ActiveScanJob) -> Self {
+        Self {
+            started_at: value.started_at,
+            scope_label: value.scope_label,
+            dry_run: value.dry_run,
+            search_missing: value.search_missing,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ActiveCleanupAuditView {
+    pub started_at: String,
+    pub scope_label: String,
+    pub libraries_label: String,
+}
+
+impl From<ActiveCleanupAuditJob> for ActiveCleanupAuditView {
+    fn from(value: ActiveCleanupAuditJob) -> Self {
+        Self {
+            started_at: value.started_at,
+            scope_label: value.scope_label,
+            libraries_label: value.libraries_label,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ActiveRepairView {
+    pub started_at: String,
+    pub scope_label: String,
+}
+
+impl From<ActiveRepairJob> for ActiveRepairView {
+    fn from(value: ActiveRepairJob) -> Self {
+        Self {
+            started_at: value.started_at,
+            scope_label: value.scope_label,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BackgroundScanOutcomeView {
+    pub finished_at: String,
+    pub scope_label: String,
+    pub dry_run: bool,
+    pub search_missing: bool,
+    pub success: bool,
+    pub message: String,
+}
+
+impl From<LastScanOutcome> for BackgroundScanOutcomeView {
+    fn from(value: LastScanOutcome) -> Self {
+        Self {
+            finished_at: value.finished_at,
+            scope_label: value.scope_label,
+            dry_run: value.dry_run,
+            search_missing: value.search_missing,
+            success: value.success,
+            message: value.message,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BackgroundCleanupAuditOutcomeView {
+    pub finished_at: String,
+    pub scope_label: String,
+    pub libraries_label: String,
+    pub success: bool,
+    pub message: String,
+    pub report_path: Option<String>,
+}
+
+impl From<LastCleanupAuditOutcome> for BackgroundCleanupAuditOutcomeView {
+    fn from(value: LastCleanupAuditOutcome) -> Self {
+        Self {
+            finished_at: value.finished_at,
+            scope_label: value.scope_label,
+            libraries_label: value.libraries_label,
+            success: value.success,
+            message: value.message,
+            report_path: value.report_path,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BackgroundRepairOutcomeView {
+    pub finished_at: String,
+    pub scope_label: String,
+    pub success: bool,
+    pub message: String,
+    pub repaired: usize,
+    pub failed: usize,
+    pub skipped: usize,
+    pub stale: usize,
+}
+
+impl From<LastRepairOutcome> for BackgroundRepairOutcomeView {
+    fn from(value: LastRepairOutcome) -> Self {
+        Self {
+            finished_at: value.finished_at,
+            scope_label: value.scope_label,
+            success: value.success,
+            message: value.message,
+            repaired: value.repaired,
+            failed: value.failed,
+            skipped: value.skipped,
+            stale: value.stale,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -222,6 +350,8 @@ use crate::config::LibraryConfig;
 #[template(path = "web/ui/scan.html")]
 pub struct ScanTemplate {
     pub libraries: Vec<LibraryConfig>,
+    pub active_scan: Option<ActiveScanView>,
+    pub last_scan_outcome: Option<BackgroundScanOutcomeView>,
     pub latest_run: Option<ScanRunView>,
     pub history: Vec<ScanRunView>,
     pub queue: QueueOverview,
@@ -233,6 +363,8 @@ pub struct ScanTemplate {
 pub struct ScanResultTemplate {
     pub success: bool,
     pub message: String,
+    pub active_scan: Option<ActiveScanView>,
+    pub last_scan_outcome: Option<BackgroundScanOutcomeView>,
     pub latest_run: Option<ScanRunView>,
     pub dry_run: bool,
 }
@@ -257,6 +389,8 @@ pub struct ScanRunDetailTemplate {
 #[template(path = "web/ui/cleanup.html")]
 pub struct CleanupTemplate {
     pub libraries: Vec<LibraryConfig>,
+    pub active_cleanup_audit: Option<ActiveCleanupAuditView>,
+    pub last_cleanup_audit_outcome: Option<BackgroundCleanupAuditOutcomeView>,
     pub last_report: Option<CleanupReportSummaryView>,
     pub last_report_path: Option<PathBuf>,
 }
@@ -291,6 +425,8 @@ impl CleanupReportSummaryView {
 pub struct CleanupResultTemplate {
     pub success: bool,
     pub message: String,
+    pub active_cleanup_audit: Option<ActiveCleanupAuditView>,
+    pub last_cleanup_audit_outcome: Option<BackgroundCleanupAuditOutcomeView>,
     pub report_path: Option<PathBuf>,
     pub report_summary: Option<CleanupReportSummaryView>,
 }
@@ -309,6 +445,7 @@ pub struct PrunePreviewTemplate {
     pub legacy_anime_root_groups: Vec<crate::cleanup_audit::LegacyAnimeRootGroupCount>,
     pub report_path: Option<PathBuf>,
     pub confirmation_token: Option<String>,
+    pub error_message: Option<String>,
 }
 
 // ─── Links ──────────────────────────────────────────────────────────
@@ -324,6 +461,8 @@ pub struct LinksTemplate {
 #[template(path = "web/ui/dead_links.html")]
 pub struct DeadLinksTemplate {
     pub links: Vec<LinkRecord>,
+    pub active_repair: Option<ActiveRepairView>,
+    pub last_repair_outcome: Option<BackgroundRepairOutcomeView>,
 }
 
 #[derive(Template)]
@@ -333,6 +472,8 @@ pub struct RepairResultTemplate {
     pub message: String,
     pub repaired: usize,
     pub failed: usize,
+    pub active_repair: Option<ActiveRepairView>,
+    pub last_repair_outcome: Option<BackgroundRepairOutcomeView>,
 }
 
 // ─── Config ─────────────────────────────────────────────────────────
@@ -373,7 +514,10 @@ use crate::discovery::DiscoveredItem;
 #[template(path = "web/ui/discover.html")]
 pub struct DiscoverTemplate {
     pub libraries: Vec<LibraryConfig>,
+    pub selected_library: String,
+    pub refresh_cache: bool,
     pub discovered_items: Vec<DiscoveredItem>,
+    pub status_message: Option<String>,
 }
 
 #[derive(Template)]
@@ -484,6 +628,11 @@ mod tests {
                     updated_at: None,
                 },
             ],
+            active_repair: Some(ActiveRepairView {
+                started_at: "2026-03-29 23:59:00 UTC".to_string(),
+                scope_label: "All Libraries".to_string(),
+            }),
+            last_repair_outcome: None,
         };
 
         let html = template.render().unwrap();
@@ -491,6 +640,7 @@ mod tests {
         assert!(html.contains("2 dead"));
         assert!(html.contains("Auto-Repair All"));
         assert!(html.contains("Cleanup"));
+        assert!(html.contains("Background repair running"));
         assert!(html.contains("tv / movie"));
         assert!(html.contains("badge badge-info"));
     }
@@ -516,6 +666,8 @@ mod tests {
         let template = CleanupResultTemplate {
             success: true,
             message: "Audit complete".to_string(),
+            active_cleanup_audit: None,
+            last_cleanup_audit_outcome: None,
             report_path: Some(PathBuf::from("/tmp/cleanup-audit-anime.json")),
             report_summary: Some(CleanupReportSummaryView {
                 path: PathBuf::from("/tmp/cleanup-audit-anime.json"),
@@ -534,6 +686,50 @@ mod tests {
         assert!(html.contains("Anime"));
         assert!(html.contains("18"));
         assert!(html.contains("4 / 9"));
+    }
+
+    #[test]
+    fn cleanup_result_template_renders_background_audit_banner() {
+        let template = CleanupResultTemplate {
+            success: true,
+            message: "Cleanup audit started in background for Anime across Anime.".to_string(),
+            active_cleanup_audit: Some(ActiveCleanupAuditView {
+                started_at: "2026-03-29 23:59:00 UTC".to_string(),
+                scope_label: "Anime".to_string(),
+                libraries_label: "Anime".to_string(),
+            }),
+            last_cleanup_audit_outcome: None,
+            report_path: None,
+            report_summary: None,
+        };
+
+        let html = template.render().unwrap();
+        assert!(html.contains("Background cleanup audit running"));
+        assert!(html.contains("Background Audit Accepted"));
+        assert!(html.contains("2026-03-29 23:59:00 UTC"));
+    }
+
+    #[test]
+    fn cleanup_result_template_renders_last_failed_audit_outcome() {
+        let template = CleanupResultTemplate {
+            success: false,
+            message: "Cleanup audit not started".to_string(),
+            active_cleanup_audit: None,
+            last_cleanup_audit_outcome: Some(BackgroundCleanupAuditOutcomeView {
+                finished_at: "2026-03-29 23:59:59 UTC".to_string(),
+                scope_label: "Anime".to_string(),
+                libraries_label: "Anime".to_string(),
+                success: false,
+                message: "source root unhealthy".to_string(),
+                report_path: None,
+            }),
+            report_path: None,
+            report_summary: None,
+        };
+
+        let html = template.render().unwrap();
+        assert!(html.contains("Last background cleanup audit failed"));
+        assert!(html.contains("source root unhealthy"));
     }
 
     #[test]
@@ -579,6 +775,7 @@ mod tests {
             legacy_anime_root_groups: vec![],
             report_path: Some(PathBuf::from("/tmp/cleanup-audit-all.json")),
             confirmation_token: Some("abcdef1234567890".to_string()),
+            error_message: None,
         };
 
         let html = template.render().unwrap();
@@ -632,6 +829,7 @@ mod tests {
             }],
             report_path: Some(PathBuf::from("/tmp/cleanup-audit-anime.json")),
             confirmation_token: Some("abcdef1234567890".to_string()),
+            error_message: None,
         };
 
         let html = template.render().unwrap();

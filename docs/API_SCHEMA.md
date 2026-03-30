@@ -8,9 +8,16 @@ Base path:
 /api/v1
 ```
 
-The API is currently local-first and intended to back the bundled web UI. There is no auth layer in front of these routes yet, so treat it as trusted-local-network tooling rather than a public internet API.
+The API is currently local-first and intended to back the bundled web UI. There is still no full user auth layer in front of these routes, so treat it as trusted-local-network tooling rather than a public internet API.
 
-By default, the web server binds to `127.0.0.1`. Set `web.bind_address: "0.0.0.0"` only when you intentionally want external reachability, such as a container with explicit port publishing. Cross-origin access is not enabled by default.
+By default, the web server binds to `127.0.0.1`. Set `web.bind_address: "0.0.0.0"` only when you intentionally want external reachability, such as a container with explicit port publishing, and pair it with `web.allow_remote: true`. Cross-origin access is not enabled by default.
+
+For mutating browser requests, Symlinkarr now enforces two layers:
+
+- same-origin `Origin`/`Referer` validation for browser-style `POST` requests
+- an issued host-only browser session cookie (`SameSite=Strict`) that is set by same-origin `GET` responses and required on later browser mutations
+
+Non-browser local clients that do not send `Origin` or `Referer` headers are still allowed to call mutating endpoints without that browser session cookie.
 
 ## Conventions
 
@@ -60,16 +67,59 @@ Response:
 }
 ```
 
+## `GET /api/v1/discover`
+
+Returns read-only discovery results from the RD cache, scoped to all libraries or a single library.
+
+Query params:
+
+- `library=<LIBRARY_NAME>` optional
+- `refresh_cache=true|false` optional, defaults to `false` for cached-only discover
+
+Status codes:
+
+- `200 OK` on success
+- `400 Bad Request` for invalid library filters
+- `500 Internal Server Error` if discovery fails
+
+Response:
+
+```json
+{
+  "items": [
+    {
+      "rd_torrent_id": "rd-1",
+      "torrent_name": "Missing.Show.S01E01.1080p.WEB-DL.mkv",
+      "status": "downloaded",
+      "size": 1073741824,
+      "parsed_title": "Missing Show"
+    }
+  ],
+  "status_message": "Real-Debrid API key not configured. Showing cached results only."
+}
+```
+
+Notes:
+
+- Browser/UI discover defaults to cached-only mode for lower latency and fewer inline surprises.
+- Set `refresh_cache=true` only when you explicitly want a live RD cache sync before gap detection.
+
 ## `POST /api/v1/scan`
 
-Triggers the scan pipeline.
+Starts the scan pipeline in the background.
+
+Status codes:
+
+- `202 Accepted` when the scan was accepted and is now running in the background
+- `409 Conflict` when another web/API-triggered scan is already running
 
 Request body:
 
 ```json
 {
   "dry_run": true,
-  "library": "Anime"
+  "library": "Anime",
+  "search_missing": false
 }
 ```
 
@@ -78,23 +128,79 @@ Response:
 ```json
 {
   "success": true,
-  "message": "Scan complete: 3 created, 1 updated, 17 skipped",
-  "created": 3,
-  "updated": 1,
-  "skipped": 17
+  "message": "Scan started in background for Anime. Poll /api/v1/scan/jobs or /api/v1/scan/history for completion.",
+  "created": 0,
+  "updated": 0,
+  "skipped": 0,
+  "running": true,
+  "started_at": "2026-03-29 23:59:00 UTC",
+  "scope_label": "Anime",
+  "search_missing": false,
+  "dry_run": true
 }
 ```
 
+Notes:
+
+- Web/API scan now returns immediately instead of holding the request open for the full run.
+- Poll `GET /api/v1/scan/jobs` for the active background scan and `GET /api/v1/scan/history` / `GET /api/v1/scan/:id` for completed runs.
+
+## `GET /api/v1/scan/status`
+
+Returns the current in-memory background scan state plus the latest completed or failed background-scan outcome.
+
+Status codes:
+
+- `200 OK`
+
+Response schema:
+
+```json
+{
+  "active_job": {
+    "id": 0,
+    "status": "running",
+    "started_at": "2026-03-29 23:59:00 UTC",
+    "scope_label": "Anime",
+    "search_missing": true,
+    "dry_run": false,
+    "library_items_found": 0,
+    "source_items_found": 0,
+    "matches_found": 0,
+    "links_created": 0,
+    "links_updated": 0,
+    "dead_marked": 0
+  },
+  "last_outcome": {
+    "finished_at": "2026-03-29 23:58:00 UTC",
+    "scope_label": "Anime",
+    "dry_run": false,
+    "search_missing": true,
+    "success": false,
+    "message": "RD cache sync failed"
+  }
+}
+```
+
+Notes:
+
+- `active_job` is `null` when no background scan is currently running.
+- `last_outcome` carries the latest background-scan success or failure, including failures that do not produce a durable scan-history row.
+- stale failed outcomes are suppressed once a newer durable `scan_runs` entry exists.
+
 ## `GET /api/v1/scan/jobs`
 
-Returns the most recent scan jobs in compact form.
+Returns the active background scan first when one is running, followed by recent completed scan history in compact form.
 
 Response element schema:
 
 ```json
 {
-  "id": 42,
+  "id": 0,
+  "status": "running",
   "started_at": "2026-03-21 21:11:00",
+  "scope_label": "Anime",
+  "search_missing": true,
   "dry_run": true,
   "library_items_found": 3906,
   "source_items_found": 101542,
@@ -104,6 +210,11 @@ Response element schema:
   "dead_marked": 15
 }
 ```
+
+Notes:
+
+- `status` is `running` for the synthetic in-memory active row and `completed` for history-backed rows.
+- Running rows use `id: 0` until a durable history row exists at completion time.
 
 ## `GET /api/v1/scan/history`
 
@@ -276,24 +387,73 @@ Error example when no Plex DB path can be resolved:
 
 ## `POST /api/v1/repair/auto`
 
-Runs the web API repair action.
+Starts the repair flow in the background.
+
+Status codes:
+
+- `202 Accepted` when the repair flow was accepted and is now running in the background
+- `409 Conflict` when another scan, cleanup audit, or repair run is already active
 
 Response schema:
 
 ```json
 {
   "success": true,
-  "message": "Repair completed",
+  "message": "Repair started in background for All Libraries. Poll /api/v1/repair/status for the finished outcome.",
   "repaired": 0,
-  "failed": 0
+  "failed": 0,
+  "skipped": 0,
+  "stale": 0,
+  "running": true,
+  "started_at": "2026-03-29 23:59:00 UTC",
+  "scope_label": "All Libraries"
 }
 ```
 
-Note: this endpoint is currently a thin placeholder compared to the richer CLI repair paths.
+Notes:
+
+- this route now returns immediately instead of holding the request open for the full repair pass
+- the background worker still runs the same core repair flow as CLI `repair auto`, without the CLI-only self-heal prompt/output layer
+
+## `GET /api/v1/repair/status`
+
+Returns the current in-memory background repair state plus the latest completed repair outcome.
+
+Status codes:
+
+- `200 OK`
+
+Response schema:
+
+```json
+{
+  "active_job": {
+    "status": "running",
+    "started_at": "2026-03-29 23:59:00 UTC",
+    "scope_label": "All Libraries"
+  },
+  "last_outcome": {
+    "finished_at": "2026-03-30 00:00:05 UTC",
+    "scope_label": "All Libraries",
+    "success": true,
+    "message": "Repair completed: 1 repaired, 0 unrepairable, 0 skipped, 0 stale record(s).",
+    "repaired": 1,
+    "failed": 0,
+    "skipped": 0,
+    "stale": 0
+  }
+}
+```
 
 ## `POST /api/v1/cleanup/audit`
 
-Runs a cleanup audit and writes a report.
+Starts a cleanup audit in the background. The finished report is written under the configured backup directory and becomes visible from the web cleanup page.
+
+Status codes:
+
+- `202 Accepted` when the audit was queued successfully
+- `409 Conflict` when another scan or cleanup audit is already running
+- `400 Bad Request` for invalid scope values
 
 Request body:
 
@@ -308,22 +468,89 @@ Response schema:
 ```json
 {
   "success": true,
-  "message": "Audit complete",
-  "report_path": "/path/to/report.json",
-  "total_findings": 123,
-  "critical": 10,
-  "high": 100,
-  "warning": 13
+  "message": "Cleanup audit started in background for Anime. Poll /api/v1/cleanup/audit/jobs or inspect /cleanup for the finished report.",
+  "report_path": "",
+  "total_findings": 0,
+  "critical": 0,
+  "high": 0,
+  "warning": 0,
+  "running": true,
+  "started_at": "2026-03-29 12:34:56 UTC",
+  "scope_label": "Anime",
+  "libraries_label": "All Libraries"
 }
 ```
 
 Notes:
 
 - `scope` currently supports `anime`, `tv`, `movie`, and `all`.
+- `report_path` stays empty until the background audit has finished and produced a report.
+- `report_path` in follow-up prune requests must resolve inside the configured Symlinkarr backup directory.
+
+## `GET /api/v1/cleanup/audit/status`
+
+Returns the current in-memory cleanup-audit state plus the latest completed or failed background-audit outcome.
+
+Status codes:
+
+- `200 OK`
+
+Response schema:
+
+```json
+{
+  "active_job": {
+    "status": "running",
+    "started_at": "2026-03-29 12:34:56 UTC",
+    "scope_label": "Anime",
+    "libraries_label": "All Libraries"
+  },
+  "last_outcome": {
+    "finished_at": "2026-03-29 12:40:00 UTC",
+    "scope_label": "Anime",
+    "libraries_label": "All Libraries",
+    "success": true,
+    "message": "Report written to /path/to/report.json",
+    "report_path": "/path/to/report.json"
+  }
+}
+```
+
+Notes:
+
+- `active_job` is `null` when no cleanup audit is currently running.
+- `last_outcome` carries the latest background cleanup-audit success or failure, including failures that never produced a report file.
+- stale failed outcomes are suppressed once a newer durable cleanup report exists on disk.
+
+## `GET /api/v1/cleanup/audit/jobs`
+
+Returns the currently running cleanup audit job, if any.
+
+Status codes:
+
+- `200 OK`
+
+Response schema:
+
+```json
+[
+  {
+    "status": "running",
+    "started_at": "2026-03-29 12:34:56 UTC",
+    "scope_label": "Anime",
+    "libraries_label": "All Libraries"
+  }
+]
+```
 
 ## `POST /api/v1/cleanup/prune`
 
 Applies prune against a previously generated report.
+
+Status codes:
+
+- `200 OK` on success
+- `400 Bad Request` when prune validation fails, including invalid tokens or bad report input
 
 Request body:
 
@@ -334,13 +561,21 @@ Request body:
 }
 ```
 
+Notes:
+
+- `report_path` must resolve inside the configured Symlinkarr backup directory. Arbitrary filesystem paths are rejected.
+
 Response schema:
 
 ```json
 {
   "success": true,
-  "message": "Prune completed successfully",
+  "message": "Prune applied",
+  "candidates": 17,
+  "managed_candidates": 17,
+  "foreign_candidates": 0,
   "removed": 17,
+  "quarantined": 0,
   "skipped": 2
 }
 ```

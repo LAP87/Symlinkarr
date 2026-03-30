@@ -14,8 +14,8 @@ use crate::auto_acquire::{
     process_auto_acquire_queue, AutoAcquireBatchSummary, AutoAcquireRequest, RelinkCheck,
 };
 use crate::commands::{
-    decypharr_arr_name, ensure_runtime_directories_healthy, is_safe_auto_acquire_query,
-    prowlarr_categories, selected_libraries,
+    decypharr_arr_name, ensure_runtime_directories_healthy, ensure_runtime_sources_healthy,
+    is_safe_auto_acquire_query, prowlarr_categories, selected_libraries,
 };
 use crate::config::Config;
 use crate::db::Database;
@@ -93,7 +93,7 @@ pub(crate) async fn run_scan(
     let selected_libraries = selected_libraries(cfg, library_filter)?;
 
     let runtime_checks_started = Instant::now();
-    ensure_runtime_directories_healthy(&selected_libraries, &cfg.sources).await?;
+    ensure_runtime_directories_healthy(&selected_libraries, &cfg.sources, "scan startup").await?;
     telemetry.runtime_checks = runtime_checks_started.elapsed();
 
     let library_scan_started = Instant::now();
@@ -227,6 +227,7 @@ pub(crate) async fn run_scan(
     .await?;
 
     let dead = if search_missing {
+        ensure_runtime_sources_healthy(&cfg.sources, "scan dead-link sweep").await?;
         let dead_started = Instant::now();
         let library_roots: Vec<_> = selected_libraries
             .iter()

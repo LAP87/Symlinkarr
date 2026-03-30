@@ -232,7 +232,6 @@ mod tests {
         assert!(!titles_match("something", ""));
     }
 
-
     #[test]
     fn test_truncate_exact_boundary() {
         assert_eq!(truncate("Hello", 5), "Hello");

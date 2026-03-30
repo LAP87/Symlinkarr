@@ -73,8 +73,10 @@ async fn run_cleanup_dead(
 ) -> Result<i64> {
     info!("=== Symlinkarr Cleanup ===");
     let selected = selected_libraries(cfg, library_filter)?;
-    ensure_runtime_directories_healthy(&selected, &cfg.sources).await?;
     let library_roots: Vec<_> = selected.iter().map(|l| l.path.clone()).collect();
+
+    ensure_runtime_directories_healthy(&selected, &cfg.sources, "cleanup dead-link removal")
+        .await?;
 
     if cfg.backup.enabled {
         let bm = crate::backup::BackupManager::new(&cfg.backup);
@@ -201,7 +203,7 @@ pub(crate) async fn run_cleanup_prune(
     }
 
     if apply {
-        ensure_runtime_directories_healthy(&selected, &cfg.sources).await?;
+        ensure_runtime_directories_healthy(&selected, &cfg.sources, "cleanup prune apply").await?;
     }
 
     let outcome = cleanup_audit::run_prune(

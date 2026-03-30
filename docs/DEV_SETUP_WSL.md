@@ -92,6 +92,7 @@ If you intentionally want the server reachable beyond loopback, set this in conf
 web:
   enabled: true
   bind_address: "0.0.0.0"
+  allow_remote: true
   port: 8726
 ```
 
@@ -101,6 +102,7 @@ For normal laptop development, prefer:
 web:
   enabled: true
   bind_address: "127.0.0.1"
+  allow_remote: false
   port: 8726
 ```
 

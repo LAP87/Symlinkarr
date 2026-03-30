@@ -1,5 +1,5 @@
-use std::sync::LazyLock;
 use regex::Regex;
+use std::sync::LazyLock;
 use tracing::{info, warn};
 use walkdir::WalkDir;
 

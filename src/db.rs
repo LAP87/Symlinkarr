@@ -296,7 +296,9 @@ const LATEST_SCHEMA_VERSION: i64 = 9;
 // SqlitePool is Clone (wraps Arc), so Database can safely be Clone
 impl Clone for Database {
     fn clone(&self) -> Self {
-        Self { pool: self.pool.clone() }
+        Self {
+            pool: self.pool.clone(),
+        }
     }
 }
 
@@ -747,9 +749,11 @@ impl Database {
 
     async fn migration_v9_tx(&self, tx: &mut sqlx::Transaction<'_, Sqlite>) -> Result<()> {
         // Composite index on links(status, target_path) speeds up get_links_scoped queries
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_links_status_target ON links(status, target_path)")
-            .execute(&mut **tx)
-            .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_links_status_target ON links(status, target_path)",
+        )
+        .execute(&mut **tx)
+        .await?;
         Ok(())
     }
 
@@ -933,19 +937,42 @@ impl Database {
 
     /// Get all links with a given status.
     pub async fn get_links_by_status(&self, status: LinkStatus) -> Result<Vec<LinkRecord>> {
+        self.get_links_by_status_limited(status, None).await
+    }
+
+    pub async fn get_links_by_status_limited(
+        &self,
+        status: LinkStatus,
+        limit: Option<i64>,
+    ) -> Result<Vec<LinkRecord>> {
         let status_str = match status {
             LinkStatus::Active => "active",
             LinkStatus::Dead => "dead",
             LinkStatus::Removed => "removed",
         };
 
-        let rows = sqlx::query(
-            "SELECT id, source_path, target_path, media_id, media_type, status, created_at, updated_at
-             FROM links WHERE status = ?",
-        )
-        .bind(status_str)
-        .fetch_all(&self.pool)
-        .await?;
+        let rows = if let Some(limit) = limit {
+            sqlx::query(
+                "SELECT id, source_path, target_path, media_id, media_type, status, created_at, updated_at
+                 FROM links
+                 WHERE status = ?
+                 ORDER BY id DESC
+                 LIMIT ?",
+            )
+            .bind(status_str)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                "SELECT id, source_path, target_path, media_id, media_type, status, created_at, updated_at
+                 FROM links
+                 WHERE status = ?",
+            )
+            .bind(status_str)
+            .fetch_all(&self.pool)
+            .await?
+        };
 
         let records = rows
             .iter()
@@ -1083,6 +1110,11 @@ impl Database {
     #[allow(dead_code)] // Kept as a simple compatibility wrapper
     pub async fn get_active_links(&self) -> Result<Vec<LinkRecord>> {
         self.get_links_by_status(LinkStatus::Active).await
+    }
+
+    pub async fn get_active_links_limited(&self, limit: i64) -> Result<Vec<LinkRecord>> {
+        self.get_links_by_status_limited(LinkStatus::Active, Some(limit))
+            .await
     }
 
     pub async fn get_active_links_scoped(
@@ -2036,6 +2068,11 @@ impl Database {
         self.get_links_by_status(LinkStatus::Dead).await
     }
 
+    pub async fn get_dead_links_limited(&self, limit: i64) -> Result<Vec<LinkRecord>> {
+        self.get_links_by_status_limited(LinkStatus::Dead, Some(limit))
+            .await
+    }
+
     /// Aggregate statistics for the web dashboard.
     #[allow(dead_code)]
     pub async fn get_web_stats(&self) -> Result<WebStats> {
@@ -2307,6 +2344,44 @@ mod tests {
         let active = db.get_active_links().await.unwrap();
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].media_id, "tvdb-12345");
+    }
+
+    #[tokio::test]
+    async fn test_get_active_links_limited_applies_limit_in_sql() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        db.insert_link(&sample_link(
+            "/mnt/rd/show/ep01.mkv",
+            "/plex/show/S01E01.mkv",
+        ))
+        .await
+        .unwrap();
+        db.insert_link(&sample_link(
+            "/mnt/rd/show/ep02.mkv",
+            "/plex/show/S01E02.mkv",
+        ))
+        .await
+        .unwrap();
+        db.insert_link(&sample_link(
+            "/mnt/rd/show/ep03.mkv",
+            "/plex/show/S01E03.mkv",
+        ))
+        .await
+        .unwrap();
+
+        let active = db.get_active_links_limited(2).await.unwrap();
+        assert_eq!(active.len(), 2);
+        assert_eq!(
+            active[0].target_path,
+            PathBuf::from("/plex/show/S01E03.mkv")
+        );
+        assert_eq!(
+            active[1].target_path,
+            PathBuf::from("/plex/show/S01E02.mkv")
+        );
     }
 
     #[tokio::test]

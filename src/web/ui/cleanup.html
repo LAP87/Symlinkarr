@@ -9,6 +9,28 @@
     <p class="page-lead">Cleanup is intentionally two-step: run an audit to produce a report, review that report in prune preview, then apply prune only if the preview still looks correct.</p>
 </div>
 
+{% match active_cleanup_audit %}
+{% when Some with (job) %}
+<div class="alert alert-info">
+    <strong>&#9203; Background cleanup audit running.</strong>
+    {{ job.scope_label }} across {{ job.libraries_label }} started {{ job.started_at }}.
+    Refresh this page for the finished report.
+</div>
+{% when None %}{% endmatch %}
+
+{% match last_cleanup_audit_outcome %}
+{% when Some with (outcome) %}
+<div class="alert {% if outcome.success %}alert-success{% else %}alert-error{% endif %}">
+    <strong>{% if outcome.success %}Background cleanup audit completed.{% else %}Background cleanup audit failed.{% endif %}</strong>
+    {{ outcome.scope_label }} across {{ outcome.libraries_label }} finished {{ outcome.finished_at }}.
+    {{ outcome.message }}
+    {% match outcome.report_path %}
+    {% when Some with (path) %}
+    <a href="/cleanup/prune?report={{ path }}" class="btn btn-secondary mt-1">&#128064; Open Prune Preview</a>
+    {% when None %}{% endmatch %}
+</div>
+{% when None %}{% endmatch %}
+
 {% if libraries|length > 0 %}
 <div class="card">
     <div class="section-head">
@@ -94,8 +116,8 @@
     <div class="section-head">
         <div>
             <p class="section-kicker">Apply Gate</p>
-            <h2 class="section-title">Use the same report and token</h2>
-            <p class="text-muted">If you rerun the audit, the preview token changes. Treat the report path below as the exact input to the prune page.</p>
+            <h2 class="section-title">Apply only from preview</h2>
+            <p class="text-muted">If you rerun the audit, the preview token changes. Open prune preview from the button below and apply only from that page.</p>
         </div>
     </div>
     <p class="mb-1">Report file: <code class="mono">{{ report.path.display() }}</code></p>
@@ -103,16 +125,9 @@
         <a href="/cleanup/prune?report={{ report.path.display() }}" class="btn btn-secondary">
             &#128064; Preview Prune Actions
         </a>
-        <form action="/cleanup/prune" method="post" class="inline-token-form">
-            <input type="hidden" name="report" value="{{ report.path.display() }}">
-            <input type="password" name="token" class="form-control field-max-md" placeholder="Confirmation token" required>
-            <button type="submit" class="btn btn-danger">
-                &#9888;&#65039; Apply Cleanup
-            </button>
-        </form>
     </div>
     <small class="text-muted mt-1">
-        &#9888;&#65039; Prune is permanent. The preview is the gate, not the report list itself.
+        &#9888;&#65039; Prune is permanent. Preview is the only place where the report token should be used.
     </small>
 </div>
 {% when None %}

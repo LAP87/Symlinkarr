@@ -227,28 +227,17 @@ pub(crate) async fn runtime_source_health(path: &Path, probe_path: &Path) -> Pat
     directory_path_health_with_timeout(probe_path.to_path_buf(), DIRECTORY_PROBE_TIMEOUT).await
 }
 
-pub(crate) async fn ensure_runtime_directories_healthy(
-    libraries: &[&LibraryConfig],
+pub(crate) async fn ensure_runtime_sources_healthy(
     sources: &[SourceConfig],
+    operation: &str,
 ) -> Result<()> {
-    for lib in libraries {
-        let health =
-            directory_path_health_with_timeout(lib.path.clone(), DIRECTORY_PROBE_TIMEOUT).await;
-        if !health.is_healthy() {
-            anyhow::bail!(
-                "Library '{}' is not healthy: {}",
-                lib.name,
-                health.describe(&lib.path)
-            );
-        }
-    }
-
     for src in sources {
         let probe_path = runtime_source_probe_path(&src.path);
         let health = runtime_source_health(&src.path, &probe_path).await;
         if !health.is_healthy() {
             anyhow::bail!(
-                "Source '{}' is not healthy: {}",
+                "Refusing {}: source '{}' is not healthy: {}",
+                operation,
                 src.name,
                 health.describe(&probe_path)
             );
@@ -258,11 +247,49 @@ pub(crate) async fn ensure_runtime_directories_healthy(
     Ok(())
 }
 
+pub(crate) async fn ensure_runtime_source_paths_healthy(
+    source_paths: &[PathBuf],
+    operation: &str,
+) -> Result<()> {
+    for path in source_paths {
+        let probe_path = runtime_source_probe_path(path);
+        let health = runtime_source_health(path, &probe_path).await;
+        if !health.is_healthy() {
+            anyhow::bail!(
+                "Refusing {}: source root is not healthy: {}",
+                operation,
+                health.describe(&probe_path)
+            );
+        }
+    }
+
+    Ok(())
+}
+
+pub(crate) async fn ensure_runtime_directories_healthy(
+    libraries: &[&LibraryConfig],
+    sources: &[SourceConfig],
+    operation: &str,
+) -> Result<()> {
+    for lib in libraries {
+        let health =
+            directory_path_health_with_timeout(lib.path.clone(), DIRECTORY_PROBE_TIMEOUT).await;
+        if !health.is_healthy() {
+            anyhow::bail!(
+                "Refusing {}: library '{}' is not healthy: {}",
+                operation,
+                lib.name,
+                health.describe(&lib.path)
+            );
+        }
+    }
+
+    ensure_runtime_sources_healthy(sources, operation).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{LibraryConfig, SourceConfig};
-    use crate::models::MediaType;
 
     #[test]
     fn safe_auto_acquire_queries_require_enough_signal() {
@@ -290,57 +317,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ensure_runtime_directories_healthy_accepts_existing_library_and_source() {
-        let dir = tempfile::tempdir().unwrap();
-        let library_path = dir.path().join("library");
-        let source_path = dir.path().join("source");
-        std::fs::create_dir_all(&library_path).unwrap();
-        std::fs::create_dir_all(&source_path).unwrap();
-
-        let library = LibraryConfig {
-            name: "Anime".to_string(),
-            path: library_path,
-            media_type: MediaType::Tv,
-            content_type: None,
-            depth: 1,
-        };
-        let source = SourceConfig {
-            name: "RealDebrid".to_string(),
-            path: source_path,
-            media_type: "auto".to_string(),
-        };
-
-        ensure_runtime_directories_healthy(&[&library], &[source])
+    async fn ensure_runtime_source_paths_reports_missing_source_root() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let missing = dir.path().join("missing-rd");
+        let err = ensure_runtime_source_paths_healthy(&[missing], "repair auto")
             .await
-            .unwrap();
+            .unwrap_err();
+        assert!(err.to_string().contains("Refusing repair auto"));
     }
 
     #[tokio::test]
-    async fn ensure_runtime_directories_healthy_rejects_missing_source() {
-        let dir = tempfile::tempdir().unwrap();
-        let library_path = dir.path().join("library");
-        std::fs::create_dir_all(&library_path).unwrap();
-
-        let library = LibraryConfig {
-            name: "Anime".to_string(),
-            path: library_path,
-            media_type: MediaType::Tv,
-            content_type: None,
-            depth: 1,
-        };
-        let source = SourceConfig {
-            name: "RealDebrid".to_string(),
-            path: dir.path().join("missing-source"),
-            media_type: "auto".to_string(),
-        };
-
-        let err = ensure_runtime_directories_healthy(&[&library], &[source])
-            .await
-            .unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("Source 'RealDebrid' is not healthy"),
-            "unexpected error: {err}"
-        );
+    async fn ensure_runtime_sources_reports_named_missing_source_root() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let missing = dir.path().join("missing-rd");
+        let err = ensure_runtime_sources_healthy(
+            &[SourceConfig {
+                name: "RD".to_string(),
+                path: missing,
+                media_type: "auto".to_string(),
+            }],
+            "cleanup prune apply",
+        )
+        .await
+        .unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("Refusing cleanup prune apply"));
+        assert!(message.contains("source 'RD' is not healthy"));
     }
 }

@@ -44,6 +44,35 @@ pub fn cached_source_exists(
     exists
 }
 
+pub fn cached_source_health(
+    path: &Path,
+    source_health_cache: &mut HashMap<PathBuf, PathHealth>,
+    parent_health_cache: &mut HashMap<PathBuf, PathHealth>,
+) -> PathHealth {
+    if let Some(health) = source_health_cache.get(path) {
+        return health.clone();
+    }
+
+    if let Some(parent) = path.parent() {
+        let parent_health = if let Some(health) = parent_health_cache.get(parent) {
+            health.clone()
+        } else {
+            let health = fast_path_health(parent);
+            parent_health_cache.insert(parent.to_path_buf(), health.clone());
+            health
+        };
+
+        if !parent_health.is_healthy() {
+            source_health_cache.insert(path.to_path_buf(), parent_health.clone());
+            return parent_health;
+        }
+    }
+
+    let health = fast_path_health(path);
+    source_health_cache.insert(path.to_path_buf(), health.clone());
+    health
+}
+
 use tokio::task;
 use tokio::time;
 
@@ -62,6 +91,13 @@ pub enum PathHealth {
 impl PathHealth {
     pub fn is_healthy(&self) -> bool {
         matches!(self, Self::Healthy)
+    }
+
+    pub fn blocks_destructive_ops(&self) -> bool {
+        matches!(
+            self,
+            Self::TransportDisconnected | Self::Timeout | Self::IoError(_)
+        )
     }
 
     pub fn describe(&self, path: &Path) -> String {
@@ -235,20 +271,35 @@ mod tests {
     fn path_under_roots_single_match() {
         let roots = [PathBuf::from("/mnt/storage")];
         assert!(path_under_roots(Path::new("/mnt/storage/film"), &roots));
-        assert!(path_under_roots(Path::new("/mnt/storage/film/Movie {tmdb-1}"), &roots));
+        assert!(path_under_roots(
+            Path::new("/mnt/storage/film/Movie {tmdb-1}"),
+            &roots
+        ));
     }
 
     #[test]
     fn path_under_roots_no_match() {
         let roots = [PathBuf::from("/mnt/storage")];
-        assert!(!path_under_roots(Path::new("/home/lenny/Downloads"), &roots));
+        assert!(!path_under_roots(
+            Path::new("/home/lenny/Downloads"),
+            &roots
+        ));
     }
 
     #[test]
     fn path_under_roots_multiple_roots() {
-        let roots = vec![PathBuf::from("/mnt/storage/film"), PathBuf::from("/mnt/storage/serier")];
-        assert!(path_under_roots(Path::new("/mnt/storage/film/Movie {tmdb-1}"), &roots));
-        assert!(path_under_roots(Path::new("/mnt/storage/serier/Show {tvdb-1}"), &roots));
+        let roots = vec![
+            PathBuf::from("/mnt/storage/film"),
+            PathBuf::from("/mnt/storage/serier"),
+        ];
+        assert!(path_under_roots(
+            Path::new("/mnt/storage/film/Movie {tmdb-1}"),
+            &roots
+        ));
+        assert!(path_under_roots(
+            Path::new("/mnt/storage/serier/Show {tvdb-1}"),
+            &roots
+        ));
         assert!(!path_under_roots(Path::new("/mnt/storage/other"), &roots));
     }
 
@@ -293,6 +344,46 @@ mod tests {
     fn transport_error_is_classified_explicitly() {
         let err = io::Error::from_raw_os_error(ENOTCONN_RAW_OS_ERROR);
         assert_eq!(classify_path_error(err), PathHealth::TransportDisconnected);
+    }
+
+    #[test]
+    fn cached_source_health_short_circuits_missing_parent() {
+        let root = tempfile::TempDir::new().unwrap();
+        let missing = root.path().join("missing-parent").join("missing-file.mkv");
+        let mut source_cache = HashMap::new();
+        let mut parent_cache = HashMap::new();
+
+        let health = cached_source_health(&missing, &mut source_cache, &mut parent_cache);
+        assert_eq!(health, PathHealth::Missing);
+
+        let parent = missing.parent().unwrap().to_path_buf();
+        assert_eq!(parent_cache.get(&parent), Some(&PathHealth::Missing));
+        assert_eq!(source_cache.get(&missing), Some(&PathHealth::Missing));
+    }
+
+    #[test]
+    fn cached_source_health_propagates_cached_unhealthy_parent() {
+        let path = PathBuf::from("/mnt/rd/file.mkv");
+        let parent = path.parent().unwrap().to_path_buf();
+        let mut source_cache = HashMap::new();
+        let mut parent_cache = HashMap::new();
+        parent_cache.insert(parent, PathHealth::TransportDisconnected);
+
+        let health = cached_source_health(&path, &mut source_cache, &mut parent_cache);
+        assert_eq!(health, PathHealth::TransportDisconnected);
+        assert_eq!(
+            source_cache.get(&path),
+            Some(&PathHealth::TransportDisconnected)
+        );
+    }
+
+    #[test]
+    fn path_health_blocks_destructive_ops_only_for_unhealthy_states() {
+        assert!(!PathHealth::Healthy.blocks_destructive_ops());
+        assert!(!PathHealth::Missing.blocks_destructive_ops());
+        assert!(PathHealth::TransportDisconnected.blocks_destructive_ops());
+        assert!(PathHealth::Timeout.blocks_destructive_ops());
+        assert!(PathHealth::IoError("boom".to_string()).blocks_destructive_ops());
     }
 
     #[test]

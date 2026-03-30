@@ -130,6 +130,8 @@ pub struct WebConfig {
     pub enabled: bool,
     #[serde(default = "default_web_bind_address")]
     pub bind_address: String,
+    #[serde(default)]
+    pub allow_remote: bool,
     #[serde(default = "default_web_port")]
     pub port: u16,
 }
@@ -147,6 +149,7 @@ impl Default for WebConfig {
         Self {
             enabled: false,
             bind_address: default_web_bind_address(),
+            allow_remote: false,
             port: default_web_port(),
         }
     }
@@ -160,6 +163,22 @@ impl WebConfig {
         } else {
             bind_address.to_string()
         }
+    }
+
+    pub fn binds_loopback_only(&self) -> bool {
+        let bind_address = self.normalized_bind_address();
+        if bind_address.eq_ignore_ascii_case("localhost") {
+            return true;
+        }
+
+        bind_address
+            .parse::<std::net::IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false)
+    }
+
+    pub fn requires_remote_ack(&self) -> bool {
+        !self.binds_loopback_only()
     }
 }
 
@@ -920,11 +939,18 @@ impl Config {
                 report
                     .errors
                     .push("web.bind_address must not be empty when web.enabled=true".to_string());
-            } else if matches!(bind_address, "0.0.0.0" | "::") {
-                report.warnings.push(format!(
-                    "web.bind_address={} exposes the web UI to the network; prefer 127.0.0.1 unless remote access is intentional",
-                    bind_address
-                ));
+            } else if self.web.requires_remote_ack() {
+                if self.web.allow_remote {
+                    report.warnings.push(format!(
+                        "web.bind_address={} exposes the web UI to the network because web.allow_remote=true",
+                        bind_address
+                    ));
+                } else {
+                    report.errors.push(format!(
+                        "web.bind_address={} requires web.allow_remote=true before Symlinkarr will expose the web UI beyond loopback",
+                        bind_address
+                    ));
+                }
             }
         }
 
@@ -2042,6 +2068,7 @@ realdebrid:
     fn web_config_defaults_to_loopback_bind_address() {
         let web = WebConfig::default();
         assert_eq!(web.bind_address, "127.0.0.1");
+        assert!(!web.allow_remote);
         assert_eq!(web.port, 8726);
     }
 
@@ -2085,6 +2112,7 @@ sources:
 web:
   enabled: true
   bind_address: "0.0.0.0"
+  allow_remote: true
   port: 9999
 "#,
         )
@@ -2093,6 +2121,7 @@ web:
         let cfg = Config::load(Some(config_path.display().to_string())).unwrap();
         assert!(cfg.web.enabled);
         assert_eq!(cfg.web.bind_address, "0.0.0.0");
+        assert!(cfg.web.allow_remote);
         assert_eq!(cfg.web.port, 9999);
     }
 
@@ -2110,16 +2139,30 @@ web:
     }
 
     #[test]
-    fn validate_warns_when_web_binds_publicly() {
+    fn validate_rejects_remote_web_bind_without_explicit_opt_in() {
         let mut cfg = runtime_config_fixture();
         cfg.web.enabled = true;
         cfg.web.bind_address = "0.0.0.0".to_string();
 
         let report = cfg.validate_runtime_settings();
         assert!(report
+            .errors
+            .iter()
+            .any(|err| err.contains("requires web.allow_remote=true")));
+    }
+
+    #[test]
+    fn validate_warns_when_remote_web_bind_is_explicitly_allowed() {
+        let mut cfg = runtime_config_fixture();
+        cfg.web.enabled = true;
+        cfg.web.bind_address = "0.0.0.0".to_string();
+        cfg.web.allow_remote = true;
+
+        let report = cfg.validate_runtime_settings();
+        assert!(report
             .warnings
             .iter()
-            .any(|warning| warning.contains("web.bind_address=0.0.0.0 exposes the web UI")));
+            .any(|warning| warning.contains("web.allow_remote=true")));
     }
 
     #[test]

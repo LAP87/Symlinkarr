@@ -119,21 +119,6 @@ impl Matcher {
         }
     }
 
-    /// Match source items against library items.
-    ///
-    /// Returns a list of confirmed matches with confidence scores.
-    pub async fn find_matches(
-        &self,
-        library_items: &[LibraryItem],
-        source_items: &[SourceItem],
-        db: &Database,
-    ) -> Result<Vec<MatchResult>> {
-        Ok(self
-            .find_matches_with_telemetry(library_items, source_items, db)
-            .await?
-            .matches)
-    }
-
     pub async fn find_matches_with_telemetry(
         &self,
         library_items: &[LibraryItem],

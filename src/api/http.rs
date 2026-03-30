@@ -219,7 +219,6 @@ fn retry_after_wait(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
     Some(Duration::from_secs(seconds))
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,7 +249,11 @@ mod tests {
         // Normal attempt range
         for attempt in 1..=20 {
             let result = backoff(attempt);
-            assert!(result > Duration::from_secs(0), "attempt {} should give positive duration", attempt);
+            assert!(
+                result > Duration::from_secs(0),
+                "attempt {} should give positive duration",
+                attempt
+            );
         }
     }
 

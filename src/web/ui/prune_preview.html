@@ -16,6 +16,14 @@
     </div>
 </div>
 
+{% match error_message %}
+{% when Some with (message) %}
+<div class="alert alert-error">
+    <strong>&#10060; Preview unavailable</strong><br>
+    {{ message }}
+</div>
+{% when None %}{% endmatch %}
+
 {% if findings|length > 0 %}
 <div class="split-grid">
     <section class="card hero-card hero-card--accent">

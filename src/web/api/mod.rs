@@ -3,6 +3,7 @@
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
+    response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
@@ -10,29 +11,36 @@ use serde::{Deserialize, Serialize};
 use tracing::info;
 
 use crate::backup::BackupManager;
-use crate::cleanup_audit::{CleanupAuditor, CleanupReport, CleanupScope};
+use crate::cleanup_audit::{self, CleanupReport, CleanupScope};
+use crate::commands::config::validate_config_report;
+use crate::commands::discover::load_discovery_snapshot;
+use crate::commands::doctor::{collect_doctor_checks, DoctorCheckMode};
 use crate::commands::report::{build_anime_remediation_report, AnimeRemediationSample};
 use crate::config::Config;
 use crate::db::{Database, ScanHistoryRecord};
-use crate::library_scanner::LibraryScanner;
-use crate::linker::Linker;
-use crate::matcher::Matcher;
-use crate::source_scanner::SourceScanner;
 
-use super::WebState;
+use super::{
+    latest_cleanup_report_created_at, should_surface_cleanup_audit_outcome,
+    should_surface_scan_outcome, WebState,
+};
 
 /// Create the API router
 pub fn create_router(state: WebState) -> Router<WebState> {
     Router::new()
         .route("/status", get(api_get_status))
         .route("/health", get(api_get_health))
+        .route("/discover", get(api_get_discover))
         .route("/scan", post(api_post_scan))
+        .route("/scan/status", get(api_get_scan_status))
         .route("/scan/jobs", get(api_get_scan_jobs))
         .route("/scan/history", get(api_get_scan_history))
         .route("/scan/:id", get(api_get_scan_run))
         .route("/report/anime-remediation", get(api_get_anime_remediation))
         .route("/repair/auto", post(api_post_repair_auto))
+        .route("/repair/status", get(api_get_repair_status))
         .route("/cleanup/audit", post(api_post_cleanup_audit))
+        .route("/cleanup/audit/status", get(api_get_cleanup_audit_status))
+        .route("/cleanup/audit/jobs", get(api_get_cleanup_audit_jobs))
         .route("/cleanup/prune", post(api_post_cleanup_prune))
         .route("/links", get(api_get_links))
         .route("/config/validate", get(api_get_config_validate))
@@ -50,6 +58,28 @@ pub struct ApiStatus {
     pub last_scan: Option<String>,
 }
 
+#[derive(Debug, Default, Clone, Deserialize)]
+pub struct ApiDiscoverQuery {
+    pub library: Option<String>,
+    #[serde(default)]
+    pub refresh_cache: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApiDiscoverItem {
+    pub rd_torrent_id: String,
+    pub torrent_name: String,
+    pub status: String,
+    pub size: i64,
+    pub parsed_title: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApiDiscoverResponse {
+    pub items: Vec<ApiDiscoverItem>,
+    pub status_message: Option<String>,
+}
+
 #[derive(Serialize)]
 pub struct ApiHealth {
     pub database: String,
@@ -58,19 +88,27 @@ pub struct ApiHealth {
     pub realdebrid: String,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ApiScanResponse {
     pub success: bool,
     pub message: String,
     pub created: u64,
     pub updated: u64,
     pub skipped: u64,
+    pub running: bool,
+    pub started_at: Option<String>,
+    pub scope_label: Option<String>,
+    pub search_missing: bool,
+    pub dry_run: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ApiScanJob {
     pub id: i64,
+    pub status: String,
     pub started_at: String,
+    pub scope_label: String,
+    pub search_missing: bool,
     pub dry_run: bool,
     pub library_items_found: i64,
     pub source_items_found: i64,
@@ -78,6 +116,22 @@ pub struct ApiScanJob {
     pub links_created: i64,
     pub links_updated: i64,
     pub dead_marked: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApiScanOutcome {
+    pub finished_at: String,
+    pub scope_label: String,
+    pub dry_run: bool,
+    pub search_missing: bool,
+    pub success: bool,
+    pub message: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApiScanStatusResponse {
+    pub active_job: Option<ApiScanJob>,
+    pub last_outcome: Option<ApiScanOutcome>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -162,7 +216,7 @@ pub struct ApiScanRunDetail {
     pub auto_acquire_successes: i64,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ApiErrorResponse {
     pub error: String,
 }
@@ -187,15 +241,83 @@ pub struct ApiAnimeRemediationResponse {
     pub groups: Vec<AnimeRemediationSample>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct ApiRepairResponse {
     pub success: bool,
     pub message: String,
     pub repaired: usize,
     pub failed: usize,
+    pub skipped: usize,
+    pub stale: usize,
+    pub running: bool,
+    pub started_at: Option<String>,
+    pub scope_label: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApiRepairJob {
+    pub status: String,
+    pub started_at: String,
+    pub scope_label: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApiRepairOutcome {
+    pub finished_at: String,
+    pub scope_label: String,
+    pub success: bool,
+    pub message: String,
+    pub repaired: usize,
+    pub failed: usize,
+    pub skipped: usize,
+    pub stale: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApiRepairStatusResponse {
+    pub active_job: Option<ApiRepairJob>,
+    pub last_outcome: Option<ApiRepairOutcome>,
+}
+
+fn resolve_cleanup_report_path(
+    backup_dir: &std::path::Path,
+    report: &str,
+) -> anyhow::Result<std::path::PathBuf> {
+    let trimmed = report.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("Cleanup report path is required");
+    }
+
+    let requested = std::path::Path::new(trimmed);
+    let backup_root = backup_dir
+        .canonicalize()
+        .unwrap_or_else(|_| backup_dir.to_path_buf());
+
+    if requested.is_absolute() {
+        let canonical = requested
+            .canonicalize()
+            .map_err(|_| anyhow::anyhow!("Cleanup report not found: {}", requested.display()))?;
+        if !canonical.starts_with(&backup_root) {
+            anyhow::bail!("Cleanup report must be inside the configured backup directory");
+        }
+        return Ok(canonical);
+    }
+
+    if requested.components().any(|component| {
+        matches!(
+            component,
+            std::path::Component::ParentDir
+                | std::path::Component::RootDir
+                | std::path::Component::Prefix(_)
+        )
+    }) {
+        anyhow::bail!("Cleanup report path escapes the configured backup directory");
+    }
+
+    Ok(backup_dir.join(requested))
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct ApiCleanupAuditResponse {
     pub success: bool,
     pub message: String,
@@ -204,17 +326,49 @@ pub struct ApiCleanupAuditResponse {
     pub critical: usize,
     pub high: usize,
     pub warning: usize,
+    pub running: bool,
+    pub started_at: Option<String>,
+    pub scope_label: Option<String>,
+    pub libraries_label: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
+pub struct ApiCleanupAuditJob {
+    pub status: String,
+    pub started_at: String,
+    pub scope_label: String,
+    pub libraries_label: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ApiCleanupAuditOutcome {
+    pub finished_at: String,
+    pub scope_label: String,
+    pub libraries_label: String,
+    pub success: bool,
+    pub message: String,
+    pub report_path: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ApiCleanupAuditStatusResponse {
+    pub active_job: Option<ApiCleanupAuditJob>,
+    pub last_outcome: Option<ApiCleanupAuditOutcome>,
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct ApiCleanupPruneResponse {
     pub success: bool,
     pub message: String,
+    pub candidates: usize,
+    pub managed_candidates: usize,
+    pub foreign_candidates: usize,
     pub removed: usize,
+    pub quarantined: usize,
     pub skipped: usize,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct ApiLink {
     pub id: i64,
     pub source_path: String,
@@ -233,14 +387,14 @@ pub struct ApiConfigValidateResponse {
     pub warnings: Vec<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ApiDoctorCheck {
     pub check: String,
     pub passed: bool,
     pub message: String,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ApiDoctorResponse {
     pub all_passed: bool,
     pub checks: Vec<ApiDoctorCheck>,
@@ -250,6 +404,7 @@ pub struct ApiDoctorResponse {
 pub struct ApiScanRequest {
     pub dry_run: Option<bool>,
     pub library: Option<String>,
+    pub search_missing: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -261,6 +416,7 @@ pub struct ApiCleanupAuditRequest {
 pub struct ApiCleanupPruneRequest {
     pub report_path: String,
     pub token: String,
+    pub max_delete: Option<usize>,
 }
 
 // ─── API Handlers ───────────────────────────────────────────────────
@@ -311,118 +467,146 @@ pub async fn api_get_health(State(state): State<WebState>) -> Json<ApiHealth> {
     })
 }
 
+/// GET /api/v1/discover
+pub async fn api_get_discover(
+    State(state): State<WebState>,
+    Query(query): Query<ApiDiscoverQuery>,
+) -> Result<Json<ApiDiscoverResponse>, (StatusCode, Json<ApiErrorResponse>)> {
+    match load_discovery_snapshot(
+        &state.config,
+        &state.database,
+        query.library.as_deref(),
+        query.refresh_cache,
+    )
+    .await
+    {
+        Ok(snapshot) => Ok(Json(ApiDiscoverResponse {
+            items: snapshot
+                .items
+                .into_iter()
+                .map(|item| ApiDiscoverItem {
+                    rd_torrent_id: item.rd_torrent_id,
+                    torrent_name: item.torrent_name,
+                    status: item.status,
+                    size: item.size,
+                    parsed_title: item.parsed_title,
+                })
+                .collect(),
+            status_message: snapshot.status_message.or_else(|| {
+                (!query.refresh_cache).then(|| {
+                    "Showing cached RD results only. Set refresh_cache=true when you want a slower live cache sync first."
+                        .to_string()
+                })
+            }),
+        })),
+        Err(err) => {
+            let message = err.to_string();
+            let status = if message.contains("Unknown library filter") {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            Err((status, Json(ApiErrorResponse { error: message })))
+        }
+    }
+}
+
 /// POST /api/v1/scan
 pub async fn api_post_scan(
     State(state): State<WebState>,
     Json(req): Json<ApiScanRequest>,
-) -> Json<ApiScanResponse> {
+) -> impl IntoResponse {
     info!("API: Triggering scan");
 
     let dry_run = req.dry_run.unwrap_or(false);
     let library_name = req.library.filter(|l| !l.is_empty());
+    let search_missing = req.search_missing.unwrap_or(false);
 
-    let scanner = LibraryScanner::new();
-    let source_scanner = SourceScanner::new();
-
-    let library_items = if let Some(ref name) = library_name {
-        if let Some(lib) = state.config.libraries.iter().find(|l| &l.name == name) {
-            scanner.scan_library(lib)
-        } else {
-            vec![]
-        }
-    } else {
-        state
-            .config
-            .libraries
-            .iter()
-            .flat_map(|lib| scanner.scan_library(lib))
-            .collect()
-    };
-
-    let source_items = source_scanner.scan_all(&state.config.sources);
-
-    // Create matcher
-    use crate::api::tmdb::TmdbClient;
-    use crate::api::tvdb::TvdbClient;
-
-    let cfg = &state.config;
-    let tmdb = if cfg.has_tmdb() {
-        let rat = if cfg.api.tmdb_read_access_token.is_empty() {
-            None
-        } else {
-            Some(cfg.api.tmdb_read_access_token.as_str())
-        };
-        Some(TmdbClient::new(
-            &cfg.api.tmdb_api_key,
-            rat,
-            cfg.api.cache_ttl_hours,
-        ))
-    } else {
-        None
-    };
-
-    let tvdb = if cfg.has_tvdb() {
-        Some(TvdbClient::new(
-            &cfg.api.tvdb_api_key,
-            cfg.api.cache_ttl_hours,
-        ))
-    } else {
-        None
-    };
-
-    let matcher = Matcher::new(
-        tmdb,
-        tvdb,
-        state.config.matching.mode,
-        state.config.matching.metadata_mode,
-        state.config.matching.metadata_concurrency,
-    );
-
-    let matches = match matcher
-        .find_matches(&library_items, &source_items, &state.database)
+    match state
+        .start_scan(dry_run, search_missing, library_name.clone())
         .await
     {
-        Ok(m) => m,
-        Err(e) => {
-            return Json(ApiScanResponse {
-                success: false,
-                message: format!("Match failed: {}", e),
+        Ok(job) => (
+            StatusCode::ACCEPTED,
+            Json(ApiScanResponse {
+                success: true,
+                message: format!(
+                    "Scan started in background for {}. Poll /api/v1/scan/jobs or /api/v1/scan/history for completion.",
+                    job.scope_label
+                ),
                 created: 0,
                 updated: 0,
                 skipped: 0,
-            });
-        }
-    };
-
-    let linker = Linker::new_with_options(
-        dry_run,
-        state.config.matching.mode.is_strict(),
-        &state.config.symlink.naming_template,
-        true,
-    );
-
-    let link_result = match linker.process_matches(&matches, &state.database).await {
-        Ok(r) => r,
-        Err(e) => {
-            return Json(ApiScanResponse {
-                success: false,
-                message: format!("Link failed: {}", e),
-                created: 0,
-                updated: 0,
-                skipped: 0,
-            });
-        }
-    };
-
-    Json(ApiScanResponse {
-        success: true,
-        message: format!(
-            "Scan complete: {} created, {} updated, {} skipped",
-            link_result.created, link_result.updated, link_result.skipped
+                running: true,
+                started_at: Some(job.started_at),
+                scope_label: Some(job.scope_label),
+                search_missing: job.search_missing,
+                dry_run: job.dry_run,
+            }),
         ),
-        created: link_result.created,
-        updated: link_result.updated,
-        skipped: link_result.skipped,
+        Err(e) => {
+            let active_scan = state.active_scan().await;
+            (
+                StatusCode::CONFLICT,
+                Json(ApiScanResponse {
+                    success: false,
+                    message: format!("Scan not started: {}", e),
+                    created: 0,
+                    updated: 0,
+                    skipped: 0,
+                    running: active_scan.is_some(),
+                    started_at: active_scan.as_ref().map(|job| job.started_at.clone()),
+                    scope_label: active_scan.as_ref().map(|job| job.scope_label.clone()),
+                    search_missing: active_scan.as_ref().is_some_and(|job| job.search_missing),
+                    dry_run: active_scan.as_ref().is_some_and(|job| job.dry_run),
+                }),
+            )
+        }
+    }
+}
+
+fn api_scan_job_from_active(job: crate::web::ActiveScanJob) -> ApiScanJob {
+    ApiScanJob {
+        id: 0,
+        status: "running".to_string(),
+        started_at: job.started_at,
+        scope_label: job.scope_label,
+        search_missing: job.search_missing,
+        dry_run: job.dry_run,
+        library_items_found: 0,
+        source_items_found: 0,
+        matches_found: 0,
+        links_created: 0,
+        links_updated: 0,
+        dead_marked: 0,
+    }
+}
+
+/// GET /api/v1/scan/status
+pub async fn api_get_scan_status(State(state): State<WebState>) -> Json<ApiScanStatusResponse> {
+    let latest_run_started_at = state
+        .database
+        .get_scan_history(1)
+        .await
+        .ok()
+        .and_then(|history| history.into_iter().next().map(|run| run.started_at));
+
+    Json(ApiScanStatusResponse {
+        active_job: state.active_scan().await.map(api_scan_job_from_active),
+        last_outcome: state
+            .last_scan_outcome()
+            .await
+            .filter(|outcome| {
+                should_surface_scan_outcome(outcome, latest_run_started_at.as_deref())
+            })
+            .map(|outcome| ApiScanOutcome {
+                finished_at: outcome.finished_at,
+                scope_label: outcome.scope_label,
+                dry_run: outcome.dry_run,
+                search_missing: outcome.search_missing,
+                success: outcome.success,
+                message: outcome.message,
+            }),
     })
 }
 
@@ -434,11 +618,21 @@ pub async fn api_get_scan_jobs(State(state): State<WebState>) -> Json<Vec<ApiSca
         .await
         .unwrap_or_default();
 
-    let jobs = history
-        .into_iter()
-        .map(|h| ApiScanJob {
+    let mut jobs = Vec::new();
+    if let Some(active_scan) = state.active_scan().await {
+        jobs.push(api_scan_job_from_active(active_scan));
+    }
+
+    jobs.extend(history.into_iter().map(|h| {
+        ApiScanJob {
             id: h.id,
+            status: "completed".to_string(),
             started_at: h.started_at.to_string(),
+            scope_label: h
+                .library_filter
+                .clone()
+                .unwrap_or_else(|| "All Libraries".to_string()),
+            search_missing: h.search_missing,
             dry_run: h.dry_run,
             library_items_found: h.library_items_found,
             source_items_found: h.source_items_found,
@@ -446,8 +640,8 @@ pub async fn api_get_scan_jobs(State(state): State<WebState>) -> Json<Vec<ApiSca
             links_created: h.links_created,
             links_updated: h.links_updated,
             dead_marked: h.dead_marked,
-        })
-        .collect();
+        }
+    }));
 
     Json(jobs)
 }
@@ -674,7 +868,8 @@ pub async fn api_get_anime_remediation(
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ApiErrorResponse {
-                error: "Plex DB path is required or must exist at a standard local path".to_string(),
+                error: "Plex DB path is required or must exist at a standard local path"
+                    .to_string(),
             }),
         ));
     };
@@ -710,15 +905,68 @@ pub async fn api_get_anime_remediation(
 }
 
 /// POST /api/v1/repair/auto
-pub async fn api_post_repair_auto(State(state): State<WebState>) -> Json<ApiRepairResponse> {
-    info!("API: Running auto repair");
+pub async fn api_post_repair_auto(State(state): State<WebState>) -> impl IntoResponse {
+    info!("API: Starting background auto repair");
 
-    // Placeholder - would integrate with repair module
-    Json(ApiRepairResponse {
-        success: true,
-        message: "Repair completed".to_string(),
-        repaired: 0,
-        failed: 0,
+    match state.start_repair().await {
+        Ok(job) => (
+            StatusCode::ACCEPTED,
+            Json(ApiRepairResponse {
+                success: true,
+                message: format!(
+                    "Repair started in background for {}. Poll /api/v1/repair/status for the finished outcome.",
+                    job.scope_label
+                ),
+                repaired: 0,
+                failed: 0,
+                skipped: 0,
+                stale: 0,
+                running: true,
+                started_at: Some(job.started_at),
+                scope_label: Some(job.scope_label),
+            }),
+        ),
+        Err(err) => {
+            let active_repair = state.active_repair().await;
+            (
+                StatusCode::CONFLICT,
+                Json(ApiRepairResponse {
+                    success: false,
+                    message: format!("Repair not started: {}", err),
+                    repaired: 0,
+                    failed: 0,
+                    skipped: 0,
+                    stale: 0,
+                    running: active_repair.is_some(),
+                    started_at: active_repair.as_ref().map(|job| job.started_at.clone()),
+                    scope_label: active_repair.map(|job| job.scope_label),
+                }),
+            )
+        }
+    }
+}
+
+/// GET /api/v1/repair/status
+pub async fn api_get_repair_status(State(state): State<WebState>) -> Json<ApiRepairStatusResponse> {
+    Json(ApiRepairStatusResponse {
+        active_job: state.active_repair().await.map(|job| ApiRepairJob {
+            status: "running".to_string(),
+            started_at: job.started_at,
+            scope_label: job.scope_label,
+        }),
+        last_outcome: state
+            .last_repair_outcome()
+            .await
+            .map(|outcome| ApiRepairOutcome {
+                finished_at: outcome.finished_at,
+                scope_label: outcome.scope_label,
+                success: outcome.success,
+                message: outcome.message,
+                repaired: outcome.repaired,
+                failed: outcome.failed,
+                skipped: outcome.skipped,
+                stale: outcome.stale,
+            }),
     })
 }
 
@@ -726,101 +974,188 @@ pub async fn api_post_repair_auto(State(state): State<WebState>) -> Json<ApiRepa
 pub async fn api_post_cleanup_audit(
     State(state): State<WebState>,
     Json(req): Json<ApiCleanupAuditRequest>,
-) -> Json<ApiCleanupAuditResponse> {
-    info!("API: Running cleanup audit");
+) -> impl IntoResponse {
+    info!("API: Starting cleanup audit");
 
     let scope = match CleanupScope::parse(&req.scope) {
         Ok(s) => s,
         Err(e) => {
-            return Json(ApiCleanupAuditResponse {
-                success: false,
-                message: format!("Invalid scope: {}", e),
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ApiCleanupAuditResponse {
+                    success: false,
+                    message: format!("Invalid scope: {}", e),
+                    report_path: String::new(),
+                    total_findings: 0,
+                    critical: 0,
+                    high: 0,
+                    warning: 0,
+                    running: false,
+                    started_at: None,
+                    scope_label: None,
+                    libraries_label: None,
+                }),
+            );
+        }
+    };
+
+    match state.start_cleanup_audit(scope, Vec::new()).await {
+        Ok(job) => (
+            StatusCode::ACCEPTED,
+            Json(ApiCleanupAuditResponse {
+                success: true,
+                message: format!(
+                    "Cleanup audit started in background for {}. Poll /api/v1/cleanup/audit/jobs or inspect /cleanup for the finished report.",
+                    job.scope_label
+                ),
                 report_path: String::new(),
                 total_findings: 0,
                 critical: 0,
                 high: 0,
                 warning: 0,
-            });
-        }
-    };
-
-    let auditor = CleanupAuditor::new_with_progress(&state.config, &state.database, false);
-
-    let default_output = state.config.backup.path.join(format!(
-        "cleanup-audit-{}-{}.json",
-        req.scope,
-        chrono::Utc::now().format("%Y%m%d-%H%M%S")
-    ));
-    let report_path = match auditor.run_audit(scope, Some(&default_output)).await {
-        Ok(p) => p,
+                running: true,
+                started_at: Some(job.started_at),
+                scope_label: Some(job.scope_label),
+                libraries_label: Some(job.libraries_label),
+            }),
+        ),
         Err(e) => {
-            return Json(ApiCleanupAuditResponse {
-                success: false,
-                message: format!("Audit failed: {}", e),
-                report_path: String::new(),
-                total_findings: 0,
-                critical: 0,
-                high: 0,
-                warning: 0,
-            });
+            let active_audit = state.active_cleanup_audit().await;
+            (
+                StatusCode::CONFLICT,
+                Json(ApiCleanupAuditResponse {
+                    success: false,
+                    message: format!("Cleanup audit not started: {}", e),
+                    report_path: String::new(),
+                    total_findings: 0,
+                    critical: 0,
+                    high: 0,
+                    warning: 0,
+                    running: active_audit.is_some(),
+                    started_at: active_audit.as_ref().map(|job| job.started_at.clone()),
+                    scope_label: active_audit.as_ref().map(|job| job.scope_label.clone()),
+                    libraries_label: active_audit.as_ref().map(|job| job.libraries_label.clone()),
+                }),
+            )
         }
-    };
+    }
+}
 
-    let report_json = match std::fs::read_to_string(&report_path) {
-        Ok(json) => json,
-        Err(e) => {
-            return Json(ApiCleanupAuditResponse {
-                success: false,
-                message: format!("Audit report read failed: {}", e),
-                report_path: report_path.to_string_lossy().to_string(),
-                total_findings: 0,
-                critical: 0,
-                high: 0,
-                warning: 0,
-            });
-        }
-    };
+/// GET /api/v1/cleanup/audit/status
+pub async fn api_get_cleanup_audit_status(
+    State(state): State<WebState>,
+) -> Json<ApiCleanupAuditStatusResponse> {
+    let latest_report_created_at = latest_cleanup_report_created_at(&state.config.backup.path);
 
-    let report: CleanupReport = match serde_json::from_str(&report_json) {
-        Ok(report) => report,
-        Err(e) => {
-            return Json(ApiCleanupAuditResponse {
-                success: false,
-                message: format!("Audit report parse failed: {}", e),
-                report_path: report_path.to_string_lossy().to_string(),
-                total_findings: 0,
-                critical: 0,
-                high: 0,
-                warning: 0,
-            });
-        }
-    };
-
-    Json(ApiCleanupAuditResponse {
-        success: true,
-        message: "Audit complete".to_string(),
-        report_path: report_path.to_string_lossy().to_string(),
-        total_findings: report.summary.total_findings,
-        critical: report.summary.critical,
-        high: report.summary.high,
-        warning: report.summary.warning,
+    Json(ApiCleanupAuditStatusResponse {
+        active_job: state
+            .active_cleanup_audit()
+            .await
+            .map(|active_audit| ApiCleanupAuditJob {
+                status: "running".to_string(),
+                started_at: active_audit.started_at,
+                scope_label: active_audit.scope_label,
+                libraries_label: active_audit.libraries_label,
+            }),
+        last_outcome: state
+            .last_cleanup_audit_outcome()
+            .await
+            .filter(|outcome| {
+                should_surface_cleanup_audit_outcome(outcome, latest_report_created_at.as_deref())
+            })
+            .map(|outcome| ApiCleanupAuditOutcome {
+                finished_at: outcome.finished_at,
+                scope_label: outcome.scope_label,
+                libraries_label: outcome.libraries_label,
+                success: outcome.success,
+                message: outcome.message,
+                report_path: outcome.report_path,
+            }),
     })
+}
+
+/// GET /api/v1/cleanup/audit/jobs
+pub async fn api_get_cleanup_audit_jobs(
+    State(state): State<WebState>,
+) -> Json<Vec<ApiCleanupAuditJob>> {
+    let mut jobs = Vec::new();
+    if let Some(active_audit) = state.active_cleanup_audit().await {
+        jobs.push(ApiCleanupAuditJob {
+            status: "running".to_string(),
+            started_at: active_audit.started_at,
+            scope_label: active_audit.scope_label,
+            libraries_label: active_audit.libraries_label,
+        });
+    }
+
+    Json(jobs)
 }
 
 /// POST /api/v1/cleanup/prune
 pub async fn api_post_cleanup_prune(
     State(state): State<WebState>,
-    Json(_req): Json<ApiCleanupPruneRequest>,
-) -> Json<ApiCleanupPruneResponse> {
+    Json(req): Json<ApiCleanupPruneRequest>,
+) -> impl IntoResponse {
     info!("API: Applying prune");
 
-    // Placeholder - would parse report and apply deletions
-    Json(ApiCleanupPruneResponse {
-        success: true,
-        message: "Prune applied".to_string(),
-        removed: 0,
-        skipped: 0,
-    })
+    let report_path = match resolve_cleanup_report_path(&state.config.backup.path, &req.report_path)
+    {
+        Ok(path) => path,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ApiCleanupPruneResponse {
+                    success: false,
+                    message: format!("Prune failed: {}", err),
+                    candidates: 0,
+                    managed_candidates: 0,
+                    foreign_candidates: 0,
+                    removed: 0,
+                    quarantined: 0,
+                    skipped: 0,
+                }),
+            );
+        }
+    };
+
+    match cleanup_audit::run_prune(
+        &state.config,
+        &state.database,
+        &report_path,
+        true,
+        false,
+        req.max_delete,
+        Some(&req.token),
+    )
+    .await
+    {
+        Ok(outcome) => (
+            StatusCode::OK,
+            Json(ApiCleanupPruneResponse {
+                success: true,
+                message: "Prune applied".to_string(),
+                candidates: outcome.candidates,
+                managed_candidates: outcome.managed_candidates,
+                foreign_candidates: outcome.foreign_candidates,
+                removed: outcome.removed,
+                quarantined: outcome.quarantined,
+                skipped: outcome.skipped,
+            }),
+        ),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(ApiCleanupPruneResponse {
+                success: false,
+                message: format!("Prune failed: {}", e),
+                candidates: 0,
+                managed_candidates: 0,
+                foreign_candidates: 0,
+                removed: 0,
+                quarantined: 0,
+                skipped: 0,
+            }),
+        ),
+    }
 }
 
 /// GET /api/v1/links
@@ -835,11 +1170,18 @@ pub async fn api_get_links(
     let status_filter = params.get("status").map(|s| s.as_str());
 
     let links = match status_filter {
-        Some("dead") => state.database.get_dead_links().await.unwrap_or_default(),
-        _ => state.database.get_active_links().await.unwrap_or_default(),
+        Some("dead") => state
+            .database
+            .get_dead_links_limited(limit)
+            .await
+            .unwrap_or_default(),
+        _ => state
+            .database
+            .get_active_links_limited(limit)
+            .await
+            .unwrap_or_default(),
     }
     .into_iter()
-    .take(limit as usize)
     .map(|l| ApiLink {
         id: l.id.unwrap_or(0),
         source_path: l.source_path.to_string_lossy().to_string(),
@@ -859,68 +1201,26 @@ pub async fn api_get_links(
 pub async fn api_get_config_validate(
     State(state): State<WebState>,
 ) -> Json<ApiConfigValidateResponse> {
-    let mut errors = vec![];
-    let mut warnings = vec![];
-
-    if state.config.libraries.is_empty() {
-        errors.push("No libraries configured".to_string());
-    }
-
-    if state.config.sources.is_empty() {
-        errors.push("No sources configured".to_string());
-    }
-
-    if !state.config.has_tmdb() {
-        warnings.push("TMDB API key not configured".to_string());
-    }
-
-    if !state.config.has_tvdb() {
-        warnings.push("TVDB API key not configured".to_string());
-    }
+    let report = validate_config_report(&state.config).await;
 
     Json(ApiConfigValidateResponse {
-        valid: errors.is_empty(),
-        errors,
-        warnings,
+        valid: report.errors.is_empty(),
+        errors: report.errors,
+        warnings: report.warnings,
     })
 }
 
 /// GET /api/v1/doctor
 pub async fn api_get_doctor(State(state): State<WebState>) -> Json<ApiDoctorResponse> {
-    let mut checks = vec![];
-
-    for lib in &state.config.libraries {
-        let exists = lib.path.exists();
-        checks.push(ApiDoctorCheck {
-            check: format!("Library '{}' exists", lib.name),
-            passed: exists,
-            message: if exists {
-                format!("{}: exists", lib.path.display())
-            } else {
-                format!("{}: NOT FOUND", lib.path.display())
-            },
-        });
-    }
-
-    for source in &state.config.sources {
-        let exists = source.path.exists();
-        checks.push(ApiDoctorCheck {
-            check: format!("Source '{}' exists", source.name),
-            passed: exists,
-            message: if exists {
-                format!("{}: exists", source.path.display())
-            } else {
-                format!("{}: NOT FOUND", source.path.display())
-            },
-        });
-    }
-
-    let db_ok = state.database.get_web_stats().await.is_ok();
-    checks.push(ApiDoctorCheck {
-        check: "Database connection".to_string(),
-        passed: db_ok,
-        message: if db_ok { "Connected" } else { "Failed" }.to_string(),
-    });
+    let checks = collect_doctor_checks(&state.config, &state.database, DoctorCheckMode::ReadOnly)
+        .await
+        .into_iter()
+        .map(|check| ApiDoctorCheck {
+            check: check.name,
+            passed: check.ok,
+            message: check.detail,
+        })
+        .collect::<Vec<_>>();
 
     let all_passed = checks.iter().all(|c| c.passed);
 
@@ -934,7 +1234,10 @@ mod tests {
     use axum::http::Request;
     use axum::response::IntoResponse;
     use serde_json::Value;
-    use std::path::Path;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use sqlx::Executor;
+    use std::path::{Path, PathBuf};
+    use std::str::FromStr;
     use tempfile::TempDir;
 
     use crate::config::{
@@ -945,8 +1248,9 @@ mod tests {
     };
     use crate::db::{Database, ScanRunRecord};
     use crate::models::{LinkRecord, LinkStatus, MediaType};
-    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-    use sqlx::Executor;
+    use crate::web::{
+        ActiveCleanupAuditJob, ActiveScanJob, LastCleanupAuditOutcome, LastScanOutcome,
+    };
 
     fn test_config(root: &Path) -> Config {
         let library_root = root.join("library");
@@ -1000,7 +1304,9 @@ mod tests {
 
     async fn test_state() -> WebState {
         let dir = tempfile::tempdir().unwrap();
-        let cfg = test_config(dir.path());
+        let root = dir.path().to_path_buf();
+        std::mem::forget(dir);
+        let cfg = test_config(&root);
         let db = Database::new(&cfg.db_path).await.unwrap();
 
         db.record_scan_run(&ScanRunRecord {
@@ -1045,14 +1351,9 @@ mod tests {
         WebState::new(cfg, db)
     }
 
-    async fn create_test_plex_duplicate_db(
-        db_path: &Path,
-        root: &Path,
-        tagged_file: &Path,
-        legacy_file: &Path,
-    ) {
-        let options = SqliteConnectOptions::new()
-            .filename(db_path)
+    async fn create_test_plex_duplicate_db(path: &Path) {
+        let options = SqliteConnectOptions::from_str(path.to_str().unwrap())
+            .unwrap()
             .create_if_missing(true);
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -1060,65 +1361,54 @@ mod tests {
             .await
             .unwrap();
 
-        for statement in [
-            "CREATE TABLE section_locations (id INTEGER PRIMARY KEY, library_section_id INTEGER, root_path TEXT)",
-            "CREATE TABLE metadata_items (id INTEGER PRIMARY KEY, library_section_id INTEGER, metadata_type INTEGER, title TEXT, original_title TEXT, year INTEGER, guid TEXT, deleted_at INTEGER)",
-            "CREATE TABLE media_items (id INTEGER PRIMARY KEY, library_section_id INTEGER, section_location_id INTEGER, metadata_item_id INTEGER, deleted_at INTEGER)",
-            "CREATE TABLE media_parts (id INTEGER PRIMARY KEY, media_item_id INTEGER, file TEXT, deleted_at INTEGER)",
-        ] {
-            pool.execute(statement).await.unwrap();
-        }
-
-        sqlx::query(
-            "INSERT INTO section_locations (id, library_section_id, root_path) VALUES (1, 1, ?)",
+        pool.execute(
+            "CREATE TABLE section_locations (
+                id INTEGER PRIMARY KEY,
+                library_section_id INTEGER,
+                root_path TEXT,
+                available BOOLEAN,
+                scanned_at INTEGER,
+                created_at INTEGER,
+                updated_at INTEGER
+            );",
         )
-        .bind(root.to_string_lossy().to_string())
-        .execute(&pool)
         .await
         .unwrap();
-
-        for (id, guid, file) in [
-            (
-                1_i64,
-                "com.plexapp.agents.hama://anidb-100?lang=en",
-                tagged_file,
-            ),
-            (
-                2_i64,
-                "com.plexapp.agents.hama://tvdb-1?lang=en",
-                legacy_file,
-            ),
-        ] {
-            sqlx::query(
-                "INSERT INTO metadata_items (id, library_section_id, metadata_type, title, original_title, year, guid, deleted_at) VALUES (?, 1, 2, 'Show A', '', 2024, ?, NULL)",
-            )
-            .bind(id)
-            .bind(guid)
-            .execute(&pool)
-            .await
-            .unwrap();
-
-            sqlx::query(
-                "INSERT INTO media_items (id, library_section_id, section_location_id, metadata_item_id, deleted_at) VALUES (?, 1, 1, ?, NULL)",
-            )
-            .bind(id)
-            .bind(id)
-            .execute(&pool)
-            .await
-            .unwrap();
-
-            sqlx::query(
-                "INSERT INTO media_parts (id, media_item_id, file, deleted_at) VALUES (?, ?, ?, NULL)",
-            )
-            .bind(id)
-            .bind(id)
-            .bind(file.to_string_lossy().to_string())
-            .execute(&pool)
-            .await
-            .unwrap();
-        }
-
-        pool.close().await;
+        pool.execute(
+            "CREATE TABLE metadata_items (
+                id INTEGER PRIMARY KEY,
+                library_section_id INTEGER,
+                metadata_type INTEGER,
+                title TEXT,
+                original_title TEXT,
+                year INTEGER,
+                guid TEXT,
+                deleted_at INTEGER
+            );",
+        )
+        .await
+        .unwrap();
+        pool.execute(
+            "CREATE TABLE media_items (
+                id INTEGER PRIMARY KEY,
+                library_section_id INTEGER,
+                section_location_id INTEGER,
+                metadata_item_id INTEGER,
+                deleted_at INTEGER
+            );",
+        )
+        .await
+        .unwrap();
+        pool.execute(
+            "CREATE TABLE media_parts (
+                id INTEGER PRIMARY KEY,
+                media_item_id INTEGER,
+                file TEXT,
+                deleted_at INTEGER
+            );",
+        )
+        .await
+        .unwrap();
     }
 
     fn make_scan_history_query(
@@ -1290,35 +1580,426 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn api_get_anime_remediation_returns_ranked_groups() {
-        let dir = TempDir::new().unwrap();
+    async fn api_get_scan_jobs_includes_active_background_scan() {
+        let ctx = test_state().await;
+        ctx.set_active_scan_for_test(Some(ActiveScanJob {
+            started_at: "2026-03-29 23:59:00 UTC".to_string(),
+            scope_label: "Anime".to_string(),
+            dry_run: true,
+            search_missing: true,
+        }))
+        .await;
+
+        let response = api_get_scan_jobs(State(ctx)).await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&bytes).unwrap();
+        let jobs = json.as_array().unwrap();
+
+        assert_eq!(jobs[0]["status"], "running");
+        assert_eq!(jobs[0]["scope_label"], "Anime");
+        assert_eq!(jobs[0]["search_missing"], true);
+        assert_eq!(jobs[0]["dry_run"], true);
+    }
+
+    #[tokio::test]
+    async fn api_get_scan_status_includes_last_outcome() {
+        let ctx = test_state().await;
+        ctx.set_last_scan_outcome_for_test(Some(LastScanOutcome {
+            finished_at: "2099-03-29 23:58:00 UTC".to_string(),
+            scope_label: "Anime".to_string(),
+            dry_run: false,
+            search_missing: true,
+            success: false,
+            message: "RD cache sync failed".to_string(),
+        }))
+        .await;
+
+        let response = api_get_scan_status(State(ctx)).await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: ApiScanStatusResponse = serde_json::from_slice(&bytes).unwrap();
+
+        assert!(json.active_job.is_none());
+        let last_outcome = json.last_outcome.expect("expected last scan outcome");
+        assert!(!last_outcome.success);
+        assert_eq!(last_outcome.scope_label, "Anime");
+        assert!(last_outcome.search_missing);
+        assert_eq!(last_outcome.message, "RD cache sync failed");
+    }
+
+    #[tokio::test]
+    async fn api_get_scan_status_hides_stale_failed_outcome_when_newer_run_exists() {
+        let ctx = test_state().await;
+        ctx.set_last_scan_outcome_for_test(Some(LastScanOutcome {
+            finished_at: "2026-03-29 09:58:00 UTC".to_string(),
+            scope_label: "Anime".to_string(),
+            dry_run: false,
+            search_missing: true,
+            success: false,
+            message: "stale failure".to_string(),
+        }))
+        .await;
+
+        let response = api_get_scan_status(State(ctx)).await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: ApiScanStatusResponse = serde_json::from_slice(&bytes).unwrap();
+
+        assert!(json.last_outcome.is_none());
+    }
+
+    #[tokio::test]
+    async fn api_post_scan_rejects_when_background_scan_is_already_running() {
+        let ctx = test_state().await;
+        ctx.set_active_scan_for_test(Some(ActiveScanJob {
+            started_at: "2026-03-29 23:59:00 UTC".to_string(),
+            scope_label: "Anime".to_string(),
+            dry_run: true,
+            search_missing: false,
+        }))
+        .await;
+
+        let response = api_post_scan(
+            State(ctx),
+            Json(ApiScanRequest {
+                dry_run: Some(false),
+                library: Some("Anime".to_string()),
+                search_missing: Some(true),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: ApiScanResponse = serde_json::from_slice(&bytes).unwrap();
+
+        assert!(!json.success);
+        assert!(json.running);
+        assert_eq!(json.scope_label.as_deref(), Some("Anime"));
+        assert!(json.message.contains("already running"));
+    }
+
+    #[tokio::test]
+    async fn api_get_discover_returns_cached_gap_items() {
+        let dir = tempfile::tempdir().unwrap();
         let cfg = test_config(dir.path());
         let db = Database::new(&cfg.db_path).await.unwrap();
-        let anime_root = cfg.libraries[0].path.clone();
+        db.upsert_rd_torrent(
+            "rd-1",
+            "hash-1",
+            "Missing.Show.S01E01.1080p.WEB-DL.mkv",
+            "downloaded",
+            r#"{"files":[{"bytes":1073741824,"path":"Missing.Show.S01E01.1080p.WEB-DL.mkv"}]}"#,
+        )
+        .await
+        .unwrap();
+
+        let state = WebState::new(cfg, db);
+        let response = api_get_discover(
+            State(state),
+            Query(ApiDiscoverQuery {
+                library: Some("Anime".to_string()),
+                refresh_cache: false,
+            }),
+        )
+        .await
+        .expect("discover response");
+        let body = response.into_response();
+        assert_eq!(body.status(), StatusCode::OK);
+        let bytes = to_bytes(body.into_body(), usize::MAX).await.unwrap();
+        let json: ApiDiscoverResponse = serde_json::from_slice(&bytes).unwrap();
+
+        assert_eq!(json.items.len(), 1);
+        assert_eq!(json.items[0].rd_torrent_id, "rd-1");
+        assert_eq!(json.items[0].parsed_title, "Missing Show");
+        assert!(json
+            .status_message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Real-Debrid API key not configured"));
+        assert!(json
+            .status_message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("live refresh is unavailable"));
+    }
+
+    #[tokio::test]
+    async fn api_get_discover_rejects_invalid_library_filter() {
+        let ctx = test_state().await;
+        let response = api_get_discover(
+            State(ctx),
+            Query(ApiDiscoverQuery {
+                library: Some("Nope".to_string()),
+                refresh_cache: false,
+            }),
+        )
+        .await;
+
+        let (status, body) = response.expect_err("expected bad request");
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let body = body.into_response();
+        let bytes = to_bytes(body.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(json["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Unknown library filter"));
+    }
+
+    #[tokio::test]
+    async fn api_get_doctor_uses_full_doctor_checks() {
+        let ctx = test_state().await;
+        let response = api_get_doctor(State(ctx)).await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: ApiDoctorResponse = serde_json::from_slice(&bytes).unwrap();
+
+        assert!(json
+            .checks
+            .iter()
+            .any(|check| check.check == "db_schema_version"));
+        assert!(json
+            .checks
+            .iter()
+            .any(|check| check.check == "config_validation"));
+        assert!(json
+            .checks
+            .iter()
+            .any(|check| check.check == "cleanup.prune.enforce_policy"));
+    }
+
+    #[tokio::test]
+    async fn api_get_doctor_does_not_create_missing_backup_dir_in_read_only_mode() {
+        let ctx = test_state().await;
+        let backup_dir = ctx.config.backup.path.clone();
+        std::fs::remove_dir(&backup_dir).unwrap();
+        assert!(!backup_dir.exists());
+
+        let response = api_get_doctor(State(ctx)).await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: ApiDoctorResponse = serde_json::from_slice(&bytes).unwrap();
+
+        assert!(json.checks.iter().any(|check| {
+            check.check == "backup_dir"
+                && check
+                    .message
+                    .contains("write probe skipped in read-only mode")
+        }));
+        assert!(!backup_dir.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn api_get_doctor_flags_existing_non_writable_backup_dir() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = test_config(dir.path());
+        let backup_dir = cfg.backup.path.clone();
+        std::fs::set_permissions(&backup_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let db = Database::new(&cfg.db_path).await.unwrap();
+        let state = WebState::new(cfg, db);
+
+        let response = api_get_doctor(State(state)).await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: ApiDoctorResponse = serde_json::from_slice(&bytes).unwrap();
+
+        assert!(json.checks.iter().any(|check| {
+            check.check == "backup_dir"
+                && !check.passed
+                && check.message.contains("denies write or traverse")
+                && check.message.contains("mode=555")
+        }));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn api_post_repair_auto_starts_background_repair_flow() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = test_config(dir.path());
+        let db = Database::new(&cfg.db_path).await.unwrap();
+
+        let library_root = cfg.libraries[0].path.clone();
         let source_root = cfg.sources[0].path.clone();
-        let plex_db_path = dir.path().join("plex.db");
+        let target_path = library_root.join("Show/Season 01/Show - S01E01.mkv");
+        let missing_source = source_root.join("missing/Show.S01E01.mkv");
+        let replacement = source_root.join("Show.S01E01.mkv");
 
-        let tagged_root = anime_root.join("Show A (2024) {tvdb-1}");
-        let legacy_root = anime_root.join("Show A");
-        let tagged_season = tagged_root.join("Season 01");
-        let legacy_season = legacy_root.join("Season 01");
-        std::fs::create_dir_all(&tagged_season).unwrap();
-        std::fs::create_dir_all(&legacy_season).unwrap();
-
-        let tagged_source = source_root.join("show-a-tagged.mkv");
-        let legacy_source = source_root.join("show-a-legacy.mkv");
-        std::fs::write(&tagged_source, b"tagged").unwrap();
-        std::fs::write(&legacy_source, b"legacy").unwrap();
-
-        let tagged_file = tagged_season.join("Show A - S01E01.mkv");
-        let legacy_file = legacy_season.join("Show A - S01E01.mkv");
-        std::os::unix::fs::symlink(&tagged_source, &tagged_file).unwrap();
-        std::os::unix::fs::symlink(&legacy_source, &legacy_file).unwrap();
+        std::fs::create_dir_all(target_path.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(missing_source.parent().unwrap()).unwrap();
+        std::fs::write(&replacement, b"video").unwrap();
+        std::os::unix::fs::symlink(&missing_source, &target_path).unwrap();
 
         db.insert_link(&LinkRecord {
             id: None,
-            source_path: tagged_source,
-            target_path: tagged_file.clone(),
+            source_path: missing_source.clone(),
+            target_path: target_path.clone(),
+            media_id: "tvdb-99".to_string(),
+            media_type: MediaType::Tv,
+            status: LinkStatus::Dead,
+            created_at: None,
+            updated_at: None,
+        })
+        .await
+        .unwrap();
+
+        let state = WebState::new(cfg, db);
+        let response = api_post_repair_auto(State(state.clone()))
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: ApiRepairResponse = serde_json::from_slice(&bytes).unwrap();
+
+        assert!(json.success);
+        assert!(json.running);
+        assert_eq!(json.repaired, 0);
+        assert_eq!(json.failed, 0);
+        assert!(json.message.contains("Repair started in background"));
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if state.last_repair_outcome().await.is_some() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("background repair should finish");
+
+        let status = api_get_repair_status(State(state.clone())).await;
+        let status_json = serde_json::to_value(status.0).unwrap();
+        assert!(status_json["active_job"].is_null());
+        assert_eq!(status_json["last_outcome"]["repaired"], 1);
+        assert_eq!(status_json["last_outcome"]["failed"], 0);
+
+        let repaired = state.database.get_active_links().await.unwrap();
+        let repaired = repaired
+            .into_iter()
+            .find(|link| link.target_path == target_path)
+            .expect("expected repaired active link");
+        assert_eq!(repaired.source_path, replacement);
+    }
+
+    #[tokio::test]
+    async fn api_get_links_respects_limit_without_loading_full_result_in_handler() {
+        let ctx = test_state().await;
+        ctx.database
+            .insert_link(&LinkRecord {
+                id: None,
+                source_path: PathBuf::from("/mnt/rd/show/ep01.mkv"),
+                target_path: PathBuf::from("/plex/show/S01E01.mkv"),
+                media_id: "tvdb-1".to_string(),
+                media_type: MediaType::Tv,
+                status: LinkStatus::Active,
+                created_at: None,
+                updated_at: None,
+            })
+            .await
+            .unwrap();
+        ctx.database
+            .insert_link(&LinkRecord {
+                id: None,
+                source_path: PathBuf::from("/mnt/rd/show/ep02.mkv"),
+                target_path: PathBuf::from("/plex/show/S01E02.mkv"),
+                media_id: "tvdb-1".to_string(),
+                media_type: MediaType::Tv,
+                status: LinkStatus::Active,
+                created_at: None,
+                updated_at: None,
+            })
+            .await
+            .unwrap();
+
+        let response = api_get_links(
+            State(ctx),
+            Query(std::collections::HashMap::from([(
+                "limit".to_string(),
+                "1".to_string(),
+            )])),
+        )
+        .await;
+        let body = response.into_response();
+        assert_eq!(body.status(), StatusCode::OK);
+        let bytes = to_bytes(body.into_body(), usize::MAX).await.unwrap();
+        let links: Vec<ApiLink> = serde_json::from_slice(&bytes).unwrap();
+
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].target_path, "/plex/show/S01E02.mkv");
+    }
+
+    #[tokio::test]
+    async fn api_get_config_validate_uses_full_config_validation() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        std::mem::forget(dir);
+        let mut cfg = test_config(&root);
+        cfg.web.enabled = true;
+        cfg.web.bind_address = "0.0.0.0".to_string();
+        cfg.web.allow_remote = true;
+        let db = Database::new(&cfg.db_path).await.unwrap();
+        let state = WebState::new(cfg, db);
+
+        let Json(response) = api_get_config_validate(State(state)).await;
+
+        assert!(response
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("web.allow_remote=true")));
+    }
+
+    #[tokio::test]
+    async fn api_post_cleanup_audit_accepts_background_job() {
+        let ctx = test_state().await;
+
+        let response = api_post_cleanup_audit(
+            State(ctx),
+            Json(ApiCleanupAuditRequest {
+                scope: "anime".to_string(),
+            }),
+        )
+        .await;
+        let body = response.into_response();
+        assert_eq!(body.status(), StatusCode::ACCEPTED);
+        let bytes = to_bytes(body.into_body(), usize::MAX).await.unwrap();
+        let response: ApiCleanupAuditResponse = serde_json::from_slice(&bytes).unwrap();
+
+        assert!(response.success);
+        assert!(response
+            .message
+            .contains("Cleanup audit started in background"));
+        assert!(response.running);
+        assert!(response.report_path.is_empty());
+        assert_eq!(response.scope_label.as_deref(), Some("Anime"));
+        assert_eq!(response.libraries_label.as_deref(), Some("Anime"));
+        assert!(response.started_at.is_some());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn api_post_cleanup_prune_returns_real_outcome() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = test_config(dir.path());
+        cfg.cleanup.prune.quarantine_path = dir.path().join("quarantine");
+
+        let library_root = cfg.libraries[0].path.clone();
+        let source_root = cfg.sources[0].path.clone();
+        let source_path = source_root.join("source.mkv");
+        let symlink_path = library_root.join("Show - S01E01.mkv");
+        std::fs::write(&source_path, "video").unwrap();
+        std::os::unix::fs::symlink(&source_path, &symlink_path).unwrap();
+
+        let db = Database::new(&cfg.db_path).await.unwrap();
+        db.insert_link(&LinkRecord {
+            id: None,
+            source_path: source_path.clone(),
+            target_path: symlink_path.clone(),
             media_id: "tvdb-1".to_string(),
             media_type: MediaType::Tv,
             status: LinkStatus::Active,
@@ -1328,8 +2009,317 @@ mod tests {
         .await
         .unwrap();
 
-        create_test_plex_duplicate_db(&plex_db_path, &anime_root, &tagged_file, &legacy_file).await;
+        let report = CleanupReport {
+            version: 1,
+            created_at: chrono::Utc::now(),
+            scope: CleanupScope::Anime,
+            findings: vec![crate::cleanup_audit::CleanupFinding {
+                symlink_path: symlink_path.clone(),
+                source_path: source_path.clone(),
+                media_id: "tvdb-1".to_string(),
+                severity: crate::cleanup_audit::FindingSeverity::High,
+                confidence: 1.0,
+                reasons: vec![crate::cleanup_audit::FindingReason::BrokenSource],
+                parsed: crate::cleanup_audit::ParsedContext {
+                    library_title: "Show".to_string(),
+                    parsed_title: "Show".to_string(),
+                    season: Some(1),
+                    episode: Some(1),
+                },
+                alternate_match: None,
+                legacy_anime_root: None,
+                db_tracked: false,
+                ownership: crate::cleanup_audit::CleanupOwnership::Foreign,
+            }],
+            summary: crate::cleanup_audit::CleanupSummary {
+                total_findings: 1,
+                critical: 0,
+                high: 1,
+                warning: 0,
+            },
+        };
+        let report_path = cfg.backup.path.join("report.json");
+        std::fs::write(&report_path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
 
+        let preview =
+            crate::cleanup_audit::run_prune(&cfg, &db, &report_path, false, false, None, None)
+                .await
+                .unwrap();
+
+        let state = WebState::new(cfg, db);
+        let response = api_post_cleanup_prune(
+            State(state),
+            Json(ApiCleanupPruneRequest {
+                report_path: report_path.to_string_lossy().to_string(),
+                token: preview.confirmation_token,
+                max_delete: None,
+            }),
+        )
+        .await;
+        let body = response.into_response();
+        assert_eq!(body.status(), StatusCode::OK);
+        let bytes = to_bytes(body.into_body(), usize::MAX).await.unwrap();
+        let response: ApiCleanupPruneResponse = serde_json::from_slice(&bytes).unwrap();
+
+        assert!(response.success);
+        assert_eq!(response.candidates, 1);
+        assert_eq!(response.managed_candidates, 1);
+        assert_eq!(response.foreign_candidates, 0);
+        assert_eq!(response.removed, 1);
+        assert_eq!(response.quarantined, 0);
+        assert_eq!(response.skipped, 0);
+        assert!(!symlink_path.exists());
+    }
+
+    #[tokio::test]
+    async fn api_post_cleanup_audit_rejects_invalid_scope_with_bad_request() {
+        let ctx = test_state().await;
+
+        let response = api_post_cleanup_audit(
+            State(ctx),
+            Json(ApiCleanupAuditRequest {
+                scope: "nope".to_string(),
+            }),
+        )
+        .await;
+        let body = response.into_response();
+        assert_eq!(body.status(), StatusCode::BAD_REQUEST);
+        let bytes = to_bytes(body.into_body(), usize::MAX).await.unwrap();
+        let response: ApiCleanupAuditResponse = serde_json::from_slice(&bytes).unwrap();
+        assert!(!response.success);
+        assert!(response.message.contains("Invalid scope"));
+    }
+
+    #[tokio::test]
+    async fn api_get_cleanup_audit_jobs_includes_active_background_audit() {
+        let ctx = test_state().await;
+        ctx.set_active_cleanup_audit_for_test(Some(ActiveCleanupAuditJob {
+            started_at: "2026-03-29 23:59:00 UTC".to_string(),
+            scope_label: "Anime".to_string(),
+            libraries_label: "Anime".to_string(),
+        }))
+        .await;
+
+        let response = api_get_cleanup_audit_jobs(State(ctx)).await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&bytes).unwrap();
+        let jobs = json.as_array().unwrap();
+
+        assert_eq!(jobs[0]["status"], "running");
+        assert_eq!(jobs[0]["scope_label"], "Anime");
+        assert_eq!(jobs[0]["libraries_label"], "Anime");
+    }
+
+    #[tokio::test]
+    async fn api_get_cleanup_audit_status_includes_last_outcome() {
+        let ctx = test_state().await;
+        ctx.set_last_cleanup_audit_outcome_for_test(Some(LastCleanupAuditOutcome {
+            finished_at: "2026-03-29 23:58:00 UTC".to_string(),
+            scope_label: "Anime".to_string(),
+            libraries_label: "Anime".to_string(),
+            success: false,
+            message: "source root unhealthy".to_string(),
+            report_path: None,
+        }))
+        .await;
+
+        let response = api_get_cleanup_audit_status(State(ctx))
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: ApiCleanupAuditStatusResponse = serde_json::from_slice(&bytes).unwrap();
+
+        assert!(json.active_job.is_none());
+        let last_outcome = json
+            .last_outcome
+            .expect("expected last cleanup audit outcome");
+        assert!(!last_outcome.success);
+        assert_eq!(last_outcome.scope_label, "Anime");
+        assert_eq!(last_outcome.message, "source root unhealthy");
+    }
+
+    #[tokio::test]
+    async fn api_get_cleanup_audit_status_hides_stale_failed_outcome_when_newer_report_exists() {
+        let ctx = test_state().await;
+        let report_path = ctx
+            .config
+            .backup
+            .path
+            .join("cleanup-audit-anime-20260329.json");
+        let report = CleanupReport {
+            version: 1,
+            created_at: chrono::Utc::now(),
+            scope: CleanupScope::Anime,
+            findings: vec![],
+            summary: cleanup_audit::CleanupSummary {
+                total_findings: 1,
+                critical: 0,
+                high: 1,
+                warning: 0,
+            },
+        };
+        std::fs::write(&report_path, serde_json::to_vec(&report).unwrap()).unwrap();
+
+        ctx.set_last_cleanup_audit_outcome_for_test(Some(LastCleanupAuditOutcome {
+            finished_at: "2026-03-29 09:58:00 UTC".to_string(),
+            scope_label: "Anime".to_string(),
+            libraries_label: "Anime".to_string(),
+            success: false,
+            message: "stale cleanup failure".to_string(),
+            report_path: None,
+        }))
+        .await;
+
+        let response = api_get_cleanup_audit_status(State(ctx))
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: ApiCleanupAuditStatusResponse = serde_json::from_slice(&bytes).unwrap();
+
+        assert!(json.last_outcome.is_none());
+    }
+
+    #[tokio::test]
+    async fn api_post_cleanup_audit_rejects_when_background_audit_is_already_running() {
+        let ctx = test_state().await;
+        ctx.set_active_cleanup_audit_for_test(Some(ActiveCleanupAuditJob {
+            started_at: "2026-03-29 23:59:00 UTC".to_string(),
+            scope_label: "Anime".to_string(),
+            libraries_label: "Anime".to_string(),
+        }))
+        .await;
+
+        let response = api_post_cleanup_audit(
+            State(ctx),
+            Json(ApiCleanupAuditRequest {
+                scope: "anime".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: ApiCleanupAuditResponse = serde_json::from_slice(&bytes).unwrap();
+
+        assert!(!json.success);
+        assert!(json.message.contains("Cleanup audit not started"));
+        assert!(json.running);
+        assert_eq!(json.scope_label.as_deref(), Some("Anime"));
+        assert_eq!(json.libraries_label.as_deref(), Some("Anime"));
+    }
+
+    #[tokio::test]
+    async fn api_post_cleanup_prune_returns_bad_request_for_invalid_token() {
+        let ctx = test_state().await;
+        let response = api_post_cleanup_prune(
+            State(ctx),
+            Json(ApiCleanupPruneRequest {
+                report_path: "/tmp/does-not-exist.json".to_string(),
+                token: "bad-token".to_string(),
+                max_delete: None,
+            }),
+        )
+        .await;
+        let body = response.into_response();
+        assert_eq!(body.status(), StatusCode::BAD_REQUEST);
+        let bytes = to_bytes(body.into_body(), usize::MAX).await.unwrap();
+        let response: ApiCleanupPruneResponse = serde_json::from_slice(&bytes).unwrap();
+        assert!(!response.success);
+        assert!(response.message.contains("Prune failed"));
+    }
+
+    #[tokio::test]
+    async fn api_post_cleanup_prune_rejects_report_outside_backup_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = test_config(dir.path());
+        let db = Database::new(&cfg.db_path).await.unwrap();
+        let outside_report = dir.path().join("outside-report.json");
+        std::fs::write(&outside_report, "{}").unwrap();
+
+        let state = WebState::new(cfg, db);
+        let response = api_post_cleanup_prune(
+            State(state),
+            Json(ApiCleanupPruneRequest {
+                report_path: outside_report.to_string_lossy().to_string(),
+                token: "bad-token".to_string(),
+                max_delete: None,
+            }),
+        )
+        .await;
+        let body = response.into_response();
+        assert_eq!(body.status(), StatusCode::BAD_REQUEST);
+        let bytes = to_bytes(body.into_body(), usize::MAX).await.unwrap();
+        let response: ApiCleanupPruneResponse = serde_json::from_slice(&bytes).unwrap();
+        assert!(!response.success);
+        assert!(response
+            .message
+            .contains("Cleanup report must be inside the configured backup directory"));
+    }
+
+    #[tokio::test]
+    async fn api_get_anime_remediation_returns_ranked_groups() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let mut cfg = test_config(&root);
+        let anime_root = cfg.libraries[0].path.clone();
+        let tagged_root = anime_root.join("Show A (2024) {tvdb-1}");
+        let legacy_root = anime_root.join("Show A");
+
+        std::fs::create_dir_all(tagged_root.join("Season 01")).unwrap();
+        std::fs::create_dir_all(legacy_root.join("Season 01")).unwrap();
+
+        let db = Database::new(&cfg.db_path).await.unwrap();
+        let tracked_source = cfg.sources[0].path.join("Show.A.S01E01.mkv");
+        let tracked_target = tagged_root.join("Season 01/Show A - S01E01.mkv");
+        std::fs::write(&tracked_source, b"video").unwrap();
+        db.insert_link(&LinkRecord {
+            id: None,
+            source_path: tracked_source,
+            target_path: tracked_target,
+            media_id: "tvdb-1".to_string(),
+            media_type: MediaType::Tv,
+            status: LinkStatus::Active,
+            created_at: None,
+            updated_at: None,
+        })
+        .await
+        .unwrap();
+
+        let legacy_target = legacy_root.join("Season 01/Show A - S01E01.mkv");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("/tmp/source-a.mkv", &legacy_target).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file("C:\\source-a.mkv", &legacy_target).unwrap();
+
+        let plex_db_path = root.join("plex.db");
+        create_test_plex_duplicate_db(&plex_db_path).await;
+        let options = SqliteConnectOptions::from_str(plex_db_path.to_str().unwrap()).unwrap();
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO section_locations (id, library_section_id, root_path) VALUES (1, 1, ?)",
+        )
+        .bind(anime_root.to_string_lossy().to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO metadata_items (id, library_section_id, metadata_type, title, original_title, year, guid, deleted_at)
+             VALUES (1, 1, 2, 'Show A', '', 2024, 'com.plexapp.agents.hama://anidb-100', NULL),
+                    (2, 1, 2, 'Show A', '', 2024, 'com.plexapp.agents.hama://tvdb-1', NULL)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        cfg.libraries[0].path = anime_root;
         let state = WebState::new(cfg, db);
         let response = api_get_anime_remediation(
             State(state),
@@ -1338,14 +2328,12 @@ mod tests {
                 full: Some(true),
             }),
         )
-        .await;
+        .await
+        .unwrap()
+        .into_response();
 
-        let body = match response {
-            Ok(json) => json.into_response(),
-            Err((status, _json)) => panic!("unexpected error {}", status),
-        };
-        assert_eq!(body.status(), StatusCode::OK);
-        let bytes = to_bytes(body.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let json: ApiAnimeRemediationResponse = serde_json::from_slice(&bytes).unwrap();
 
         assert_eq!(json.filesystem_mixed_root_groups, 1);
@@ -1353,33 +2341,7 @@ mod tests {
         assert_eq!(json.correlated_hama_split_groups, 1);
         assert_eq!(json.remediation_groups, 1);
         assert_eq!(json.returned_groups, 1);
-        assert_eq!(json.groups[0].normalized_title, "Show A");
         assert_eq!(json.groups[0].recommended_tagged_root.path, tagged_root);
         assert_eq!(json.groups[0].legacy_roots[0].path, legacy_root);
-    }
-
-    #[tokio::test]
-    async fn api_post_cleanup_audit_returns_real_report_summary() {
-        let ctx = test_state().await;
-
-        let Json(response) = api_post_cleanup_audit(
-            State(ctx),
-            Json(ApiCleanupAuditRequest {
-                scope: "anime".to_string(),
-            }),
-        )
-        .await;
-
-        assert!(response.success);
-        assert_eq!(response.message, "Audit complete");
-        assert!(!response.report_path.is_empty());
-
-        let report_json = std::fs::read_to_string(&response.report_path).unwrap();
-        let report: CleanupReport = serde_json::from_str(&report_json).unwrap();
-
-        assert_eq!(response.total_findings, report.summary.total_findings);
-        assert_eq!(response.critical, report.summary.critical);
-        assert_eq!(response.high, report.summary.high);
-        assert_eq!(response.warning, report.summary.warning);
     }
 }

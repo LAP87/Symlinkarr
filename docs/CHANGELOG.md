@@ -6,62 +6,85 @@
 - posture: `stable core, evolving ops`
 - intended use: local-first host or Docker installs, with Windows 11 users running through WSL2 or a Linux container
 
-## 2026-03-29 - Opt-in Legacy Anime Root Quarantine
+## 2026-03-30 - RC Branch Convergence: Anime Remediation + Safer Web Ops
 
 ### Code Changes
 
-- `cleanup prune` gained an explicit `--include-legacy-anime-roots` opt-in for warning-only anime findings where an untagged legacy root coexists with a tagged `{tvdb-*}` or `{tmdb-*}` root.
-  - these candidates remain `foreign` and flow into quarantine instead of raw delete when foreign quarantine is enabled
-  - files: `src/main.rs`, `src/commands/cleanup.rs`, `src/cleanup_audit.rs`, `src/web/handlers.rs`
-- cleanup reports and prune preview now preserve legacy anime-root context, including the canonical tagged roots behind each untagged legacy finding.
-  - prune preview surfaces top legacy root groups in web UI, and each row can now show the tagged root(s) it conflicts with
-  - files: `src/cleanup_audit.rs`, `src/web/templates.rs`, `src/web/ui/prune_preview.html`, `src/web/handlers.rs`
-- destructive cleanup commands now refuse to run if the configured source mounts are unhealthy at runtime.
-  - reuses the same runtime mount probe path used by `scan`, so transient RD outages are blocked before `cleanup dead` or `cleanup prune --apply` can mutate the library
-  - files: `src/commands/mod.rs`, `src/commands/scan.rs`, `src/commands/cleanup.rs`
-- `report` now loads Symlinkarr links once and filters them to the selected libraries in memory, instead of issuing a root-scoped DB query for every selected-root shape.
-  - this avoids the slower scoped query path on larger library sets while preserving the same library-local report output
-  - files: `src/commands/report.rs`
-- anime duplicate reporting now surfaces the overlap between mixed filesystem roots and Plex Hama AniDB/TVDB split groups.
-  - this isolates the titles where legacy untagged roots and Plex metadata fragmentation are happening at the same time, so remediation can focus on the real overlap set instead of two separate counters
-  - files: `src/commands/report.rs`
-- `report` can now emit the full anime duplicate backlog on demand instead of sample-limited slices.
-  - `--full-anime-duplicates` is intended for remediation exports where the default top-N sample would hide part of the mixed-root or Hama-split worklist
-  - files: `src/main.rs`, `src/commands/report.rs`
-- anime duplicate exports now include richer Plex duplicate metadata for remediation.
-  - correlated and Plex sample groups now carry total/live/deleted row counts plus exact Plex GUIDs, which makes it much easier to separate stale metadata ghosts from still-live duplicate trees
-  - files: `src/commands/report.rs`
-- anime duplicate exports now also emit a prioritized remediation queue for the correlated legacy-root/Hama-split set.
-  - the queue ranks titles by legacy-root filesystem/DB impact and points at the recommended tagged root to keep, which turns the raw duplicate counters into an operator worklist
-  - files: `src/commands/report.rs`
-- the web API can now expose the anime remediation backlog directly, with a local Plex DB path auto-discovery fallback for common host installs.
-  - this gives operators a stable JSON surface for the ranked remediation queue instead of requiring direct CLI report parsing every time
-  - files: `src/web/api/mod.rs`, `src/commands/report.rs`, `docs/API_SCHEMA.md`
-- `report` can now export the anime remediation queue directly as TSV for spreadsheet/ops workflows.
-  - `--anime-remediation-tsv` writes the ranked queue to disk and implicitly lifts the queue sample cap, so operators can work through the full correlated anime backlog without custom `jq` glue
-  - files: `src/main.rs`, `src/commands/report.rs`
-- Plex refreshes now have first-class pacing controls.
-  - `plex.refresh_delay_ms`, `plex.refresh_coalesce_threshold`, and `plex.max_refresh_batches_per_run` let operators slow or cap queued refreshes to avoid overloading Plex during larger relink waves
-  - files: `src/config.rs`, `src/commands/scan.rs`, `config.example.yaml`, `config.docker.yaml`
-
-### Docs
-
-- documented the new cleanup-prune opt-in in the quick-start cleanup examples and CLI manual.
-  - files: `README.md`, `docs/CLI_MANUAL.md`
+- merged the `ownership-quarantine-rc` web/ops hardening work into the anime duplicate/remediation branch so one RC branch now carries both safety posture and anime remediation reporting.
+  - background scan, cleanup audit, and repair flows remain asynchronous and operator-visible
+  - mutation routes still keep the stricter local/browser safety posture from the RC branch
+  - files: `src/web/mod.rs`, `src/web/handlers.rs`, `src/web/templates.rs`, `src/web/api/mod.rs`
+- anime duplicate remediation remains intact after the merge and is now preserved alongside the safer web/API stack.
+  - ranked remediation queue
+  - TSV export
+  - JSON API surface at `GET /api/v1/report/anime-remediation`
+  - files: `src/commands/report.rs`, `src/main.rs`, `src/web/api/mod.rs`
+- cleanup prune keeps the legacy anime-root context and reason buckets while also restoring safer prune-token behavior and safer quarantine target handling.
+  - tokens now stay tied to candidate dispositions
+  - quarantine copies resolve relative symlink targets before recreating them
+  - files: `src/cleanup_audit.rs`, `src/commands/cleanup.rs`, `src/web/handlers.rs`, `src/web/templates.rs`, `src/web/ui/prune_preview.html`
+- scan keeps the Plex refresh pacing/capping controls while retaining the runtime health checks from the RC safety branch.
+  - files: `src/commands/scan.rs`, `src/config.rs`, `config.example.yaml`, `config.docker.yaml`
 
 ### Validation
 
-- `cargo test -q`
+- `CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-merge cargo test -q`
+  - result: `494 passed; 0 failed`
+- `LD_LIBRARY_PATH=/usr/lib:/usr/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-merge cargo clippy --all-targets --all-features -- -D warnings`
   - result: passed
-- `cargo clippy --all-targets --all-features -- -D warnings`
+- `cargo fmt`
   - result: passed
-- `cargo run -- cleanup prune --report /tmp/symlinkarr-anime-cleanup-live.json --include-legacy-anime-roots`
-  - result:
-    - candidates: `6936`
-    - legacy anime-root warning candidates: `2735`
-    - managed delete candidates: `148`
-    - foreign quarantine candidates: `6788`
-- `cargo test commands::tests -- --nocapture`
+
+## 2026-03-29 - Cleanup Audit Backgrounding + Local Repo Cleanup
+
+### Code Changes
+
+- web/API cleanup audit triggering now runs in the background instead of holding the request open for the full audit.
+  - web cleanup pages show an active background-audit banner
+  - `POST /api/v1/cleanup/audit` now returns `202 Accepted`
+  - `GET /api/v1/cleanup/audit/jobs` exposes the currently running audit job
+  - scan and cleanup audit now share one background-job gate so they cannot start concurrently by racing separate mutexes
+  - files: `src/web/mod.rs`, `src/web/templates.rs`, `src/web/handlers.rs`, `src/web/api/mod.rs`, `src/web/ui/cleanup.html`, `src/web/ui/cleanup_result.html`
+- web/API background scan and cleanup audit now retain the last completed or failed outcome in-memory so operators can see the latest failure without digging through logs.
+  - added `GET /api/v1/scan/status` and `GET /api/v1/cleanup/audit/status`
+  - web scan/cleanup pages now show the most recent failed background outcome directly
+  - files: `src/web/mod.rs`, `src/web/templates.rs`, `src/web/handlers.rs`, `src/web/api/mod.rs`, `src/web/ui/scan.html`, `src/web/ui/scan_result.html`, `src/web/ui/cleanup.html`, `src/web/ui/cleanup_result.html`
+- background scan and cleanup-audit workers now clear their active-job state even if the task panics, and surface that panic as a failed last outcome instead of leaving the UI/API permanently "running".
+  - files: `src/web/mod.rs`, `Cargo.toml`, `Cargo.lock`
+- web/API background outcome banners and status endpoints now suppress stale failures once a newer durable scan run or cleanup report exists, and cleanup-audit library selection no longer breaks on names containing commas.
+  - files: `src/web/mod.rs`, `src/web/handlers.rs`, `src/web/api/mod.rs`
+- web/API repair now runs in the background with in-memory status/outcome reporting instead of holding the request open for the full repair pass.
+  - files: `src/web/mod.rs`, `src/web/handlers.rs`, `src/web/api/mod.rs`, `src/web/templates.rs`, `src/web/ui/dead_links.html`, `src/web/ui/repair_result.html`
+
+### Docs
+
+- documented the new background cleanup-audit posture and JSON API polling surface.
+  - file: `docs/API_SCHEMA.md`
+
+## 2026-03-29 - Web Scan Backgrounding + Discover/Doctor Honesty
+
+### Code Changes
+
+- web/API scan triggering now runs in the background instead of holding the request open for the full scan.
+  - web pages show an active background-scan banner
+  - `POST /api/v1/scan` now returns `202 Accepted`
+  - `GET /api/v1/scan/jobs` now prepends a synthetic `running` row when a background scan is active
+  - files: `src/web/mod.rs`, `src/web/templates.rs`, `src/web/handlers.rs`, `src/web/api/mod.rs`, `src/web/ui/scan.html`, `src/web/ui/scan_result.html`
+- read-only doctor checks now preserve a non-writable signal for existing directories without doing a write probe, using effective access checks instead of raw write-bit heuristics.
+  - files: `src/commands/doctor.rs`, `src/web/handlers.rs`, `src/web/api/mod.rs`
+- discover JSON output remains machine-parseable on RD cache sync failure, and cached-only discover now explicitly surfaces missing RD credentials.
+  - files: `src/commands/discover.rs`, `src/web/handlers.rs`, `src/web/api/mod.rs`
+
+### Docs
+
+- documented the new background web/API scan posture and updated web/API wording.
+  - files: `README.md`, `docs/API_SCHEMA.md`
+
+### Validation
+
+- `CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-rc-safety cargo test -q`
+  - result: `453 passed; 0 failed`
+- `CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-rc-safety cargo clippy --all-targets --all-features -- -D warnings`
   - result: passed
 
 ## 2026-03-22 - WSL2 Development Guide

@@ -17,6 +17,27 @@
     </div>
 </div>
 
+{% match active_scan %}
+{% when Some with (job) %}
+<div class="alert alert-info">
+    <strong>Background scan running.</strong>
+    {{ job.scope_label }} started {{ job.started_at }}.
+    {% if job.dry_run %} Dry run.{% endif %}
+    {% if job.search_missing %} Search missing enabled.{% endif %}
+</div>
+{% when None %}{% endmatch %}
+
+{% match last_scan_outcome %}
+{% when Some with (outcome) %}
+<div class="alert {% if outcome.success %}alert-success{% else %}alert-error{% endif %}">
+    <strong>{% if outcome.success %}Background scan completed.{% else %}Background scan failed.{% endif %}</strong>
+    {{ outcome.scope_label }} finished {{ outcome.finished_at }}.
+    {% if outcome.dry_run %} Dry run.{% endif %}
+    {% if outcome.search_missing %} Search missing enabled.{% endif %}
+    {{ outcome.message }}
+</div>
+{% when None %}{% endmatch %}
+
 <div class="split-grid">
     <section class="card">
         <div class="section-head">

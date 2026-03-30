@@ -206,10 +206,11 @@ Symlinkarr supports:
 web:
   enabled: true
   bind_address: "127.0.0.1"
+  allow_remote: false
   port: 8726
 ```
 
-Use `bind_address: "0.0.0.0"` only when you explicitly want to expose the web UI beyond loopback, for example inside Docker with a published port.
+Use `bind_address: "0.0.0.0"` only when you explicitly want to expose the web UI beyond loopback, for example inside Docker with a published port. Remote binds now require `allow_remote: true` as an explicit acknowledgement.
 
 Optional Plex refresh hardening:
 
@@ -308,7 +309,7 @@ For the full command matrix, see [CLI_MANUAL.md](docs/CLI_MANUAL.md).
 The built-in web UI exposes:
 
 - dashboard and status pages
-- scan history and per-run telemetry
+- background scan triggering, scan history, and per-run telemetry
 - cleanup audit and prune preview flows
 - dead-link review
 - anime remediation backlog via the JSON API

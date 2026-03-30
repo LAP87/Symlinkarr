@@ -8,6 +8,7 @@ use tracing::{info, warn};
 use crate::config::BackupConfig;
 use crate::db::Database;
 use crate::models::{LinkRecord, LinkStatus, MediaType};
+use crate::utils::{cached_source_health, PathHealth};
 
 // ─── Backup data structures ─────────────────────────────────────────
 
@@ -259,6 +260,8 @@ impl BackupManager {
     ) -> Result<(usize, usize, usize)> {
         let json = std::fs::read_to_string(backup_path)?;
         let manifest: BackupManifest = serde_json::from_str(&json)?;
+        let mut source_health_cache = std::collections::HashMap::new();
+        let mut parent_health_cache = std::collections::HashMap::new();
 
         info!(
             "Restoring from backup: {} ({} symlinks, {})",
@@ -272,6 +275,7 @@ impl BackupManager {
         let mut errors = 0usize;
 
         for entry in &manifest.symlinks {
+            let resolved_target_path = resolve_restore_target_path(entry);
             if enforce_roots {
                 if !path_is_within_roots(&entry.symlink_path, allowed_symlink_roots) {
                     warn!(
@@ -281,7 +285,6 @@ impl BackupManager {
                     skipped += 1;
                     continue;
                 }
-                let resolved_target_path = resolve_restore_target_path(entry);
                 if !path_is_within_roots(&resolved_target_path, allowed_target_roots) {
                     warn!(
                         "Skipping restore outside allowed source roots: {:?}",
@@ -290,6 +293,20 @@ impl BackupManager {
                     skipped += 1;
                     continue;
                 }
+            }
+
+            let target_available = restore_target_available(
+                &resolved_target_path,
+                &mut source_health_cache,
+                &mut parent_health_cache,
+            )?;
+            if !target_available {
+                warn!(
+                    "Skipping restore for {:?}: source target missing: {:?}",
+                    entry.symlink_path, resolved_target_path
+                );
+                skipped += 1;
+                continue;
             }
 
             if dry_run {
@@ -499,6 +516,21 @@ impl BackupManager {
     }
 }
 
+fn restore_target_available(
+    target_path: &Path,
+    source_health_cache: &mut std::collections::HashMap<PathBuf, PathHealth>,
+    parent_health_cache: &mut std::collections::HashMap<PathBuf, PathHealth>,
+) -> Result<bool> {
+    let health = cached_source_health(target_path, source_health_cache, parent_health_cache);
+    if health.blocks_destructive_ops() {
+        anyhow::bail!(
+            "Aborting backup restore: source target became unhealthy: {}",
+            health.describe(target_path)
+        );
+    }
+    Ok(health.is_healthy())
+}
+
 /// Summary of a backup file (for listing)
 #[derive(Debug)]
 pub struct BackupSummary {
@@ -646,6 +678,10 @@ mod tests {
         let manager = BackupManager::new(&test_config(dir.path()));
         let db_path = dir.path().join("symlinkarr.db");
         let db = Database::new(db_path.to_str().unwrap()).await.unwrap();
+        let source_root = dir.path().join("rd");
+        std::fs::create_dir_all(&source_root).unwrap();
+        std::fs::write(source_root.join("ep1.mkv"), "video").unwrap();
+        std::fs::write(source_root.join("ep2.mkv"), "video").unwrap();
 
         // Create a fake manifest
         let manifest = BackupManifest {
@@ -1037,7 +1073,24 @@ mod tests {
         std::fs::create_dir_all(&nested).unwrap();
 
         assert!(path_is_within_roots(&nested, &[root.to_path_buf()]));
-        assert!(path_is_within_roots(&nested.join("file.mkv"), &[root.to_path_buf()]));
+        assert!(path_is_within_roots(
+            &nested.join("file.mkv"),
+            &[root.to_path_buf()]
+        ));
+    }
+
+    #[test]
+    fn test_restore_target_available_rejects_unhealthy_parent() {
+        let path = PathBuf::from("/mnt/rd/file.mkv");
+        let parent = path.parent().unwrap().to_path_buf();
+        let mut source_cache = std::collections::HashMap::new();
+        let mut parent_cache = std::collections::HashMap::new();
+        parent_cache.insert(parent, PathHealth::TransportDisconnected);
+
+        let err =
+            restore_target_available(&path, &mut source_cache, &mut parent_cache).unwrap_err();
+
+        assert!(err.to_string().contains("Aborting backup restore"));
     }
 
     #[cfg(unix)]
@@ -1110,5 +1163,57 @@ mod tests {
         assert_eq!(skipped, 1);
         assert_eq!(errors, 0);
         assert!(!dir.path().join("escaped").join("outside.mkv").exists());
+    }
+
+    #[tokio::test]
+    async fn test_restore_skips_missing_target_path() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let manager = BackupManager::new(&test_config(dir.path()));
+        let db_path = dir.path().join("symlinkarr.db");
+        let db = Database::new(db_path.to_str().unwrap()).await.unwrap();
+
+        let library_root = dir.path().join("library");
+        let source_root = dir.path().join("rd");
+        std::fs::create_dir_all(&library_root).unwrap();
+        std::fs::create_dir_all(&source_root).unwrap();
+
+        let manifest = BackupManifest {
+            version: 1,
+            timestamp: Utc::now(),
+            backup_type: BackupType::Scheduled,
+            label: "missing target".to_string(),
+            symlinks: vec![BackupEntry {
+                symlink_path: library_root.join("Show/Season 01/S01E01.mkv"),
+                target_path: source_root.join("missing.mkv"),
+                media_id: "tvdb-12345".to_string(),
+                media_type: MediaType::Tv,
+                db_tracked: true,
+            }],
+            total_count: 1,
+        };
+
+        let backup_path = dir.path().join("missing-target.json");
+        std::fs::write(
+            &backup_path,
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let roots = vec![dir.path().to_path_buf()];
+        let source_roots = vec![source_root];
+        let (restored, skipped, errors) = manager
+            .restore(&db, &backup_path, false, &roots, &source_roots, true)
+            .await
+            .unwrap();
+
+        assert_eq!(restored, 0);
+        assert_eq!(skipped, 1);
+        assert_eq!(errors, 0);
+        assert!(!manifest.symlinks[0].symlink_path.exists());
+        assert!(db
+            .get_link_by_target_path(&manifest.symlinks[0].symlink_path)
+            .await
+            .unwrap()
+            .is_none());
     }
 }

@@ -6,20 +6,23 @@ use axum::{
     http::StatusCode,
     response::{Html, IntoResponse},
 };
-use chrono::Utc;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::path::{Path as StdPath, PathBuf};
+use std::path::{Component, Path as StdPath, PathBuf};
 use tracing::{error, info};
 
 use crate::backup::BackupManager;
-use crate::cleanup_audit::{self, CleanupAuditor, CleanupScope};
-use crate::commands::scan::run_scan;
+use crate::cleanup_audit::{self, CleanupScope};
+use crate::commands::config::validate_config_report;
+use crate::commands::discover::load_discovery_snapshot;
+use crate::commands::doctor::{collect_doctor_checks, DoctorCheckMode};
 use crate::db::{AcquisitionJobCounts, ScanHistoryRecord};
-use crate::OutputFormat;
 
 use super::templates::*;
-use super::WebState;
+use super::{
+    latest_cleanup_report_path, load_cleanup_report, should_surface_cleanup_audit_outcome,
+    should_surface_scan_outcome, WebState,
+};
 
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct ScanHistoryQuery {
@@ -27,6 +30,13 @@ pub struct ScanHistoryQuery {
     pub mode: Option<String>,
     pub search_missing: Option<String>,
     pub limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct DiscoverQuery {
+    pub library: Option<String>,
+    #[serde(default)]
+    pub refresh_cache: bool,
 }
 
 fn dashboard_stats_from_web_stats(stats: crate::db::WebStats) -> DashboardStats {
@@ -59,12 +69,103 @@ fn scan_history_filters_from_query(query: &ScanHistoryQuery) -> ScanHistoryFilte
 }
 
 fn cleanup_report_summary_from_path(path: &StdPath) -> Option<CleanupReportSummaryView> {
-    let json = std::fs::read_to_string(path).ok()?;
-    let report: cleanup_audit::CleanupReport = serde_json::from_str(&json).ok()?;
+    let report = load_cleanup_report(path)?;
     Some(CleanupReportSummaryView::from_report(
         path.to_path_buf(),
         report,
     ))
+}
+
+async fn visible_last_scan_outcome(state: &WebState) -> Option<BackgroundScanOutcomeView> {
+    let latest_run_started_at = state
+        .database
+        .get_scan_history(1)
+        .await
+        .ok()
+        .and_then(|history| history.into_iter().next().map(|run| run.started_at));
+
+    state
+        .last_scan_outcome()
+        .await
+        .filter(|outcome| should_surface_scan_outcome(outcome, latest_run_started_at.as_deref()))
+        .map(Into::into)
+}
+
+async fn visible_last_cleanup_audit_outcome(
+    state: &WebState,
+) -> Option<BackgroundCleanupAuditOutcomeView> {
+    let latest_report_created_at = latest_cleanup_report_path(&state.config.backup.path)
+        .as_deref()
+        .and_then(cleanup_report_summary_from_path)
+        .map(|summary| summary.created_at);
+
+    state
+        .last_cleanup_audit_outcome()
+        .await
+        .filter(|outcome| {
+            should_surface_cleanup_audit_outcome(outcome, latest_report_created_at.as_deref())
+        })
+        .map(Into::into)
+}
+
+async fn visible_last_repair_outcome(state: &WebState) -> Option<BackgroundRepairOutcomeView> {
+    state.last_repair_outcome().await.map(Into::into)
+}
+
+fn resolve_backup_restore_path(backup_dir: &StdPath, backup_file: &str) -> anyhow::Result<PathBuf> {
+    let trimmed = backup_file.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("Backup file must not be empty");
+    }
+
+    let requested = StdPath::new(trimmed);
+    if requested.is_absolute() {
+        anyhow::bail!("Backup restore only accepts files inside the configured backup directory");
+    }
+
+    if requested.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
+        anyhow::bail!("Backup restore path escapes the configured backup directory");
+    }
+
+    Ok(backup_dir.join(requested))
+}
+
+fn resolve_cleanup_report_path(backup_dir: &StdPath, report: &str) -> anyhow::Result<PathBuf> {
+    let trimmed = report.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("Cleanup report path is required");
+    }
+
+    let requested = StdPath::new(trimmed);
+    let backup_root = backup_dir
+        .canonicalize()
+        .unwrap_or_else(|_| backup_dir.to_path_buf());
+
+    if requested.is_absolute() {
+        let canonical = requested
+            .canonicalize()
+            .map_err(|_| anyhow::anyhow!("Cleanup report not found: {}", requested.display()))?;
+        if !canonical.starts_with(&backup_root) {
+            anyhow::bail!("Cleanup report must be inside the configured backup directory");
+        }
+        return Ok(canonical);
+    }
+
+    if requested.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
+        anyhow::bail!("Cleanup report path escapes the configured backup directory");
+    }
+
+    Ok(backup_dir.join(requested))
 }
 
 async fn filtered_scan_history(
@@ -162,8 +263,8 @@ pub async fn get_status(State(state): State<WebState>) -> impl IntoResponse {
     };
 
     // Get recent links
-    let recent_links = match state.database.get_active_links().await {
-        Ok(links) => links.into_iter().take(50).collect(),
+    let recent_links = match state.database.get_active_links_limited(50).await {
+        Ok(links) => links,
         Err(e) => {
             error!("Failed to get links: {}", e);
             vec![]
@@ -264,6 +365,12 @@ pub async fn get_scan(
     }
     let (filters, history) = filtered_scan_history(&state, &scan_query).await;
     let latest_run = history.first().cloned();
+    let active_scan = state.active_scan().await.map(Into::into);
+    let last_scan_outcome = if active_scan.is_none() {
+        visible_last_scan_outcome(&state).await
+    } else {
+        None
+    };
     let queue = match state.database.get_acquisition_job_counts().await {
         Ok(counts) => queue_overview_from_counts(counts),
         Err(e) => {
@@ -274,6 +381,8 @@ pub async fn get_scan(
 
     let template = ScanTemplate {
         libraries: state.config.libraries.clone(),
+        active_scan,
+        last_scan_outcome,
         latest_run,
         history,
         queue,
@@ -294,51 +403,53 @@ pub async fn post_scan_trigger(
 
     let library_name = form.library.as_deref().filter(|l| !l.is_empty());
 
-    let (added, removed) = match run_scan(
-        &state.config,
-        &state.database,
-        form.dry_run,
-        form.search_missing,
-        OutputFormat::Text,
-        library_name,
-    )
-    .await
+    match state
+        .start_scan(
+            form.dry_run,
+            form.search_missing,
+            library_name.map(|value| value.to_string()),
+        )
+        .await
     {
-        Ok(result) => result,
-        Err(e) => {
-            error!("Scan failed: {}", e);
-            return Html(
+        Ok(job) => (
+            StatusCode::ACCEPTED,
+            Html(
                 ScanResultTemplate {
-                    success: false,
-                    message: format!("Scan failed: {}", e),
+                    success: true,
+                    message: format!(
+                        "Scan started in background for {}. Refresh /scan or /scan/history for the finished run.",
+                        job.scope_label
+                    ),
+                    active_scan: Some(job.into()),
+                    last_scan_outcome: None,
                     latest_run: None,
                     dry_run: form.dry_run,
                 }
                 .render()
                 .unwrap_or_else(|e| e.to_string()),
-            );
-        }
-    };
-
-    let latest_run = match state.database.get_scan_history(1).await {
-        Ok(mut history) => history.drain(..).next().map(ScanRunView::from_record),
+            ),
+        )
+            .into_response(),
         Err(e) => {
-            error!("Failed to load latest scan history after scan: {}", e);
-            None
+            error!("Scan rejected: {}", e);
+            (
+                StatusCode::CONFLICT,
+                Html(
+                    ScanResultTemplate {
+                        success: false,
+                        message: format!("Scan not started: {}", e),
+                        active_scan: state.active_scan().await.map(Into::into),
+                        last_scan_outcome: visible_last_scan_outcome(&state).await,
+                        latest_run: None,
+                        dry_run: form.dry_run,
+                    }
+                    .render()
+                    .unwrap_or_else(|e| e.to_string()),
+                ),
+            )
+                .into_response()
         }
-    };
-
-    let template = ScanResultTemplate {
-        success: true,
-        message: format!(
-            "Scan complete: {} added/updated, {} removed",
-            added, removed
-        ),
-        latest_run,
-        dry_run: form.dry_run,
-    };
-
-    Html(template.render().unwrap_or_else(|e| e.to_string()))
+    }
 }
 
 /// GET /scan/history - Scan history
@@ -382,39 +493,22 @@ pub async fn get_scan_run_detail(
 
 /// GET /cleanup - Cleanup page
 pub async fn get_cleanup(State(state): State<WebState>) -> impl IntoResponse {
-    // Look for the most recent cleanup report
-    let last_report = match std::fs::read_dir(&state.config.backup.path) {
-        Ok(entries) => {
-            let mut reports: Vec<_> = entries
-                .filter_map(|entry| entry.ok())
-                .filter(|entry| {
-                    let name = entry.file_name();
-                    name.to_string_lossy().starts_with("cleanup-audit-")
-                        && name.to_string_lossy().ends_with(".json")
-                })
-                .collect();
-
-            // Sort by modification time (newest first)
-            reports.sort_by_key(|entry| {
-                entry
-                    .metadata()
-                    .ok()
-                    .and_then(|meta| meta.modified().ok())
-                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
-            });
-            reports.reverse();
-
-            reports.first().map(|entry| entry.path())
-        }
-        Err(_) => None,
-    };
+    let last_report = latest_cleanup_report_path(&state.config.backup.path);
 
     let last_report_summary = last_report
         .as_deref()
         .and_then(cleanup_report_summary_from_path);
+    let active_cleanup_audit = state.active_cleanup_audit().await.map(Into::into);
+    let last_cleanup_audit_outcome = if active_cleanup_audit.is_none() {
+        visible_last_cleanup_audit_outcome(&state).await
+    } else {
+        None
+    };
 
     let template = CleanupTemplate {
         libraries: state.config.libraries.clone(),
+        active_cleanup_audit,
+        last_cleanup_audit_outcome,
         last_report: last_report_summary,
         last_report_path: last_report,
     };
@@ -436,92 +530,68 @@ pub async fn post_cleanup_audit(
     let scope = match CleanupScope::parse(&form.scope) {
         Ok(s) => s,
         Err(e) => {
-            return Html(
-                CleanupResultTemplate {
-                    success: false,
-                    message: format!("Invalid scope: {}", e),
-                    report_path: None,
-                    report_summary: None,
-                }
-                .render()
-                .unwrap_or_else(|e| e.to_string()),
-            );
+            return (
+                StatusCode::BAD_REQUEST,
+                Html(
+                    CleanupResultTemplate {
+                        success: false,
+                        message: format!("Invalid scope: {}", e),
+                        active_cleanup_audit: state.active_cleanup_audit().await.map(Into::into),
+                        last_cleanup_audit_outcome: visible_last_cleanup_audit_outcome(&state)
+                            .await,
+                        report_path: None,
+                        report_summary: None,
+                    }
+                    .render()
+                    .unwrap_or_else(|e| e.to_string()),
+                ),
+            )
+                .into_response();
         }
     };
 
-    let auditor = CleanupAuditor::new_with_progress(&state.config, &state.database, true);
-
-    // Use a scoped output path when a subset of libraries was selected.
-    let ts = Utc::now().format("%Y%m%d-%H%M%S");
-    let output_path = if selected_libraries.len() == 1 {
-        state.config.backup.path.join(format!(
-            "cleanup-audit-{}-{}-{}.json",
-            form.scope, selected_libraries[0], ts
-        ))
-    } else if !selected_libraries.is_empty() {
-        state.config.backup.path.join(format!(
-            "cleanup-audit-{}-multi-{}-{}.json",
-            form.scope,
-            selected_libraries.len(),
-            ts
-        ))
-    } else {
-        state
-            .config
-            .backup
-            .path
-            .join(format!("cleanup-audit-{}-{}.json", form.scope, ts))
-    };
-
-    let report_path = match auditor
-        .run_audit_filtered(
-            scope,
-            (!selected_libraries.is_empty()).then_some(selected_libraries.as_slice()),
-            Some(&output_path),
-        )
-        .await
+    match state.start_cleanup_audit(scope, selected_libraries.clone()).await
     {
-        Ok(p) => p,
-        Err(e) => {
-            error!("Audit failed: {}", e);
-            return Html(
+        Ok(job) => (
+            StatusCode::ACCEPTED,
+            Html(
                 CleanupResultTemplate {
-                    success: false,
-                    message: format!("Audit failed: {}", e),
+                    success: true,
+                    message: format!(
+                        "Cleanup audit started in background for {} across {}. Refresh /cleanup for the finished report.",
+                        job.scope_label, job.libraries_label
+                    ),
+                    active_cleanup_audit: Some(job.into()),
+                    last_cleanup_audit_outcome: None,
                     report_path: None,
                     report_summary: None,
                 }
                 .render()
                 .unwrap_or_else(|e| e.to_string()),
-            );
+            ),
+        )
+            .into_response(),
+        Err(e) => {
+            error!("Cleanup audit rejected: {}", e);
+            (
+                StatusCode::CONFLICT,
+                Html(
+                    CleanupResultTemplate {
+                        success: false,
+                        message: format!("Cleanup audit not started: {}", e),
+                        active_cleanup_audit: state.active_cleanup_audit().await.map(Into::into),
+                        last_cleanup_audit_outcome: visible_last_cleanup_audit_outcome(&state)
+                            .await,
+                        report_path: None,
+                        report_summary: None,
+                    }
+                    .render()
+                    .unwrap_or_else(|e| e.to_string()),
+                ),
+            )
+                .into_response()
         }
-    };
-
-    let message = if selected_libraries.len() == 1 {
-        format!(
-            "Audit complete for library '{}': {}",
-            selected_libraries[0],
-            report_path.display()
-        )
-    } else if !selected_libraries.is_empty() {
-        format!(
-            "Audit complete for {} libraries ({}): {}",
-            selected_libraries.len(),
-            selected_libraries.join(", "),
-            report_path.display()
-        )
-    } else {
-        format!("Audit complete: {}", report_path.display())
-    };
-
-    let template = CleanupResultTemplate {
-        success: true,
-        message,
-        report_summary: cleanup_report_summary_from_path(&report_path),
-        report_path: Some(report_path),
-    };
-
-    Html(template.render().unwrap_or_else(|e| e.to_string()))
+    }
 }
 
 /// GET /cleanup/prune - Prune preview
@@ -529,9 +599,7 @@ pub async fn get_cleanup_prune(
     State(state): State<WebState>,
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let report_path = params.get("report").map(|p| p.as_str());
-
-    if report_path.is_none() {
+    let Some(raw_report) = params.get("report").map(|p| p.as_str()) else {
         return Html(
             PrunePreviewTemplate {
                 findings: vec![],
@@ -545,14 +613,37 @@ pub async fn get_cleanup_prune(
                 legacy_anime_root_groups: vec![],
                 report_path: None,
                 confirmation_token: None,
+                error_message: None,
             }
             .render()
             .unwrap_or_else(|e| e.to_string()),
         );
-    }
+    };
 
-    // Read the report and show preview
-    let report_path = std::path::Path::new(report_path.unwrap());
+    let report_path = match resolve_cleanup_report_path(&state.config.backup.path, raw_report) {
+        Ok(path) => path,
+        Err(err) => {
+            return Html(
+                PrunePreviewTemplate {
+                    findings: vec![],
+                    total: 0,
+                    critical: 0,
+                    high: 0,
+                    warning: 0,
+                    managed_candidates: 0,
+                    foreign_candidates: 0,
+                    reason_counts: vec![],
+                    legacy_anime_root_groups: vec![],
+                    report_path: None,
+                    confirmation_token: None,
+                    error_message: Some(err.to_string()),
+                }
+                .render()
+                .unwrap_or_else(|e| e.to_string()),
+            );
+        }
+    };
+
     if !report_path.exists() {
         return Html(
             PrunePreviewTemplate {
@@ -567,6 +658,10 @@ pub async fn get_cleanup_prune(
                 legacy_anime_root_groups: vec![],
                 report_path: None,
                 confirmation_token: None,
+                error_message: Some(format!(
+                    "Cleanup report not found: {}",
+                    report_path.display()
+                )),
             }
             .render()
             .unwrap_or_else(|e| e.to_string()),
@@ -574,7 +669,7 @@ pub async fn get_cleanup_prune(
     }
 
     // Parse the JSON report to show actual preview data
-    let json = match std::fs::read_to_string(report_path) {
+    let json = match std::fs::read_to_string(&report_path) {
         Ok(j) => j,
         Err(e) => {
             error!("Failed to read cleanup report: {}", e);
@@ -591,6 +686,7 @@ pub async fn get_cleanup_prune(
                     legacy_anime_root_groups: vec![],
                     report_path: None,
                     confirmation_token: None,
+                    error_message: Some(format!("Failed to read report: {}", e)),
                 }
                 .render()
                 .unwrap_or_else(|e| e.to_string()),
@@ -615,6 +711,7 @@ pub async fn get_cleanup_prune(
                     legacy_anime_root_groups: vec![],
                     report_path: None,
                     confirmation_token: None,
+                    error_message: Some(format!("Failed to parse report: {}", e)),
                 }
                 .render()
                 .unwrap_or_else(|e| e.to_string()),
@@ -635,15 +732,6 @@ pub async fn get_cleanup_prune(
             }
         };
 
-    let legacy_anime_root_groups = prune_plan
-        .as_ref()
-        .map(|plan| {
-            let mut groups = plan.legacy_anime_root_groups.clone();
-            groups.truncate(12);
-            groups
-        })
-        .unwrap_or_default();
-
     let template = PrunePreviewTemplate {
         findings: report.findings.clone(),
         total: report.findings.len(),
@@ -662,9 +750,13 @@ pub async fn get_cleanup_prune(
             .as_ref()
             .map(|plan| plan.reason_counts.clone())
             .unwrap_or_default(),
-        legacy_anime_root_groups,
+        legacy_anime_root_groups: prune_plan
+            .as_ref()
+            .map(|plan| plan.legacy_anime_root_groups.clone())
+            .unwrap_or_default(),
         report_path: Some(report_path.to_path_buf()),
         confirmation_token: prune_plan.map(|plan| plan.confirmation_token),
+        error_message: None,
     };
 
     Html(template.render().unwrap_or_else(|e| e.to_string()))
@@ -683,6 +775,8 @@ pub async fn post_cleanup_prune(
             CleanupResultTemplate {
                 success: false,
                 message: "Report path is required".to_string(),
+                active_cleanup_audit: None,
+                last_cleanup_audit_outcome: None,
                 report_path: None,
                 report_summary: None,
             }
@@ -696,6 +790,8 @@ pub async fn post_cleanup_prune(
             CleanupResultTemplate {
                 success: false,
                 message: "Confirmation token is required".to_string(),
+                active_cleanup_audit: None,
+                last_cleanup_audit_outcome: None,
                 report_path: None,
                 report_summary: None,
             }
@@ -705,12 +801,30 @@ pub async fn post_cleanup_prune(
     }
 
     // Read the report
-    let report_path = std::path::Path::new(&form.report);
+    let report_path = match resolve_cleanup_report_path(&state.config.backup.path, &form.report) {
+        Ok(path) => path,
+        Err(err) => {
+            return Html(
+                CleanupResultTemplate {
+                    success: false,
+                    message: err.to_string(),
+                    active_cleanup_audit: None,
+                    last_cleanup_audit_outcome: None,
+                    report_path: None,
+                    report_summary: None,
+                }
+                .render()
+                .unwrap_or_else(|e| e.to_string()),
+            );
+        }
+    };
     if !report_path.exists() {
         return Html(
             CleanupResultTemplate {
                 success: false,
-                message: format!("Report not found: {}", form.report),
+                message: format!("Report not found: {}", report_path.display()),
+                active_cleanup_audit: None,
+                last_cleanup_audit_outcome: None,
                 report_path: None,
                 report_summary: None,
             }
@@ -719,7 +833,7 @@ pub async fn post_cleanup_prune(
         );
     }
 
-    let json = match std::fs::read_to_string(report_path) {
+    let json = match std::fs::read_to_string(&report_path) {
         Ok(j) => j,
         Err(e) => {
             error!("Failed to read cleanup report: {}", e);
@@ -727,6 +841,8 @@ pub async fn post_cleanup_prune(
                 CleanupResultTemplate {
                     success: false,
                     message: format!("Failed to read report: {}", e),
+                    active_cleanup_audit: None,
+                    last_cleanup_audit_outcome: None,
                     report_path: None,
                     report_summary: None,
                 }
@@ -744,6 +860,8 @@ pub async fn post_cleanup_prune(
                 CleanupResultTemplate {
                     success: false,
                     message: format!("Failed to parse report: {}", e),
+                    active_cleanup_audit: None,
+                    last_cleanup_audit_outcome: None,
                     report_path: None,
                     report_summary: None,
                 }
@@ -757,7 +875,7 @@ pub async fn post_cleanup_prune(
     let outcome = match cleanup_audit::run_prune(
         &state.config,
         &state.database,
-        report_path,
+        &report_path,
         true,              // apply
         false,             // include_legacy_anime_roots
         None,              // max_delete
@@ -772,6 +890,8 @@ pub async fn post_cleanup_prune(
                 CleanupResultTemplate {
                     success: false,
                     message: format!("Prune failed: {}", e),
+                    active_cleanup_audit: None,
+                    last_cleanup_audit_outcome: None,
                     report_path: None,
                     report_summary: None,
                 }
@@ -793,7 +913,9 @@ pub async fn post_cleanup_prune(
     let template = CleanupResultTemplate {
         success: true,
         message,
-        report_summary: cleanup_report_summary_from_path(report_path),
+        active_cleanup_audit: None,
+        last_cleanup_audit_outcome: None,
+        report_summary: cleanup_report_summary_from_path(&report_path),
         report_path: Some(report_path.to_path_buf()),
     };
 
@@ -812,13 +934,22 @@ pub async fn get_links(
         .unwrap_or(100);
 
     let links = match filter {
-        Some("dead") => state.database.get_dead_links().await.unwrap_or_default(),
-        Some("active") => state.database.get_active_links().await.unwrap_or_default(),
-        _ => state.database.get_active_links().await.unwrap_or_default(),
-    }
-    .into_iter()
-    .take(limit as usize)
-    .collect::<Vec<_>>();
+        Some("dead") => state
+            .database
+            .get_dead_links_limited(limit)
+            .await
+            .unwrap_or_default(),
+        Some("active") => state
+            .database
+            .get_active_links_limited(limit)
+            .await
+            .unwrap_or_default(),
+        _ => state
+            .database
+            .get_active_links_limited(limit)
+            .await
+            .unwrap_or_default(),
+    };
 
     let template = LinksTemplate {
         links,
@@ -837,24 +968,64 @@ pub async fn get_dead_links(State(state): State<WebState>) -> impl IntoResponse 
         }
     };
 
-    let template = DeadLinksTemplate { links };
+    let active_repair = state.active_repair().await.map(Into::into);
+    let last_repair_outcome = if active_repair.is_none() {
+        visible_last_repair_outcome(&state).await
+    } else {
+        None
+    };
+
+    let template = DeadLinksTemplate {
+        links,
+        active_repair,
+        last_repair_outcome,
+    };
     Html(template.render().unwrap_or_else(|e| e.to_string()))
 }
 
 /// POST /links/repair - Repair dead links
 pub async fn post_repair(State(state): State<WebState>) -> impl IntoResponse {
-    info!("Running auto repair");
+    info!("Starting background auto repair");
 
-    // Use the repair module
-    // This would call crate::repair::auto_repair
-    let template = RepairResultTemplate {
-        success: true,
-        message: "Repair completed".to_string(),
-        repaired: 0,
-        failed: 0,
-    };
-
-    Html(template.render().unwrap_or_else(|e| e.to_string()))
+    match state.start_repair().await {
+        Ok(job) => (
+            StatusCode::ACCEPTED,
+            Html(
+                RepairResultTemplate {
+                    success: true,
+                    message: format!(
+                        "Repair started in background for {}. Refresh /links/dead for the finished outcome.",
+                        job.scope_label
+                    ),
+                    repaired: 0,
+                    failed: 0,
+                    active_repair: Some(job.into()),
+                    last_repair_outcome: None,
+                }
+                .render()
+                .unwrap_or_else(|e| e.to_string()),
+            ),
+        ),
+        Err(err) => {
+            let message = err.to_string();
+            let active_repair = state.active_repair().await.map(Into::into);
+            (
+                StatusCode::CONFLICT,
+                Html(
+                    RepairResultTemplate {
+                        success: false,
+                        message: format!("Repair not started: {}", message),
+                        repaired: 0,
+                        failed: 0,
+                        active_repair,
+                        last_repair_outcome: visible_last_repair_outcome(&state).await,
+                    }
+                    .render()
+                    .unwrap_or_else(|e| e.to_string()),
+                ),
+            )
+        }
+    }
 }
 
 /// GET /config - Config page
@@ -868,39 +1039,12 @@ pub async fn get_config(State(state): State<WebState>) -> impl IntoResponse {
 
 /// POST /config/validate - Validate config
 pub async fn post_config_validate(State(state): State<WebState>) -> impl IntoResponse {
-    // Config is already loaded, just check for obvious issues
-    let mut errors = vec![];
-    let mut warnings = vec![];
-
-    if state.config.libraries.is_empty() {
-        errors.push("No libraries configured".to_string());
-    }
-
-    if state.config.sources.is_empty() {
-        errors.push("No sources configured".to_string());
-    }
-
-    if !state.config.has_tmdb() {
-        warnings.push("TMDB API key not configured".to_string());
-    }
-
-    if !state.config.has_tvdb() {
-        warnings.push("TVDB API key not configured".to_string());
-    }
-
-    let result = if errors.is_empty() {
-        Some(ValidationResult {
-            valid: true,
-            errors,
-            warnings,
-        })
-    } else {
-        Some(ValidationResult {
-            valid: false,
-            errors,
-            warnings,
-        })
-    };
+    let report = validate_config_report(&state.config).await;
+    let result = Some(ValidationResult {
+        valid: report.errors.is_empty(),
+        errors: report.errors,
+        warnings: report.warnings,
+    });
 
     let template = ConfigTemplate {
         config: (*state.config).clone(),
@@ -911,65 +1055,15 @@ pub async fn post_config_validate(State(state): State<WebState>) -> impl IntoRes
 
 /// GET /doctor - Doctor page
 pub async fn get_doctor(State(state): State<WebState>) -> impl IntoResponse {
-    let mut checks = vec![];
-
-    // Check libraries exist
-    for lib in &state.config.libraries {
-        let exists = lib.path.exists();
-        checks.push(DoctorCheck {
-            check: format!("Library '{}' exists", lib.name),
-            passed: exists,
-            message: if exists {
-                format!("{}: exists", lib.path.display())
-            } else {
-                format!("{}: NOT FOUND", lib.path.display())
-            },
-        });
-    }
-
-    // Check sources exist
-    for source in &state.config.sources {
-        let exists = source.path.exists();
-        checks.push(DoctorCheck {
-            check: format!("Source '{}' exists", source.name),
-            passed: exists,
-            message: if exists {
-                format!("{}: exists", source.path.display())
-            } else {
-                format!("{}: NOT FOUND", source.path.display())
-            },
-        });
-    }
-
-    // Check database
-    let db_ok = state.database.get_web_stats().await.is_ok();
-    checks.push(DoctorCheck {
-        check: "Database connection".to_string(),
-        passed: db_ok,
-        message: if db_ok { "Connected" } else { "Failed" }.to_string(),
-    });
-
-    // Check API keys
-    let has_tmdb = state.config.has_tmdb();
-    checks.push(DoctorCheck {
-        check: "TMDB API key".to_string(),
-        passed: has_tmdb,
-        message: if has_tmdb { "Configured" } else { "Missing" }.to_string(),
-    });
-
-    let has_tvdb = state.config.has_tvdb();
-    checks.push(DoctorCheck {
-        check: "TVDB API key".to_string(),
-        passed: has_tvdb,
-        message: if has_tvdb { "Configured" } else { "Missing" }.to_string(),
-    });
-
-    let has_rd = state.config.has_realdebrid();
-    checks.push(DoctorCheck {
-        check: "Real-Debrid API token".to_string(),
-        passed: has_rd,
-        message: if has_rd { "Configured" } else { "Missing" }.to_string(),
-    });
+    let checks = collect_doctor_checks(&state.config, &state.database, DoctorCheckMode::ReadOnly)
+        .await
+        .into_iter()
+        .map(|check| DoctorCheck {
+            check: check.name,
+            passed: check.ok,
+            message: check.detail,
+        })
+        .collect::<Vec<_>>();
 
     let all_passed = checks.iter().all(|c| c.passed);
 
@@ -978,28 +1072,81 @@ pub async fn get_doctor(State(state): State<WebState>) -> impl IntoResponse {
 }
 
 /// GET /discover - Discover page
-pub async fn get_discover(State(state): State<WebState>) -> impl IntoResponse {
-    let template = DiscoverTemplate {
-        libraries: state.config.libraries.clone(),
-        discovered_items: vec![],
-    };
-    Html(template.render().unwrap_or_else(|e| e.to_string()))
+pub async fn get_discover(
+    State(state): State<WebState>,
+    Query(query): Query<DiscoverQuery>,
+) -> impl IntoResponse {
+    let selected_library = query.library.clone().unwrap_or_default();
+    match load_discovery_snapshot(
+        &state.config,
+        &state.database,
+        query.library.as_deref(),
+        query.refresh_cache,
+    )
+    .await
+    {
+        Ok(snapshot) => {
+            let template = DiscoverTemplate {
+                libraries: state.config.libraries.clone(),
+                selected_library,
+                refresh_cache: query.refresh_cache,
+                discovered_items: snapshot.items,
+                status_message: snapshot.status_message.or_else(|| {
+                    (!query.refresh_cache).then(|| {
+                        "Showing cached RD results only. Enable refresh when you want a slower live cache sync first."
+                            .to_string()
+                    })
+                }),
+            };
+            (
+                StatusCode::OK,
+                Html(template.render().unwrap_or_else(|e| e.to_string())),
+            )
+        }
+        Err(err) => {
+            let message = err.to_string();
+            let template = DiscoverTemplate {
+                libraries: state.config.libraries.clone(),
+                selected_library,
+                refresh_cache: query.refresh_cache,
+                discovered_items: vec![],
+                status_message: Some(if message.contains("Unknown library filter") {
+                    format!("Invalid library filter: {}", message)
+                } else {
+                    format!("Discover failed: {}", message)
+                }),
+            };
+            (
+                if message.contains("Unknown library filter") {
+                    StatusCode::BAD_REQUEST
+                } else {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                },
+                Html(template.render().unwrap_or_else(|e| e.to_string())),
+            )
+        }
+    }
 }
 
 /// POST /discover/add - Add torrent to library
 pub async fn post_discover_add(
-    State(state): State<WebState>,
+    State(_state): State<WebState>,
     Form(form): Form<DiscoverAddForm>,
 ) -> impl IntoResponse {
-    info!("Adding torrent {} to library", form.torrent_id);
-
-    // This would integrate with the auto_acquire system
+    info!(
+        "Rejecting web discover-add for torrent {} (library='{}') until safe Arr selection is wired",
+        form.torrent_id, form.library
+    );
     let template = DiscoverResultTemplate {
-        success: true,
-        message: format!("Torrent {} queued for download", form.torrent_id),
+        success: false,
+        message: "Web discover/add is not wired to a safe Decypharr routing flow yet. Use the CLI: `symlinkarr discover add <torrent_id> --arr <arr-name>`."
+            .to_string(),
     };
 
-    Html(template.render().unwrap_or_else(|e| e.to_string()))
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Html(template.render().unwrap_or_else(|e| e.to_string())),
+    )
 }
 
 /// GET /backup - Backup page
@@ -1078,8 +1225,22 @@ pub async fn post_backup_restore(
     info!("Restoring backup: {}", form.backup_file);
 
     let backup_manager = BackupManager::new(&state.config.backup);
-
-    let backup_path = state.config.backup.path.join(&form.backup_file);
+    let backup_path =
+        match resolve_backup_restore_path(&state.config.backup.path, &form.backup_file) {
+            Ok(path) => path,
+            Err(e) => {
+                let template = BackupResultTemplate {
+                    success: false,
+                    message: format!("Restore failed: {}", e),
+                    backup_path: None,
+                };
+                return Html(
+                    template
+                        .render()
+                        .unwrap_or_else(|render_err| render_err.to_string()),
+                );
+            }
+        };
 
     let allowed_roots: Vec<PathBuf> = state
         .config
@@ -1195,6 +1356,9 @@ mod tests {
     };
     use crate::db::{AcquisitionJobSeed, AcquisitionRelinkKind, Database, ScanRunRecord};
     use crate::models::{LinkRecord, LinkStatus, MediaType};
+    use crate::web::{
+        ActiveCleanupAuditJob, ActiveScanJob, LastCleanupAuditOutcome, LastScanOutcome,
+    };
 
     struct TestWebContext {
         _dir: TempDir,
@@ -1368,6 +1532,156 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn scan_page_renders_active_background_scan_banner() {
+        let ctx = test_context().await;
+        ctx.state
+            .set_active_scan_for_test(Some(ActiveScanJob {
+                started_at: "2026-03-29 23:59:00 UTC".to_string(),
+                scope_label: "Anime".to_string(),
+                dry_run: true,
+                search_missing: true,
+            }))
+            .await;
+
+        let body = render_body(
+            get_scan(State(ctx.state.clone()), Query(ScanHistoryQuery::default())).await,
+        )
+        .await;
+
+        assert!(body.contains("Background scan running"));
+        assert!(body.contains("2026-03-29 23:59:00 UTC"));
+        assert!(body.contains("Anime"));
+        assert!(body.contains("Search missing enabled"));
+    }
+
+    #[tokio::test]
+    async fn scan_page_renders_last_failed_background_scan_outcome() {
+        let ctx = test_context().await;
+        ctx.state
+            .set_last_scan_outcome_for_test(Some(LastScanOutcome {
+                finished_at: "2099-03-29 23:58:00 UTC".to_string(),
+                scope_label: "Anime".to_string(),
+                dry_run: false,
+                search_missing: true,
+                success: false,
+                message: "RD cache sync failed".to_string(),
+            }))
+            .await;
+
+        let body = render_body(
+            get_scan(State(ctx.state.clone()), Query(ScanHistoryQuery::default())).await,
+        )
+        .await;
+
+        assert!(body.contains("Background scan failed"));
+        assert!(body.contains("RD cache sync failed"));
+        assert!(body.contains("2099-03-29 23:58:00 UTC"));
+    }
+
+    #[tokio::test]
+    async fn scan_page_hides_stale_failed_background_outcome_when_newer_run_exists() {
+        let ctx = test_context().await;
+        ctx.state
+            .set_last_scan_outcome_for_test(Some(LastScanOutcome {
+                finished_at: "2026-03-29 09:58:00 UTC".to_string(),
+                scope_label: "Anime".to_string(),
+                dry_run: false,
+                search_missing: true,
+                success: false,
+                message: "stale failure".to_string(),
+            }))
+            .await;
+
+        let body = render_body(
+            get_scan(State(ctx.state.clone()), Query(ScanHistoryQuery::default())).await,
+        )
+        .await;
+
+        assert!(!body.contains("Background scan failed"));
+        assert!(!body.contains("stale failure"));
+    }
+
+    #[tokio::test]
+    async fn cleanup_page_renders_active_background_audit_banner() {
+        let ctx = test_context().await;
+        ctx.state
+            .set_active_cleanup_audit_for_test(Some(ActiveCleanupAuditJob {
+                started_at: "2026-03-29 23:59:00 UTC".to_string(),
+                scope_label: "Anime".to_string(),
+                libraries_label: "Anime".to_string(),
+            }))
+            .await;
+
+        let body = render_body(get_cleanup(State(ctx.state.clone())).await).await;
+
+        assert!(body.contains("Background cleanup audit running"));
+        assert!(body.contains("2026-03-29 23:59:00 UTC"));
+        assert!(body.contains("Anime across Anime"));
+    }
+
+    #[tokio::test]
+    async fn cleanup_page_renders_last_failed_background_audit_outcome() {
+        let ctx = test_context().await;
+        ctx.state
+            .set_last_cleanup_audit_outcome_for_test(Some(LastCleanupAuditOutcome {
+                finished_at: "2026-03-29 23:58:00 UTC".to_string(),
+                scope_label: "Anime".to_string(),
+                libraries_label: "Anime".to_string(),
+                success: false,
+                message: "source root unhealthy".to_string(),
+                report_path: None,
+            }))
+            .await;
+
+        let body = render_body(get_cleanup(State(ctx.state.clone())).await).await;
+
+        assert!(body.contains("Background cleanup audit failed"));
+        assert!(body.contains("source root unhealthy"));
+        assert!(body.contains("2026-03-29 23:58:00 UTC"));
+    }
+
+    #[tokio::test]
+    async fn cleanup_page_hides_stale_failed_background_audit_outcome_when_newer_report_exists() {
+        let ctx = test_context().await;
+        let report_path = ctx
+            .state
+            .config
+            .backup
+            .path
+            .join("cleanup-audit-anime-20260329.json");
+        let report = CleanupReport {
+            version: 1,
+            created_at: chrono::Utc::now(),
+            scope: CleanupScope::Anime,
+            findings: vec![],
+            summary: CleanupSummary {
+                total_findings: 1,
+                critical: 0,
+                high: 1,
+                warning: 0,
+            },
+        };
+        std::fs::write(&report_path, serde_json::to_vec(&report).unwrap()).unwrap();
+
+        ctx.state
+            .set_last_cleanup_audit_outcome_for_test(Some(LastCleanupAuditOutcome {
+                finished_at: "2026-03-29 09:58:00 UTC".to_string(),
+                scope_label: "Anime".to_string(),
+                libraries_label: "Anime".to_string(),
+                success: false,
+                message: "stale cleanup failure".to_string(),
+                report_path: None,
+            }))
+            .await;
+
+        let body = render_body(get_cleanup(State(ctx.state.clone())).await).await;
+
+        assert!(!body.contains("Background cleanup audit failed"));
+        assert!(!body.contains("stale cleanup failure"));
+        assert!(body.contains("Last Report"));
+    }
+
+    #[tokio::test]
     async fn scan_run_detail_renders_specific_run() {
         let ctx = test_context().await;
         let run = ctx
@@ -1447,6 +1761,181 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn doctor_page_uses_full_doctor_checks() {
+        let ctx = test_context().await;
+        let body = render_body(get_doctor(State(ctx.state)).await).await;
+
+        assert!(body.contains("db_schema_version"));
+        assert!(body.contains("config_validation"));
+        assert!(body.contains("cleanup.prune.enforce_policy"));
+    }
+
+    #[tokio::test]
+    async fn doctor_page_does_not_create_missing_backup_dir_in_read_only_mode() {
+        let ctx = test_context().await;
+        let backup_dir = ctx.state.config.backup.path.clone();
+        std::fs::remove_dir(&backup_dir).unwrap();
+        assert!(!backup_dir.exists());
+
+        let body = render_body(get_doctor(State(ctx.state)).await).await;
+
+        assert!(body.contains("backup_dir"));
+        assert!(body.contains("write probe skipped in read-only mode"));
+        assert!(!backup_dir.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn doctor_page_flags_existing_non_writable_backup_dir() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let ctx = test_context().await;
+        let backup_dir = ctx.state.config.backup.path.clone();
+        std::fs::set_permissions(&backup_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let body = render_body(get_doctor(State(ctx.state)).await).await;
+
+        assert!(body.contains("backup_dir"));
+        assert!(body.contains("denies write or traverse"));
+        assert!(body.contains("mode=555"));
+    }
+
+    #[tokio::test]
+    async fn discover_page_renders_cached_gap_items() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = test_config(dir.path());
+        let db = Database::new(&cfg.db_path).await.unwrap();
+
+        db.upsert_rd_torrent(
+            "rd-1",
+            "hash-1",
+            "Missing.Show.S01E01.1080p.WEB-DL.mkv",
+            "downloaded",
+            r#"{"files":[{"bytes":1073741824,"path":"Missing.Show.S01E01.1080p.WEB-DL.mkv"}]}"#,
+        )
+        .await
+        .unwrap();
+
+        let state = WebState::new(cfg, db);
+        let response = get_discover(State(state), Query(DiscoverQuery::default()))
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+
+        assert!(body.contains("Discovered Items (1)"));
+        assert!(body.contains("Missing Show"));
+        assert!(body.contains("Real-Debrid API key not configured"));
+        assert!(body.contains("live refresh is unavailable"));
+    }
+
+    #[tokio::test]
+    async fn discover_page_rejects_invalid_library_filter() {
+        let ctx = test_context().await;
+        let response = get_discover(
+            State(ctx.state),
+            Query(DiscoverQuery {
+                library: Some("Nope".to_string()),
+                refresh_cache: false,
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(body.contains("Invalid library filter"));
+        assert!(body.contains("Unknown library filter"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn post_repair_starts_background_repair_flow() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = test_config(dir.path());
+        let db = Database::new(&cfg.db_path).await.unwrap();
+
+        let library_root = cfg.libraries[0].path.clone();
+        let source_root = cfg.sources[0].path.clone();
+        let target_path = library_root.join("Show/Season 01/Show - S01E01.mkv");
+        let missing_source = source_root.join("missing/Show.S01E01.mkv");
+        let replacement = source_root.join("Show.S01E01.mkv");
+
+        std::fs::create_dir_all(target_path.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(missing_source.parent().unwrap()).unwrap();
+        std::fs::write(&replacement, b"video").unwrap();
+        std::os::unix::fs::symlink(&missing_source, &target_path).unwrap();
+
+        db.insert_link(&LinkRecord {
+            id: None,
+            source_path: missing_source.clone(),
+            target_path: target_path.clone(),
+            media_id: "tvdb-99".to_string(),
+            media_type: MediaType::Tv,
+            status: LinkStatus::Dead,
+            created_at: None,
+            updated_at: None,
+        })
+        .await
+        .unwrap();
+
+        let state = WebState::new(cfg, db);
+        let response = post_repair(State(state.clone())).await.into_response();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+
+        assert!(body.contains("Repair started in background"));
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if state.last_repair_outcome().await.is_some() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("background repair should finish");
+
+        let outcome = state
+            .last_repair_outcome()
+            .await
+            .expect("expected repair outcome");
+        assert!(outcome.success);
+        assert_eq!(outcome.repaired, 1);
+        assert_eq!(outcome.failed, 0);
+
+        let repaired = state.database.get_active_links().await.unwrap();
+        let repaired = repaired
+            .into_iter()
+            .find(|link| link.target_path == target_path)
+            .expect("expected repaired active link");
+        assert_eq!(repaired.source_path, replacement);
+    }
+
+    #[tokio::test]
+    async fn post_discover_add_returns_not_implemented_failure() {
+        let ctx = test_context().await;
+        let response = post_discover_add(
+            State(ctx.state),
+            Form(DiscoverAddForm {
+                torrent_id: "rd-123".to_string(),
+                library: "Anime".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(body.contains("not wired to a safe Decypharr routing flow"));
+    }
+
+    #[tokio::test]
     async fn cleanup_page_renders_latest_report_summary() {
         let ctx = test_context().await;
         let report_path = ctx
@@ -1457,7 +1946,7 @@ mod tests {
             .join("cleanup-audit-anime-20260321.json");
         let report = CleanupReport {
             version: 1,
-            created_at: Utc::now(),
+            created_at: chrono::Utc::now(),
             scope: CleanupScope::Anime,
             findings: vec![],
             summary: CleanupSummary {
@@ -1474,7 +1963,8 @@ mod tests {
         assert!(body.contains("Last Report"));
         assert!(body.contains("12"));
         assert!(body.contains("Open Prune Preview"));
-        assert!(body.contains("Apply Cleanup"));
+        assert!(!body.contains("Apply Cleanup"));
+        assert!(body.contains("Apply only from preview"));
     }
 
     #[test]
@@ -1526,5 +2016,46 @@ mod tests {
         assert!(result.contains(&"Anime".to_string()));
         assert!(result.contains(&"Anime 2".to_string()));
         assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn resolve_backup_restore_path_rejects_absolute_input() {
+        let backup_dir = PathBuf::from("/srv/symlinkarr/backups");
+        let err = resolve_backup_restore_path(&backup_dir, "/tmp/evil.json").unwrap_err();
+        assert!(err.to_string().contains("configured backup directory"));
+    }
+
+    #[test]
+    fn resolve_backup_restore_path_rejects_parent_escape() {
+        let backup_dir = PathBuf::from("/srv/symlinkarr/backups");
+        let err = resolve_backup_restore_path(&backup_dir, "../outside.json").unwrap_err();
+        assert!(err.to_string().contains("escapes"));
+    }
+
+    #[test]
+    fn resolve_backup_restore_path_accepts_plain_filename() {
+        let backup_dir = PathBuf::from("/srv/symlinkarr/backups");
+        let path = resolve_backup_restore_path(&backup_dir, "backup-20260329.json").unwrap();
+        assert_eq!(path, backup_dir.join("backup-20260329.json"));
+    }
+
+    #[test]
+    fn resolve_cleanup_report_path_rejects_absolute_outside_backup_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let backup_dir = dir.path().join("backups");
+        let outside = dir.path().join("outside.json");
+        std::fs::create_dir_all(&backup_dir).unwrap();
+        std::fs::write(&outside, "{}").unwrap();
+
+        let err = resolve_cleanup_report_path(&backup_dir, outside.to_string_lossy().as_ref())
+            .unwrap_err();
+        assert!(err.to_string().contains("configured backup directory"));
+    }
+
+    #[test]
+    fn resolve_cleanup_report_path_accepts_plain_filename() {
+        let backup_dir = PathBuf::from("/srv/symlinkarr/backups");
+        let path = resolve_cleanup_report_path(&backup_dir, "cleanup-audit-anime.json").unwrap();
+        assert_eq!(path, backup_dir.join("cleanup-audit-anime.json"));
     }
 }
