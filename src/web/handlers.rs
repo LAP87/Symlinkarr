@@ -93,15 +93,15 @@ fn default_plex_db_candidates() -> [&'static str; 3] {
 }
 
 fn resolve_plex_db_path(query_path: Option<&str>) -> Option<PathBuf> {
-    query_path
+    if let Some(requested) = query_path.map(str::trim).filter(|value| !value.is_empty()) {
+        let path = PathBuf::from(requested);
+        return path.exists().then_some(path);
+    }
+
+    default_plex_db_candidates()
+        .into_iter()
         .map(PathBuf::from)
-        .filter(|path| path.exists())
-        .or_else(|| {
-            default_plex_db_candidates()
-                .into_iter()
-                .map(PathBuf::from)
-                .find(|path| path.exists())
-        })
+        .find(|path| path.exists())
 }
 
 async fn visible_last_scan_outcome(state: &WebState) -> Option<BackgroundScanOutcomeView> {

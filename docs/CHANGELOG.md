@@ -27,6 +27,8 @@
   - files: `src/commands/cleanup.rs`, `src/web/api/mod.rs`, `docs/API_SCHEMA.md`
 - dashboard and scan pages now surface Plex refresh protection warnings directly when the latest run hit caps, skips, unresolved paths, or refresh failures.
   - files: `src/web/ui/dashboard.html`, `src/web/ui/scan.html`, `src/web/handlers.rs`
+- explicit `plex_db` overrides for anime remediation/reporting are now strict: wrong override paths fail instead of silently falling back to a default local Plex DB.
+  - files: `src/commands/cleanup.rs`, `src/web/api/mod.rs`, `src/web/handlers.rs`, `docs/API_SCHEMA.md`, `docs/CLI_MANUAL.md`
 
 ### Validation
 

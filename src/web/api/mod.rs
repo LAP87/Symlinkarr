@@ -894,15 +894,15 @@ fn default_plex_db_candidates() -> [&'static str; 3] {
 }
 
 fn resolve_plex_db_path(query_path: Option<&str>) -> Option<std::path::PathBuf> {
-    query_path
+    if let Some(requested) = query_path.map(str::trim).filter(|value| !value.is_empty()) {
+        let path = std::path::PathBuf::from(requested);
+        return path.exists().then_some(path);
+    }
+
+    default_plex_db_candidates()
+        .into_iter()
         .map(std::path::PathBuf::from)
-        .filter(|path| path.exists())
-        .or_else(|| {
-            default_plex_db_candidates()
-                .into_iter()
-                .map(std::path::PathBuf::from)
-                .find(|path| path.exists())
-        })
+        .find(|path| path.exists())
 }
 
 /// GET /api/v1/scan/history
@@ -2785,5 +2785,88 @@ mod tests {
                 .filter(|entry| entry.path().is_symlink())
                 .count();
         assert!(quarantined_entries >= 1);
+    }
+
+    #[tokio::test]
+    async fn api_post_anime_remediation_preview_rejects_missing_plex_db() {
+        let ctx = test_state().await;
+        let response = api_post_anime_remediation_preview(
+            State(ctx),
+            Json(ApiAnimeRemediationPreviewRequest {
+                plex_db: Some("/tmp/definitely-missing-plex.db".to_string()),
+                title: None,
+                library: Some("Anime".to_string()),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: ApiAnimeRemediationPreviewResponse = serde_json::from_slice(&bytes).unwrap();
+        assert!(!json.success);
+        assert!(json.message.contains("Plex DB path is required"));
+    }
+
+    #[tokio::test]
+    async fn api_post_anime_remediation_apply_rejects_report_outside_backup_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = test_config(dir.path());
+        let db = Database::new(&cfg.db_path).await.unwrap();
+        let outside_report = dir.path().join("outside-report.json");
+        std::fs::write(&outside_report, "{}").unwrap();
+
+        let state = WebState::new(cfg, db);
+        let response = api_post_anime_remediation_apply(
+            State(state),
+            Json(ApiAnimeRemediationApplyRequest {
+                report_path: outside_report.to_string_lossy().to_string(),
+                token: "bad-token".to_string(),
+                max_delete: None,
+                library: Some("Anime".to_string()),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: ApiAnimeRemediationApplyResponse = serde_json::from_slice(&bytes).unwrap();
+        assert!(!json.success);
+        assert!(json
+            .message
+            .contains("Cleanup report must be inside the configured backup directory"));
+    }
+
+    #[tokio::test]
+    async fn api_post_anime_remediation_apply_rejects_when_foreign_quarantine_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let mut cfg = test_config(&root);
+        cfg.cleanup.prune.quarantine_foreign = false;
+        let report_path = cfg.backup.path.join("anime-remediation.json");
+        std::fs::write(&report_path, "{}").unwrap();
+
+        let db = Database::new(&cfg.db_path).await.unwrap();
+        let state = WebState::new(cfg, db);
+        let response = api_post_anime_remediation_apply(
+            State(state),
+            Json(ApiAnimeRemediationApplyRequest {
+                report_path: report_path.to_string_lossy().to_string(),
+                token: "token".to_string(),
+                max_delete: None,
+                library: Some("Anime".to_string()),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: ApiAnimeRemediationApplyResponse = serde_json::from_slice(&bytes).unwrap();
+        assert!(!json.success);
+        assert!(json
+            .message
+            .contains("cleanup.prune.quarantine_foreign=true"));
     }
 }

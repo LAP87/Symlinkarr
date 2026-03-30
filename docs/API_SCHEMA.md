@@ -400,6 +400,7 @@ Notes:
 
 - The API does not accept an arbitrary output path; preview plans are always written under the configured backup directory.
 - This endpoint is the JSON/API analogue of `cleanup remediate-anime` preview and keeps the same eligibility gate.
+- If `plex_db` is supplied explicitly, that exact path must exist; Symlinkarr no longer silently falls back to a default Plex DB when an override path is wrong.
 
 ## `POST /api/v1/cleanup/anime-remediation/apply`
 

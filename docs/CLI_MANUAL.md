@@ -167,6 +167,7 @@ Notes:
 - `cleanup remediate-anime` is the guarded follow-up for the correlated anime backlog from `report --plex-db ...`. Preview writes a remediation plan JSON with eligible and blocked titles, then apply reuses that exact report plus a confirmation token.
 - `cleanup remediate-anime` only auto-handles groups where the legacy roots are foreign-only, the recommended tagged root is DB-tracked, and no non-symlink media files are present under the legacy root. Everything else stays blocked for manual review.
 - `cleanup remediate-anime --apply` requires `cleanup.prune.quarantine_foreign=true`, because the workflow intentionally quarantines `foreign` legacy symlinks instead of deleting them.
+- If you pass `--plex-db`, that exact path must exist. Symlinkarr only falls back to standard local Plex DB paths when no explicit override was supplied.
 - Destructive cleanup commands refuse to run when a configured source mount is unhealthy or missing at runtime. Fix the mount first, then re-run the command.
 
 ### `repair`
