@@ -443,9 +443,8 @@ pub(crate) async fn run_scan(
         plex_refresh_coalesced_batches: telemetry.plex_refresh_stats.coalesced_batches as i64,
         plex_refresh_coalesced_paths: telemetry.plex_refresh_stats.coalesced_paths as i64,
         plex_refresh_refreshed_batches: telemetry.plex_refresh_stats.refreshed_batches as i64,
-        plex_refresh_refreshed_paths_covered: telemetry
-            .plex_refresh_stats
-            .refreshed_paths_covered as i64,
+        plex_refresh_refreshed_paths_covered: telemetry.plex_refresh_stats.refreshed_paths_covered
+            as i64,
         plex_refresh_skipped_batches: telemetry.plex_refresh_stats.skipped_batches as i64,
         plex_refresh_unresolved_paths: telemetry.plex_refresh_stats.unresolved_paths as i64,
         plex_refresh_capped_batches: telemetry.plex_refresh_stats.capped_batches as i64,
