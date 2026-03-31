@@ -1,13 +1,10 @@
 use std::collections::HashSet;
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use tokio::time::sleep;
 use tracing::info;
 
 use crate::api::bazarr::BazarrClient;
-use crate::api::plex::{plan_refresh_batches, PlexClient};
 use crate::api::tmdb::TmdbClient;
 use crate::api::tvdb::TvdbClient;
 use crate::auto_acquire::{
@@ -22,6 +19,10 @@ use crate::db::Database;
 use crate::library_scanner::LibraryScanner;
 use crate::linker::{LinkProcessSummary, Linker};
 use crate::matcher::{MatchRunOutput, MatchTelemetry, Matcher};
+use crate::media_servers::{
+    configured_invalidation_server, has_configured_invalidation_server, refresh_library_paths,
+    LibraryRefreshTelemetry,
+};
 use crate::models::{LibraryItem, MatchResult, MediaId, MediaType, SourceItem};
 use crate::source_scanner::SourceScanner;
 use crate::utils::{stdout_text_guard, user_println};
@@ -47,22 +48,6 @@ impl SourceInventoryTelemetry {
 }
 
 #[derive(Debug, Clone, Default)]
-struct PlexRefreshTelemetry {
-    requested_paths: usize,
-    unique_paths: usize,
-    planned_batches: usize,
-    coalesced_batches: usize,
-    coalesced_paths: usize,
-    refreshed_batches: usize,
-    refreshed_paths_covered: usize,
-    skipped_batches: usize,
-    unresolved_paths: usize,
-    capped_batches: usize,
-    aborted_due_to_cap: bool,
-    failed_batches: usize,
-}
-
-#[derive(Debug, Clone, Default)]
 struct ScanTelemetry {
     runtime_checks: Duration,
     library_scan: Duration,
@@ -73,7 +58,7 @@ struct ScanTelemetry {
     episode_title_enrichment: Duration,
     linking: Duration,
     plex_refresh: Duration,
-    plex_refresh_stats: PlexRefreshTelemetry,
+    plex_refresh_stats: LibraryRefreshTelemetry,
     dead_link_sweep: Duration,
 }
 
@@ -205,9 +190,15 @@ pub(crate) async fn run_scan(
         }
     }
 
-    if linked_total > 0 && !effective_dry_run && cfg.has_plex() {
+    if linked_total > 0 && !effective_dry_run && has_configured_invalidation_server(cfg) {
         let plex_refresh_started = Instant::now();
-        match trigger_plex_refresh(cfg, &link_summary.refresh_paths).await {
+        match refresh_library_paths(
+            cfg,
+            &link_summary.refresh_paths,
+            output != OutputFormat::Json,
+        )
+        .await
+        {
             Ok(plex_stats) => {
                 telemetry.plex_refresh = plex_refresh_started.elapsed();
                 telemetry.plex_refresh_stats = plex_stats;
@@ -216,7 +207,10 @@ pub(crate) async fn run_scan(
                 telemetry.plex_refresh = plex_refresh_started.elapsed();
                 telemetry.plex_refresh_stats.requested_paths = link_summary.refresh_paths.len();
                 telemetry.plex_refresh_stats.skipped_batches = 1;
-                user_println(format!("   ⚠️  Plex refresh failed: {}", e));
+                let prefix = configured_invalidation_server(cfg)
+                    .map(|server| format!("{} refresh failed", server))
+                    .unwrap_or_else(|| "Media-server refresh failed".to_string());
+                user_println(format!("   ⚠️  {}: {}", prefix, e));
             }
         }
     }
@@ -677,137 +671,6 @@ fn duration_ms_i64(duration: Duration) -> i64 {
         .unwrap_or(i64::MAX)
 }
 
-// ─── Scan-specific helpers ─────────────────────────────────────────
-
-async fn trigger_plex_refresh(
-    cfg: &Config,
-    refresh_paths: &[PathBuf],
-) -> Result<PlexRefreshTelemetry> {
-    let mut telemetry = PlexRefreshTelemetry {
-        requested_paths: refresh_paths.len(),
-        ..PlexRefreshTelemetry::default()
-    };
-    if refresh_paths.is_empty() || !cfg.has_plex_refresh() {
-        return Ok(telemetry);
-    }
-
-    let plex = PlexClient::new(&cfg.plex.url, &cfg.plex.token);
-    let sections = plex.get_sections().await?;
-    let planned = plan_refresh_batches(
-        &sections,
-        refresh_paths,
-        cfg.plex.refresh_coalesce_threshold,
-    );
-    let (plan, dropped_batches) =
-        enforce_refresh_batch_limit(planned, cfg.plex.max_refresh_batches_per_run);
-
-    telemetry.unique_paths = plan.unique_paths;
-    telemetry.planned_batches = plan.batches.len() + dropped_batches;
-    telemetry.coalesced_batches = plan.coalesced_batches;
-    telemetry.coalesced_paths = plan.coalesced_paths;
-    telemetry.unresolved_paths = plan.unresolved_paths.len();
-    telemetry.capped_batches = dropped_batches;
-
-    for path in &plan.unresolved_paths {
-        user_println(format!(
-            "   ⚠️  Plex: no matching library section found for {}",
-            path.display()
-        ));
-    }
-    telemetry.skipped_batches += plan.unresolved_paths.len();
-    if dropped_batches > 0 {
-        if cfg.plex.abort_refresh_when_capped {
-            telemetry.aborted_due_to_cap = true;
-            telemetry.skipped_batches += telemetry.planned_batches;
-            user_println(format!(
-                "   ⚠️  Plex: refresh plan needed {} request(s), exceeding cap {}. Aborted all targeted refreshes to protect Plex.",
-                telemetry.planned_batches, cfg.plex.max_refresh_batches_per_run
-            ));
-            if telemetry.coalesced_batches > 0 {
-                user_println(format!(
-                    "   📺 Plex: coalesced {} path(s) into {} library-root refresh(es) before the cap guard stopped the run",
-                    telemetry.coalesced_paths, telemetry.coalesced_batches
-                ));
-            }
-            if telemetry.skipped_batches > 0 {
-                user_println(format!(
-                    "   ⚠️  Plex: {} refresh request(s) were not queued",
-                    telemetry.skipped_batches
-                ));
-            }
-            return Ok(telemetry);
-        }
-
-        telemetry.skipped_batches += dropped_batches;
-        user_println(format!(
-            "   ⚠️  Plex: capped refresh plan at {} request(s); {} request(s) skipped to reduce load",
-            cfg.plex.max_refresh_batches_per_run, dropped_batches
-        ));
-    }
-
-    let refresh_delay = Duration::from_millis(cfg.plex.refresh_delay_ms);
-    let batch_count = plan.batches.len();
-    for (idx, batch) in plan.batches.into_iter().enumerate() {
-        match plex
-            .refresh_path(&batch.section_key, &batch.refresh_path)
-            .await
-        {
-            Ok(_) => {
-                telemetry.refreshed_batches += 1;
-                telemetry.refreshed_paths_covered += batch.covered_paths;
-            }
-            Err(err) => {
-                user_println(format!(
-                    "   ⚠️  Plex: refresh failed for {} (section '{}'): {}",
-                    batch.refresh_path.display(),
-                    batch.section_title,
-                    err
-                ));
-                telemetry.failed_batches += 1;
-                telemetry.skipped_batches += 1;
-            }
-        }
-
-        if refresh_delay > Duration::ZERO && idx + 1 < batch_count {
-            sleep(refresh_delay).await;
-        }
-    }
-
-    if telemetry.refreshed_batches > 0 {
-        user_println(format!(
-            "   📺 Plex: targeted refresh queued for {} request(s) covering {} path(s)",
-            telemetry.refreshed_batches, telemetry.refreshed_paths_covered
-        ));
-    }
-    if telemetry.coalesced_batches > 0 {
-        user_println(format!(
-            "   📺 Plex: coalesced {} path(s) into {} library-root refresh(es)",
-            telemetry.coalesced_paths, telemetry.coalesced_batches
-        ));
-    }
-    if telemetry.skipped_batches > 0 {
-        user_println(format!(
-            "   ⚠️  Plex: {} refresh request(s) were not queued",
-            telemetry.skipped_batches
-        ));
-    }
-
-    Ok(telemetry)
-}
-
-fn enforce_refresh_batch_limit(
-    mut plan: crate::api::plex::PlexRefreshPlan,
-    max_batches: usize,
-) -> (crate::api::plex::PlexRefreshPlan, usize) {
-    if max_batches == 0 || plan.batches.len() <= max_batches {
-        return (plan, 0);
-    }
-
-    let dropped_batches = plan.batches.len().saturating_sub(max_batches);
-    plan.batches.truncate(max_batches);
-    (plan, dropped_batches)
-}
-
 fn build_missing_search_query(item: &LibraryItem) -> Option<String> {
     if item.media_type == MediaType::Tv {
         return None;
@@ -834,7 +697,6 @@ pub(crate) async fn lookup_item_imdb_id(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::plex::PlexRefreshPlan;
     use crate::config::ContentType;
 
     #[test]
@@ -875,78 +737,15 @@ mod tests {
     }
 
     #[test]
-    fn enforce_refresh_batch_limit_keeps_small_plans_intact() {
-        let plan = PlexRefreshPlan {
-            batches: vec![
-                crate::api::plex::PlexRefreshBatch {
-                    section_key: "1".to_string(),
-                    section_title: "Anime".to_string(),
-                    refresh_path: PathBuf::from("/library/a"),
-                    covered_paths: 1,
-                    coalesced_to_root: false,
-                },
-                crate::api::plex::PlexRefreshBatch {
-                    section_key: "1".to_string(),
-                    section_title: "Anime".to_string(),
-                    refresh_path: PathBuf::from("/library/b"),
-                    covered_paths: 1,
-                    coalesced_to_root: false,
-                },
-            ],
-            ..PlexRefreshPlan::default()
-        };
-
-        let (limited, dropped) = enforce_refresh_batch_limit(plan, 2);
-        assert_eq!(limited.batches.len(), 2);
-        assert_eq!(dropped, 0);
-    }
-
-    #[test]
-    fn enforce_refresh_batch_limit_truncates_large_plans() {
-        let plan = PlexRefreshPlan {
-            batches: vec![
-                crate::api::plex::PlexRefreshBatch {
-                    section_key: "1".to_string(),
-                    section_title: "Anime".to_string(),
-                    refresh_path: PathBuf::from("/library/a"),
-                    covered_paths: 1,
-                    coalesced_to_root: false,
-                },
-                crate::api::plex::PlexRefreshBatch {
-                    section_key: "1".to_string(),
-                    section_title: "Anime".to_string(),
-                    refresh_path: PathBuf::from("/library/b"),
-                    covered_paths: 1,
-                    coalesced_to_root: false,
-                },
-                crate::api::plex::PlexRefreshBatch {
-                    section_key: "1".to_string(),
-                    section_title: "Anime".to_string(),
-                    refresh_path: PathBuf::from("/library/c"),
-                    covered_paths: 1,
-                    coalesced_to_root: false,
-                },
-            ],
-            ..PlexRefreshPlan::default()
-        };
-
-        let (limited, dropped) = enforce_refresh_batch_limit(plan, 2);
-        assert_eq!(limited.batches.len(), 2);
-        assert_eq!(limited.batches[0].refresh_path, PathBuf::from("/library/a"));
-        assert_eq!(limited.batches[1].refresh_path, PathBuf::from("/library/b"));
-        assert_eq!(dropped, 1);
-    }
-
-    #[test]
     fn scan_telemetry_summary_marks_aborted_refreshes() {
         let telemetry = ScanTelemetry {
-            plex_refresh_stats: PlexRefreshTelemetry {
+            plex_refresh_stats: LibraryRefreshTelemetry {
                 planned_batches: 4,
                 refreshed_batches: 0,
                 skipped_batches: 4,
                 capped_batches: 2,
                 aborted_due_to_cap: true,
-                ..PlexRefreshTelemetry::default()
+                ..LibraryRefreshTelemetry::default()
             },
             ..ScanTelemetry::default()
         };

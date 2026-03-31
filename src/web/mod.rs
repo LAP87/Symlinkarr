@@ -451,6 +451,7 @@ impl WebState {
                     database.as_ref(),
                     None,
                     false,
+                    false,
                 )
                 .await
             })

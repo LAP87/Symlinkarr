@@ -14,6 +14,7 @@ use crate::commands::{
 };
 use crate::config::Config;
 use crate::db::Database;
+use crate::media_servers::{configured_invalidation_server, invalidate_after_mutation};
 use crate::models::MediaType;
 use crate::repair;
 use crate::RepairAction;
@@ -48,7 +49,7 @@ pub(crate) async fn run_repair(
                     "   ⚠️  --self-heal may trigger external downloads via Prowlarr/Decypharr."
                 );
             }
-            let results = execute_repair_auto(cfg, db, library_filter, dry_run).await?;
+            let results = execute_repair_auto(cfg, db, library_filter, dry_run, true).await?;
 
             let repaired: Vec<_> = results
                 .iter()
@@ -212,6 +213,7 @@ pub(crate) async fn execute_repair_auto(
     db: &Database,
     library_filter: Option<&str>,
     dry_run: bool,
+    emit_text: bool,
 ) -> Result<Vec<repair::RepairResult>> {
     let repairer = repair::Repairer::new();
     let selected = selected_libraries(cfg, library_filter)?;
@@ -310,6 +312,10 @@ pub(crate) async fn execute_repair_auto(
         .iter()
         .filter(|r| matches!(r, repair::RepairResult::Repaired { .. }))
         .count();
+    let stale_count = results
+        .iter()
+        .filter(|r| matches!(r, repair::RepairResult::Stale { .. }))
+        .count();
     if repaired_count > 0 && cfg.has_bazarr() && !dry_run {
         let bazarr = BazarrClient::new(&cfg.bazarr);
         println!(
@@ -318,6 +324,24 @@ pub(crate) async fn execute_repair_auto(
         );
         info!("Bazarr integration ready — needs Sonarr/Radarr IDs in future");
         let _ = bazarr;
+    }
+
+    let affected_paths = collect_repair_affected_paths(&results);
+    if !dry_run && (repaired_count > 0 || stale_count > 0) && !affected_paths.is_empty() {
+        if let (true, Some(server)) = (emit_text, configured_invalidation_server(cfg)) {
+            println!(
+                "   📺 Post-repair: refreshing affected library roots in {}...",
+                server
+            );
+        }
+        if let Err(err) =
+            invalidate_after_mutation(cfg, &selected, &affected_paths, emit_text).await
+        {
+            if emit_text {
+                println!("   ⚠️  Post-repair media-server refresh failed: {}", err);
+            }
+            tracing::warn!("Post-repair media-server refresh failed: {}", err);
+        }
     }
 
     Ok(results)
@@ -343,6 +367,26 @@ pub(crate) fn summarize_repair_results(
         .filter(|r| matches!(r, repair::RepairResult::Stale { .. }))
         .count();
     (repaired, failed, skipped, stale)
+}
+
+pub(crate) fn collect_repair_affected_paths(
+    results: &[repair::RepairResult],
+) -> Vec<std::path::PathBuf> {
+    let mut paths = Vec::new();
+
+    for result in results {
+        match result {
+            repair::RepairResult::Repaired { dead_link, .. }
+            | repair::RepairResult::Stale { dead_link, .. } => {
+                paths.push(dead_link.symlink_path.clone());
+            }
+            repair::RepairResult::Unrepairable { .. } | repair::RepairResult::Skipped { .. } => {}
+        }
+    }
+
+    paths.sort();
+    paths.dedup();
+    paths
 }
 
 fn build_repair_self_heal_query(dead_link: &repair::DeadLink) -> Option<String> {
@@ -376,4 +420,55 @@ fn library_name_for_path(cfg: &Config, path: &std::path::Path) -> Option<String>
         .iter()
         .find(|lib| path.starts_with(&lib.path))
         .map(|lib| lib.name.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::ContentType;
+    use crate::repair::{DeadLink, TrashMeta};
+
+    fn dead_link(path: &str) -> DeadLink {
+        DeadLink {
+            symlink_path: std::path::PathBuf::from(path),
+            original_source: std::path::PathBuf::from("/mnt/rd/source.mkv"),
+            media_id: "tvdb-1".to_string(),
+            media_type: MediaType::Tv,
+            content_type: ContentType::Tv,
+            meta: TrashMeta {
+                title: "Show".to_string(),
+                year: Some(2024),
+                season: Some(1),
+                episode: Some(1),
+                quality: Some("1080p".to_string()),
+                imdb_id: None,
+            },
+            original_size: None,
+        }
+    }
+
+    #[test]
+    fn collect_repair_affected_paths_returns_only_mutated_targets() {
+        let repaired = repair::RepairResult::Repaired {
+            dead_link: dead_link("/library/Show - S01E01.mkv"),
+            replacement: std::path::PathBuf::from("/mnt/rd/replacement.mkv"),
+        };
+        let stale = repair::RepairResult::Stale {
+            dead_link: dead_link("/library/Show - S01E02.mkv"),
+            reason: "missing on disk".to_string(),
+        };
+        let unrepairable = repair::RepairResult::Unrepairable {
+            dead_link: dead_link("/library/Show - S01E03.mkv"),
+            reason: "no candidate".to_string(),
+        };
+
+        let affected = collect_repair_affected_paths(&[unrepairable, repaired, stale]);
+        assert_eq!(
+            affected,
+            vec![
+                std::path::PathBuf::from("/library/Show - S01E01.mkv"),
+                std::path::PathBuf::from("/library/Show - S01E02.mkv"),
+            ]
+        );
+    }
 }

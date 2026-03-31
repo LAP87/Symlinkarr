@@ -12,13 +12,18 @@ use tracing::info;
 
 use crate::backup::BackupManager;
 use crate::cleanup_audit::{self, CleanupReport, CleanupScope};
-use crate::commands::cleanup::{apply_anime_remediation_plan, preview_anime_remediation_plan};
+use crate::commands::cleanup::{
+    apply_anime_remediation_plan_with_refresh, apply_cleanup_prune_with_refresh,
+    preview_anime_remediation_plan, CleanupPruneApplyArgs,
+};
 use crate::commands::config::validate_config_report;
 use crate::commands::discover::load_discovery_snapshot;
 use crate::commands::doctor::{collect_doctor_checks, DoctorCheckMode};
 use crate::commands::report::{build_anime_remediation_report, AnimeRemediationSample};
+use crate::commands::selected_libraries;
 use crate::config::Config;
 use crate::db::{Database, ScanHistoryRecord};
+use crate::media_servers::LibraryInvalidationOutcome;
 
 use super::{
     latest_cleanup_report_created_at, should_surface_cleanup_audit_outcome,
@@ -311,6 +316,7 @@ pub struct ApiAnimeRemediationApplyResponse {
     pub removed: usize,
     pub skipped: usize,
     pub safety_snapshot: Option<String>,
+    pub media_server_invalidation: Option<LibraryInvalidationOutcome>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -446,6 +452,7 @@ pub struct ApiCleanupPruneResponse {
     pub removed: usize,
     pub quarantined: usize,
     pub skipped: usize,
+    pub media_server_invalidation: Option<LibraryInvalidationOutcome>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1102,22 +1109,24 @@ pub async fn api_post_anime_remediation_apply(
                     removed: 0,
                     skipped: 0,
                     safety_snapshot: None,
+                    media_server_invalidation: None,
                 }),
             );
         }
     };
 
-    match apply_anime_remediation_plan(
+    match apply_anime_remediation_plan_with_refresh(
         &state.config,
         &state.database,
         req.library.as_deref(),
         &report_path,
         Some(&req.token),
         req.max_delete,
+        false,
     )
     .await
     {
-        Ok((plan, outcome, safety_snapshot)) => (
+        Ok((plan, outcome, safety_snapshot, invalidation)) => (
             StatusCode::OK,
             Json(ApiAnimeRemediationApplyResponse {
                 success: true,
@@ -1133,6 +1142,7 @@ pub async fn api_post_anime_remediation_apply(
                 safety_snapshot: safety_snapshot
                     .as_ref()
                     .map(|path| path.to_string_lossy().to_string()),
+                media_server_invalidation: Some(invalidation),
             }),
         ),
         Err(err) => (
@@ -1149,6 +1159,7 @@ pub async fn api_post_anime_remediation_apply(
                 removed: 0,
                 skipped: 0,
                 safety_snapshot: None,
+                media_server_invalidation: None,
             }),
         ),
     }
@@ -1363,23 +1374,47 @@ pub async fn api_post_cleanup_prune(
                     removed: 0,
                     quarantined: 0,
                     skipped: 0,
+                    media_server_invalidation: None,
                 }),
             );
         }
     };
 
-    match cleanup_audit::run_prune(
+    let selected = match selected_libraries(state.config.as_ref(), None) {
+        Ok(selected) => selected,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ApiCleanupPruneResponse {
+                    success: false,
+                    message: format!("Prune failed: {}", e),
+                    candidates: 0,
+                    managed_candidates: 0,
+                    foreign_candidates: 0,
+                    removed: 0,
+                    quarantined: 0,
+                    skipped: 0,
+                    media_server_invalidation: None,
+                }),
+            );
+        }
+    };
+
+    match apply_cleanup_prune_with_refresh(
         &state.config,
         &state.database,
-        &report_path,
-        true,
-        false,
-        req.max_delete,
-        Some(&req.token),
+        CleanupPruneApplyArgs {
+            libraries: &selected,
+            report_path: &report_path,
+            include_legacy_anime_roots: false,
+            max_delete: req.max_delete,
+            confirm_token: Some(&req.token),
+            emit_text: false,
+        },
     )
     .await
     {
-        Ok(outcome) => (
+        Ok((outcome, invalidation)) => (
             StatusCode::OK,
             Json(ApiCleanupPruneResponse {
                 success: true,
@@ -1390,6 +1425,7 @@ pub async fn api_post_cleanup_prune(
                 removed: outcome.removed,
                 quarantined: outcome.quarantined,
                 skipped: outcome.skipped,
+                media_server_invalidation: Some(invalidation),
             }),
         ),
         Err(e) => (
@@ -1403,6 +1439,7 @@ pub async fn api_post_cleanup_prune(
                 removed: 0,
                 quarantined: 0,
                 skipped: 0,
+                media_server_invalidation: None,
             }),
         ),
     }

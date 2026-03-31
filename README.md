@@ -292,6 +292,8 @@ symlinkarr cleanup remediate-anime --apply --report backups/anime-remediation-gu
 `cleanup remediate-anime` is the safer operator path for the correlated anime backlog: preview writes a report JSON, apply requires the preview token, and eligible legacy-root symlinks are quarantined instead of deleted.
 `cleanup remediate-anime --apply` also requires `cleanup.prune.quarantine_foreign=true`, because the workflow is intentionally quarantine-first for legacy anime roots.
 Destructive cleanup commands also stop early if a configured source mount is unhealthy, so a transient RD outage does not become a cleanup event.
+When media-server refresh is configured, successful cleanup and remediation applies now invalidate affected library roots afterward so Plex does not keep stale ghosts after the filesystem has already been fixed.
+That invalidation now runs through a dedicated `media_servers` boundary, with Plex as the first live adapter and Emby/Jellyfin reserved for future dedicated modules once those servers are onboarded and verified.
 
 Cache management:
 
@@ -307,6 +309,8 @@ symlinkarr repair scan
 symlinkarr repair auto --dry-run
 symlinkarr discover list
 ```
+
+Successful `repair auto` runs also trigger the same guarded post-mutation invalidation flow. Today the live adapter is Plex, while Emby and Jellyfin are being broken out as dedicated modules instead of staying hidden behind Plex-specific code.
 
 For the full command matrix, see [CLI_MANUAL.md](docs/CLI_MANUAL.md).
 

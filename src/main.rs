@@ -16,6 +16,7 @@ mod discovery;
 mod library_scanner;
 mod linker;
 mod matcher;
+mod media_servers;
 mod models;
 mod plex_db;
 mod repair;

@@ -434,7 +434,26 @@ Response:
   "quarantined": 16,
   "removed": 0,
   "skipped": 0,
-  "safety_snapshot": "/home/lenny/apps/Symlinkarr/backups/safety-anime-remediation-20260330-201702.json"
+  "safety_snapshot": "/home/lenny/apps/Symlinkarr/backups/safety-anime-remediation-20260330-201702.json",
+  "media_server_invalidation": {
+    "server": "plex",
+    "requested_library_roots": 1,
+    "configured": true,
+    "refresh": {
+      "requested_paths": 1,
+      "unique_paths": 1,
+      "planned_batches": 1,
+      "coalesced_batches": 0,
+      "coalesced_paths": 0,
+      "refreshed_batches": 1,
+      "refreshed_paths_covered": 1,
+      "skipped_batches": 0,
+      "unresolved_paths": 0,
+      "capped_batches": 0,
+      "aborted_due_to_cap": false,
+      "failed_batches": 0
+    }
+  }
 }
 ```
 
@@ -443,6 +462,8 @@ Notes:
 - `report_path` must canonicalize inside the configured backup directory; symlink escapes under the backup tree are rejected.
 - Apply keeps the same runtime safety gates as the CLI path.
 - `cleanup.prune.quarantine_foreign` must be enabled; this workflow is intentionally quarantine-first.
+- `media_server_invalidation` reports the post-apply library invalidation step. Today that adapter is Plex; Emby and Jellyfin are reserved behind the same module boundary but are not live yet.
+- The invalidation step uses only the library roots that actually contained changed symlinks, not every selected library root.
 
 If `plex_db` is omitted, Symlinkarr tries a few common local Plex DB paths first.
 
@@ -691,9 +712,33 @@ Response schema:
   "foreign_candidates": 0,
   "removed": 17,
   "quarantined": 0,
-  "skipped": 2
+  "skipped": 2,
+  "media_server_invalidation": {
+    "server": "plex",
+    "requested_library_roots": 2,
+    "configured": true,
+    "refresh": {
+      "requested_paths": 2,
+      "unique_paths": 2,
+      "planned_batches": 2,
+      "coalesced_batches": 0,
+      "coalesced_paths": 0,
+      "refreshed_batches": 2,
+      "refreshed_paths_covered": 2,
+      "skipped_batches": 0,
+      "unresolved_paths": 0,
+      "capped_batches": 0,
+      "aborted_due_to_cap": false,
+      "failed_batches": 0
+    }
+  }
 }
 ```
+
+Notes:
+
+- `media_server_invalidation` is emitted only for apply, not preview.
+- Cleanup apply now refreshes only the library roots that actually had changed symlinks. If no media-server refresh is configured, the field is still present on success with `configured=false`.
 
 ## `GET /api/v1/links`
 

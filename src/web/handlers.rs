@@ -14,10 +14,12 @@ use tracing::{error, info};
 use crate::backup::BackupManager;
 use crate::cleanup_audit::{self, CleanupScope};
 use crate::commands::backup::ensure_backup_restore_runtime_healthy;
+use crate::commands::cleanup::{apply_cleanup_prune_with_refresh, CleanupPruneApplyArgs};
 use crate::commands::config::validate_config_report;
 use crate::commands::discover::load_discovery_snapshot;
 use crate::commands::doctor::{collect_doctor_checks, DoctorCheckMode};
 use crate::commands::report::build_anime_remediation_report;
+use crate::commands::selected_libraries;
 use crate::db::{AcquisitionJobCounts, ScanHistoryRecord};
 
 use super::templates::*;
@@ -994,19 +996,39 @@ pub async fn post_cleanup_prune(
         }
     };
 
-    // Apply the prune operation
-    let outcome = match cleanup_audit::run_prune(
+    let selected = match selected_libraries(state.config.as_ref(), None) {
+        Ok(selected) => selected,
+        Err(e) => {
+            return Html(
+                CleanupResultTemplate {
+                    success: false,
+                    message: format!("Prune failed: {}", e),
+                    active_cleanup_audit: None,
+                    last_cleanup_audit_outcome: None,
+                    report_path: None,
+                    report_summary: None,
+                }
+                .render()
+                .unwrap_or_else(|e| e.to_string()),
+            );
+        }
+    };
+
+    let (outcome, invalidation) = match apply_cleanup_prune_with_refresh(
         &state.config,
         &state.database,
-        &report_path,
-        true,              // apply
-        false,             // include_legacy_anime_roots
-        None,              // max_delete
-        Some(&form.token), // confirmation_token
+        CleanupPruneApplyArgs {
+            libraries: &selected,
+            report_path: &report_path,
+            include_legacy_anime_roots: false,
+            max_delete: None,
+            confirm_token: Some(&form.token),
+            emit_text: true,
+        },
     )
     .await
     {
-        Ok(o) => o,
+        Ok(result) => result,
         Err(e) => {
             error!("Prune operation failed: {}", e);
             return Html(
@@ -1024,7 +1046,7 @@ pub async fn post_cleanup_prune(
         }
     };
 
-    let message = if outcome.removed > 0 {
+    let mut message = if outcome.removed > 0 {
         format!(
             "✅ Prune completed successfully: {} symlinks removed, {} skipped",
             outcome.removed, outcome.skipped
@@ -1032,6 +1054,9 @@ pub async fn post_cleanup_prune(
     } else {
         "⚠️ Prune completed but no symlinks were removed".to_string()
     };
+    if let Some(suffix) = invalidation.summary_suffix() {
+        message.push_str(&format!(" ({})", suffix));
+    }
 
     let template = CleanupResultTemplate {
         success: true,

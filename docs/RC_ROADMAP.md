@@ -24,6 +24,8 @@ latest live findings from Plex, Symlinkarr, and the anime remediation work.
 - Plex refresh pacing and batch caps are now configurable
 - persisted scan history now records Plex refresh requested/coalesced/refreshed/capped/skipped signals
 - remediation exports now include live/deleted Plex row counts and exact Plex GUIDs
+- post-cleanup invalidation now runs through a dedicated `media_servers` boundary, with Plex live today and Emby/Jellyfin reserved as future adapters
+- cleanup/remediation invalidation is now scoped to actually changed library roots rather than every selected library root
 
 ## Top Priorities
 

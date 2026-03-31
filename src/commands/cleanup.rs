@@ -13,6 +13,10 @@ use crate::commands::{ensure_runtime_directories_healthy, print_json, selected_l
 use crate::config::Config;
 use crate::db::Database;
 use crate::linker::Linker;
+use crate::media_servers::{
+    configured_invalidation_server, invalidate_after_mutation, refresh_selected_library_roots,
+    LibraryInvalidationOutcome,
+};
 use crate::utils::path_under_roots;
 use crate::{CleanupAction, GateMode, OutputFormat};
 
@@ -25,6 +29,15 @@ pub(crate) struct CleanupPruneArgs<'a> {
     pub gate_mode: GateMode,
     pub library_filter: Option<&'a str>,
     pub output: OutputFormat,
+}
+
+pub(crate) struct CleanupPruneApplyArgs<'a> {
+    pub libraries: &'a [&'a crate::config::LibraryConfig],
+    pub report_path: &'a Path,
+    pub include_legacy_anime_roots: bool,
+    pub max_delete: Option<usize>,
+    pub confirm_token: Option<&'a str>,
+    pub emit_text: bool,
 }
 
 pub(crate) struct CleanupAnimeRemediationArgs<'a> {
@@ -182,6 +195,18 @@ async fn run_cleanup_dead(
     let dead = linker
         .check_dead_links_scoped(db, Some(&library_roots))
         .await?;
+    let invalidation = if dead.removed > 0 {
+        maybe_refresh_media_servers_after_cleanup(
+            cfg,
+            &selected,
+            None,
+            "dead-link cleanup",
+            output != OutputFormat::Json,
+        )
+        .await
+    } else {
+        LibraryInvalidationOutcome::default()
+    };
     info!(
         "Handled dead links: marked={}, removed={}, skipped={}",
         dead.dead_marked, dead.removed, dead.skipped
@@ -191,7 +216,10 @@ async fn run_cleanup_dead(
             "dead_marked": dead.dead_marked,
             "removed": dead.removed,
             "skipped": dead.skipped,
+            "media_server_invalidation": invalidation,
         }));
+    } else if let Some(summary) = invalidation.summary_suffix() {
+        println!("   📺 Media-server refresh: {}", summary);
     }
     Ok(dead.removed as i64)
 }
@@ -296,16 +324,35 @@ pub(crate) async fn run_cleanup_prune(
         ensure_runtime_directories_healthy(&selected, &cfg.sources, "cleanup prune apply").await?;
     }
 
-    let outcome = cleanup_audit::run_prune(
-        cfg,
-        db,
-        &effective_report_path,
-        apply,
-        include_legacy_anime_roots,
-        max_delete,
-        confirm_token,
-    )
-    .await?;
+    let (outcome, invalidation) = if apply {
+        apply_cleanup_prune_with_refresh(
+            cfg,
+            db,
+            CleanupPruneApplyArgs {
+                libraries: &selected,
+                report_path: &effective_report_path,
+                include_legacy_anime_roots,
+                max_delete,
+                confirm_token,
+                emit_text: output != OutputFormat::Json,
+            },
+        )
+        .await?
+    } else {
+        (
+            cleanup_audit::run_prune(
+                cfg,
+                db,
+                &effective_report_path,
+                false,
+                include_legacy_anime_roots,
+                max_delete,
+                confirm_token,
+            )
+            .await?,
+            LibraryInvalidationOutcome::default(),
+        )
+    };
 
     if let Some(tmp) = temporary_report {
         let _ = std::fs::remove_file(tmp);
@@ -326,6 +373,7 @@ pub(crate) async fn run_cleanup_prune(
             "quarantined": outcome.quarantined,
             "skipped": outcome.skipped,
             "confirmation_token": outcome.confirmation_token,
+            "media_server_invalidation": invalidation,
         }));
     } else {
         if apply {
@@ -375,6 +423,9 @@ pub(crate) async fn run_cleanup_prune(
         println!("   Removed: {}", outcome.removed);
         println!("   Quarantined: {}", outcome.quarantined);
         println!("   Skipped: {}", outcome.skipped);
+        if let Some(summary) = invalidation.summary_suffix() {
+            println!("   📺 Media-server refresh: {}", summary);
+        }
         if !apply {
             println!("   Confirmation token: {}", outcome.confirmation_token);
             println!(
@@ -409,15 +460,17 @@ async fn run_cleanup_anime_remediation(
             );
         }
         let report_path = Path::new(args.report.unwrap());
-        let (plan, outcome, safety_snapshot) = apply_anime_remediation_plan(
-            cfg,
-            db,
-            args.library_filter,
-            report_path,
-            args.confirm_token,
-            args.max_delete,
-        )
-        .await?;
+        let (plan, outcome, safety_snapshot, invalidation) =
+            apply_anime_remediation_plan_with_refresh(
+                cfg,
+                db,
+                args.library_filter,
+                report_path,
+                args.confirm_token,
+                args.max_delete,
+                args.output != OutputFormat::Json,
+            )
+            .await?;
 
         if args.output == OutputFormat::Json {
             print_json(&serde_json::json!({
@@ -431,6 +484,7 @@ async fn run_cleanup_anime_remediation(
                 "removed": outcome.removed,
                 "skipped": outcome.skipped,
                 "safety_snapshot": safety_snapshot,
+                "media_server_invalidation": invalidation,
             }));
         } else {
             println!("\n🎌 Anime Remediation Applied");
@@ -441,6 +495,9 @@ async fn run_cleanup_anime_remediation(
             println!("   Quarantined: {}", outcome.quarantined);
             println!("   Removed: {}", outcome.removed);
             println!("   Skipped: {}", outcome.skipped);
+            if let Some(summary) = invalidation.summary_suffix() {
+                println!("   📺 Media-server refresh: {}", summary);
+            }
             if let Some(snapshot) = &safety_snapshot {
                 println!("   Safety snapshot: {}", snapshot.display());
             }
@@ -629,6 +686,140 @@ pub(crate) async fn apply_anime_remediation_plan(
     let outcome = outcome?;
 
     Ok((plan, outcome, safety_snapshot))
+}
+
+pub(crate) async fn apply_anime_remediation_plan_with_refresh(
+    cfg: &Config,
+    db: &Database,
+    library_filter: Option<&str>,
+    report_path: &Path,
+    confirm_token: Option<&str>,
+    max_delete: Option<usize>,
+    emit_text: bool,
+) -> Result<(
+    AnimeRemediationPlanReport,
+    cleanup_audit::PruneOutcome,
+    Option<PathBuf>,
+    LibraryInvalidationOutcome,
+)> {
+    let (plan, outcome, safety_snapshot) = apply_anime_remediation_plan(
+        cfg,
+        db,
+        library_filter,
+        report_path,
+        confirm_token,
+        max_delete,
+    )
+    .await?;
+    let anime_libraries: Vec<_> = selected_libraries(cfg, library_filter)?
+        .into_iter()
+        .filter(|lib| lib.content_type == Some(crate::config::ContentType::Anime))
+        .collect();
+    let invalidation = if outcome.removed > 0 || outcome.quarantined > 0 {
+        maybe_refresh_media_servers_after_cleanup(
+            cfg,
+            &anime_libraries,
+            Some(&outcome.affected_paths),
+            "anime remediation",
+            emit_text,
+        )
+        .await
+    } else {
+        LibraryInvalidationOutcome::default()
+    };
+
+    Ok((plan, outcome, safety_snapshot, invalidation))
+}
+
+pub(crate) async fn apply_cleanup_prune_with_refresh(
+    cfg: &Config,
+    db: &Database,
+    args: CleanupPruneApplyArgs<'_>,
+) -> Result<(cleanup_audit::PruneOutcome, LibraryInvalidationOutcome)> {
+    let CleanupPruneApplyArgs {
+        libraries,
+        report_path,
+        include_legacy_anime_roots,
+        max_delete,
+        confirm_token,
+        emit_text,
+    } = args;
+    let outcome = cleanup_audit::run_prune(
+        cfg,
+        db,
+        report_path,
+        true,
+        include_legacy_anime_roots,
+        max_delete,
+        confirm_token,
+    )
+    .await?;
+    let invalidation = if outcome.removed > 0 || outcome.quarantined > 0 {
+        maybe_refresh_media_servers_after_cleanup(
+            cfg,
+            libraries,
+            Some(&outcome.affected_paths),
+            "cleanup prune",
+            emit_text,
+        )
+        .await
+    } else {
+        LibraryInvalidationOutcome::default()
+    };
+
+    Ok((outcome, invalidation))
+}
+
+async fn maybe_refresh_media_servers_after_cleanup(
+    cfg: &Config,
+    libraries: &[&crate::config::LibraryConfig],
+    affected_paths: Option<&[PathBuf]>,
+    operation: &str,
+    emit_text: bool,
+) -> LibraryInvalidationOutcome {
+    if libraries.is_empty() {
+        return LibraryInvalidationOutcome::default();
+    }
+
+    if emit_text {
+        if let Some(server) = configured_invalidation_server(cfg) {
+            println!(
+                "   📺 Post-{}: refreshing affected library roots in {}...",
+                operation, server
+            );
+        } else {
+            println!(
+                "   📺 Post-{}: checking whether any configured media server should be refreshed...",
+                operation
+            );
+        }
+    }
+
+    let refresh_result = match affected_paths.filter(|paths| !paths.is_empty()) {
+        Some(paths) => invalidate_after_mutation(cfg, libraries, paths, emit_text).await,
+        None => refresh_selected_library_roots(cfg, libraries, emit_text)
+            .await
+            .map(|refresh| LibraryInvalidationOutcome {
+                server: configured_invalidation_server(cfg),
+                requested_library_roots: libraries.len(),
+                configured: configured_invalidation_server(cfg).is_some(),
+                refresh: Some(refresh),
+            }),
+    };
+
+    match refresh_result {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            if emit_text {
+                println!(
+                    "   ⚠️  Post-{} media-server refresh failed: {}",
+                    operation, err
+                );
+            }
+            tracing::warn!("Post-{} media-server refresh failed: {}", operation, err);
+            LibraryInvalidationOutcome::default()
+        }
+    }
 }
 
 fn default_plex_db_candidates() -> [&'static str; 3] {

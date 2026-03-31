@@ -188,6 +188,7 @@ pub struct PruneOutcome {
     pub quarantined: usize,
     pub skipped: usize,
     pub confirmation_token: String,
+    pub affected_paths: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1041,6 +1042,7 @@ pub async fn run_prune(
             quarantined: 0,
             skipped: 0,
             confirmation_token: plan.confirmation_token,
+            affected_paths: plan.candidate_paths,
         });
     }
 
@@ -1277,6 +1279,7 @@ pub async fn run_prune(
         quarantined,
         skipped,
         confirmation_token: plan.confirmation_token,
+        affected_paths: plan.candidate_paths,
     })
 }
 
