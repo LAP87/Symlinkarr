@@ -160,6 +160,11 @@ pub(crate) async fn refresh_library_paths(
     Ok(telemetry)
 }
 
+pub(crate) async fn probe_sections(cfg: &Config) -> Result<usize> {
+    let plex = PlexClient::new(&cfg.plex.url, &cfg.plex.token);
+    Ok(plex.get_sections().await?.len())
+}
+
 fn enforce_refresh_batch_limit(
     mut plan: PlexRefreshPlan,
     max_batches: usize,

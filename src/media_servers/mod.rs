@@ -186,6 +186,20 @@ pub(crate) fn has_configured_invalidation_server(cfg: &Config) -> bool {
     configured_invalidation_server(cfg).is_some()
 }
 
+pub(crate) async fn probe_configured_media_server(
+    cfg: &Config,
+) -> Option<Result<(MediaServerKind, usize)>> {
+    if cfg.has_plex() {
+        return Some(
+            plex::probe_sections(cfg)
+                .await
+                .map(|sections| (MediaServerKind::Plex, sections)),
+        );
+    }
+
+    None
+}
+
 pub(crate) fn selected_library_root_paths(libraries: &[&LibraryConfig]) -> Vec<PathBuf> {
     let mut roots: Vec<_> = libraries
         .iter()

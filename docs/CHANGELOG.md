@@ -14,6 +14,8 @@
   - files: `src/media_servers/mod.rs`, `src/media_servers/plex.rs`, `src/media_servers/emby.rs`, `src/media_servers/jellyfin.rs`
 - cleanup prune and anime remediation now refresh only the library roots that actually contained changed symlinks, instead of refreshing every selected library root.
   - files: `src/commands/cleanup.rs`, `src/cleanup_audit.rs`
+- `repair auto` now uses the same affected-root invalidation path instead of refreshing every selected library root after mutations.
+  - files: `src/commands/repair.rs`
 - web and JSON cleanup apply flows now use the same shared cleanup+refresh helpers as CLI, so post-cleanup behavior stays in parity across surfaces.
   - files: `src/web/handlers.rs`, `src/web/api/mod.rs`, `src/commands/cleanup.rs`
 - cleanup/anime-remediation API responses now expose `media_server_invalidation`, making post-apply invalidation visible to operators and automation.
@@ -578,8 +580,3 @@ Accounts with large RD libraries (10k+ torrents) triggered cascading `429 Too Ma
   - `backups/cleanup-reports/symlinkarr-cleanup-anime-threshold-v2.json`
 - pre-change safety backup:
   - `backups/backup-20260224-185003.json`
-# Unreleased
-
-## Changed
-- Broke targeted library invalidation out behind a new `media_servers` module, with Plex as the first adapter and scaffolding reserved for future Emby/Jellyfin integrations.
-- `cleanup dead`, `cleanup prune`, `cleanup remediate-anime`, and `repair auto` now trigger a guarded post-mutation Plex refresh of affected library roots when Plex refresh is configured.

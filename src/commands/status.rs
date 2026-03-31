@@ -3,12 +3,12 @@ use std::future::Future;
 use anyhow::Result;
 
 use crate::api::bazarr::BazarrClient;
-use crate::api::plex::PlexClient;
 use crate::api::prowlarr::ProwlarrClient;
 use crate::api::tautulli::TautulliClient;
 use crate::commands::{panel_border, panel_kv_row, panel_title, print_json};
 use crate::config::Config;
 use crate::db::Database;
+use crate::media_servers::{probe_configured_media_server, MediaServerKind};
 use crate::OutputFormat;
 
 pub(crate) async fn run_status(
@@ -228,22 +228,29 @@ async fn check_tautulli(cfg: &Config, emit_text: bool, health_json: &mut Vec<ser
 }
 
 async fn check_plex(cfg: &Config, emit_text: bool, health_json: &mut Vec<serde_json::Value>) {
-    if !cfg.has_plex() {
+    let Some(result) = probe_configured_media_server(cfg).await else {
         if emit_text {
             println!("   ⚪ Plex: Not configured");
         }
         health_json.push(serde_json::json!({ "service": "plex", "configured": false }));
         return;
-    }
+    };
 
-    let plex = PlexClient::new(&cfg.plex.url, &cfg.plex.token);
-    match plex.get_sections().await {
-        Ok(sections) => {
+    match result {
+        Ok((MediaServerKind::Plex, sections)) => {
             if emit_text {
-                println!("   ✅ Plex: Connected ({} section(s))", sections.len());
+                println!("   ✅ Plex: Connected ({} section(s))", sections);
             }
             health_json.push(serde_json::json!({
-                "service": "plex", "ok": true, "sections": sections.len(),
+                "service": "plex", "ok": true, "sections": sections,
+            }));
+        }
+        Ok((other, sections)) => {
+            if emit_text {
+                println!("   ✅ {}: Connected ({} section(s))", other, sections);
+            }
+            health_json.push(serde_json::json!({
+                "service": other.to_string().to_lowercase(), "ok": true, "sections": sections,
             }));
         }
         Err(e) => {
