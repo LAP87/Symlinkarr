@@ -286,8 +286,55 @@ pub(crate) fn selected_library_root_paths(libraries: &[&LibraryConfig]) -> Vec<P
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ContentType, LibraryConfig};
+    use crate::config::{
+        ApiConfig, BackupConfig, BazarrConfig, CleanupPolicyConfig, Config, ContentType,
+        DaemonConfig, DecypharrConfig, DmmConfig, FeaturesConfig, LibraryConfig, MatchingConfig,
+        MediaBrowserConfig, PlexConfig, ProwlarrConfig, RadarrConfig, RealDebridConfig,
+        SecurityConfig, SonarrConfig, SourceConfig, SymlinkConfig, TautulliConfig, WebConfig,
+    };
     use crate::models::MediaType;
+
+    fn test_config() -> Config {
+        Config {
+            libraries: vec![LibraryConfig {
+                name: "Anime".to_string(),
+                path: PathBuf::from("/mnt/storage/plex/anime"),
+                media_type: MediaType::Tv,
+                content_type: Some(ContentType::Anime),
+                depth: 1,
+            }],
+            sources: vec![SourceConfig {
+                name: "RD".to_string(),
+                path: PathBuf::from("/mnt/zurg/__all__"),
+                media_type: "auto".to_string(),
+            }],
+            api: ApiConfig::default(),
+            realdebrid: RealDebridConfig::default(),
+            decypharr: DecypharrConfig::default(),
+            dmm: DmmConfig::default(),
+            backup: BackupConfig::default(),
+            db_path: "/tmp/test.sqlite".to_string(),
+            log_level: "info".to_string(),
+            daemon: DaemonConfig::default(),
+            symlink: SymlinkConfig::default(),
+            matching: MatchingConfig::default(),
+            prowlarr: ProwlarrConfig::default(),
+            bazarr: BazarrConfig::default(),
+            tautulli: TautulliConfig::default(),
+            plex: PlexConfig::default(),
+            emby: MediaBrowserConfig::default(),
+            jellyfin: MediaBrowserConfig::default(),
+            radarr: RadarrConfig::default(),
+            sonarr: SonarrConfig::default(),
+            sonarr_anime: SonarrConfig::default(),
+            features: FeaturesConfig::default(),
+            security: SecurityConfig::default(),
+            cleanup: CleanupPolicyConfig::default(),
+            web: WebConfig::default(),
+            loaded_from: None,
+            secret_files: Vec::new(),
+        }
+    }
 
     #[test]
     fn selected_library_root_paths_dedupes_and_sorts() {
@@ -348,5 +395,44 @@ mod tests {
                 PathBuf::from("/mnt/storage/plex/anime"),
             ]
         );
+    }
+
+    #[test]
+    fn configured_invalidation_server_returns_none_without_backend() {
+        let cfg = test_config();
+        assert_eq!(configured_invalidation_server(&cfg), None);
+        assert!(!has_configured_invalidation_server(&cfg));
+    }
+
+    #[test]
+    fn configured_invalidation_server_fails_closed_with_multiple_backends() {
+        let mut cfg = test_config();
+        cfg.plex.url = "http://localhost:32400".to_string();
+        cfg.plex.token = "plex-token".to_string();
+        cfg.emby.url = "http://localhost:8096".to_string();
+        cfg.emby.api_key = "emby-key".to_string();
+
+        assert_eq!(configured_refresh_backends(&cfg).len(), 2);
+        assert_eq!(configured_invalidation_server(&cfg), None);
+        assert!(!has_configured_invalidation_server(&cfg));
+    }
+
+    #[tokio::test]
+    async fn invalidate_after_mutation_reports_unconfigured_when_no_backend_exists() {
+        let cfg = test_config();
+        let library = &cfg.libraries[0];
+        let outcome = invalidate_after_mutation(
+            &cfg,
+            &[library],
+            &[PathBuf::from("/mnt/storage/plex/anime/Show/Season 01/E01.mkv")],
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.server, None);
+        assert!(!outcome.configured);
+        assert_eq!(outcome.requested_library_roots, 1);
+        assert!(outcome.refresh.is_none());
     }
 }

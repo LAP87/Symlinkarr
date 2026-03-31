@@ -1751,6 +1751,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn api_get_health_reports_media_servers_as_optional() {
+        let ctx = test_state().await;
+        let Json(health) = api_get_health(State(ctx.clone())).await;
+
+        assert_eq!(health.database, "healthy");
+        assert_eq!(health.tmdb, "missing");
+        assert_eq!(health.tvdb, "missing");
+        assert_eq!(health.realdebrid, "missing");
+        assert_eq!(health.plex, "missing");
+        assert_eq!(health.emby, "missing");
+        assert_eq!(health.jellyfin, "missing");
+    }
+
+    #[tokio::test]
     async fn api_get_scan_run_returns_full_detail() {
         let ctx = test_state().await;
         let history = ctx.database.get_scan_history(1).await.unwrap();

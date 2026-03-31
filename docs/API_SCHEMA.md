@@ -56,6 +56,8 @@ Response:
 
 Returns config/health presence flags for the core integrations.
 
+Plex, Emby, and Jellyfin are optional. If none are configured, Symlinkarr still operates normally and these fields simply return `"missing"`.
+
 Response:
 
 ```json

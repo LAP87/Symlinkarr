@@ -49,6 +49,8 @@ Symlinkarr can interact with:
 
 It uses TVDB/TMDB-tagged library folders such as `{tvdb-123456}` or `{tmdb-123456}` to keep matching deterministic and safe.
 
+All media-server integrations are optional. Symlinkarr can still scan, match, link, clean up, repair, and auto-acquire without Plex, Emby, or Jellyfin configured; those integrations only add post-mutation invalidation and server-facing visibility.
+
 ## Typical Stack
 
 You do not need every service below, but this is the kind of stack Symlinkarr is designed to sit inside:

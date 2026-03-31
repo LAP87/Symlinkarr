@@ -63,6 +63,7 @@ symlinkarr status --health --output json
 ```
 
 When configured, `status --health` now probes Plex, Emby, and Jellyfin separately. Only one of those may be the active post-mutation refresh backend at a time, but all three can still be health-checked when credentials are present.
+No media server is required. If none are configured, Symlinkarr still works normally; the health output simply reports those integrations as not configured and skips post-mutation invalidation.
 
 ### `queue`
 
