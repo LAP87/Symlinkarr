@@ -8,7 +8,7 @@
 
 Symlinkarr manages symlinks between a Real-Debrid-backed source and your media library.
 
-> The last-mile library layer for debrid + *arr + Plex/Jellyfin setups.
+> The last-mile library layer for debrid + *arr + media-server setups.
 
 It is built for setups where Sonarr, Radarr, Prowlarr, Decypharr, Zurg, Plex, and similar tools already exist, but the final library still needs a reliable layer that can:
 
@@ -30,14 +30,15 @@ Common problems it addresses:
 - large RD libraries that are too slow or too rate-limited to rescan naively
 - anime numbering and naming mismatches that ordinary TV matching handles poorly
 
-In practice, it gives you a cleaner Plex/Jellyfin/Kodi-facing library without needing to manually babysit the symlink layer.
+In practice, it gives you a cleaner media-server-facing library without needing to manually babysit the symlink layer.
 
 ## Integrates With
 
 Symlinkarr can interact with:
 
 - Real-Debrid mounts from tools like Zurg, Decypharr, and similar providers
-- Plex, Jellyfin, or Kodi-style library folders
+- Plex library folders today, with Jellyfin/Emby adapter groundwork underway
+- Jellyfin or Kodi-style library layouts on disk
 - Sonarr
 - Radarr
 - Prowlarr
@@ -59,7 +60,7 @@ flowchart LR
     B --> C["Symlinkarr"]
     D["TMDB / TVDB"] --> C
     E["DMM Fallback"] --> C
-    C --> F["Plex / Jellyfin / Kodi Library"]
+    C --> F["Plex Library (live) / other media-server libraries"]
     C --> G["SQLite State + Web UI"]
     H["Bazarr / Tautulli"] --> F
 ```
@@ -69,7 +70,8 @@ Typical example:
 - Sonarr and Radarr decide what should exist in your library
 - Prowlarr and Decypharr help acquire or expose that content through your RD mount
 - Symlinkarr scans the mount, matches the right files, and writes clean symlinks into your media library
-- Plex or Jellyfin sees only the clean library paths, not the messy source filenames
+- Plex sees only the clean library paths, not the messy source filenames
+- Emby/Jellyfin adapter work is scaffolded but not live yet
 - The built-in web UI gives you scan telemetry, cleanup review, and dead-link visibility
 
 ## How It Works
