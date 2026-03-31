@@ -8,7 +8,7 @@ use crate::api::tautulli::TautulliClient;
 use crate::commands::{panel_border, panel_kv_row, panel_title, print_json};
 use crate::config::Config;
 use crate::db::Database;
-use crate::media_servers::{probe_configured_media_server, MediaServerKind};
+use crate::media_servers::{configured_media_servers, probe_media_server, MediaServerKind};
 use crate::OutputFormat;
 
 pub(crate) async fn run_status(
@@ -69,7 +69,7 @@ pub(crate) async fn run_status(
         }
 
         check_tautulli(cfg, emit_text, &mut health_json).await;
-        check_plex(cfg, emit_text, &mut health_json).await;
+        check_media_servers(cfg, emit_text, &mut health_json).await;
         check_service(
             "Prowlarr",
             cfg.has_prowlarr(),
@@ -227,39 +227,77 @@ async fn check_tautulli(cfg: &Config, emit_text: bool, health_json: &mut Vec<ser
     }
 }
 
-async fn check_plex(cfg: &Config, emit_text: bool, health_json: &mut Vec<serde_json::Value>) {
-    let Some(result) = probe_configured_media_server(cfg).await else {
-        if emit_text {
-            println!("   ⚪ Plex: Not configured");
+async fn check_media_servers(
+    cfg: &Config,
+    emit_text: bool,
+    health_json: &mut Vec<serde_json::Value>,
+) {
+    let configured = configured_media_servers(cfg);
+    for server in [
+        MediaServerKind::Plex,
+        MediaServerKind::Emby,
+        MediaServerKind::Jellyfin,
+    ] {
+        if !configured.contains(&server) {
+            if emit_text {
+                println!("   ⚪ {}: Not configured", server);
+            }
+            health_json
+                .push(serde_json::json!({ "service": server.service_key(), "configured": false }));
+            continue;
         }
-        health_json.push(serde_json::json!({ "service": "plex", "configured": false }));
-        return;
-    };
 
-    match result {
-        Ok((MediaServerKind::Plex, sections)) => {
-            if emit_text {
-                println!("   ✅ Plex: Connected ({} section(s))", sections);
+        match probe_media_server(cfg, server).await {
+            Some(Ok(collections)) => {
+                if emit_text {
+                    println!(
+                        "   ✅ {}: Connected ({} {})",
+                        server,
+                        collections,
+                        collection_label(server, collections)
+                    );
+                }
+                health_json.push(serde_json::json!({
+                    "service": server.service_key(),
+                    "ok": true,
+                    "collections": collections,
+                }));
             }
-            health_json.push(serde_json::json!({
-                "service": "plex", "ok": true, "sections": sections,
-            }));
+            Some(Err(e)) => {
+                if emit_text {
+                    println!("   ❌ {}: Connection error ({})", server, e);
+                }
+                health_json.push(serde_json::json!({
+                    "service": server.service_key(), "ok": false, "error": e.to_string(),
+                }));
+            }
+            None => {
+                if emit_text {
+                    println!("   ⚪ {}: Not configured", server);
+                }
+                health_json.push(
+                    serde_json::json!({ "service": server.service_key(), "configured": false }),
+                );
+            }
         }
-        Ok((other, sections)) => {
-            if emit_text {
-                println!("   ✅ {}: Connected ({} section(s))", other, sections);
+    }
+}
+
+fn collection_label(server: MediaServerKind, count: usize) -> &'static str {
+    match server {
+        MediaServerKind::Plex => {
+            if count == 1 {
+                "section"
+            } else {
+                "sections"
             }
-            health_json.push(serde_json::json!({
-                "service": other.service_key(), "ok": true, "sections": sections,
-            }));
         }
-        Err(e) => {
-            if emit_text {
-                println!("   ❌ Plex: Connection error ({})", e);
+        MediaServerKind::Emby | MediaServerKind::Jellyfin => {
+            if count == 1 {
+                "library"
+            } else {
+                "libraries"
             }
-            health_json.push(serde_json::json!({
-                "service": "plex", "ok": false, "error": e.to_string(),
-            }));
         }
     }
 }

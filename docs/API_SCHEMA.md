@@ -63,7 +63,10 @@ Response:
   "database": "healthy",
   "tmdb": "configured",
   "tvdb": "configured",
-  "realdebrid": "configured"
+  "realdebrid": "configured",
+  "plex": "configured",
+  "emby": "missing",
+  "jellyfin": "missing"
 }
 ```
 
@@ -462,7 +465,7 @@ Notes:
 - `report_path` must canonicalize inside the configured backup directory; symlink escapes under the backup tree are rejected.
 - Apply keeps the same runtime safety gates as the CLI path.
 - `cleanup.prune.quarantine_foreign` must be enabled; this workflow is intentionally quarantine-first.
-- `media_server_invalidation` reports the post-apply library invalidation step. Today that adapter is Plex; Emby and Jellyfin are reserved behind the same module boundary but are not live yet.
+- `media_server_invalidation` reports the post-apply library invalidation step. Plex, Emby, and Jellyfin are all valid backends behind the same module boundary, but only one refresh backend may be enabled at a time.
 - The invalidation step uses only the library roots that actually contained changed symlinks, not every selected library root.
 
 If `plex_db` is omitted, Symlinkarr tries a few common local Plex DB paths first.

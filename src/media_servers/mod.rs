@@ -109,8 +109,18 @@ pub(crate) async fn refresh_library_paths(
         return Ok(LibraryRefreshTelemetry::default());
     }
 
-    if has_configured_invalidation_server(cfg) {
-        return plex::refresh_library_paths(cfg, refresh_paths, emit_text).await;
+    if let Some(server) = configured_invalidation_server(cfg) {
+        return match server {
+            MediaServerKind::Plex => {
+                plex::refresh_library_paths(cfg, refresh_paths, emit_text).await
+            }
+            MediaServerKind::Emby => {
+                emby::refresh_library_paths(cfg, refresh_paths, emit_text).await
+            }
+            MediaServerKind::Jellyfin => {
+                jellyfin::refresh_library_paths(cfg, refresh_paths, emit_text).await
+            }
+        };
     }
 
     Ok(LibraryRefreshTelemetry {
@@ -159,8 +169,17 @@ pub(crate) async fn invalidate_after_mutation(
     let refresh_roots = refresh_root_paths_for_affected_paths(libraries, affected_paths);
     let configured_server = configured_invalidation_server(cfg);
     let configured = configured_server.is_some();
+    let refresh_targets = match configured_server {
+        Some(MediaServerKind::Plex) | None => refresh_roots.clone(),
+        Some(MediaServerKind::Emby) | Some(MediaServerKind::Jellyfin) => {
+            let mut paths = affected_paths.to_vec();
+            paths.sort();
+            paths.dedup();
+            paths
+        }
+    };
 
-    if refresh_roots.is_empty() {
+    if refresh_roots.is_empty() || refresh_targets.is_empty() {
         return Ok(LibraryInvalidationOutcome {
             configured,
             ..LibraryInvalidationOutcome::default()
@@ -168,7 +187,7 @@ pub(crate) async fn invalidate_after_mutation(
     }
 
     if configured {
-        let refresh = refresh_library_paths(cfg, &refresh_roots, emit_text).await?;
+        let refresh = refresh_library_paths(cfg, &refresh_targets, emit_text).await?;
         return Ok(LibraryInvalidationOutcome {
             server: configured_server,
             requested_library_roots: refresh_roots.len(),
@@ -186,29 +205,72 @@ pub(crate) async fn invalidate_after_mutation(
 }
 
 pub(crate) fn configured_invalidation_server(cfg: &Config) -> Option<MediaServerKind> {
-    if cfg.has_plex_refresh() {
-        return Some(MediaServerKind::Plex);
+    let enabled = configured_refresh_backends(cfg);
+    match enabled.as_slice() {
+        [server] => Some(*server),
+        _ => None,
     }
-
-    None
 }
 
 pub(crate) fn has_configured_invalidation_server(cfg: &Config) -> bool {
     configured_invalidation_server(cfg).is_some()
 }
 
-pub(crate) async fn probe_configured_media_server(
-    cfg: &Config,
-) -> Option<Result<(MediaServerKind, usize)>> {
-    if cfg.has_plex() {
-        return Some(
-            plex::probe_sections(cfg)
-                .await
-                .map(|sections| (MediaServerKind::Plex, sections)),
-        );
+pub(crate) fn configured_refresh_backends(cfg: &Config) -> Vec<MediaServerKind> {
+    let mut enabled = Vec::new();
+    if cfg.has_plex_refresh() {
+        enabled.push(MediaServerKind::Plex);
     }
+    if cfg.has_emby_refresh() {
+        enabled.push(MediaServerKind::Emby);
+    }
+    if cfg.has_jellyfin_refresh() {
+        enabled.push(MediaServerKind::Jellyfin);
+    }
+    enabled
+}
 
-    None
+pub(crate) fn configured_media_servers(cfg: &Config) -> Vec<MediaServerKind> {
+    let mut servers = Vec::new();
+    if cfg.has_plex() {
+        servers.push(MediaServerKind::Plex);
+    }
+    if cfg.has_emby() {
+        servers.push(MediaServerKind::Emby);
+    }
+    if cfg.has_jellyfin() {
+        servers.push(MediaServerKind::Jellyfin);
+    }
+    servers
+}
+
+pub(crate) async fn probe_media_server(
+    cfg: &Config,
+    server: MediaServerKind,
+) -> Option<Result<usize>> {
+    match server {
+        MediaServerKind::Plex => {
+            if cfg.has_plex() {
+                Some(plex::probe_sections(cfg).await)
+            } else {
+                None
+            }
+        }
+        MediaServerKind::Emby => {
+            if cfg.has_emby() {
+                Some(emby::probe_libraries(cfg).await)
+            } else {
+                None
+            }
+        }
+        MediaServerKind::Jellyfin => {
+            if cfg.has_jellyfin() {
+                Some(jellyfin::probe_libraries(cfg).await)
+            } else {
+                None
+            }
+        }
+    }
 }
 
 pub(crate) fn selected_library_root_paths(libraries: &[&LibraryConfig]) -> Vec<PathBuf> {

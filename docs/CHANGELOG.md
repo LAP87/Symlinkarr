@@ -6,11 +6,36 @@
 - posture: `stable core, evolving ops`
 - intended use: local-first host or Docker installs, with Windows 11 users running through WSL2 or a Linux container
 
+## 2026-03-31 - Emby and Jellyfin Adapter Activation
+
+### Code Changes
+
+- added first-class `emby` and `jellyfin` config sections with API-key based invalidation settings, including delay, batch size, cap, and fail-closed behavior.
+  - files: `src/config.rs`, `config.example.yaml`, `config.docker.yaml`
+- activated real Emby and Jellyfin invalidation adapters behind the shared `media_servers` boundary using `POST /Library/Media/Updated`, with batched path updates and the same cap-guard posture as the Plex path.
+  - files: `src/media_servers/mod.rs`, `src/media_servers/emby.rs`, `src/media_servers/jellyfin.rs`
+- `status --health` now reports Plex, Emby, and Jellyfin separately when configured, instead of treating media-server health as Plex-only.
+  - files: `src/commands/status.rs`
+- `/api/v1/health` now exposes `plex`, `emby`, and `jellyfin` configuration presence flags.
+  - files: `src/web/api/mod.rs`, `docs/API_SCHEMA.md`
+- updated the adapter rollout doc and top-level README so they match the new reality: Plex still has the deepest reporting/remediation support, but Emby and Jellyfin now have live invalidation adapters rather than placeholder modules.
+  - files: `docs/MEDIA_SERVER_ADAPTER_PLAN.md`, `README.md`, `docs/CLI_MANUAL.md`
+
+### Validation
+
+- `CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-emby cargo test -q`
+  - result: `527 passed; 0 failed`
+- `LD_LIBRARY_PATH=/usr/lib:/usr/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-emby cargo clippy --all-targets --all-features -- -D warnings`
+  - result: passed
+- `CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-emby cargo run -- config validate --output json`
+  - result: `ok: true`, `errors: []`, `warnings: []`
+
 ## 2026-03-31 - Media-Server Invalidation Boundary
 
 ### Code Changes
 
-- broke post-mutation library invalidation out behind a dedicated `media_servers` boundary, with Plex as the first live adapter and reserved module slots for Emby/Jellyfin.
+- broke post-mutation library invalidation out behind a dedicated `media_servers` boundary, with Plex as the first live adapter.
+- activated Emby and Jellyfin targeted invalidation adapters behind the same `media_servers` boundary, with fail-closed config validation if multiple refresh backends are enabled at once.
   - files: `src/media_servers/mod.rs`, `src/media_servers/plex.rs`, `src/media_servers/emby.rs`, `src/media_servers/jellyfin.rs`
 - cleanup prune and anime remediation now refresh only the library roots that actually contained changed symlinks, instead of refreshing every selected library root.
   - files: `src/commands/cleanup.rs`, `src/cleanup_audit.rs`

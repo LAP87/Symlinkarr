@@ -232,6 +232,12 @@ pub struct Config {
     /// Plex integration for targeted library refresh (optional)
     #[serde(default)]
     pub plex: PlexConfig,
+    /// Emby integration for targeted library invalidation (optional)
+    #[serde(default)]
+    pub emby: MediaBrowserConfig,
+    /// Jellyfin integration for targeted library invalidation (optional)
+    #[serde(default)]
+    pub jellyfin: MediaBrowserConfig,
     /// Radarr integration (optional)
     #[serde(default)]
     pub radarr: RadarrConfig,
@@ -574,6 +580,66 @@ impl Default for PlexConfig {
     }
 }
 
+/// Emby/Jellyfin-style integration for targeted library invalidation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MediaBrowserConfig {
+    /// Server URL (e.g. "http://localhost:8096")
+    #[serde(default)]
+    pub url: String,
+    /// API key for media update and library refresh requests
+    #[serde(default)]
+    pub api_key: String,
+    /// Enable Symlinkarr-triggered invalidation after linking or cleanup
+    #[serde(default = "default_media_browser_refresh_enabled")]
+    pub refresh_enabled: bool,
+    /// Delay between queued invalidation requests
+    #[serde(default = "default_media_browser_refresh_delay_ms")]
+    pub refresh_delay_ms: u64,
+    /// Maximum paths to include in one `/Library/Media/Updated` request
+    #[serde(default = "default_media_browser_refresh_batch_size")]
+    pub refresh_batch_size: usize,
+    /// Maximum invalidation batches queued per run (0 = unlimited)
+    #[serde(default = "default_media_browser_max_refresh_batches_per_run")]
+    pub max_refresh_batches_per_run: usize,
+    /// Abort the entire invalidation phase when the planned batch count exceeds the limit
+    #[serde(default = "default_media_browser_abort_refresh_when_capped")]
+    pub abort_refresh_when_capped: bool,
+}
+
+fn default_media_browser_refresh_enabled() -> bool {
+    true
+}
+
+fn default_media_browser_refresh_delay_ms() -> u64 {
+    250
+}
+
+fn default_media_browser_refresh_batch_size() -> usize {
+    64
+}
+
+fn default_media_browser_max_refresh_batches_per_run() -> usize {
+    12
+}
+
+fn default_media_browser_abort_refresh_when_capped() -> bool {
+    true
+}
+
+impl Default for MediaBrowserConfig {
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            api_key: String::new(),
+            refresh_enabled: default_media_browser_refresh_enabled(),
+            refresh_delay_ms: default_media_browser_refresh_delay_ms(),
+            refresh_batch_size: default_media_browser_refresh_batch_size(),
+            max_refresh_batches_per_run: default_media_browser_max_refresh_batches_per_run(),
+            abort_refresh_when_capped: default_media_browser_abort_refresh_when_capped(),
+        }
+    }
+}
+
 /// Radarr integration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RadarrConfig {
@@ -911,6 +977,16 @@ impl Config {
                     .errors
                     .push("Plex configured without token".to_string());
             }
+            if cfg_has_url_without_key(&self.emby.url, &self.emby.api_key) {
+                report
+                    .errors
+                    .push("Emby configured without api_key".to_string());
+            }
+            if cfg_has_url_without_key(&self.jellyfin.url, &self.jellyfin.api_key) {
+                report
+                    .errors
+                    .push("Jellyfin configured without api_key".to_string());
+            }
             if cfg_has_url_without_key(&self.radarr.url, &self.radarr.api_key) {
                 report
                     .errors
@@ -939,6 +1015,21 @@ impl Config {
             report
                 .errors
                 .push("api.cache_ttl_hours must be greater than 0".to_string());
+        }
+
+        let active_media_refresh_backends = [
+            ("plex", self.has_plex_refresh()),
+            ("emby", self.has_emby_refresh()),
+            ("jellyfin", self.has_jellyfin_refresh()),
+        ]
+        .into_iter()
+        .filter_map(|(name, enabled)| enabled.then_some(name))
+        .collect::<Vec<_>>();
+        if active_media_refresh_backends.len() > 1 {
+            report.errors.push(format!(
+                "Only one media-server refresh backend may be enabled at a time; active backends: {}",
+                active_media_refresh_backends.join(", ")
+            ));
         }
 
         if self.web.enabled {
@@ -1136,6 +1227,26 @@ impl Config {
         self.has_plex() && self.plex.refresh_enabled
     }
 
+    /// Check if Emby is configured
+    pub fn has_emby(&self) -> bool {
+        !self.emby.url.is_empty() && !self.emby.api_key.is_empty()
+    }
+
+    /// Check if Emby invalidation is configured and enabled
+    pub fn has_emby_refresh(&self) -> bool {
+        self.has_emby() && self.emby.refresh_enabled
+    }
+
+    /// Check if Jellyfin is configured
+    pub fn has_jellyfin(&self) -> bool {
+        !self.jellyfin.url.is_empty() && !self.jellyfin.api_key.is_empty()
+    }
+
+    /// Check if Jellyfin invalidation is configured and enabled
+    pub fn has_jellyfin_refresh(&self) -> bool {
+        self.has_jellyfin() && self.jellyfin.refresh_enabled
+    }
+
     /// Check if Radarr is configured
     pub fn has_radarr(&self) -> bool {
         !self.radarr.url.is_empty() && !self.radarr.api_key.is_empty()
@@ -1212,6 +1323,18 @@ impl Config {
         self.plex.token = resolve_secret(
             &self.plex.token,
             "plex.token",
+            self.security.require_secret_provider,
+            config_dir,
+        )?;
+        self.emby.api_key = resolve_secret(
+            &self.emby.api_key,
+            "emby.api_key",
+            self.security.require_secret_provider,
+            config_dir,
+        )?;
+        self.jellyfin.api_key = resolve_secret(
+            &self.jellyfin.api_key,
+            "jellyfin.api_key",
             self.security.require_secret_provider,
             config_dir,
         )?;
@@ -1464,7 +1587,7 @@ fn collect_secret_file_paths(root: &serde_yaml::Value, config_dir: Option<&Path>
     paths
 }
 
-fn secret_field_paths() -> [(&'static [&'static str], &'static str); 12] {
+fn secret_field_paths() -> [(&'static [&'static str], &'static str); 14] {
     [
         (&["api", "tmdb_api_key"], "api.tmdb_api_key"),
         (
@@ -1478,6 +1601,8 @@ fn secret_field_paths() -> [(&'static [&'static str], &'static str); 12] {
         (&["bazarr", "api_key"], "bazarr.api_key"),
         (&["tautulli", "api_key"], "tautulli.api_key"),
         (&["plex", "token"], "plex.token"),
+        (&["emby", "api_key"], "emby.api_key"),
+        (&["jellyfin", "api_key"], "jellyfin.api_key"),
         (&["radarr", "api_key"], "radarr.api_key"),
         (&["sonarr", "api_key"], "sonarr.api_key"),
         (&["sonarr_anime", "api_key"], "sonarr_anime.api_key"),
@@ -1807,6 +1932,8 @@ realdebrid:
             bazarr: BazarrConfig::default(),
             tautulli: TautulliConfig::default(),
             plex: PlexConfig::default(),
+            emby: MediaBrowserConfig::default(),
+            jellyfin: MediaBrowserConfig::default(),
             radarr: RadarrConfig::default(),
             sonarr: SonarrConfig::default(),
             sonarr_anime: SonarrConfig::default(),
@@ -1863,6 +1990,8 @@ realdebrid:
             bazarr: BazarrConfig::default(),
             tautulli: TautulliConfig::default(),
             plex: PlexConfig::default(),
+            emby: MediaBrowserConfig::default(),
+            jellyfin: MediaBrowserConfig::default(),
             radarr: RadarrConfig::default(),
             sonarr: SonarrConfig::default(),
             sonarr_anime: SonarrConfig::default(),
@@ -1907,6 +2036,8 @@ realdebrid:
             bazarr: BazarrConfig::default(),
             tautulli: TautulliConfig::default(),
             plex: PlexConfig::default(),
+            emby: MediaBrowserConfig::default(),
+            jellyfin: MediaBrowserConfig::default(),
             radarr: RadarrConfig::default(),
             sonarr: SonarrConfig::default(),
             sonarr_anime: SonarrConfig::default(),
@@ -1980,6 +2111,8 @@ realdebrid:
             bazarr: BazarrConfig::default(),
             tautulli: TautulliConfig::default(),
             plex: PlexConfig::default(),
+            emby: MediaBrowserConfig::default(),
+            jellyfin: MediaBrowserConfig::default(),
             radarr: RadarrConfig::default(),
             sonarr: SonarrConfig::default(),
             sonarr_anime: SonarrConfig::default(),
@@ -2033,6 +2166,8 @@ realdebrid:
             bazarr: BazarrConfig::default(),
             tautulli: TautulliConfig::default(),
             plex: PlexConfig::default(),
+            emby: MediaBrowserConfig::default(),
+            jellyfin: MediaBrowserConfig::default(),
             radarr: RadarrConfig::default(),
             sonarr: SonarrConfig::default(),
             sonarr_anime: SonarrConfig::default(),
@@ -2091,6 +2226,16 @@ realdebrid:
     }
 
     #[test]
+    fn media_browser_config_defaults_to_safe_refresh_limits() {
+        let media_browser = MediaBrowserConfig::default();
+        assert!(media_browser.refresh_enabled);
+        assert_eq!(media_browser.refresh_delay_ms, 250);
+        assert_eq!(media_browser.refresh_batch_size, 64);
+        assert_eq!(media_browser.max_refresh_batches_per_run, 12);
+        assert!(media_browser.abort_refresh_when_capped);
+    }
+
+    #[test]
     fn has_plex_refresh_respects_refresh_enabled_flag() {
         let mut cfg = runtime_config_fixture();
         cfg.plex.url = "http://localhost:32400".to_string();
@@ -2100,6 +2245,39 @@ realdebrid:
         cfg.plex.refresh_enabled = false;
         assert!(!cfg.has_plex_refresh());
         assert!(cfg.has_plex());
+    }
+
+    #[test]
+    fn has_emby_and_jellyfin_refresh_respect_refresh_enabled_flags() {
+        let mut cfg = runtime_config_fixture();
+
+        cfg.emby.url = "http://localhost:8096".to_string();
+        cfg.emby.api_key = "emby-key".to_string();
+        assert!(cfg.has_emby_refresh());
+        cfg.emby.refresh_enabled = false;
+        assert!(!cfg.has_emby_refresh());
+        assert!(cfg.has_emby());
+
+        cfg.jellyfin.url = "http://localhost:8097".to_string();
+        cfg.jellyfin.api_key = "jellyfin-key".to_string();
+        assert!(cfg.has_jellyfin_refresh());
+        cfg.jellyfin.refresh_enabled = false;
+        assert!(!cfg.has_jellyfin_refresh());
+        assert!(cfg.has_jellyfin());
+    }
+
+    #[test]
+    fn validate_runtime_settings_rejects_multiple_media_refresh_backends() {
+        let mut cfg = runtime_config_fixture();
+        cfg.plex.url = "http://localhost:32400".to_string();
+        cfg.plex.token = "plex-token".to_string();
+        cfg.emby.url = "http://localhost:8096".to_string();
+        cfg.emby.api_key = "emby-key".to_string();
+
+        let report = cfg.validate_runtime_settings();
+        assert!(report.errors.iter().any(|err| {
+            err.contains("Only one media-server refresh backend may be enabled at a time")
+        }));
     }
 
     #[test]
@@ -2273,6 +2451,8 @@ tautulli:
             bazarr: BazarrConfig::default(),
             tautulli: TautulliConfig::default(),
             plex: PlexConfig::default(),
+            emby: MediaBrowserConfig::default(),
+            jellyfin: MediaBrowserConfig::default(),
             radarr: RadarrConfig::default(),
             sonarr: SonarrConfig::default(),
             sonarr_anime: SonarrConfig::default(),

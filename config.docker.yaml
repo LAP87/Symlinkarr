@@ -86,6 +86,28 @@ tautulli:
 #   max_refresh_batches_per_run: 12
 #   abort_refresh_when_capped: true
 
+# Optional: targeted Emby invalidation after Symlinkarr links or relinks content
+# emby:
+#   url: "http://host.docker.internal:8096"
+#   api_key: "secretfile:/app/secrets/emby_api_key"
+#   refresh_enabled: false
+#   refresh_delay_ms: 250
+#   refresh_batch_size: 64
+#   max_refresh_batches_per_run: 12
+#   abort_refresh_when_capped: true
+
+# Optional: targeted Jellyfin invalidation after Symlinkarr links or relinks content
+# jellyfin:
+#   url: "http://host.docker.internal:8097"
+#   api_key: "secretfile:/app/secrets/jellyfin_api_key"
+#   refresh_enabled: false
+#   refresh_delay_ms: 250
+#   refresh_batch_size: 64
+#   max_refresh_batches_per_run: 12
+#   abort_refresh_when_capped: true
+
+# Only one of plex/emby/jellyfin refresh backends may be enabled at a time.
+
 radarr:
   url: "http://host.docker.internal:7878"
   api_key: "secretfile:/app/secrets/radarr_api_key"

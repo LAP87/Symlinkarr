@@ -30,15 +30,14 @@ Common problems it addresses:
 - large RD libraries that are too slow or too rate-limited to rescan naively
 - anime numbering and naming mismatches that ordinary TV matching handles poorly
 
-In practice, it gives you a cleaner media-server-facing library without needing to manually babysit the symlink layer.
+In practice, it gives you a cleaner Plex/Emby/Jellyfin/Kodi-facing library without needing to manually babysit the symlink layer.
 
 ## Integrates With
 
 Symlinkarr can interact with:
 
 - Real-Debrid mounts from tools like Zurg, Decypharr, and similar providers
-- Plex library folders today, with Jellyfin/Emby adapter groundwork underway
-- Jellyfin or Kodi-style library layouts on disk
+- Plex, Emby, Jellyfin, or Kodi-style library folders
 - Sonarr
 - Radarr
 - Prowlarr
@@ -60,7 +59,7 @@ flowchart LR
     B --> C["Symlinkarr"]
     D["TMDB / TVDB"] --> C
     E["DMM Fallback"] --> C
-    C --> F["Plex Library (live) / other media-server libraries"]
+    C --> F["Plex / Emby / Jellyfin Library"]
     C --> G["SQLite State + Web UI"]
     H["Bazarr / Tautulli"] --> F
 ```
@@ -70,8 +69,8 @@ Typical example:
 - Sonarr and Radarr decide what should exist in your library
 - Prowlarr and Decypharr help acquire or expose that content through your RD mount
 - Symlinkarr scans the mount, matches the right files, and writes clean symlinks into your media library
-- Plex sees only the clean library paths, not the messy source filenames
-- Emby/Jellyfin adapter work is scaffolded but not live yet
+- Plex, Emby, or Jellyfin sees only the clean library paths, not the messy source filenames
+- Plex still has the deepest reporting and remediation integration today; Emby/Jellyfin now support targeted invalidation
 - The built-in web UI gives you scan telemetry, cleanup review, and dead-link visibility
 
 ## How It Works
@@ -229,6 +228,56 @@ plex:
 
 If Plex becomes unstable under refresh load, keep `abort_refresh_when_capped: true`, raise `refresh_delay_ms`, lower `max_refresh_batches_per_run`, or temporarily set `refresh_enabled: false`.
 
+Emby and Jellyfin can use the same guarded invalidation pattern:
+
+```yaml
+emby:
+  url: "http://localhost:8096"
+  api_key: "env:SYMLINKARR_EMBY_API_KEY"
+  refresh_enabled: true
+  refresh_delay_ms: 250
+  refresh_batch_size: 64
+  max_refresh_batches_per_run: 12
+  abort_refresh_when_capped: true
+
+jellyfin:
+  url: "http://localhost:8097"
+  api_key: "env:SYMLINKARR_JELLYFIN_API_KEY"
+  refresh_enabled: false
+  refresh_delay_ms: 250
+  refresh_batch_size: 64
+  max_refresh_batches_per_run: 12
+  abort_refresh_when_capped: true
+```
+
+For now, enable only one refresh backend at a time. Symlinkarr fails closed if `plex`, `emby`, and `jellyfin` refresh backends overlap.
+
+Optional Emby or Jellyfin invalidation:
+
+```yaml
+emby:
+  url: "http://localhost:8096"
+  api_key: "env:SYMLINKARR_EMBY_API_KEY"
+  refresh_enabled: true
+  refresh_delay_ms: 250
+  refresh_batch_size: 64
+  max_refresh_batches_per_run: 12
+  abort_refresh_when_capped: true
+
+# or
+
+jellyfin:
+  url: "http://localhost:8097"
+  api_key: "env:SYMLINKARR_JELLYFIN_API_KEY"
+  refresh_enabled: true
+  refresh_delay_ms: 250
+  refresh_batch_size: 64
+  max_refresh_batches_per_run: 12
+  abort_refresh_when_capped: true
+```
+
+Enable only one media-server refresh backend at a time. Plex, Emby, and Jellyfin now share the same guarded invalidation boundary, but Symlinkarr deliberately fails closed if multiple refresh backends are enabled together.
+
 When `--config` is omitted, Symlinkarr searches:
 
 1. `SYMLINKARR_CONFIG`
@@ -294,8 +343,8 @@ symlinkarr cleanup remediate-anime --apply --report backups/anime-remediation-gu
 `cleanup remediate-anime` is the safer operator path for the correlated anime backlog: preview writes a report JSON, apply requires the preview token, and eligible legacy-root symlinks are quarantined instead of deleted.
 `cleanup remediate-anime --apply` also requires `cleanup.prune.quarantine_foreign=true`, because the workflow is intentionally quarantine-first for legacy anime roots.
 Destructive cleanup commands also stop early if a configured source mount is unhealthy, so a transient RD outage does not become a cleanup event.
-When media-server refresh is configured, successful cleanup and remediation applies now invalidate affected library roots afterward so Plex does not keep stale ghosts after the filesystem has already been fixed.
-That invalidation now runs through a dedicated `media_servers` boundary, with Plex as the first live adapter and Emby/Jellyfin reserved for future dedicated modules once those servers are onboarded and verified.
+When media-server refresh is configured, successful cleanup and remediation applies now invalidate affected library paths afterward so Plex, Emby, or Jellyfin does not keep stale ghosts after the filesystem has already been fixed.
+That invalidation runs through a dedicated `media_servers` boundary. Plex remains the deepest-integrated adapter today, while Emby/Jellyfin now support the same guarded post-mutation invalidation flow.
 
 Cache management:
 
@@ -312,7 +361,7 @@ symlinkarr repair auto --dry-run
 symlinkarr discover list
 ```
 
-Successful `repair auto` runs also trigger the same guarded post-mutation invalidation flow. Today the live adapter is Plex, while Emby and Jellyfin are being broken out as dedicated modules instead of staying hidden behind Plex-specific code.
+Successful `repair auto` runs also trigger the same guarded post-mutation invalidation flow.
 
 For the full command matrix, see [CLI_MANUAL.md](docs/CLI_MANUAL.md).
 

@@ -100,6 +100,9 @@ pub struct ApiHealth {
     pub tmdb: String,
     pub tvdb: String,
     pub realdebrid: String,
+    pub plex: String,
+    pub emby: String,
+    pub jellyfin: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -546,11 +549,32 @@ pub async fn api_get_health(State(state): State<WebState>) -> Json<ApiHealth> {
         "missing"
     };
 
+    let plex_status = if state.config.has_plex() {
+        "configured"
+    } else {
+        "missing"
+    };
+
+    let emby_status = if state.config.has_emby() {
+        "configured"
+    } else {
+        "missing"
+    };
+
+    let jellyfin_status = if state.config.has_jellyfin() {
+        "configured"
+    } else {
+        "missing"
+    };
+
     Json(ApiHealth {
         database: db_status.to_string(),
         tmdb: tmdb_status.to_string(),
         tvdb: tvdb_status.to_string(),
         realdebrid: rd_status.to_string(),
+        plex: plex_status.to_string(),
+        emby: emby_status.to_string(),
+        jellyfin: jellyfin_status.to_string(),
     })
 }
 
@@ -1530,8 +1554,8 @@ mod tests {
     use crate::config::{
         ApiConfig, BackupConfig, BazarrConfig, CleanupPolicyConfig, Config, ContentType,
         DaemonConfig, DecypharrConfig, DmmConfig, FeaturesConfig, LibraryConfig, MatchingConfig,
-        PlexConfig, ProwlarrConfig, RadarrConfig, RealDebridConfig, SecurityConfig, SonarrConfig,
-        SourceConfig, SymlinkConfig, TautulliConfig, WebConfig,
+        MediaBrowserConfig, PlexConfig, ProwlarrConfig, RadarrConfig, RealDebridConfig,
+        SecurityConfig, SonarrConfig, SourceConfig, SymlinkConfig, TautulliConfig, WebConfig,
     };
     use crate::db::{Database, ScanRunRecord};
     use crate::models::{LinkRecord, LinkStatus, MediaType};
@@ -1577,6 +1601,8 @@ mod tests {
             bazarr: BazarrConfig::default(),
             tautulli: TautulliConfig::default(),
             plex: PlexConfig::default(),
+            emby: MediaBrowserConfig::default(),
+            jellyfin: MediaBrowserConfig::default(),
             radarr: RadarrConfig::default(),
             sonarr: SonarrConfig::default(),
             sonarr_anime: SonarrConfig::default(),

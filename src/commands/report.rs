@@ -1268,9 +1268,9 @@ mod tests {
 
     use crate::config::{
         ApiConfig, BackupConfig, BazarrConfig, CleanupPolicyConfig, ContentType, DaemonConfig,
-        DecypharrConfig, DmmConfig, FeaturesConfig, MatchingConfig, PlexConfig, ProwlarrConfig,
-        RadarrConfig, RealDebridConfig, SecurityConfig, SonarrConfig, SourceConfig, SymlinkConfig,
-        TautulliConfig, WebConfig,
+        DecypharrConfig, DmmConfig, FeaturesConfig, MatchingConfig, MediaBrowserConfig, PlexConfig,
+        ProwlarrConfig, RadarrConfig, RealDebridConfig, SecurityConfig, SonarrConfig, SourceConfig,
+        SymlinkConfig, TautulliConfig, WebConfig,
     };
     use crate::db::Database;
     use crate::models::{LinkRecord, LinkStatus, MediaType};
@@ -1945,6 +1945,8 @@ mod tests {
             bazarr: BazarrConfig::default(),
             tautulli: TautulliConfig::default(),
             plex: PlexConfig::default(),
+            emby: MediaBrowserConfig::default(),
+            jellyfin: MediaBrowserConfig::default(),
             radarr: RadarrConfig::default(),
             sonarr: SonarrConfig::default(),
             sonarr_anime: SonarrConfig::default(),
