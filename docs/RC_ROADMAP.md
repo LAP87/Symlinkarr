@@ -26,6 +26,7 @@ latest live findings from Plex, Symlinkarr, and the anime remediation work.
 - remediation exports now include live/deleted Plex row counts and exact Plex GUIDs
 - post-cleanup invalidation now runs through a dedicated `media_servers` boundary, with Plex live today and Emby/Jellyfin reserved as future adapters
 - cleanup/remediation invalidation is now scoped to actually changed library roots rather than every selected library root
+- verified Emby/Jellyfin invalidation endpoints are tracked in `docs/MEDIA_SERVER_ADAPTER_PLAN.md` so future adapters can follow the same guardrail model instead of reintroducing Plex-only assumptions
 
 ## Top Priorities
 

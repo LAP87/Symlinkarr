@@ -44,6 +44,16 @@ impl std::fmt::Display for MediaServerKind {
     }
 }
 
+impl MediaServerKind {
+    pub(crate) fn service_key(self) -> &'static str {
+        match self {
+            Self::Plex => "plex",
+            Self::Emby => "emby",
+            Self::Jellyfin => "jellyfin",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct LibraryInvalidationOutcome {
     pub server: Option<MediaServerKind>,

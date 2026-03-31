@@ -250,7 +250,7 @@ async fn check_plex(cfg: &Config, emit_text: bool, health_json: &mut Vec<serde_j
                 println!("   ✅ {}: Connected ({} section(s))", other, sections);
             }
             health_json.push(serde_json::json!({
-                "service": other.to_string().to_lowercase(), "ok": true, "sections": sections,
+                "service": other.service_key(), "ok": true, "sections": sections,
             }));
         }
         Err(e) => {
