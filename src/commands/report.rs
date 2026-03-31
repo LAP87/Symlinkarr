@@ -12,8 +12,8 @@ use crate::commands::{panel_border, panel_kv_row, panel_title};
 use crate::config::{Config, ContentType, LibraryConfig};
 use crate::db::Database;
 use crate::library_scanner::LibraryScanner;
+use crate::media_servers::plex_db;
 use crate::models::MediaType;
-use crate::plex_db;
 use crate::utils::normalize;
 use crate::OutputFormat;
 

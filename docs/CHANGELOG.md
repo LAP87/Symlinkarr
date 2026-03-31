@@ -20,6 +20,8 @@
   - files: `src/web/handlers.rs`, `src/web/api/mod.rs`, `src/commands/cleanup.rs`
 - cleanup/anime-remediation API responses now expose `media_server_invalidation`, making post-apply invalidation visible to operators and automation.
   - files: `src/web/api/mod.rs`, `docs/API_SCHEMA.md`
+- moved Plex DB inspection/reporting under the same `media_servers` namespace so future Emby/Jellyfin DB or metadata adapters do not have to live beside root-level Plex-only modules.
+  - files: `src/media_servers/plex_db.rs`, `src/commands/report.rs`, `src/main.rs`
 
 ### Validation
 

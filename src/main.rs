@@ -18,7 +18,6 @@ mod linker;
 mod matcher;
 mod media_servers;
 mod models;
-mod plex_db;
 mod repair;
 mod source_scanner;
 mod utils;

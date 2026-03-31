@@ -8,6 +8,7 @@ use crate::config::{Config, LibraryConfig};
 pub(crate) mod emby;
 pub(crate) mod jellyfin;
 mod plex;
+pub(crate) mod plex_db;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct LibraryRefreshTelemetry {
