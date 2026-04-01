@@ -67,10 +67,15 @@ Response:
   "tvdb": "configured",
   "realdebrid": "configured",
   "plex": "configured",
-  "emby": "missing",
-  "jellyfin": "missing"
+  "emby": "configured",
+  "jellyfin": "missing",
+  "refresh_backends": ["plex", "emby"]
 }
 ```
+
+Notes:
+
+- `refresh_backends` lists the refresh/invalidation backends that are both configured and enabled right now. A server may still show as `"configured"` in its individual field even if it is not currently active for refresh fan-out.
 
 ## `GET /api/v1/discover`
 

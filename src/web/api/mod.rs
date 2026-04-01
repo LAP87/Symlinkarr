@@ -23,7 +23,9 @@ use crate::commands::report::{build_anime_remediation_report, AnimeRemediationSa
 use crate::commands::selected_libraries;
 use crate::config::Config;
 use crate::db::{Database, ScanHistoryRecord};
-use crate::media_servers::{LibraryInvalidationOutcome, LibraryInvalidationServerOutcome};
+use crate::media_servers::{
+    configured_refresh_backends, LibraryInvalidationOutcome, LibraryInvalidationServerOutcome,
+};
 
 use super::{
     latest_cleanup_report_created_at, should_surface_cleanup_audit_outcome,
@@ -103,6 +105,7 @@ pub struct ApiHealth {
     pub plex: String,
     pub emby: String,
     pub jellyfin: String,
+    pub refresh_backends: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -534,6 +537,10 @@ pub async fn api_get_status(State(state): State<WebState>) -> Json<ApiStatus> {
 
 /// GET /api/v1/health
 pub async fn api_get_health(State(state): State<WebState>) -> Json<ApiHealth> {
+    let refresh_backends = configured_refresh_backends(&state.config)
+        .into_iter()
+        .map(|server| server.service_key().to_string())
+        .collect();
     let db_status = if state.database.get_web_stats().await.is_ok() {
         "healthy"
     } else {
@@ -584,6 +591,7 @@ pub async fn api_get_health(State(state): State<WebState>) -> Json<ApiHealth> {
         plex: plex_status.to_string(),
         emby: emby_status.to_string(),
         jellyfin: jellyfin_status.to_string(),
+        refresh_backends,
     })
 }
 
@@ -1815,6 +1823,33 @@ mod tests {
         assert_eq!(health.plex, "missing");
         assert_eq!(health.emby, "missing");
         assert_eq!(health.jellyfin, "missing");
+        assert!(health.refresh_backends.is_empty());
+    }
+
+    #[tokio::test]
+    async fn api_get_health_reports_active_refresh_backends() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        std::mem::forget(dir);
+        let mut cfg = test_config(&root);
+        cfg.plex.url = "http://plex.local".to_string();
+        cfg.plex.token = "token".to_string();
+        cfg.plex.refresh_enabled = true;
+        cfg.emby.url = "http://emby.local".to_string();
+        cfg.emby.api_key = "key".to_string();
+        cfg.emby.refresh_enabled = true;
+        cfg.jellyfin.url = "http://jellyfin.local".to_string();
+        cfg.jellyfin.api_key = "key".to_string();
+        cfg.jellyfin.refresh_enabled = false;
+
+        let db = Database::new(&cfg.db_path).await.unwrap();
+        let ctx = WebState::new(cfg, db);
+        let Json(health) = api_get_health(State(ctx)).await;
+
+        assert_eq!(health.plex, "configured");
+        assert_eq!(health.emby, "configured");
+        assert_eq!(health.jellyfin, "configured");
+        assert_eq!(health.refresh_backends, vec!["plex", "emby"]);
     }
 
     #[tokio::test]

@@ -8,7 +8,10 @@ use crate::api::tautulli::TautulliClient;
 use crate::commands::{panel_border, panel_kv_row, panel_title, print_json};
 use crate::config::Config;
 use crate::db::Database;
-use crate::media_servers::{configured_media_servers, probe_media_server, MediaServerKind};
+use crate::media_servers::{
+    configured_media_servers, configured_refresh_backends, display_server_list, probe_media_server,
+    MediaServerKind,
+};
 use crate::OutputFormat;
 
 pub(crate) async fn run_status(
@@ -63,9 +66,22 @@ pub(crate) async fn run_status(
     }
 
     if health {
+        let refresh_backends = configured_refresh_backends(cfg);
+        let refresh_backend_keys = refresh_backends
+            .iter()
+            .map(|server| server.service_key().to_string())
+            .collect::<Vec<_>>();
         let mut health_json = Vec::new();
         if emit_text {
             println!("\n🏥 Health Check:");
+            if refresh_backends.is_empty() {
+                println!("   🔁 Active refresh backends: none");
+            } else {
+                println!(
+                    "   🔁 Active refresh backends: {}",
+                    display_server_list(&refresh_backends)
+                );
+            }
         }
 
         check_tautulli(cfg, emit_text, &mut health_json).await;
@@ -140,6 +156,7 @@ pub(crate) async fn run_status(
                 "dead": dead,
                 "total": total,
                 "acquisition": acquisition_json,
+                "refresh_backends": refresh_backend_keys,
                 "health": health_json,
             }));
         }

@@ -14,6 +14,8 @@
   - files: `src/db.rs`, `src/commands/scan.rs`, `src/media_servers/mod.rs`
 - `/api/v1/scan/history` and `/api/v1/scan/:id` now expose `media_server_refresh` as a per-backend array, and the scan detail/dashboard labels were generalized from Plex-only wording to media refresh wording.
   - files: `src/web/api/mod.rs`, `src/web/templates.rs`, `src/web/ui/dashboard.html`, `src/web/ui/scan.html`, `src/web/ui/scan_history.html`, `src/web/ui/scan_run.html`, `docs/API_SCHEMA.md`
+- `status --health --output json` and `/api/v1/health` now expose the active `refresh_backends` list, making multi-server fan-out visible without having to infer it from per-service flags.
+  - files: `src/commands/status.rs`, `src/web/api/mod.rs`, `docs/API_SCHEMA.md`, `docs/CLI_MANUAL.md`, `README.md`
 
 ### Validation
 

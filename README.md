@@ -313,6 +313,7 @@ Inspect health and status:
 
 ```bash
 symlinkarr status --health
+symlinkarr status --health --output json
 symlinkarr doctor --output json
 symlinkarr report --plex-db "/var/lib/plex/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db"
 symlinkarr report --library Anime --plex-db "/var/lib/plex/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db" --full-anime-duplicates --output json --pretty

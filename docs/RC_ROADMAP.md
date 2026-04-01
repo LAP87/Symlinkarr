@@ -24,9 +24,11 @@ latest live findings from Plex, Symlinkarr, and the anime remediation work.
 - Plex refresh pacing and batch caps are now configurable
 - persisted scan history now records Plex refresh requested/coalesced/refreshed/capped/skipped signals
 - remediation exports now include live/deleted Plex row counts and exact Plex GUIDs
-- post-cleanup invalidation now runs through a dedicated `media_servers` boundary, with Plex live today and Emby/Jellyfin reserved as future adapters
+- post-cleanup invalidation now runs through a dedicated `media_servers` boundary, with Plex, Emby, and Jellyfin all live as refresh backends
 - cleanup/remediation invalidation is now scoped to actually changed library roots rather than every selected library root
-- verified Emby/Jellyfin invalidation endpoints are tracked in `docs/MEDIA_SERVER_ADAPTER_PLAN.md` so future adapters can follow the same guardrail model instead of reintroducing Plex-only assumptions
+- scan history and `/api/v1/scan/*` now persist explicit per-backend refresh slices alongside the legacy aggregate counters
+- `status --health --output json` and `/api/v1/health` now expose active refresh-backend lists, so multi-server fan-out is easier to reason about operationally
+- verified Emby/Jellyfin invalidation endpoints and rollout notes are tracked in `docs/MEDIA_SERVER_ADAPTER_PLAN.md` so future adapter work can follow the same guardrail model instead of reintroducing Plex-only assumptions
 
 ## Top Priorities
 
