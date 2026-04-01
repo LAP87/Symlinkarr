@@ -2,15 +2,107 @@
 
 ## Release Target
 
-- package version for this push: `0.2.0-beta.1`
-- posture: `stable core, evolving ops`
+- package version for this push: `0.3.0-beta.1`
+- posture: `rc-prep with downloadable binary artifacts`
 - intended use: local-first host or Docker installs, with Windows 11 users running through WSL2 or a Linux container
+
+## 2026-04-01 - Release Packaging and Binary Build Hardening
+
+### Code Changes
+
+- bumped the package version to `0.3.0-beta.1`.
+  - files: `Cargo.toml`, `docs/CHANGELOG.md`
+- switched HTTP/database runtime TLS away from `native-tls`/OpenSSL and onto Rustls-backed runtimes, reducing release-build friction and making cross-target binary packaging less fragile.
+  - files: `Cargo.toml`, `Cargo.lock`
+- added a release-smoke job to CI so `cargo build --release --locked` is exercised on every PR/push instead of only finding binary issues at tag time.
+  - files: `.github/workflows/ci.yml`
+- updated the tag-driven release workflow so GitHub Releases publish versioned `.tar.gz` binaries plus `.sha256` files instead of only loose uploaded artifacts.
+  - files: `.github/workflows/release.yml`
+
+### Validation
+
+- `cargo build --release --locked`
+  - result: passed locally
+- local packaging smoke
+  - result: produced `symlinkarr-v0.3.0-beta.1-linux-amd64.tar.gz` and matching `.sha256`
+
+## 2026-04-01 - Per-Backend Scan Refresh History
+
+### Code Changes
+
+- persisted per-backend media refresh telemetry alongside the legacy aggregate `plex_refresh_*` scan-run fields, so scan history and run detail can show separate Plex, Emby, and Jellyfin outcomes without breaking older consumers.
+  - files: `src/db.rs`, `src/commands/scan.rs`, `src/media_servers/mod.rs`
+- `/api/v1/scan/history` and `/api/v1/scan/:id` now expose `media_server_refresh` as a per-backend array, and the scan detail/dashboard labels were generalized from Plex-only wording to media refresh wording.
+  - files: `src/web/api/mod.rs`, `src/web/templates.rs`, `src/web/ui/dashboard.html`, `src/web/ui/scan.html`, `src/web/ui/scan_history.html`, `src/web/ui/scan_run.html`, `docs/API_SCHEMA.md`
+- `status --health --output json` and `/api/v1/health` now expose the active `refresh_backends` list, making multi-server fan-out visible without having to infer it from per-service flags.
+  - files: `src/commands/status.rs`, `src/web/api/mod.rs`, `docs/API_SCHEMA.md`, `docs/CLI_MANUAL.md`, `README.md`
+- dashboard, scan, and scan-history overviews now surface per-backend refresh outcome badges directly, so partial failures are visible without opening the full scan detail page.
+  - files: `src/web/ui/dashboard.html`, `src/web/ui/scan.html`, `src/web/ui/scan_history.html`, `src/web/handlers.rs`
+
+### Validation
+
+- `CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-emby cargo test web:: -- --nocapture`
+  - result: `87 passed; 0 failed`
+- `CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-emby cargo test db::tests::test_record_scan_run_roundtrip -- --nocapture`
+  - result: passed
+- `CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-emby cargo test db::tests::test_latest_migration_creates_media_server_refresh_json_column -- --nocapture`
+  - result: passed
+
+## 2026-04-01 - Multi-Server Refresh Fan-Out
+
+### Code Changes
+
+- removed the fail-closed single-backend restriction for media-server invalidation. Plex, Emby, and Jellyfin refresh backends can now run together, with aggregate refresh telemetry for scan history and per-backend invalidation detail for mutation responses.
+  - files: `src/media_servers/mod.rs`, `src/config.rs`, `src/commands/scan.rs`, `src/commands/cleanup.rs`, `src/commands/repair.rs`
+- updated local/operator docs and config examples so they no longer claim only one backend can be active at once.
+  - files: `README.md`, `docs/CLI_MANUAL.md`, `docs/API_SCHEMA.md`, `docs/MEDIA_SERVER_ADAPTER_PLAN.md`, `config.example.yaml`, `config.docker.yaml`
+
+### Validation
+
+- `CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-emby cargo test -q`
+  - result: `532 passed; 0 failed`
+- `LD_LIBRARY_PATH=/usr/lib:/usr/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-emby cargo clippy --all-targets --all-features -- -D warnings`
+  - result: passed
+- `CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-emby cargo run -- config validate --output json`
+  - result: `ok: true`, `errors: []`, `warnings: []`
+- `CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-emby cargo run -- status --health --output json`
+  - result: Plex `6` sections, Emby `3` libraries, Jellyfin `3` libraries
+- live invalidation smoke:
+  - `POST /Library/Media/Updated` returned `204` from both Emby and Jellyfin for a real library path
+- live scan:
+  - `cargo run -- scan --library Anime`
+  - result: `9 created`, `3 updated`, with fan-out invalidation to Plex, Emby, and Jellyfin in one run
+
+## 2026-03-31 - Emby and Jellyfin Adapter Activation
+
+### Code Changes
+
+- added first-class `emby` and `jellyfin` config sections with API-key based invalidation settings, including delay, batch size, cap, and fail-closed behavior.
+  - files: `src/config.rs`, `config.example.yaml`, `config.docker.yaml`
+- activated real Emby and Jellyfin invalidation adapters behind the shared `media_servers` boundary using `POST /Library/Media/Updated`, with batched path updates and the same cap-guard posture as the Plex path.
+  - files: `src/media_servers/mod.rs`, `src/media_servers/emby.rs`, `src/media_servers/jellyfin.rs`
+- `status --health` now reports Plex, Emby, and Jellyfin separately when configured, instead of treating media-server health as Plex-only.
+  - files: `src/commands/status.rs`
+- `/api/v1/health` now exposes `plex`, `emby`, and `jellyfin` configuration presence flags.
+  - files: `src/web/api/mod.rs`, `docs/API_SCHEMA.md`
+- updated the adapter rollout doc and top-level README so they match the new reality: Plex still has the deepest reporting/remediation support, but Emby and Jellyfin now have live invalidation adapters rather than placeholder modules.
+  - files: `docs/MEDIA_SERVER_ADAPTER_PLAN.md`, `README.md`, `docs/CLI_MANUAL.md`
+
+### Validation
+
+- `CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-emby cargo test -q`
+  - result: `527 passed; 0 failed`
+- `LD_LIBRARY_PATH=/usr/lib:/usr/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-emby cargo clippy --all-targets --all-features -- -D warnings`
+  - result: passed
+- `CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-emby cargo run -- config validate --output json`
+  - result: `ok: true`, `errors: []`, `warnings: []`
 
 ## 2026-03-31 - Media-Server Invalidation Boundary
 
 ### Code Changes
 
-- broke post-mutation library invalidation out behind a dedicated `media_servers` boundary, with Plex as the first live adapter and reserved module slots for Emby/Jellyfin.
+- broke post-mutation library invalidation out behind a dedicated `media_servers` boundary, with Plex as the first live adapter.
+- activated Emby and Jellyfin targeted invalidation adapters behind the same `media_servers` boundary, with fail-closed config validation if multiple refresh backends are enabled at once.
   - files: `src/media_servers/mod.rs`, `src/media_servers/plex.rs`, `src/media_servers/emby.rs`, `src/media_servers/jellyfin.rs`
 - cleanup prune and anime remediation now refresh only the library roots that actually contained changed symlinks, instead of refreshing every selected library root.
   - files: `src/commands/cleanup.rs`, `src/cleanup_audit.rs`

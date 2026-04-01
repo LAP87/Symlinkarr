@@ -1,127 +1,137 @@
 # Symlinkarr RC Roadmap
 
-This roadmap reflects the current state of the `codex/anime-duplicate-audit` branch and the
-latest live findings from Plex, Symlinkarr, and the anime remediation work.
+This is the current high-signal list of what still remains before Symlinkarr should be called a real `1.0 RC`.
 
-## Current State
+## Current Position
 
-- anime duplicate reporting can now export the full backlog with `--full-anime-duplicates`
-- guarded anime remediation now exists as a real CLI workflow via `cleanup remediate-anime`
-  - preview writes a saved remediation report with eligible vs blocked groups
-  - apply reuses that exact report and confirmation token
-  - eligible legacy-root symlinks are quarantined rather than deleted
-- live anime audit currently shows:
-  - `582` mixed filesystem root groups
-  - `373` Plex duplicate show groups
-  - `371` Hama AniDB/TVDB split groups
-  - `106` correlated filesystem+Plex groups
-- live guarded remediation preview currently narrows that to:
-  - `1` eligible group
-  - `105` blocked groups
-  - `16` quarantine candidates
-  - current auto-eligible title: `Angels of Death`
-- cleanup can quarantine legacy anime roots as `foreign` instead of deleting them
-- Plex refresh pacing and batch caps are now configurable
-- persisted scan history now records Plex refresh requested/coalesced/refreshed/capped/skipped signals
-- remediation exports now include live/deleted Plex row counts and exact Plex GUIDs
-- post-cleanup invalidation now runs through a dedicated `media_servers` boundary, with Plex live today and Emby/Jellyfin reserved as future adapters
-- cleanup/remediation invalidation is now scoped to actually changed library roots rather than every selected library root
-- verified Emby/Jellyfin invalidation endpoints are tracked in `docs/MEDIA_SERVER_ADAPTER_PLAN.md` so future adapters can follow the same guardrail model instead of reintroducing Plex-only assumptions
+Symlinkarr is now past “rough beta” territory and into “power-user beta / RC-prep”.
 
-## Top Priorities
+Already working in real use:
 
-### 1. Anime Remediation Hardening
+- scan, match, link, repair, cleanup, and cache flows
+- web UI and JSON API
+- guarded cleanup and guarded anime remediation preview/apply
+- Plex, Emby, and Jellyfin invalidation adapters
+- multi-backend refresh fan-out
+- persisted scan telemetry and per-backend refresh history
+- media-server-free usage when no Plex/Emby/Jellyfin backend is configured
 
-Harden the new guarded workflow for the `106` correlated anime groups.
+Still true in live data:
 
-Why it matters:
+- anime legacy cleanup is the messiest remaining operational area
+- Plex overload and refresh pressure still need continued hardening
+- some of the most important operator questions still require digging into logs or JSON
 
-- we now have a safe path from diagnosis to action, but it still needs more operator polish
-- this is the core trust-building step toward `1.0 RC`
+## What Must Be Finished Before `1.0 RC`
 
-What it should include:
+### 1. Remediation Trust
 
-- richer operator summaries for blocked groups
-- optional web/API exposure for plan preview/apply status
-- more live validation against the full correlated backlog
-- eventual Plex refresh strategy after apply without overload
+This is the biggest remaining category.
 
-Progress so far:
+Must finish:
 
-- CLI preview/apply exists
-- JSON API preview/apply now exists on the same saved-plan/token model
-- web UI is still intentionally read-only for this workflow
+- make the anime remediation backlog more actionable than it is today
+- improve blocked-group explanations so the operator sees exactly why a title is not eligible
+- increase safe eligibility where possible without lowering cleanup safety
+- keep every remediation path quarantine-first for foreign/legacy material
+- expose the remediation workflow more fully in the web UI, not just read-only backlog views
 
-### 2. Plex Overload Detection and Throttling
+Why:
 
-Plex instability is still a real RC blocker.
+- users need to trust that Symlinkarr will not silently make legacy-folder situations worse
+- right now only a small fraction of correlated anime groups are auto-eligible
 
-Why it matters:
+### 2. Scan and Link Observability
 
-- autonomous remediation is not acceptable if Plex can die under refresh pressure
-- scan and remediation need safe defaults for real homelab installs
+The next trust problem is “why did this not link?”
 
-What it should include:
+Must finish:
 
-- overload-aware refresh throttling or kill-switch behavior
-- clearer operator warnings when refresh load is capped or skipped
-- follow-up validation against real Plex load now that persisted refresh telemetry is available
+- persist and surface meaningful skip reasons for scan/link outcomes
+- make “ambiguous”, “source missing before link”, and similar cases visible in UI/API
+- keep overview screens useful without forcing the operator into log files
+- continue improving per-backend refresh visibility
 
-### 3. Mount and Runtime Safety Parity
+Why:
 
-Continue making destructive and semi-destructive paths obey the same runtime safety rules.
+- a stable product cannot feel random when it skips something
 
-Why it matters:
+### 3. Media-Server Hardening
 
-- Real-Debrid users depend on remote mounts and flaky mounts are a known foot-gun
-- RC requires consistent safety behavior across CLI, web, cleanup, repair, and remediation
+The adapter layer is real now, but it still needs more operational polish.
 
-What it should include:
+Must finish:
 
-- no mutation when mounts are unhealthy
-- same safety posture in CLI and web/API
-- no success-shaped no-ops for blocked operations
+- continue tuning refresh pacing, cap guards, and abort behavior against real library load
+- keep partial-failure semantics honest across scan, cleanup, repair, and remediation
+- decide whether Emby or Jellyfin need a guarded fallback to full library refresh
+- avoid media-server overload during cleanup/remediation runs
 
-### 4. API Schema and Operator Docs
+Why:
 
-The web/API surface is growing faster than the hand-maintained docs.
+- a working invalidation layer is not enough if it can still destabilize the media server
 
-Why it matters:
+### 4. Runtime Safety Parity
 
-- a broader user base needs clear API/CLI behavior
-- automation and dashboards depend on stable schema documentation
+Safety rules need to stay uniform across every mutation surface.
 
-What it should include:
+Must finish:
 
-- refresh `docs/API_SCHEMA.md` for current background-job behavior
-- document report/export additions and remediation-oriented fields
-- keep README and CLI manual aligned with real command/config surface
+- ensure every destructive or semi-destructive path respects mount/runtime health gates
+- keep CLI, web UI, and API behavior aligned
+- keep blocking behavior explicit instead of success-shaped no-ops
 
-### 5. Anime Remediation UX
+Why:
 
-Expose the correlated backlog in a more operationally useful way.
+- RD mount failures are common enough that this cannot be inconsistent
 
-Why it matters:
+### 5. Docs and Operator Onboarding
 
-- `106` correlated groups is now actionable, but still too manual
-- a user should not need ad hoc JSON parsing to decide what to fix next
+The project has grown past “the README is enough”.
 
-What it should include:
+Must finish:
 
-- filtered exports or API views for correlated groups only
-- visibility into `all live` vs `partially stale` vs `metadata ghost` groups
-- clearer grouping around legacy root, tagged root, and Plex GUID split
+- keep README slim and useful
+- keep wiki, CLI manual, and API schema aligned with reality
+- maintain a clear “what is stable vs what is still RC work” story
+- keep the roadmap current when work lands
 
-## Safe To Keep Shipping Tonight
+Why:
 
-- live scans and reports with full logs and before/after snapshots
-- documentation and API schema refreshes
-- non-destructive export and telemetry improvements
-- remediation planning and preview improvements
+- broader users will judge stability partly from how predictable the docs and behavior are
 
-## Do Not Ship Yet
+## Important, But Not Required For `1.0 RC`
 
-- automatic permanent deletion of duplicate groups
-- blind remediation of all correlated anime groups without an operator gate
-- broader non-anime duplicate cleanup based on the anime heuristics
-- `1.0 RC` until the guarded remediation workflow and Plex stability story are stronger
+These are good next steps, but they should not block RC if the trust/safety work above is done.
+
+- Emby/Jellyfin DB compare adapters
+- Emby/Jellyfin duplicate-correlation or remediation helpers
+- item-ID-based refresh/invalidation for Emby or Jellyfin
+- more aggressive missing-search acquisition strategies
+- broader non-anime duplicate remediation
+- richer dashboards and cosmetic UI work
+
+## Explicitly Not Ready To Ship
+
+Do not ship these as “safe defaults” yet:
+
+- blind permanent deletion of duplicate groups
+- automatic remediation of the whole correlated anime backlog
+- broad non-anime cleanup based on anime heuristics
+- large matcher rewrites without tight regression coverage
+- event-driven/watchdog mode as a default runtime model
+
+## Immediate Next Slices
+
+If work resumes right now, the best next slices are:
+
+1. operator-visible scan/link skip reasons
+2. better blocked-reason summaries for anime remediation groups
+3. more real-load validation and pacing hardening for Plex/Emby/Jellyfin refresh
+
+## Supporting Docs
+
+- [README.md](../README.md)
+- [CLI manual](CLI_MANUAL.md)
+- [API schema](API_SCHEMA.md)
+- [Media-server adapter plan](MEDIA_SERVER_ADAPTER_PLAN.md)

@@ -23,7 +23,9 @@ use crate::commands::report::{build_anime_remediation_report, AnimeRemediationSa
 use crate::commands::selected_libraries;
 use crate::config::Config;
 use crate::db::{Database, ScanHistoryRecord};
-use crate::media_servers::LibraryInvalidationOutcome;
+use crate::media_servers::{
+    configured_refresh_backends, LibraryInvalidationOutcome, LibraryInvalidationServerOutcome,
+};
 
 use super::{
     latest_cleanup_report_created_at, should_surface_cleanup_audit_outcome,
@@ -100,6 +102,10 @@ pub struct ApiHealth {
     pub tmdb: String,
     pub tvdb: String,
     pub realdebrid: String,
+    pub plex: String,
+    pub emby: String,
+    pub jellyfin: String,
+    pub refresh_backends: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -189,6 +195,13 @@ pub struct ApiPlexRefreshSummary {
 }
 
 #[derive(Serialize, Deserialize)]
+pub struct ApiMediaServerRefreshServer {
+    pub server: String,
+    pub requested_targets: i64,
+    pub refresh: ApiPlexRefreshSummary,
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct ApiScanHistoryEntry {
     pub id: i64,
     pub started_at: String,
@@ -202,6 +215,7 @@ pub struct ApiScanHistoryEntry {
     pub cache_hit_ratio: Option<f64>,
     pub dead_count: i64,
     pub plex_refresh: ApiPlexRefreshSummary,
+    pub media_server_refresh: Vec<ApiMediaServerRefreshServer>,
     pub auto_acquire: ApiScanAutoAcquireSummary,
 }
 
@@ -230,6 +244,7 @@ pub struct ApiScanRunDetail {
     pub linking_ms: i64,
     pub plex_refresh_ms: i64,
     pub plex_refresh: ApiPlexRefreshSummary,
+    pub media_server_refresh: Vec<ApiMediaServerRefreshServer>,
     pub dead_link_sweep_ms: i64,
     pub total_runtime_ms: i64,
     pub cache_hit_ratio: Option<f64>,
@@ -522,6 +537,10 @@ pub async fn api_get_status(State(state): State<WebState>) -> Json<ApiStatus> {
 
 /// GET /api/v1/health
 pub async fn api_get_health(State(state): State<WebState>) -> Json<ApiHealth> {
+    let refresh_backends = configured_refresh_backends(&state.config)
+        .into_iter()
+        .map(|server| server.service_key().to_string())
+        .collect();
     let db_status = if state.database.get_web_stats().await.is_ok() {
         "healthy"
     } else {
@@ -546,11 +565,33 @@ pub async fn api_get_health(State(state): State<WebState>) -> Json<ApiHealth> {
         "missing"
     };
 
+    let plex_status = if state.config.has_plex() {
+        "configured"
+    } else {
+        "missing"
+    };
+
+    let emby_status = if state.config.has_emby() {
+        "configured"
+    } else {
+        "missing"
+    };
+
+    let jellyfin_status = if state.config.has_jellyfin() {
+        "configured"
+    } else {
+        "missing"
+    };
+
     Json(ApiHealth {
         database: db_status.to_string(),
         tmdb: tmdb_status.to_string(),
         tvdb: tvdb_status.to_string(),
         realdebrid: rd_status.to_string(),
+        plex: plex_status.to_string(),
+        emby: emby_status.to_string(),
+        jellyfin: jellyfin_status.to_string(),
+        refresh_backends,
     })
 }
 
@@ -814,6 +855,43 @@ fn plex_refresh_summary_from_record(record: &ScanHistoryRecord) -> ApiPlexRefres
     }
 }
 
+fn api_refresh_summary_from_telemetry(
+    telemetry: &crate::media_servers::LibraryRefreshTelemetry,
+) -> ApiPlexRefreshSummary {
+    ApiPlexRefreshSummary {
+        runtime_ms: 0,
+        requested_paths: telemetry.requested_paths as i64,
+        unique_paths: telemetry.unique_paths as i64,
+        planned_batches: telemetry.planned_batches as i64,
+        coalesced_batches: telemetry.coalesced_batches as i64,
+        coalesced_paths: telemetry.coalesced_paths as i64,
+        refreshed_batches: telemetry.refreshed_batches as i64,
+        refreshed_paths_covered: telemetry.refreshed_paths_covered as i64,
+        skipped_batches: telemetry.skipped_batches as i64,
+        unresolved_paths: telemetry.unresolved_paths as i64,
+        capped_batches: telemetry.capped_batches as i64,
+        aborted_due_to_cap: telemetry.aborted_due_to_cap,
+        failed_batches: telemetry.failed_batches as i64,
+    }
+}
+
+fn media_server_refresh_from_record(
+    record: &ScanHistoryRecord,
+) -> Vec<ApiMediaServerRefreshServer> {
+    record
+        .media_server_refresh_json
+        .as_deref()
+        .and_then(|json| serde_json::from_str::<Vec<LibraryInvalidationServerOutcome>>(json).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|entry| ApiMediaServerRefreshServer {
+            server: entry.server.to_string(),
+            requested_targets: entry.requested_targets as i64,
+            refresh: api_refresh_summary_from_telemetry(&entry.refresh),
+        })
+        .collect()
+}
+
 fn scan_history_entry_from_record(record: ScanHistoryRecord) -> ApiScanHistoryEntry {
     let scope_label = scan_scope_label(&record);
     let total_runtime_ms = scan_total_runtime_ms(&record);
@@ -821,6 +899,7 @@ fn scan_history_entry_from_record(record: ScanHistoryRecord) -> ApiScanHistoryEn
     let auto_acquire_successes = scan_auto_acquire_successes(&record);
     let started_at = record.started_at.clone();
     let plex_refresh = plex_refresh_summary_from_record(&record);
+    let media_server_refresh = media_server_refresh_from_record(&record);
 
     ApiScanHistoryEntry {
         id: record.id,
@@ -835,6 +914,7 @@ fn scan_history_entry_from_record(record: ScanHistoryRecord) -> ApiScanHistoryEn
         cache_hit_ratio: record.cache_hit_ratio,
         dead_count,
         plex_refresh,
+        media_server_refresh,
         auto_acquire: ApiScanAutoAcquireSummary {
             requests: record.auto_acquire_requests,
             missing_requests: record.auto_acquire_missing_requests,
@@ -857,6 +937,7 @@ fn scan_run_detail_from_record(record: ScanHistoryRecord) -> ApiScanRunDetail {
     let auto_acquire_successes = scan_auto_acquire_successes(&record);
     let started_at = record.started_at.clone();
     let plex_refresh = plex_refresh_summary_from_record(&record);
+    let media_server_refresh = media_server_refresh_from_record(&record);
 
     ApiScanRunDetail {
         id: record.id,
@@ -882,6 +963,7 @@ fn scan_run_detail_from_record(record: ScanHistoryRecord) -> ApiScanRunDetail {
         linking_ms: record.linking_ms,
         plex_refresh_ms: record.plex_refresh_ms,
         plex_refresh,
+        media_server_refresh,
         dead_link_sweep_ms: record.dead_link_sweep_ms,
         total_runtime_ms,
         cache_hit_ratio: record.cache_hit_ratio,
@@ -1530,8 +1612,8 @@ mod tests {
     use crate::config::{
         ApiConfig, BackupConfig, BazarrConfig, CleanupPolicyConfig, Config, ContentType,
         DaemonConfig, DecypharrConfig, DmmConfig, FeaturesConfig, LibraryConfig, MatchingConfig,
-        PlexConfig, ProwlarrConfig, RadarrConfig, RealDebridConfig, SecurityConfig, SonarrConfig,
-        SourceConfig, SymlinkConfig, TautulliConfig, WebConfig,
+        MediaBrowserConfig, PlexConfig, ProwlarrConfig, RadarrConfig, RealDebridConfig,
+        SecurityConfig, SonarrConfig, SourceConfig, SymlinkConfig, TautulliConfig, WebConfig,
     };
     use crate::db::{Database, ScanRunRecord};
     use crate::models::{LinkRecord, LinkStatus, MediaType};
@@ -1577,6 +1659,8 @@ mod tests {
             bazarr: BazarrConfig::default(),
             tautulli: TautulliConfig::default(),
             plex: PlexConfig::default(),
+            emby: MediaBrowserConfig::default(),
+            jellyfin: MediaBrowserConfig::default(),
             radarr: RadarrConfig::default(),
             sonarr: SonarrConfig::default(),
             sonarr_anime: SonarrConfig::default(),
@@ -1628,6 +1712,9 @@ mod tests {
             plex_refresh_capped_batches: 1,
             plex_refresh_aborted_due_to_cap: true,
             plex_refresh_failed_batches: 0,
+            media_server_refresh_json: Some(
+                r#"[{"server":"plex","requested_targets":5,"refresh":{"requested_paths":12,"unique_paths":10,"planned_batches":5,"coalesced_batches":2,"coalesced_paths":7,"refreshed_batches":4,"refreshed_paths_covered":12,"skipped_batches":1,"unresolved_paths":0,"capped_batches":1,"aborted_due_to_cap":true,"failed_batches":0}},{"server":"emby","requested_targets":12,"refresh":{"requested_paths":12,"unique_paths":12,"planned_batches":1,"coalesced_batches":0,"coalesced_paths":0,"refreshed_batches":1,"refreshed_paths_covered":12,"skipped_batches":0,"unresolved_paths":0,"capped_batches":0,"aborted_due_to_cap":false,"failed_batches":0}}]"#.to_string(),
+            ),
             dead_link_sweep_ms: 700,
             cache_hit_ratio: Some(0.94),
             candidate_slots: 77_624_480,
@@ -1725,6 +1812,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn api_get_health_reports_media_servers_as_optional() {
+        let ctx = test_state().await;
+        let Json(health) = api_get_health(State(ctx.clone())).await;
+
+        assert_eq!(health.database, "healthy");
+        assert_eq!(health.tmdb, "missing");
+        assert_eq!(health.tvdb, "missing");
+        assert_eq!(health.realdebrid, "missing");
+        assert_eq!(health.plex, "missing");
+        assert_eq!(health.emby, "missing");
+        assert_eq!(health.jellyfin, "missing");
+        assert!(health.refresh_backends.is_empty());
+    }
+
+    #[tokio::test]
+    async fn api_get_health_reports_active_refresh_backends() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        std::mem::forget(dir);
+        let mut cfg = test_config(&root);
+        cfg.plex.url = "http://plex.local".to_string();
+        cfg.plex.token = "token".to_string();
+        cfg.plex.refresh_enabled = true;
+        cfg.emby.url = "http://emby.local".to_string();
+        cfg.emby.api_key = "key".to_string();
+        cfg.emby.refresh_enabled = true;
+        cfg.jellyfin.url = "http://jellyfin.local".to_string();
+        cfg.jellyfin.api_key = "key".to_string();
+        cfg.jellyfin.refresh_enabled = false;
+
+        let db = Database::new(&cfg.db_path).await.unwrap();
+        let ctx = WebState::new(cfg, db);
+        let Json(health) = api_get_health(State(ctx)).await;
+
+        assert_eq!(health.plex, "configured");
+        assert_eq!(health.emby, "configured");
+        assert_eq!(health.jellyfin, "configured");
+        assert_eq!(health.refresh_backends, vec!["plex", "emby"]);
+    }
+
+    #[tokio::test]
     async fn api_get_scan_run_returns_full_detail() {
         let ctx = test_state().await;
         let history = ctx.database.get_scan_history(1).await.unwrap();
@@ -1794,6 +1922,7 @@ mod tests {
                 title_enrichment_ms: 50,
                 linking_ms: 60,
                 plex_refresh_ms: 70,
+                media_server_refresh_json: None,
                 dead_link_sweep_ms: 80,
                 cache_hit_ratio: Some(0.5),
                 auto_acquire_requests: 9,

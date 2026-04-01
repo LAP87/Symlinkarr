@@ -115,13 +115,13 @@
                 <div class="telemetry-item"><span>Match</span><strong>{{ run.matching }}</strong></div>
                 <div class="telemetry-item"><span>Titles</span><strong>{{ run.title_enrichment }}</strong></div>
                 <div class="telemetry-item"><span>Link</span><strong>{{ run.linking }}</strong></div>
-                <div class="telemetry-item"><span>Plex</span><strong>{{ run.plex_refresh }}</strong></div>
+                <div class="telemetry-item"><span>Refresh</span><strong>{{ run.plex_refresh }}</strong></div>
                 <div class="telemetry-item"><span>Dead Sweep</span><strong>{{ run.dead_link_sweep }}</strong></div>
             </div>
 
             {% if run.plex_refresh_capped_batches > 0 || run.plex_refresh_skipped_batches > 0 || run.plex_refresh_failed_batches > 0 || run.plex_refresh_unresolved_paths > 0 %}
             <div class="alert alert-warning mt-2">
-                <strong>Plex refresh protections activated.</strong>
+                <strong>Media refresh protections activated.</strong>
                 {% if run.plex_refresh_aborted_due_to_cap %}
                 Cap guard aborted all targeted refreshes after the plan exceeded the per-run limit.
                 {% else %}
@@ -217,7 +217,7 @@
                 <th>Runtime</th>
                 <th>Matches</th>
                 <th>Links</th>
-                <th>Plex</th>
+                <th>Refresh</th>
                 <th>Acquire</th>
                 <th>Dead</th>
             </tr>
@@ -251,6 +251,21 @@
                     {% endif %}
                     {% if run.plex_refresh_skipped_batches > 0 %}
                     <span class="badge badge-danger">skip {{ run.plex_refresh_skipped_batches }}</span>
+                    {% endif %}
+                    {% if !run.media_server_refresh.is_empty() %}
+                    <div>
+                        {% for refresh in run.media_server_refresh %}
+                        {% if refresh.failed_batches > 0 %}
+                        <span class="badge badge-danger">{{ refresh.server }} failed</span>
+                        {% else if refresh.aborted_due_to_cap %}
+                        <span class="badge badge-danger">{{ refresh.server }} guard abort</span>
+                        {% else if refresh.skipped_batches > 0 %}
+                        <span class="badge badge-warning">{{ refresh.server }} skip {{ refresh.skipped_batches }}</span>
+                        {% else %}
+                        <span class="badge badge-info">{{ refresh.server }} {{ refresh.refreshed_batches }}/{{ refresh.planned_batches }}</span>
+                        {% endif %}
+                        {% endfor %}
+                    </div>
                     {% endif %}
                     {% else %}
                     <span class="text-muted">n/a</span>

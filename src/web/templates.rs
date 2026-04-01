@@ -16,6 +16,7 @@ use crate::cleanup_audit::{CleanupReport, CleanupScope};
 use crate::commands::report::AnimeRemediationSample;
 use crate::config::Config;
 use crate::db::{AcquisitionJobCounts, ScanHistoryRecord};
+use crate::media_servers::LibraryInvalidationServerOutcome;
 use crate::models::LinkRecord;
 
 // ─── Dashboard ──────────────────────────────────────────────────────
@@ -188,6 +189,17 @@ impl From<LastRepairOutcome> for BackgroundRepairOutcomeView {
 }
 
 #[derive(Debug, Clone)]
+pub struct MediaServerRefreshServerView {
+    pub server: String,
+    pub requested_targets: i64,
+    pub refreshed_batches: i64,
+    pub planned_batches: i64,
+    pub skipped_batches: i64,
+    pub failed_batches: i64,
+    pub aborted_due_to_cap: bool,
+}
+
+#[derive(Debug, Clone)]
 pub struct ScanRunView {
     pub id: i64,
     pub started_at: String,
@@ -222,6 +234,7 @@ pub struct ScanRunView {
     pub plex_refresh_capped_batches: i64,
     pub plex_refresh_aborted_due_to_cap: bool,
     pub plex_refresh_failed_batches: i64,
+    pub media_server_refresh: Vec<MediaServerRefreshServerView>,
     pub dead_link_sweep: String,
     pub total_runtime: String,
     pub cache_hit_ratio: String,
@@ -242,7 +255,31 @@ pub struct ScanRunView {
 }
 
 impl ScanRunView {
+    fn media_server_refresh_from_record(
+        record: &ScanHistoryRecord,
+    ) -> Vec<MediaServerRefreshServerView> {
+        record
+            .media_server_refresh_json
+            .as_deref()
+            .and_then(|json| {
+                serde_json::from_str::<Vec<LibraryInvalidationServerOutcome>>(json).ok()
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .map(|entry| MediaServerRefreshServerView {
+                server: entry.server.to_string(),
+                requested_targets: entry.requested_targets as i64,
+                refreshed_batches: entry.refresh.refreshed_batches as i64,
+                planned_batches: entry.refresh.planned_batches as i64,
+                skipped_batches: entry.refresh.skipped_batches as i64,
+                failed_batches: entry.refresh.failed_batches as i64,
+                aborted_due_to_cap: entry.refresh.aborted_due_to_cap,
+            })
+            .collect()
+    }
+
     pub fn from_record(record: ScanHistoryRecord) -> Self {
+        let media_server_refresh = Self::media_server_refresh_from_record(&record);
         let total_runtime_ms = record.runtime_checks_ms
             + record.library_scan_ms
             + record.source_inventory_ms
@@ -293,6 +330,7 @@ impl ScanRunView {
             plex_refresh_capped_batches: record.plex_refresh_capped_batches,
             plex_refresh_aborted_due_to_cap: record.plex_refresh_aborted_due_to_cap,
             plex_refresh_failed_batches: record.plex_refresh_failed_batches,
+            media_server_refresh,
             dead_link_sweep: format_duration_ms(record.dead_link_sweep_ms),
             total_runtime: format_duration_ms(total_runtime_ms),
             cache_hit_ratio: record
@@ -698,6 +736,15 @@ mod tests {
             plex_refresh_capped_batches: 1,
             plex_refresh_aborted_due_to_cap: true,
             plex_refresh_failed_batches: 0,
+            media_server_refresh: vec![MediaServerRefreshServerView {
+                server: "Plex".to_string(),
+                requested_targets: 12,
+                refreshed_batches: 4,
+                planned_batches: 5,
+                skipped_batches: 1,
+                failed_batches: 0,
+                aborted_due_to_cap: true,
+            }],
             dead_link_sweep: "0.7s".to_string(),
             total_runtime: "288.2s".to_string(),
             cache_hit_ratio: "94%".to_string(),

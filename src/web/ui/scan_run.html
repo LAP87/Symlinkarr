@@ -74,7 +74,7 @@
 <section class="card">
     <div class="section-head">
         <div>
-            <p class="section-kicker">Plex Refresh</p>
+            <p class="section-kicker">Media Refresh</p>
             <h2 class="section-title">Queue and throttle signals</h2>
         </div>
     </div>
@@ -94,7 +94,24 @@
         <div class="metric-card"><span class="metric-label">Unresolved</span><strong class="{% if run.plex_refresh_unresolved_paths > 0 %}text-warning{% endif %}">{{ run.plex_refresh_unresolved_paths }}</strong></div>
     </div>
     {% else %}
-    <p class="text-muted">This run did not attempt any Plex refresh requests.</p>
+    <p class="text-muted">This run did not attempt any media-server refresh requests.</p>
+    {% endif %}
+
+    {% if !run.media_server_refresh.is_empty() %}
+    <div class="metric-grid metric-grid--compact mt-2">
+        {% for refresh in run.media_server_refresh %}
+        <div class="metric-card">
+            <span class="metric-label">{{ refresh.server }}</span>
+            <strong>{{ refresh.refreshed_batches }}/{{ refresh.planned_batches }}</strong>
+            <div class="text-muted">
+                targets {{ refresh.requested_targets }}
+                {% if refresh.skipped_batches > 0 %}| skip {{ refresh.skipped_batches }}{% endif %}
+                {% if refresh.failed_batches > 0 %}| fail {{ refresh.failed_batches }}{% endif %}
+                {% if refresh.aborted_due_to_cap %}| guard abort{% endif %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
     {% endif %}
 </section>
 

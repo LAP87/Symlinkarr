@@ -14,8 +14,8 @@ use crate::config::Config;
 use crate::db::Database;
 use crate::linker::Linker;
 use crate::media_servers::{
-    configured_invalidation_server, invalidate_after_mutation, refresh_selected_library_roots,
-    LibraryInvalidationOutcome,
+    configured_refresh_backends, display_server_list, invalidate_after_mutation,
+    refresh_selected_library_roots, LibraryInvalidationOutcome,
 };
 use crate::utils::path_under_roots;
 use crate::{CleanupAction, GateMode, OutputFormat};
@@ -782,10 +782,12 @@ async fn maybe_refresh_media_servers_after_cleanup(
     }
 
     if emit_text {
-        if let Some(server) = configured_invalidation_server(cfg) {
+        let servers = configured_refresh_backends(cfg);
+        if !servers.is_empty() {
             println!(
                 "   📺 Post-{}: refreshing affected library roots in {}...",
-                operation, server
+                operation,
+                display_server_list(&servers)
             );
         } else {
             println!(
@@ -800,10 +802,11 @@ async fn maybe_refresh_media_servers_after_cleanup(
         None => refresh_selected_library_roots(cfg, libraries, emit_text)
             .await
             .map(|refresh| LibraryInvalidationOutcome {
-                server: configured_invalidation_server(cfg),
+                server: None,
                 requested_library_roots: libraries.len(),
-                configured: configured_invalidation_server(cfg).is_some(),
+                configured: !configured_refresh_backends(cfg).is_empty(),
                 refresh: Some(refresh),
+                servers: Vec::new(),
             }),
     };
 
@@ -1201,8 +1204,8 @@ mod tests {
     use crate::config::{
         ApiConfig, BackupConfig, BazarrConfig, CleanupPolicyConfig, Config, ContentType,
         DaemonConfig, DecypharrConfig, DmmConfig, FeaturesConfig, LibraryConfig, MatchingConfig,
-        PlexConfig, ProwlarrConfig, RadarrConfig, RealDebridConfig, SecurityConfig, SonarrConfig,
-        SourceConfig, SymlinkConfig, TautulliConfig, WebConfig,
+        MediaBrowserConfig, PlexConfig, ProwlarrConfig, RadarrConfig, RealDebridConfig,
+        SecurityConfig, SonarrConfig, SourceConfig, SymlinkConfig, TautulliConfig, WebConfig,
     };
     use crate::db::Database;
     use crate::models::{LinkRecord, MediaType};
@@ -1245,6 +1248,8 @@ mod tests {
             bazarr: BazarrConfig::default(),
             tautulli: TautulliConfig::default(),
             plex: PlexConfig::default(),
+            emby: MediaBrowserConfig::default(),
+            jellyfin: MediaBrowserConfig::default(),
             radarr: RadarrConfig::default(),
             sonarr: SonarrConfig::default(),
             sonarr_anime: SonarrConfig::default(),

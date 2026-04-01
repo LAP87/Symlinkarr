@@ -20,8 +20,8 @@ use crate::library_scanner::LibraryScanner;
 use crate::linker::{LinkProcessSummary, Linker};
 use crate::matcher::{MatchRunOutput, MatchTelemetry, Matcher};
 use crate::media_servers::{
-    configured_invalidation_server, has_configured_invalidation_server, refresh_library_paths,
-    LibraryRefreshTelemetry,
+    configured_refresh_backends, display_server_list, has_configured_invalidation_server,
+    refresh_library_paths_detailed, LibraryInvalidationServerOutcome, LibraryRefreshTelemetry,
 };
 use crate::models::{LibraryItem, MatchResult, MediaId, MediaType, SourceItem};
 use crate::source_scanner::SourceScanner;
@@ -59,6 +59,7 @@ struct ScanTelemetry {
     linking: Duration,
     plex_refresh: Duration,
     plex_refresh_stats: LibraryRefreshTelemetry,
+    media_server_refresh_servers: Vec<LibraryInvalidationServerOutcome>,
     dead_link_sweep: Duration,
 }
 
@@ -192,7 +193,7 @@ pub(crate) async fn run_scan(
 
     if linked_total > 0 && !effective_dry_run && has_configured_invalidation_server(cfg) {
         let plex_refresh_started = Instant::now();
-        match refresh_library_paths(
+        match refresh_library_paths_detailed(
             cfg,
             &link_summary.refresh_paths,
             output != OutputFormat::Json,
@@ -201,15 +202,19 @@ pub(crate) async fn run_scan(
         {
             Ok(plex_stats) => {
                 telemetry.plex_refresh = plex_refresh_started.elapsed();
-                telemetry.plex_refresh_stats = plex_stats;
+                telemetry.plex_refresh_stats = plex_stats.aggregate;
+                telemetry.media_server_refresh_servers = plex_stats.servers;
             }
             Err(e) => {
                 telemetry.plex_refresh = plex_refresh_started.elapsed();
                 telemetry.plex_refresh_stats.requested_paths = link_summary.refresh_paths.len();
                 telemetry.plex_refresh_stats.skipped_batches = 1;
-                let prefix = configured_invalidation_server(cfg)
-                    .map(|server| format!("{} refresh failed", server))
-                    .unwrap_or_else(|| "Media-server refresh failed".to_string());
+                let servers = configured_refresh_backends(cfg);
+                let prefix = if servers.is_empty() {
+                    "Media-server refresh failed".to_string()
+                } else {
+                    format!("{} refresh failed", display_server_list(&servers))
+                };
                 user_println(format!("   ⚠️  {}: {}", prefix, e));
             }
         }
@@ -445,6 +450,9 @@ pub(crate) async fn run_scan(
         plex_refresh_capped_batches: telemetry.plex_refresh_stats.capped_batches as i64,
         plex_refresh_aborted_due_to_cap: telemetry.plex_refresh_stats.aborted_due_to_cap,
         plex_refresh_failed_batches: telemetry.plex_refresh_stats.failed_batches as i64,
+        media_server_refresh_json: (!telemetry.media_server_refresh_servers.is_empty())
+            .then(|| serde_json::to_string(&telemetry.media_server_refresh_servers))
+            .transpose()?,
         dead_link_sweep_ms: duration_ms_i64(telemetry.dead_link_sweep),
         cache_hit_ratio: telemetry.source_inventory_stats.cache_hit_ratio(),
         candidate_slots: telemetry.match_stats.prefiltered_library_candidates as i64,

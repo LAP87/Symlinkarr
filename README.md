@@ -3,407 +3,164 @@
 ![Rust](https://img.shields.io/badge/Rust-CLI-orange?logo=rust)
 ![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)
 ![SQLite](https://img.shields.io/badge/State-SQLite-003B57?logo=sqlite&logoColor=white)
-![Plex](https://img.shields.io/badge/Media-Plex-EBAF00)
 ![Web UI](https://img.shields.io/badge/Web-UI-0F766E)
+![Plex](https://img.shields.io/badge/Media-Plex-EBAF00)
 
-Symlinkarr manages symlinks between a Real-Debrid-backed source and your media library.
+Symlinkarr is the last-mile library layer for Real-Debrid-backed media setups.
 
-> The last-mile library layer for debrid + *arr + media-server setups.
+It scans your source mount, matches files to ID-tagged library folders, writes clean symlinks, and keeps operational state in SQLite. It is built for people already running some mix of `Real-Debrid`, `Zurg`/`Decypharr`, `Sonarr`, `Radarr`, `Prowlarr`, and a media library on Plex, Emby, Jellyfin, Kodi, or plain folders.
 
-It is built for setups where Sonarr, Radarr, Prowlarr, Decypharr, Zurg, Plex, and similar tools already exist, but the final library still needs a reliable layer that can:
+## What It Solves
 
-- match the right movie or episode
-- create stable symlinks with clean names
-- keep track of dead, stale, or duplicated links
-- repair or reacquire missing content without manual folder surgery
+- deterministic matching against `{tvdb-*}` and `{tmdb-*}` library folders
+- clean symlink creation and update
+- dead, stale, or misplaced link detection
+- repair and reacquire workflows
+- safer cleanup with preview/apply guardrails
+- anime-specific reporting and remediation planning
+- optional post-mutation invalidation for Plex, Emby, and Jellyfin
 
-## What Symlinkarr Solves
+No media server is required. Symlinkarr still works as a scan/match/link/cleanup tool with only a source mount and library folders.
 
-Symlinkarr is meant to fix the messy last mile in a debrid + media-server stack.
+## Integrations
 
-Common problems it addresses:
+Symlinkarr can talk to:
 
-- wrong matches from noisy release names
-- dead symlinks after RD content disappears or moves
-- duplicate/manual links left behind from older tooling
-- libraries that drift away from Sonarr/Radarr tracking
-- large RD libraries that are too slow or too rate-limited to rescan naively
-- anime numbering and naming mismatches that ordinary TV matching handles poorly
-
-In practice, it gives you a cleaner media-server-facing library without needing to manually babysit the symlink layer.
-
-## Integrates With
-
-Symlinkarr can interact with:
-
-- Real-Debrid mounts from tools like Zurg, Decypharr, and similar providers
-- Plex library folders today, with Jellyfin/Emby adapter groundwork underway
-- Jellyfin or Kodi-style library layouts on disk
-- Sonarr
-- Radarr
+- Real-Debrid-backed mounts such as Zurg and Decypharr
+- Sonarr and Radarr
 - Prowlarr
 - Bazarr
 - Tautulli
-- TMDB
-- TVDB
+- TMDB and TVDB
 - Debrid Media Manager
+- Plex, Emby, and Jellyfin
 
-It uses TVDB/TMDB-tagged library folders such as `{tvdb-123456}` or `{tmdb-123456}` to keep matching deterministic and safe.
-
-## Typical Stack
-
-You do not need every service below, but this is the kind of stack Symlinkarr is designed to sit inside:
-
-```mermaid
-flowchart LR
-    A["Prowlarr / Sonarr / Radarr"] --> B["Decypharr / Zurg / RD Mount"]
-    B --> C["Symlinkarr"]
-    D["TMDB / TVDB"] --> C
-    E["DMM Fallback"] --> C
-    C --> F["Plex Library (live) / other media-server libraries"]
-    C --> G["SQLite State + Web UI"]
-    H["Bazarr / Tautulli"] --> F
-```
-
-Typical example:
-
-- Sonarr and Radarr decide what should exist in your library
-- Prowlarr and Decypharr help acquire or expose that content through your RD mount
-- Symlinkarr scans the mount, matches the right files, and writes clean symlinks into your media library
-- Plex sees only the clean library paths, not the messy source filenames
-- Emby/Jellyfin adapter work is scaffolded but not live yet
-- The built-in web UI gives you scan telemetry, cleanup review, and dead-link visibility
-
-## How It Works
-
-At a high level, Symlinkarr does four things:
-
-1. scans your library folders and reads the `{tvdb-*}` / `{tmdb-*}` identity tags
-2. scans your RD-backed source and parses the actual files that exist
-3. matches source files to the right movie or episode using metadata, aliases, and safety checks
-4. writes or updates clean symlinks in your library and records the result in SQLite
-
-That gives you a stable library view even when the underlying source names are noisy, inconsistent, or temporary.
+Plex, Emby, and Jellyfin can now all be enabled together for guarded post-mutation refresh fan-out.
 
 ## Quick Start
 
-### What You Need
+### 1. Install Symlinkarr
 
-- a Real-Debrid mount that exposes your files on disk
-- a library folder structure for movies and/or series
-- a config file based on [config.example.yaml](config.example.yaml)
-- TMDB and TVDB keys if you want full metadata-driven matching
-- Docker if you want the container path, or Rust/Cargo if you want to run locally
+You can run Symlinkarr in three supported ways:
 
-### Docker
+- download a release tarball from [GitHub Releases](https://github.com/LAP87/Symlinkarr/releases) and run the `symlinkarr` binary directly
+- build locally with `cargo`
+- run it with Docker
 
-1. Copy [config.example.yaml](config.example.yaml) to `config.docker.yaml` and adjust paths, tokens, and URLs.
-2. Make sure the mounts in [docker-compose.yml](docker-compose.yml) match your actual Plex and RD paths.
-3. Start it:
+Example for a release binary:
 
 ```bash
-docker-compose up -d
+tar -xzf symlinkarr-<version>-linux-amd64.tar.gz
+cd symlinkarr-<version>-linux-amd64
+./symlinkarr --help
 ```
 
-The provided compose file runs:
+### 2. Prepare a config
 
-```text
-symlinkarr --config /app/config/config.yaml daemon
-```
+Start from [config.example.yaml](config.example.yaml).
 
-If `web.enabled: true` is set in config, the web UI starts alongside daemon mode.
+You need, at minimum:
 
-If you want to reach the web UI from the host while using Docker, add a port mapping for `8726` in `docker-compose.yml`.
+- one or more library paths
+- one or more source paths
+- a writable SQLite `db_path`
+- TMDB and TVDB credentials if you want full metadata matching
 
-### Local / Host Run
-
-Build and run:
+### 3. Validate first
 
 ```bash
-cargo build --release
+cargo run -- config validate --output json
+cargo run -- doctor --output json
+```
+
+### 4. Preview a scan
+
+```bash
 cargo run -- scan --dry-run
 ```
 
-Run the web UI only:
+### 5. Run it for real
+
+```bash
+cargo run -- scan
+```
+
+### 6. Start the web UI
 
 ```bash
 cargo run -- web
 ```
 
-Default local URL:
+Default URL:
 
 ```text
 http://127.0.0.1:8726
 ```
 
-Native Windows is not currently supported. On Windows 11, run Symlinkarr through WSL2 or a Linux container.
+## Common Commands
 
-### Windows 11 Development via WSL2
+```bash
+symlinkarr scan --dry-run
+symlinkarr scan --library Anime --search-missing
+symlinkarr status --health
+symlinkarr status --health --output json
+symlinkarr cleanup audit --scope anime
+symlinkarr cleanup prune --report <REPORT.json>
+symlinkarr cleanup remediate-anime --plex-db "<PLEX_DB_PATH>"
+symlinkarr repair auto --dry-run
+symlinkarr discover list
+symlinkarr cache status
+symlinkarr web
+```
 
-If you want to keep developing on a Windows 11 laptop, use `WSL2` as the actual Symlinkarr environment.
+## Docker
 
-Recommended setup:
+```bash
+docker compose up -d
+```
 
-- install Ubuntu under `WSL2`
-- keep the repo on the Linux side, for example `~/apps/Symlinkarr`
-- do not develop from `/mnt/c/...`; symlink and file-watch behavior is worse there
-- run Rust, SQLite, Docker, and Symlinkarr commands inside WSL
-- optionally use VS Code with Remote WSL as the editor
+Use [config.docker.yaml](config.docker.yaml) as the container-oriented config template.
 
-Fast path:
+## Windows 11 Development
+
+Native Windows runtime is not supported. Use `WSL2` or a Linux container.
+
+Quick start:
 
 ```bash
 sudo apt update
 sudo apt install -y build-essential pkg-config libssl-dev sqlite3 git curl
 curl https://sh.rustup.rs -sSf | sh
 source "$HOME/.cargo/env"
-mkdir -p ~/apps
-cd ~/apps
-git clone <YOUR-REPO-URL> Symlinkarr
-cd Symlinkarr
+git clone <YOUR-REPO-URL> ~/apps/Symlinkarr
+cd ~/apps/Symlinkarr
 cargo test --quiet
 cargo run -- web
 ```
 
-There is a fuller checklist in [docs/DEV_SETUP_WSL.md](docs/DEV_SETUP_WSL.md).
+Full setup: [docs/DEV_SETUP_WSL.md](docs/DEV_SETUP_WSL.md)
 
-### Minimal First Run
+## Current Product Status
 
-Validate config:
+Today, Symlinkarr has:
 
-```bash
-symlinkarr config validate
-symlinkarr doctor
-```
+- real Plex, Emby, and Jellyfin invalidation adapters
+- multi-backend refresh fan-out
+- persisted scan telemetry and per-backend refresh history
+- guarded cleanup and anime remediation preview/apply flows
+- web UI and JSON API for the main operator workflows
 
-Preview matches without writing links:
+What remains before a real `1.0 RC` is tracked here:
 
-```bash
-symlinkarr scan --dry-run
-```
+- [docs/RC_ROADMAP.md](docs/RC_ROADMAP.md)
 
-Run a real scan:
+## Docs
 
-```bash
-symlinkarr scan
-```
-
-## Configuration
-
-Important files:
-
-- [config.example.yaml](config.example.yaml): starting template
-- `config.yaml`: typical local-host config
-- `config.docker.yaml`: typical container config
-- `.env` / `.env.local`: optional local secret loading
-
-Symlinkarr supports:
-
-- `env:VAR` secrets
-- `secretfile:/path/to/file` secrets
-- local SQLite state in `db_path`
-- optional web UI via:
-
-```yaml
-web:
-  enabled: true
-  bind_address: "127.0.0.1"
-  allow_remote: false
-  port: 8726
-```
-
-Use `bind_address: "0.0.0.0"` only when you explicitly want to expose the web UI beyond loopback, for example inside Docker with a published port. Remote binds now require `allow_remote: true` as an explicit acknowledgement.
-
-Optional Plex refresh hardening:
-
-```yaml
-plex:
-  url: "http://localhost:32400"
-  token: "env:SYMLINKARR_PLEX_TOKEN"
-  refresh_enabled: true
-  refresh_delay_ms: 250
-  refresh_coalesce_threshold: 8
-  max_refresh_batches_per_run: 12
-  abort_refresh_when_capped: true
-```
-
-If Plex becomes unstable under refresh load, keep `abort_refresh_when_capped: true`, raise `refresh_delay_ms`, lower `max_refresh_batches_per_run`, or temporarily set `refresh_enabled: false`.
-
-When `--config` is omitted, Symlinkarr searches:
-
-1. `SYMLINKARR_CONFIG`
-2. `./config.yaml`
-3. `/app/config/config.yaml`
-
-## Common Commands
-
-Scan and link:
-
-```bash
-symlinkarr scan --dry-run
-symlinkarr scan
-symlinkarr scan --library Anime --search-missing
-```
-
-Start long-running daemon mode:
-
-```bash
-symlinkarr daemon
-```
-
-Run the web UI only:
-
-```bash
-symlinkarr web
-symlinkarr web --port 9999
-```
-
-Inspect health and status:
-
-```bash
-symlinkarr status --health
-symlinkarr doctor --output json
-symlinkarr report --plex-db "/var/lib/plex/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db"
-symlinkarr report --library Anime --plex-db "/var/lib/plex/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db" --full-anime-duplicates --output json --pretty
-symlinkarr report --library Anime --plex-db "/var/lib/plex/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db" --anime-remediation-tsv /tmp/anime-remediation.tsv
-```
-
-For Plex drift analysis, treat Plex `deleted_at` as a hint, not as truth. Symlinkarr only considers `Plex deleted + known missing source` to be a strong removal signal, which protects against mass false deletes when Plex scans while the RD mount is temporarily down.
-For anime remediation exports, `--full-anime-duplicates` disables the default sample cap so the report contains the full backlog of mixed legacy roots and correlated Hama AniDB/TVDB split groups. When you also pass `--plex-db`, the report now ranks a remediation queue so you can start with the heaviest legacy-root/Hama-split collisions first. `--anime-remediation-tsv` writes that queue as a spreadsheet-friendly worklist on disk.
-
-Manage auto-acquire queue:
-
-```bash
-symlinkarr queue list
-symlinkarr queue retry --scope failed
-```
-
-Cleanup workflow:
-
-```bash
-symlinkarr cleanup audit --scope anime
-symlinkarr cleanup prune --report backups/cleanup-audit-anime-YYYYMMDD-HHMMSS.json
-symlinkarr cleanup prune --report backups/cleanup-audit-anime-YYYYMMDD-HHMMSS.json --include-legacy-anime-roots
-symlinkarr cleanup prune --report backups/cleanup-audit-anime-YYYYMMDD-HHMMSS.json --apply --confirm-token <TOKEN>
-symlinkarr cleanup remediate-anime --plex-db "/var/lib/plex/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db"
-symlinkarr cleanup remediate-anime --plex-db "/var/lib/plex/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db" --title "Gundam" --out backups/anime-remediation-gundam.json
-symlinkarr cleanup remediate-anime --apply --report backups/anime-remediation-gundam.json --confirm-token <TOKEN>
-```
-
-`--include-legacy-anime-roots` is an explicit opt-in for warning-only anime findings where a legacy untagged root coexists with a tagged `{tvdb-*}` or `{tmdb-*}` root. Those candidates stay `foreign` and are quarantined rather than deleted.
-`cleanup remediate-anime` is the safer operator path for the correlated anime backlog: preview writes a report JSON, apply requires the preview token, and eligible legacy-root symlinks are quarantined instead of deleted.
-`cleanup remediate-anime --apply` also requires `cleanup.prune.quarantine_foreign=true`, because the workflow is intentionally quarantine-first for legacy anime roots.
-Destructive cleanup commands also stop early if a configured source mount is unhealthy, so a transient RD outage does not become a cleanup event.
-When media-server refresh is configured, successful cleanup and remediation applies now invalidate affected library roots afterward so Plex does not keep stale ghosts after the filesystem has already been fixed.
-That invalidation now runs through a dedicated `media_servers` boundary, with Plex as the first live adapter and Emby/Jellyfin reserved for future dedicated modules once those servers are onboarded and verified.
-
-Cache management:
-
-```bash
-symlinkarr cache status
-symlinkarr cache build
-```
-
-Repair and discovery:
-
-```bash
-symlinkarr repair scan
-symlinkarr repair auto --dry-run
-symlinkarr discover list
-```
-
-Successful `repair auto` runs also trigger the same guarded post-mutation invalidation flow. Today the live adapter is Plex, while Emby and Jellyfin are being broken out as dedicated modules instead of staying hidden behind Plex-specific code.
-
-For the full command matrix, see [CLI_MANUAL.md](docs/CLI_MANUAL.md).
-
-## Web UI and API
-
-The built-in web UI exposes:
-
-- dashboard and status pages
-- background scan triggering, scan history, and per-run telemetry
-- cleanup audit and prune preview flows
-- dead-link review
-- anime remediation backlog via a read-only cleanup page and JSON preview/apply endpoints
-- JSON API endpoints under `/api/v1`
-
-Current API coverage is documented in [API_SCHEMA.md](docs/API_SCHEMA.md).
-
-## Matching and Safety
-
-Symlinkarr defaults to strict matching behavior.
-
-That means:
-
-- one best candidate per source item
-- ambiguous near-ties are rejected
-- destination conflicts keep the stronger candidate
-- token-boundary title matching is used to avoid bad substring matches
-- cleanup and prune are intentionally two-step, with preview before deletion
-
-It also keeps local SQLite state for link records, scan history, queue state, cache data, and operational telemetry.
-
-## FAQ
-
-### Does Symlinkarr replace Sonarr or Radarr?
-
-No. It is designed to complement them.
-
-Sonarr and Radarr still decide what should exist in your library. Symlinkarr handles the final symlink layer between your RD-backed source and your media library.
-
-### Does it download or move media files?
-
-Not in the usual sense.
-
-Symlinkarr primarily scans, matches, links, repairs, and prunes. It can participate in reacquire workflows through tools like Prowlarr, DMM, and Decypharr, but it is not a general-purpose downloader on its own.
-
-### Does it modify the original files in my RD mount?
-
-No. The intended model is that Symlinkarr creates or updates symlinks in your library paths. It does not rewrite the source media files themselves.
-
-### Do I need `{tvdb-*}` or `{tmdb-*}` in folder names?
-
-Yes, if you want the strongest and safest matching behavior.
-
-That is the recommended layout, and it is the model Symlinkarr is built around.
-
-### Can I use it without Docker?
-
-Yes.
-
-You can run it directly with Cargo or the compiled binary:
-
-```bash
-cargo run -- scan --dry-run
-cargo run -- web
-```
-
-On Windows 11, use WSL2 or Docker rather than a native Windows build.
-
-### Is there a web UI?
-
-Yes.
-
-Run:
-
-```bash
-symlinkarr web
-```
-
-Then open:
-
-```text
-http://127.0.0.1:8726
-```
-
-## Advanced Docs
-
-If you want the deeper implementation or operator docs, start here:
-
-- [CLI_MANUAL.md](docs/CLI_MANUAL.md)
-- [API_SCHEMA.md](docs/API_SCHEMA.md)
-- [RD_DMM_FILE_RESOLUTION_SPEC.md](docs/RD_DMM_FILE_RESOLUTION_SPEC.md)
-- [ANIME_LISTS_INTEGRATION_SPEC.md](docs/ANIME_LISTS_INTEGRATION_SPEC.md)
-- [DEV_SETUP_WSL.md](docs/DEV_SETUP_WSL.md)
-- [DESIGN_COUNCIL_ROADMAP.md](docs/DESIGN_COUNCIL_ROADMAP.md)
-- [CHANGELOG.md](docs/CHANGELOG.md)
+- [GitHub Wiki](https://github.com/LAP87/Symlinkarr/wiki)
+- [CLI manual](docs/CLI_MANUAL.md)
+- [API schema](docs/API_SCHEMA.md)
+- [RC roadmap](docs/RC_ROADMAP.md)
+- [Media-server adapter plan](docs/MEDIA_SERVER_ADAPTER_PLAN.md)
+- [Anime lists integration spec](docs/ANIME_LISTS_INTEGRATION_SPEC.md)
+- [RD/DMM resolution spec](docs/RD_DMM_FILE_RESOLUTION_SPEC.md)
+- [Changelog](docs/CHANGELOG.md)

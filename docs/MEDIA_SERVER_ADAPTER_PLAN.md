@@ -1,18 +1,25 @@
 # Media Server Adapter Plan
 
-This document captures the next adapter steps after the `media_servers` refactor.
+This document captures the next adapter steps after the first `media_servers` rollout.
 
 ## Current State
 
-- `src/media_servers/plex.rs` is the live invalidation adapter.
+- `src/media_servers/plex.rs` is the live Plex invalidation adapter.
+- `src/media_servers/emby.rs` and `src/media_servers/jellyfin.rs` now implement the first path-based invalidation pass via `POST /Library/Media/Updated`.
 - `src/media_servers/plex_db.rs` owns Plex-only database inspection for reporting and anime remediation.
 - `src/media_servers/mod.rs` now owns:
   - invalidation telemetry
   - mutation-scoped library-root selection
-  - primary media-server probing for status
-  - the adapter boundary for future Emby and Jellyfin support
+  - media-server probing for status
+  - active backend selection for post-mutation invalidation
 
-Today, only Plex is active. Emby and Jellyfin are intentionally scaffolded but not wired into config or runtime selection yet.
+Today:
+
+- Plex, Emby, and Jellyfin can be configured together for post-mutation invalidation fan-out.
+- Scan history now persists both aggregate refresh counters under the legacy `plex_refresh_*` field names and explicit per-backend refresh slices under `media_server_refresh`.
+- CLI/web/API mutation responses can now expose per-backend invalidation results.
+- Plex remains the only backend with DB/report/remediation-specific code.
+- Emby and Jellyfin are path-invalidation adapters only for now.
 
 ## Verified Upstream APIs
 
@@ -58,42 +65,17 @@ This gives Jellyfin the same basic path as Emby, with one extra future option:
 
 - if Symlinkarr later stores Jellyfin item ids, item-level refresh becomes possible
 
-## Recommended Rollout
+## Remaining Rollout
 
 ### Phase 1
 
-Add explicit config sections for `emby` and `jellyfin`, mirroring the current refresh-oriented Plex shape:
+Operator verification against real servers:
 
-- `url`
-- `api_key`
-- `refresh_enabled`
-- pacing / cap fields aligned with the current Plex guardrails
-
-Do not auto-enable these just because software is installed locally.
+- authenticated `POST /Library/Media/Updated` has now been verified against the deployed Emby/Jellyfin versions
+- keep tuning `refresh_batch_size`, delay, and cap defaults against real library load
+- decide whether either backend still needs a compatibility fallback to `POST /Library/Refresh`
 
 ### Phase 2
-
-Teach `media_servers::configured_invalidation_server()` to select exactly one active backend:
-
-- Plex
-- Emby
-- Jellyfin
-
-If multiple are enabled at once, fail closed until fan-out is intentionally designed.
-
-### Phase 3
-
-Implement targeted invalidation adapters:
-
-- Emby:
-  - prefer `POST /Library/Media/Updated` for changed paths
-  - fall back to `POST /Library/Refresh` when targeted reporting is not sufficient
-- Jellyfin:
-  - prefer `POST /Library/Media/Updated`
-  - optionally use `POST /Items/{itemId}/Refresh` once item-id mapping exists
-  - fall back to `POST /Library/Refresh`
-
-### Phase 4
 
 Only after invalidation is stable, decide whether Emby/Jellyfin need their own:
 
@@ -102,6 +84,14 @@ Only after invalidation is stable, decide whether Emby/Jellyfin need their own:
 - remediation/reporting helpers
 
 Those should live beside `plex_db.rs`, not back at repo root.
+
+### Phase 3
+
+Follow-up hardening after fan-out:
+
+- keep aggregate scan telemetry understandable despite the legacy `plex_refresh_*` field names
+- keep per-backend scan history/API/UI views aligned as more mutation flows start emitting fan-out telemetry
+- extend the same fan-out semantics to any future Emby/Jellyfin remediation helpers
 
 ## Safety Rules
 
@@ -113,6 +103,5 @@ Those should live beside `plex_db.rs`, not back at repo root.
 
 ## Open Questions
 
-- Should Symlinkarr support one active media-server backend at a time, or deliberate fan-out to multiple backends?
 - Do we want item-id persistence for Jellyfin/Emby later, or is path-based invalidation enough for `1.0`?
 - Should future Emby/Jellyfin health checks expose section/library counts in the same `status --health` shape as Plex?

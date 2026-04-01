@@ -116,8 +116,8 @@ mod tests {
     use crate::config::{
         ApiConfig, BackupConfig, BazarrConfig, CleanupPolicyConfig, Config, ContentType,
         DaemonConfig, DecypharrConfig, DmmConfig, FeaturesConfig, LibraryConfig, MatchingConfig,
-        PlexConfig, ProwlarrConfig, RadarrConfig, RealDebridConfig, SecurityConfig, SonarrConfig,
-        SourceConfig, SymlinkConfig, TautulliConfig, WebConfig,
+        MediaBrowserConfig, PlexConfig, ProwlarrConfig, RadarrConfig, RealDebridConfig,
+        SecurityConfig, SonarrConfig, SourceConfig, SymlinkConfig, TautulliConfig, WebConfig,
     };
     fn restore_test_config(root: &std::path::Path) -> Config {
         Config {
@@ -146,6 +146,8 @@ mod tests {
             bazarr: BazarrConfig::default(),
             tautulli: TautulliConfig::default(),
             plex: PlexConfig::default(),
+            emby: MediaBrowserConfig::default(),
+            jellyfin: MediaBrowserConfig::default(),
             radarr: RadarrConfig::default(),
             sonarr: SonarrConfig::default(),
             sonarr_anime: SonarrConfig::default(),
