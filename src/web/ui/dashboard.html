@@ -115,13 +115,13 @@
                 <div class="telemetry-item"><span>Match</span><strong>{{ run.matching }}</strong></div>
                 <div class="telemetry-item"><span>Titles</span><strong>{{ run.title_enrichment }}</strong></div>
                 <div class="telemetry-item"><span>Link</span><strong>{{ run.linking }}</strong></div>
-                <div class="telemetry-item"><span>Plex</span><strong>{{ run.plex_refresh }}</strong></div>
+                <div class="telemetry-item"><span>Refresh</span><strong>{{ run.plex_refresh }}</strong></div>
                 <div class="telemetry-item"><span>Dead Sweep</span><strong>{{ run.dead_link_sweep }}</strong></div>
             </div>
 
             {% if run.plex_refresh_capped_batches > 0 || run.plex_refresh_skipped_batches > 0 || run.plex_refresh_failed_batches > 0 || run.plex_refresh_unresolved_paths > 0 %}
             <div class="alert alert-warning mt-2">
-                <strong>Plex refresh protections activated.</strong>
+                <strong>Media refresh protections activated.</strong>
                 {% if run.plex_refresh_aborted_due_to_cap %}
                 Cap guard aborted all targeted refreshes after the plan exceeded the per-run limit.
                 {% else %}
@@ -217,7 +217,7 @@
                 <th>Runtime</th>
                 <th>Matches</th>
                 <th>Links</th>
-                <th>Plex</th>
+                <th>Refresh</th>
                 <th>Acquire</th>
                 <th>Dead</th>
             </tr>

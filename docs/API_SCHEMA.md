@@ -268,6 +268,46 @@ Response element schema:
     "aborted_due_to_cap": true,
     "failed_batches": 0
   },
+  "media_server_refresh": [
+    {
+      "server": "plex",
+      "requested_targets": 12,
+      "refresh": {
+        "runtime_ms": 3100,
+        "requested_paths": 12,
+        "unique_paths": 10,
+        "planned_batches": 5,
+        "coalesced_batches": 2,
+        "coalesced_paths": 7,
+        "refreshed_batches": 4,
+        "refreshed_paths_covered": 12,
+        "skipped_batches": 1,
+        "unresolved_paths": 0,
+        "capped_batches": 1,
+        "aborted_due_to_cap": true,
+        "failed_batches": 0
+      }
+    },
+    {
+      "server": "emby",
+      "requested_targets": 12,
+      "refresh": {
+        "runtime_ms": 200,
+        "requested_paths": 12,
+        "unique_paths": 12,
+        "planned_batches": 1,
+        "coalesced_batches": 0,
+        "coalesced_paths": 0,
+        "refreshed_batches": 1,
+        "refreshed_paths_covered": 12,
+        "skipped_batches": 0,
+        "unresolved_paths": 0,
+        "capped_batches": 0,
+        "aborted_due_to_cap": false,
+        "failed_batches": 0
+      }
+    }
+  ],
   "auto_acquire": {
     "requests": 10,
     "missing_requests": 5,
@@ -286,7 +326,8 @@ Response element schema:
 
 Notes:
 
-- `plex_refresh` makes refresh throttling observable in persisted history, including whether the cap guard aborted the entire Plex refresh phase instead of partially queueing requests.
+- `plex_refresh` remains the aggregate compatibility view for scan history tables and older consumers.
+- `media_server_refresh` exposes the per-backend breakdown for the same run, so Plex, Emby, and Jellyfin can be inspected separately when more than one backend is active.
 
 ## `GET /api/v1/scan/:id`
 
@@ -333,6 +374,46 @@ Response schema:
     "aborted_due_to_cap": true,
     "failed_batches": 0
   },
+  "media_server_refresh": [
+    {
+      "server": "plex",
+      "requested_targets": 12,
+      "refresh": {
+        "runtime_ms": 3100,
+        "requested_paths": 12,
+        "unique_paths": 10,
+        "planned_batches": 5,
+        "coalesced_batches": 2,
+        "coalesced_paths": 7,
+        "refreshed_batches": 4,
+        "refreshed_paths_covered": 12,
+        "skipped_batches": 1,
+        "unresolved_paths": 0,
+        "capped_batches": 1,
+        "aborted_due_to_cap": true,
+        "failed_batches": 0
+      }
+    },
+    {
+      "server": "emby",
+      "requested_targets": 12,
+      "refresh": {
+        "runtime_ms": 200,
+        "requested_paths": 12,
+        "unique_paths": 12,
+        "planned_batches": 1,
+        "coalesced_batches": 0,
+        "coalesced_paths": 0,
+        "refreshed_batches": 1,
+        "refreshed_paths_covered": 12,
+        "skipped_batches": 0,
+        "unresolved_paths": 0,
+        "capped_batches": 0,
+        "aborted_due_to_cap": false,
+        "failed_batches": 0
+      }
+    }
+  ],
   "dead_link_sweep_ms": 700,
   "total_runtime_ms": 288200,
   "cache_hit_ratio": 0.94,
@@ -362,6 +443,7 @@ Not found:
 Notes:
 
 - `plex_refresh_ms` remains the phase runtime for compatibility, while the nested `plex_refresh` object exposes the aggregate request pressure, coalescing, capping, cap-guard aborts, failures, and actual queued coverage across all active media-server refresh backends.
+- `media_server_refresh` stores the per-backend refresh telemetry persisted with the scan run. Use it when you need to know which backend actually capped, skipped, or failed.
 
 ## `GET /api/v1/report/anime-remediation`
 

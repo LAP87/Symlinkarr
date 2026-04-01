@@ -150,7 +150,7 @@
 
     {% if run.plex_refresh_capped_batches > 0 || run.plex_refresh_skipped_batches > 0 || run.plex_refresh_failed_batches > 0 || run.plex_refresh_unresolved_paths > 0 %}
     <div class="alert alert-warning mt-2">
-        <strong>Plex refresh protections activated.</strong>
+        <strong>Media refresh protections activated.</strong>
         {% if run.plex_refresh_aborted_due_to_cap %}
         Cap guard aborted all targeted refreshes after the plan exceeded the per-run limit.
         {% else %}
@@ -247,7 +247,7 @@
                 <th>Matches</th>
                 <th>Created</th>
                 <th>Updated</th>
-                <th>Plex</th>
+                <th>Refresh</th>
                 <th>Acquire</th>
                 <th>Dead</th>
             </tr>

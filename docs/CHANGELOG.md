@@ -6,6 +6,24 @@
 - posture: `stable core, evolving ops`
 - intended use: local-first host or Docker installs, with Windows 11 users running through WSL2 or a Linux container
 
+## 2026-04-01 - Per-Backend Scan Refresh History
+
+### Code Changes
+
+- persisted per-backend media refresh telemetry alongside the legacy aggregate `plex_refresh_*` scan-run fields, so scan history and run detail can show separate Plex, Emby, and Jellyfin outcomes without breaking older consumers.
+  - files: `src/db.rs`, `src/commands/scan.rs`, `src/media_servers/mod.rs`
+- `/api/v1/scan/history` and `/api/v1/scan/:id` now expose `media_server_refresh` as a per-backend array, and the scan detail/dashboard labels were generalized from Plex-only wording to media refresh wording.
+  - files: `src/web/api/mod.rs`, `src/web/templates.rs`, `src/web/ui/dashboard.html`, `src/web/ui/scan.html`, `src/web/ui/scan_history.html`, `src/web/ui/scan_run.html`, `docs/API_SCHEMA.md`
+
+### Validation
+
+- `CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-emby cargo test web:: -- --nocapture`
+  - result: `87 passed; 0 failed`
+- `CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-emby cargo test db::tests::test_record_scan_run_roundtrip -- --nocapture`
+  - result: passed
+- `CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-emby cargo test db::tests::test_latest_migration_creates_media_server_refresh_json_column -- --nocapture`
+  - result: passed
+
 ## 2026-04-01 - Multi-Server Refresh Fan-Out
 
 ### Code Changes

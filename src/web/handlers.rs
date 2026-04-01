@@ -1637,6 +1637,7 @@ mod tests {
             plex_refresh_capped_batches: 1,
             plex_refresh_aborted_due_to_cap: true,
             plex_refresh_failed_batches: 0,
+            media_server_refresh_json: None,
             dead_link_sweep_ms: 80,
             cache_hit_ratio: Some(0.85),
             candidate_slots: 1024,
@@ -1753,7 +1754,7 @@ mod tests {
         assert!(body.contains("Auto-Acquire Queue"));
         assert!(body.contains("Queue 1"));
         assert!(body.contains("Cache Hit"));
-        assert!(body.contains("Plex refresh protections activated"));
+        assert!(body.contains("Media refresh protections activated"));
     }
 
     #[tokio::test]
@@ -1769,7 +1770,7 @@ mod tests {
         assert!(body.contains("Candidate Slots"));
         assert!(body.contains("1024"));
         assert!(body.contains("4/6"));
-        assert!(body.contains("Plex refresh protections activated"));
+        assert!(body.contains("Media refresh protections activated"));
     }
 
     #[tokio::test]

@@ -1223,6 +1223,7 @@ mod tests {
             plex_refresh_capped_batches: 1,
             plex_refresh_aborted_due_to_cap: true,
             plex_refresh_failed_batches: 0,
+            media_server_refresh_json: None,
             dead_link_sweep_ms: 88,
             cache_hit_ratio: Some(0.75),
             candidate_slots: 12,

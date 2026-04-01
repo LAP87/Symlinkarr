@@ -26,6 +26,13 @@ pub(crate) struct LibraryRefreshTelemetry {
     pub failed_batches: usize,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct LibraryRefreshOutcome {
+    pub aggregate: LibraryRefreshTelemetry,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub servers: Vec<LibraryInvalidationServerOutcome>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum MediaServerKind {
@@ -227,22 +234,45 @@ pub(crate) async fn refresh_library_paths(
     refresh_paths: &[PathBuf],
     emit_text: bool,
 ) -> Result<LibraryRefreshTelemetry> {
+    Ok(
+        refresh_library_paths_detailed(cfg, refresh_paths, emit_text)
+            .await?
+            .aggregate,
+    )
+}
+
+pub(crate) async fn refresh_library_paths_detailed(
+    cfg: &Config,
+    refresh_paths: &[PathBuf],
+    emit_text: bool,
+) -> Result<LibraryRefreshOutcome> {
     if refresh_paths.is_empty() {
-        return Ok(LibraryRefreshTelemetry::default());
+        return Ok(LibraryRefreshOutcome::default());
     }
 
     let servers = configured_refresh_backends(cfg);
     if servers.is_empty() {
-        return Ok(LibraryRefreshTelemetry {
-            requested_paths: refresh_paths.len(),
-            ..LibraryRefreshTelemetry::default()
+        return Ok(LibraryRefreshOutcome {
+            aggregate: LibraryRefreshTelemetry {
+                requested_paths: refresh_paths.len(),
+                ..LibraryRefreshTelemetry::default()
+            },
+            servers: Vec::new(),
         });
     }
 
     let mut aggregate = LibraryRefreshTelemetry::default();
+    let mut server_outcomes = Vec::new();
     for server in servers {
         match refresh_paths_for_server(cfg, server, refresh_paths, emit_text).await {
-            Ok(telemetry) => merge_refresh_telemetry(&mut aggregate, &telemetry),
+            Ok(telemetry) => {
+                merge_refresh_telemetry(&mut aggregate, &telemetry);
+                server_outcomes.push(LibraryInvalidationServerOutcome {
+                    server,
+                    requested_targets: refresh_paths.len(),
+                    refresh: telemetry,
+                });
+            }
             Err(err) => {
                 if emit_text {
                     crate::utils::user_println(format!(
@@ -250,14 +280,26 @@ pub(crate) async fn refresh_library_paths(
                         server, err
                     ));
                 }
-                aggregate.requested_paths += refresh_paths.len();
-                aggregate.failed_batches += 1;
-                aggregate.skipped_batches += 1;
+                let failed = LibraryRefreshTelemetry {
+                    requested_paths: refresh_paths.len(),
+                    failed_batches: 1,
+                    skipped_batches: 1,
+                    ..LibraryRefreshTelemetry::default()
+                };
+                merge_refresh_telemetry(&mut aggregate, &failed);
+                server_outcomes.push(LibraryInvalidationServerOutcome {
+                    server,
+                    requested_targets: refresh_paths.len(),
+                    refresh: failed,
+                });
             }
         }
     }
 
-    Ok(aggregate)
+    Ok(LibraryRefreshOutcome {
+        aggregate,
+        servers: server_outcomes,
+    })
 }
 
 pub(crate) async fn refresh_selected_library_roots(

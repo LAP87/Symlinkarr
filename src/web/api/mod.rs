@@ -23,7 +23,7 @@ use crate::commands::report::{build_anime_remediation_report, AnimeRemediationSa
 use crate::commands::selected_libraries;
 use crate::config::Config;
 use crate::db::{Database, ScanHistoryRecord};
-use crate::media_servers::LibraryInvalidationOutcome;
+use crate::media_servers::{LibraryInvalidationOutcome, LibraryInvalidationServerOutcome};
 
 use super::{
     latest_cleanup_report_created_at, should_surface_cleanup_audit_outcome,
@@ -192,6 +192,13 @@ pub struct ApiPlexRefreshSummary {
 }
 
 #[derive(Serialize, Deserialize)]
+pub struct ApiMediaServerRefreshServer {
+    pub server: String,
+    pub requested_targets: i64,
+    pub refresh: ApiPlexRefreshSummary,
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct ApiScanHistoryEntry {
     pub id: i64,
     pub started_at: String,
@@ -205,6 +212,7 @@ pub struct ApiScanHistoryEntry {
     pub cache_hit_ratio: Option<f64>,
     pub dead_count: i64,
     pub plex_refresh: ApiPlexRefreshSummary,
+    pub media_server_refresh: Vec<ApiMediaServerRefreshServer>,
     pub auto_acquire: ApiScanAutoAcquireSummary,
 }
 
@@ -233,6 +241,7 @@ pub struct ApiScanRunDetail {
     pub linking_ms: i64,
     pub plex_refresh_ms: i64,
     pub plex_refresh: ApiPlexRefreshSummary,
+    pub media_server_refresh: Vec<ApiMediaServerRefreshServer>,
     pub dead_link_sweep_ms: i64,
     pub total_runtime_ms: i64,
     pub cache_hit_ratio: Option<f64>,
@@ -838,6 +847,43 @@ fn plex_refresh_summary_from_record(record: &ScanHistoryRecord) -> ApiPlexRefres
     }
 }
 
+fn api_refresh_summary_from_telemetry(
+    telemetry: &crate::media_servers::LibraryRefreshTelemetry,
+) -> ApiPlexRefreshSummary {
+    ApiPlexRefreshSummary {
+        runtime_ms: 0,
+        requested_paths: telemetry.requested_paths as i64,
+        unique_paths: telemetry.unique_paths as i64,
+        planned_batches: telemetry.planned_batches as i64,
+        coalesced_batches: telemetry.coalesced_batches as i64,
+        coalesced_paths: telemetry.coalesced_paths as i64,
+        refreshed_batches: telemetry.refreshed_batches as i64,
+        refreshed_paths_covered: telemetry.refreshed_paths_covered as i64,
+        skipped_batches: telemetry.skipped_batches as i64,
+        unresolved_paths: telemetry.unresolved_paths as i64,
+        capped_batches: telemetry.capped_batches as i64,
+        aborted_due_to_cap: telemetry.aborted_due_to_cap,
+        failed_batches: telemetry.failed_batches as i64,
+    }
+}
+
+fn media_server_refresh_from_record(
+    record: &ScanHistoryRecord,
+) -> Vec<ApiMediaServerRefreshServer> {
+    record
+        .media_server_refresh_json
+        .as_deref()
+        .and_then(|json| serde_json::from_str::<Vec<LibraryInvalidationServerOutcome>>(json).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|entry| ApiMediaServerRefreshServer {
+            server: entry.server.to_string(),
+            requested_targets: entry.requested_targets as i64,
+            refresh: api_refresh_summary_from_telemetry(&entry.refresh),
+        })
+        .collect()
+}
+
 fn scan_history_entry_from_record(record: ScanHistoryRecord) -> ApiScanHistoryEntry {
     let scope_label = scan_scope_label(&record);
     let total_runtime_ms = scan_total_runtime_ms(&record);
@@ -845,6 +891,7 @@ fn scan_history_entry_from_record(record: ScanHistoryRecord) -> ApiScanHistoryEn
     let auto_acquire_successes = scan_auto_acquire_successes(&record);
     let started_at = record.started_at.clone();
     let plex_refresh = plex_refresh_summary_from_record(&record);
+    let media_server_refresh = media_server_refresh_from_record(&record);
 
     ApiScanHistoryEntry {
         id: record.id,
@@ -859,6 +906,7 @@ fn scan_history_entry_from_record(record: ScanHistoryRecord) -> ApiScanHistoryEn
         cache_hit_ratio: record.cache_hit_ratio,
         dead_count,
         plex_refresh,
+        media_server_refresh,
         auto_acquire: ApiScanAutoAcquireSummary {
             requests: record.auto_acquire_requests,
             missing_requests: record.auto_acquire_missing_requests,
@@ -881,6 +929,7 @@ fn scan_run_detail_from_record(record: ScanHistoryRecord) -> ApiScanRunDetail {
     let auto_acquire_successes = scan_auto_acquire_successes(&record);
     let started_at = record.started_at.clone();
     let plex_refresh = plex_refresh_summary_from_record(&record);
+    let media_server_refresh = media_server_refresh_from_record(&record);
 
     ApiScanRunDetail {
         id: record.id,
@@ -906,6 +955,7 @@ fn scan_run_detail_from_record(record: ScanHistoryRecord) -> ApiScanRunDetail {
         linking_ms: record.linking_ms,
         plex_refresh_ms: record.plex_refresh_ms,
         plex_refresh,
+        media_server_refresh,
         dead_link_sweep_ms: record.dead_link_sweep_ms,
         total_runtime_ms,
         cache_hit_ratio: record.cache_hit_ratio,
@@ -1654,6 +1704,9 @@ mod tests {
             plex_refresh_capped_batches: 1,
             plex_refresh_aborted_due_to_cap: true,
             plex_refresh_failed_batches: 0,
+            media_server_refresh_json: Some(
+                r#"[{"server":"plex","requested_targets":5,"refresh":{"requested_paths":12,"unique_paths":10,"planned_batches":5,"coalesced_batches":2,"coalesced_paths":7,"refreshed_batches":4,"refreshed_paths_covered":12,"skipped_batches":1,"unresolved_paths":0,"capped_batches":1,"aborted_due_to_cap":true,"failed_batches":0}},{"server":"emby","requested_targets":12,"refresh":{"requested_paths":12,"unique_paths":12,"planned_batches":1,"coalesced_batches":0,"coalesced_paths":0,"refreshed_batches":1,"refreshed_paths_covered":12,"skipped_batches":0,"unresolved_paths":0,"capped_batches":0,"aborted_due_to_cap":false,"failed_batches":0}}]"#.to_string(),
+            ),
             dead_link_sweep_ms: 700,
             cache_hit_ratio: Some(0.94),
             candidate_slots: 77_624_480,
@@ -1834,6 +1887,7 @@ mod tests {
                 title_enrichment_ms: 50,
                 linking_ms: 60,
                 plex_refresh_ms: 70,
+                media_server_refresh_json: None,
                 dead_link_sweep_ms: 80,
                 cache_hit_ratio: Some(0.5),
                 auto_acquire_requests: 9,
