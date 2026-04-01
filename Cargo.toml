@@ -1,19 +1,19 @@
 [package]
 name = "symlinkarr"
-version = "0.2.0-beta.1"
+version = "0.3.0-beta.1"
 edition = "2021"
 authors = ["Lenny", "Gemini CLI", "Antigravity"]
-description = "Intelligent symlink manager for Real-Debrid ↔ Plex"
+description = "Intelligent symlink manager for Real-Debrid-backed media libraries"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
-reqwest = { version = "0.11", features = ["json", "multipart"] }
+reqwest = { version = "0.11", default-features = false, features = ["json", "multipart", "rustls-tls"] }
 regex = "1.10"
 quick-xml = { version = "0.31", features = ["serialize"] }
-sqlx = { version = "0.7", features = ["runtime-tokio-native-tls", "sqlite"] }
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite"] }
 anyhow = "1.0"
 tracing = "0.1"
 tracing-subscriber = "0.3"

@@ -18,10 +18,10 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-            artifact: symlinkarr-linux-amd64
+            artifact: linux-amd64
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
-            artifact: symlinkarr-linux-arm64
+            artifact: linux-arm64
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -38,18 +38,25 @@ jobs:
           sudo apt-get install -y gcc-aarch64-linux-gnu
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
 
-      - run: cargo build --release --target ${{ matrix.target }}
+      - run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Package binary
         run: |
           mkdir -p dist
-          cp target/${{ matrix.target }}/release/symlinkarr dist/${{ matrix.artifact }}
-          chmod +x dist/${{ matrix.artifact }}
+          package_root=symlinkarr-${{ github.ref_name }}-${{ matrix.artifact }}
+          mkdir -p dist/${package_root}
+          cp target/${{ matrix.target }}/release/symlinkarr dist/${package_root}/symlinkarr
+          chmod +x dist/${package_root}/symlinkarr
+          tar -C dist -czf dist/${package_root}.tar.gz ${package_root}
+          sha256sum dist/${package_root}.tar.gz > dist/${package_root}.tar.gz.sha256
+          rm -rf dist/${package_root}
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: dist/${{ matrix.artifact }}
+          name: symlinkarr-${{ matrix.artifact }}
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
 
   docker:
     runs-on: ubuntu-latest

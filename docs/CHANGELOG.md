@@ -2,9 +2,29 @@
 
 ## Release Target
 
-- package version for this push: `0.2.0-beta.1`
-- posture: `stable core, evolving ops`
+- package version for this push: `0.3.0-beta.1`
+- posture: `rc-prep with downloadable binary artifacts`
 - intended use: local-first host or Docker installs, with Windows 11 users running through WSL2 or a Linux container
+
+## 2026-04-01 - Release Packaging and Binary Build Hardening
+
+### Code Changes
+
+- bumped the package version to `0.3.0-beta.1`.
+  - files: `Cargo.toml`, `docs/CHANGELOG.md`
+- switched HTTP/database runtime TLS away from `native-tls`/OpenSSL and onto Rustls-backed runtimes, reducing release-build friction and making cross-target binary packaging less fragile.
+  - files: `Cargo.toml`, `Cargo.lock`
+- added a release-smoke job to CI so `cargo build --release --locked` is exercised on every PR/push instead of only finding binary issues at tag time.
+  - files: `.github/workflows/ci.yml`
+- updated the tag-driven release workflow so GitHub Releases publish versioned `.tar.gz` binaries plus `.sha256` files instead of only loose uploaded artifacts.
+  - files: `.github/workflows/release.yml`
+
+### Validation
+
+- `cargo build --release --locked`
+  - result: passed locally
+- local packaging smoke
+  - result: produced `symlinkarr-v0.3.0-beta.1-linux-amd64.tar.gz` and matching `.sha256`
 
 ## 2026-04-01 - Per-Backend Scan Refresh History
 

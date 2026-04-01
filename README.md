@@ -39,7 +39,23 @@ Plex, Emby, and Jellyfin can now all be enabled together for guarded post-mutati
 
 ## Quick Start
 
-### 1. Prepare a config
+### 1. Install Symlinkarr
+
+You can run Symlinkarr in three supported ways:
+
+- download a release tarball from [GitHub Releases](https://github.com/LAP87/Symlinkarr/releases) and run the `symlinkarr` binary directly
+- build locally with `cargo`
+- run it with Docker
+
+Example for a release binary:
+
+```bash
+tar -xzf symlinkarr-<version>-linux-amd64.tar.gz
+cd symlinkarr-<version>-linux-amd64
+./symlinkarr --help
+```
+
+### 2. Prepare a config
 
 Start from [config.example.yaml](config.example.yaml).
 
@@ -50,26 +66,26 @@ You need, at minimum:
 - a writable SQLite `db_path`
 - TMDB and TVDB credentials if you want full metadata matching
 
-### 2. Validate first
+### 3. Validate first
 
 ```bash
 cargo run -- config validate --output json
 cargo run -- doctor --output json
 ```
 
-### 3. Preview a scan
+### 4. Preview a scan
 
 ```bash
 cargo run -- scan --dry-run
 ```
 
-### 4. Run it for real
+### 5. Run it for real
 
 ```bash
 cargo run -- scan
 ```
 
-### 5. Start the web UI
+### 6. Start the web UI
 
 ```bash
 cargo run -- web
