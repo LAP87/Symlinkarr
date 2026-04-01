@@ -14,7 +14,10 @@ use tracing::{error, info};
 use crate::backup::BackupManager;
 use crate::cleanup_audit::{self, CleanupScope};
 use crate::commands::backup::ensure_backup_restore_runtime_healthy;
-use crate::commands::cleanup::{apply_cleanup_prune_with_refresh, CleanupPruneApplyArgs};
+use crate::commands::cleanup::{
+    apply_cleanup_prune_with_refresh, assess_anime_remediation_group,
+    summarize_anime_remediation_blocked_reasons, CleanupPruneApplyArgs,
+};
 use crate::commands::config::validate_config_report;
 use crate::commands::discover::load_discovery_snapshot;
 use crate::commands::doctor::{collect_doctor_checks, DoctorCheckMode};
@@ -622,25 +625,69 @@ pub async fn get_cleanup_anime_remediation(
     match build_anime_remediation_report(&state.config, &state.database, &plex_db_path, query.full)
         .await
     {
-        Ok(Some(report)) => Html(
-            AnimeRemediationTemplate {
-                summary: Some(AnimeRemediationSummaryView {
-                    generated_at: report.generated_at,
-                    plex_db_path: plex_db_path.display().to_string(),
-                    full: query.full,
-                    filesystem_mixed_root_groups: report.filesystem_mixed_root_groups,
-                    plex_duplicate_show_groups: report.plex_duplicate_show_groups,
-                    plex_hama_anidb_tvdb_groups: report.plex_hama_anidb_tvdb_groups,
-                    correlated_hama_split_groups: report.correlated_hama_split_groups,
-                    remediation_groups: report.remediation_groups,
-                    returned_groups: report.returned_groups,
-                }),
-                groups: report.groups.into_iter().map(Into::into).collect(),
-                error_message: None,
+        Ok(Some(report)) => {
+            let assessed_groups = report
+                .groups
+                .iter()
+                .map(assess_anime_remediation_group)
+                .collect::<Result<Vec<_>, _>>();
+
+            match assessed_groups {
+                Ok(assessed_groups) => {
+                    let eligible_groups = assessed_groups
+                        .iter()
+                        .filter(|group| group.eligible)
+                        .count();
+                    let blocked_groups = assessed_groups.len().saturating_sub(eligible_groups);
+                    let blocked_reason_summary =
+                        summarize_anime_remediation_blocked_reasons(&assessed_groups)
+                            .into_iter()
+                            .map(Into::into)
+                            .collect();
+
+                    Html(
+                        AnimeRemediationTemplate {
+                            summary: Some(AnimeRemediationSummaryView {
+                                generated_at: report.generated_at,
+                                plex_db_path: plex_db_path.display().to_string(),
+                                full: query.full,
+                                filesystem_mixed_root_groups: report.filesystem_mixed_root_groups,
+                                plex_duplicate_show_groups: report.plex_duplicate_show_groups,
+                                plex_hama_anidb_tvdb_groups: report.plex_hama_anidb_tvdb_groups,
+                                correlated_hama_split_groups: report.correlated_hama_split_groups,
+                                remediation_groups: report.remediation_groups,
+                                returned_groups: report.returned_groups,
+                                eligible_groups,
+                                blocked_groups,
+                                blocked_reason_summary,
+                            }),
+                            groups: assessed_groups
+                                .into_iter()
+                                .map(AnimeRemediationGroupView::from_plan_group)
+                                .collect(),
+                            error_message: None,
+                        }
+                        .render()
+                        .unwrap_or_else(|e| e.to_string()),
+                    )
+                }
+                Err(err) => {
+                    error!("Failed to assess anime remediation backlog: {}", err);
+                    Html(
+                        AnimeRemediationTemplate {
+                            summary: None,
+                            groups: vec![],
+                            error_message: Some(format!(
+                                "Failed to assess anime remediation backlog: {}",
+                                err
+                            )),
+                        }
+                        .render()
+                        .unwrap_or_else(|e| e.to_string()),
+                    )
+                }
             }
-            .render()
-            .unwrap_or_else(|e| e.to_string()),
-        ),
+        }
         Ok(None) => Html(
             AnimeRemediationTemplate {
                 summary: None,

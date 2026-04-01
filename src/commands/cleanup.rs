@@ -170,24 +170,24 @@ where
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct AnimeRemediationPlanGroup {
-    normalized_title: String,
-    eligible: bool,
+    pub(crate) normalized_title: String,
+    pub(crate) eligible: bool,
     #[serde(
         default,
         deserialize_with = "deserialize_anime_remediation_block_reasons"
     )]
-    block_reasons: Vec<AnimeRemediationBlockReason>,
-    recommended_tagged_root: crate::commands::report::AnimeRootUsageSample,
-    alternate_tagged_roots: Vec<crate::commands::report::AnimeRootUsageSample>,
-    legacy_roots: Vec<crate::commands::report::AnimeRootUsageSample>,
-    legacy_symlink_candidates: usize,
-    broken_symlink_candidates: usize,
-    legacy_media_files: usize,
-    candidate_symlink_samples: Vec<PathBuf>,
-    plex_live_rows: usize,
-    plex_deleted_rows: usize,
-    plex_guid_kinds: Vec<String>,
-    plex_guids: Vec<String>,
+    pub(crate) block_reasons: Vec<AnimeRemediationBlockReason>,
+    pub(crate) recommended_tagged_root: crate::commands::report::AnimeRootUsageSample,
+    pub(crate) alternate_tagged_roots: Vec<crate::commands::report::AnimeRootUsageSample>,
+    pub(crate) legacy_roots: Vec<crate::commands::report::AnimeRootUsageSample>,
+    pub(crate) legacy_symlink_candidates: usize,
+    pub(crate) broken_symlink_candidates: usize,
+    pub(crate) legacy_media_files: usize,
+    pub(crate) candidate_symlink_samples: Vec<PathBuf>,
+    pub(crate) plex_live_rows: usize,
+    pub(crate) plex_deleted_rows: usize,
+    pub(crate) plex_guid_kinds: Vec<String>,
+    pub(crate) plex_guids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1083,7 +1083,7 @@ async fn build_anime_remediation_plan_report(
 
     let plan_groups: Vec<_> = filtered_groups
         .iter()
-        .map(build_anime_remediation_plan_group)
+        .map(assess_anime_remediation_group)
         .collect::<Result<Vec<_>>>()?;
 
     let eligible_groups: Vec<_> = plan_groups
@@ -1092,7 +1092,7 @@ async fn build_anime_remediation_plan_report(
         .cloned()
         .collect();
     let blocked_groups = plan_groups.len().saturating_sub(eligible_groups.len());
-    let blocked_reason_summary = build_anime_remediation_blocked_reason_summary(&plan_groups);
+    let blocked_reason_summary = summarize_anime_remediation_blocked_reasons(&plan_groups);
     let cleanup_report = build_anime_remediation_cleanup_report(&eligible_groups);
     let preview_outcome = build_anime_remediation_prune_preview(cfg, db, &cleanup_report).await?;
 
@@ -1125,7 +1125,7 @@ fn remediation_group_matches_title_filter(
     haystack.contains(&needle)
 }
 
-fn build_anime_remediation_plan_group(
+pub(crate) fn assess_anime_remediation_group(
     sample: &AnimeRemediationSample,
 ) -> Result<AnimeRemediationPlanGroup> {
     let mut candidate_paths = BTreeSet::new();
@@ -1331,7 +1331,7 @@ fn build_anime_remediation_cleanup_report(
     }
 }
 
-fn build_anime_remediation_blocked_reason_summary(
+pub(crate) fn summarize_anime_remediation_blocked_reasons(
     groups: &[AnimeRemediationPlanGroup],
 ) -> Vec<AnimeRemediationBlockedReasonSummary> {
     let mut counts: std::collections::BTreeMap<String, AnimeRemediationBlockedReasonSummary> =
@@ -1555,7 +1555,7 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(&source, &legacy_symlink).unwrap();
 
-        let group = build_anime_remediation_plan_group(&sample_group(dir.path())).unwrap();
+        let group = assess_anime_remediation_group(&sample_group(dir.path())).unwrap();
         assert!(group.eligible);
         assert_eq!(group.legacy_symlink_candidates, 1);
         assert!(group.block_reasons.is_empty());
@@ -1570,7 +1570,7 @@ mod tests {
         std::fs::create_dir_all(legacy_root.join("Season 01")).unwrap();
         std::fs::write(legacy_root.join("Season 01/Show A - S01E01.mkv"), b"video").unwrap();
 
-        let group = build_anime_remediation_plan_group(&sample_group(dir.path())).unwrap();
+        let group = assess_anime_remediation_group(&sample_group(dir.path())).unwrap();
         assert!(!group.eligible);
         assert_eq!(group.legacy_media_files, 1);
         assert!(group
@@ -1592,8 +1592,8 @@ mod tests {
         std::fs::create_dir_all(legacy_root.join("Season 01")).unwrap();
         std::fs::write(legacy_root.join("Season 01/Show A - S01E01.mkv"), b"video").unwrap();
 
-        let blocked = build_anime_remediation_plan_group(&sample_group(dir.path())).unwrap();
-        let summary = build_anime_remediation_blocked_reason_summary(&[blocked]);
+        let blocked = assess_anime_remediation_group(&sample_group(dir.path())).unwrap();
+        let summary = summarize_anime_remediation_blocked_reasons(&[blocked]);
 
         assert_eq!(summary.len(), 2);
         assert!(matches!(

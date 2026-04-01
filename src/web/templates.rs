@@ -13,6 +13,7 @@ use super::{
     LastRepairOutcome, LastScanOutcome,
 };
 use crate::cleanup_audit::{CleanupReport, CleanupScope};
+use crate::commands::cleanup::{AnimeRemediationBlockedReasonSummary, AnimeRemediationPlanGroup};
 use crate::commands::report::AnimeRemediationSample;
 use crate::config::Config;
 use crate::db::{AcquisitionJobCounts, ScanHistoryRecord};
@@ -558,6 +559,16 @@ pub struct AnimeRemediationSummaryView {
     pub correlated_hama_split_groups: usize,
     pub remediation_groups: usize,
     pub returned_groups: usize,
+    pub eligible_groups: usize,
+    pub blocked_groups: usize,
+    pub blocked_reason_summary: Vec<AnimeRemediationBlockedReasonView>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AnimeRemediationBlockedReasonView {
+    pub label: String,
+    pub groups: usize,
+    pub recommended_action: String,
 }
 
 #[derive(Debug, Clone)]
@@ -575,6 +586,10 @@ pub struct AnimeRemediationGroupView {
     pub plex_deleted_rows: usize,
     pub plex_guid_kinds: Vec<String>,
     pub plex_guids: Vec<String>,
+    pub eligible: bool,
+    pub block_reasons: Vec<String>,
+    pub recommended_action: Option<String>,
+    pub candidate_symlink_samples: Vec<PathBuf>,
 }
 
 impl From<AnimeRemediationSample> for AnimeRemediationGroupView {
@@ -612,6 +627,71 @@ impl From<AnimeRemediationSample> for AnimeRemediationGroupView {
             plex_deleted_rows: value.plex_deleted_rows,
             plex_guid_kinds: value.plex_guid_kinds,
             plex_guids: value.plex_guids,
+            eligible: false,
+            block_reasons: Vec::new(),
+            recommended_action: None,
+            candidate_symlink_samples: Vec::new(),
+        }
+    }
+}
+
+impl AnimeRemediationGroupView {
+    pub fn from_plan_group(value: AnimeRemediationPlanGroup) -> Self {
+        let legacy_symlink_total = value
+            .legacy_roots
+            .iter()
+            .map(|root| root.filesystem_symlinks)
+            .sum();
+        let legacy_db_total = value
+            .legacy_roots
+            .iter()
+            .map(|root| root.db_active_links)
+            .sum();
+        let recommended_action = value
+            .block_reasons
+            .first()
+            .map(|reason| reason.recommended_action.clone());
+
+        Self {
+            normalized_title: value.normalized_title,
+            recommended_tagged_root: value.recommended_tagged_root.path,
+            recommended_filesystem_symlinks: value.recommended_tagged_root.filesystem_symlinks,
+            recommended_db_active_links: value.recommended_tagged_root.db_active_links,
+            alternate_tagged_roots: value
+                .alternate_tagged_roots
+                .into_iter()
+                .map(|root| root.path)
+                .collect(),
+            legacy_roots: value
+                .legacy_roots
+                .into_iter()
+                .map(|root| root.path)
+                .collect(),
+            legacy_symlink_total,
+            legacy_db_total,
+            plex_total_rows: value.plex_live_rows + value.plex_deleted_rows,
+            plex_live_rows: value.plex_live_rows,
+            plex_deleted_rows: value.plex_deleted_rows,
+            plex_guid_kinds: value.plex_guid_kinds,
+            plex_guids: value.plex_guids,
+            eligible: value.eligible,
+            block_reasons: value
+                .block_reasons
+                .into_iter()
+                .map(|reason| reason.message)
+                .collect(),
+            recommended_action,
+            candidate_symlink_samples: value.candidate_symlink_samples,
+        }
+    }
+}
+
+impl From<AnimeRemediationBlockedReasonSummary> for AnimeRemediationBlockedReasonView {
+    fn from(value: AnimeRemediationBlockedReasonSummary) -> Self {
+        Self {
+            label: value.label,
+            groups: value.groups,
+            recommended_action: value.recommended_action,
         }
     }
 }
@@ -1078,20 +1158,27 @@ mod tests {
                 correlated_hama_split_groups: 106,
                 remediation_groups: 106,
                 returned_groups: 50,
-            }),
-            groups: vec![AnimeRemediationGroupView::from(AnimeRemediationSample {
-                normalized_title: "Mobile Suit Gundam SEED".to_string(),
-                recommended_tagged_root: AnimeRootUsageSample {
-                    path: PathBuf::from("/plex/anime/Mobile Suit Gundam SEED (2002) {tvdb-123}"),
-                    filesystem_symlinks: 49,
-                    db_active_links: 49,
-                },
-                alternate_tagged_roots: vec![],
-                legacy_roots: vec![AnimeRootUsageSample {
-                    path: PathBuf::from("/plex/anime/Mobile Suit Gundam SEED"),
-                    filesystem_symlinks: 99,
-                    db_active_links: 0,
+                eligible_groups: 1,
+                blocked_groups: 49,
+                blocked_reason_summary: vec![AnimeRemediationBlockedReasonView {
+                    label: "legacy roots still contain tracked DB links".to_string(),
+                    groups: 32,
+                    recommended_action:
+                        "Do not auto-remediate yet; first move or prune the DB-tracked legacy links."
+                            .to_string(),
                 }],
+            }),
+            groups: vec![AnimeRemediationGroupView {
+                normalized_title: "Mobile Suit Gundam SEED".to_string(),
+                recommended_tagged_root: PathBuf::from(
+                    "/plex/anime/Mobile Suit Gundam SEED (2002) {tvdb-123}",
+                ),
+                recommended_filesystem_symlinks: 49,
+                recommended_db_active_links: 49,
+                alternate_tagged_roots: vec![],
+                legacy_roots: vec![PathBuf::from("/plex/anime/Mobile Suit Gundam SEED")],
+                legacy_symlink_total: 99,
+                legacy_db_total: 0,
                 plex_total_rows: 2,
                 plex_live_rows: 2,
                 plex_deleted_rows: 0,
@@ -1100,7 +1187,14 @@ mod tests {
                     "com.plexapp.agents.hama://anidb-1".to_string(),
                     "com.plexapp.agents.hama://tvdb-2".to_string(),
                 ],
-            })],
+                eligible: false,
+                block_reasons: vec!["legacy roots still contain 3 tracked DB links".to_string()],
+                recommended_action: Some(
+                    "Do not auto-remediate yet; first move or prune the DB-tracked legacy links."
+                        .to_string(),
+                ),
+                candidate_symlink_samples: Vec::new(),
+            }],
             error_message: None,
         };
 
@@ -1110,5 +1204,7 @@ mod tests {
         assert!(html.contains("Recommended tagged root"));
         assert!(html.contains("Sample View"));
         assert!(html.contains("hama-anidb"));
+        assert!(html.contains("visible blocked"));
+        assert!(html.contains("legacy roots still contain tracked DB links"));
     }
 }

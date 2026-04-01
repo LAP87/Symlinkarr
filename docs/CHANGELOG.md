@@ -74,6 +74,22 @@
 - `LD_LIBRARY_PATH=/usr/lib:/usr/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-run-detail-clippy cargo clippy --all-targets --all-features -- -D warnings`
   - result: passed locally
 
+## 2026-04-01 - Anime Remediation Backlog Guidance
+
+### Code Changes
+
+- reused the same remediation assessment logic behind preview/apply on the read-only anime backlog page, so visible groups now show whether they are eligible or blocked and why.
+  - files: `src/commands/cleanup.rs`, `src/web/handlers.rs`, `src/web/templates.rs`, `src/web/ui/anime_remediation.html`
+- backlog summary now surfaces visible eligible/blocked counts and the top blocked reason classes with recommended operator actions, instead of making the operator infer all of that from raw root counts.
+  - files: `src/web/templates.rs`, `src/web/ui/anime_remediation.html`
+
+### Validation
+
+- `CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-anime-ui-test cargo test -q`
+  - result: passed locally
+- `LD_LIBRARY_PATH=/usr/lib:/usr/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-anime-ui-clippy cargo clippy --all-targets --all-features -- -D warnings`
+  - result: passed locally
+
 ## 2026-04-01 - Per-Backend Scan Refresh History
 
 ### Code Changes
