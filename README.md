@@ -252,7 +252,7 @@ jellyfin:
   abort_refresh_when_capped: true
 ```
 
-For now, enable only one refresh backend at a time. Symlinkarr fails closed if `plex`, `emby`, and `jellyfin` refresh backends overlap.
+You can enable one, many, or none of the refresh backends. When more than one is enabled, Symlinkarr fans out guarded invalidation and keeps aggregate scan telemetry plus per-backend mutation details.
 
 Optional Emby or Jellyfin invalidation:
 
@@ -278,7 +278,7 @@ jellyfin:
   abort_refresh_when_capped: true
 ```
 
-Enable only one media-server refresh backend at a time. Plex, Emby, and Jellyfin now share the same guarded invalidation boundary, but Symlinkarr deliberately fails closed if multiple refresh backends are enabled together.
+Plex, Emby, and Jellyfin can now share the same guarded invalidation boundary at the same time. Scan history keeps the legacy aggregate refresh counters for compatibility, while mutation responses expose per-backend invalidation details.
 
 When `--config` is omitted, Symlinkarr searches:
 

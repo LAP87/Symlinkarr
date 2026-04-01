@@ -20,8 +20,8 @@ use crate::library_scanner::LibraryScanner;
 use crate::linker::{LinkProcessSummary, Linker};
 use crate::matcher::{MatchRunOutput, MatchTelemetry, Matcher};
 use crate::media_servers::{
-    configured_invalidation_server, has_configured_invalidation_server, refresh_library_paths,
-    LibraryRefreshTelemetry,
+    configured_refresh_backends, display_server_list, has_configured_invalidation_server,
+    refresh_library_paths, LibraryRefreshTelemetry,
 };
 use crate::models::{LibraryItem, MatchResult, MediaId, MediaType, SourceItem};
 use crate::source_scanner::SourceScanner;
@@ -207,9 +207,12 @@ pub(crate) async fn run_scan(
                 telemetry.plex_refresh = plex_refresh_started.elapsed();
                 telemetry.plex_refresh_stats.requested_paths = link_summary.refresh_paths.len();
                 telemetry.plex_refresh_stats.skipped_batches = 1;
-                let prefix = configured_invalidation_server(cfg)
-                    .map(|server| format!("{} refresh failed", server))
-                    .unwrap_or_else(|| "Media-server refresh failed".to_string());
+                let servers = configured_refresh_backends(cfg);
+                let prefix = if servers.is_empty() {
+                    "Media-server refresh failed".to_string()
+                } else {
+                    format!("{} refresh failed", display_server_list(&servers))
+                };
                 user_println(format!("   ⚠️  {}: {}", prefix, e));
             }
         }

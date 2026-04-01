@@ -6,6 +6,31 @@
 - posture: `stable core, evolving ops`
 - intended use: local-first host or Docker installs, with Windows 11 users running through WSL2 or a Linux container
 
+## 2026-04-01 - Multi-Server Refresh Fan-Out
+
+### Code Changes
+
+- removed the fail-closed single-backend restriction for media-server invalidation. Plex, Emby, and Jellyfin refresh backends can now run together, with aggregate refresh telemetry for scan history and per-backend invalidation detail for mutation responses.
+  - files: `src/media_servers/mod.rs`, `src/config.rs`, `src/commands/scan.rs`, `src/commands/cleanup.rs`, `src/commands/repair.rs`
+- updated local/operator docs and config examples so they no longer claim only one backend can be active at once.
+  - files: `README.md`, `docs/CLI_MANUAL.md`, `docs/API_SCHEMA.md`, `docs/MEDIA_SERVER_ADAPTER_PLAN.md`, `config.example.yaml`, `config.docker.yaml`
+
+### Validation
+
+- `CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-emby cargo test -q`
+  - result: `532 passed; 0 failed`
+- `LD_LIBRARY_PATH=/usr/lib:/usr/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-emby cargo clippy --all-targets --all-features -- -D warnings`
+  - result: passed
+- `CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-emby cargo run -- config validate --output json`
+  - result: `ok: true`, `errors: []`, `warnings: []`
+- `CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-emby cargo run -- status --health --output json`
+  - result: Plex `6` sections, Emby `3` libraries, Jellyfin `3` libraries
+- live invalidation smoke:
+  - `POST /Library/Media/Updated` returned `204` from both Emby and Jellyfin for a real library path
+- live scan:
+  - `cargo run -- scan --library Anime`
+  - result: `9 created`, `3 updated`, with fan-out invalidation to Plex, Emby, and Jellyfin in one run
+
 ## 2026-03-31 - Emby and Jellyfin Adapter Activation
 
 ### Code Changes

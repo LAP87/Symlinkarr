@@ -1017,21 +1017,6 @@ impl Config {
                 .push("api.cache_ttl_hours must be greater than 0".to_string());
         }
 
-        let active_media_refresh_backends = [
-            ("plex", self.has_plex_refresh()),
-            ("emby", self.has_emby_refresh()),
-            ("jellyfin", self.has_jellyfin_refresh()),
-        ]
-        .into_iter()
-        .filter_map(|(name, enabled)| enabled.then_some(name))
-        .collect::<Vec<_>>();
-        if active_media_refresh_backends.len() > 1 {
-            report.errors.push(format!(
-                "Only one media-server refresh backend may be enabled at a time; active backends: {}",
-                active_media_refresh_backends.join(", ")
-            ));
-        }
-
         if self.web.enabled {
             let bind_address = self.web.bind_address.trim();
             if bind_address.is_empty() {
@@ -2267,7 +2252,7 @@ realdebrid:
     }
 
     #[test]
-    fn validate_runtime_settings_rejects_multiple_media_refresh_backends() {
+    fn validate_runtime_settings_allows_multiple_media_refresh_backends() {
         let mut cfg = runtime_config_fixture();
         cfg.plex.url = "http://localhost:32400".to_string();
         cfg.plex.token = "plex-token".to_string();
@@ -2275,7 +2260,7 @@ realdebrid:
         cfg.emby.api_key = "emby-key".to_string();
 
         let report = cfg.validate_runtime_settings();
-        assert!(report.errors.iter().any(|err| {
+        assert!(!report.errors.iter().any(|err| {
             err.contains("Only one media-server refresh backend may be enabled at a time")
         }));
     }

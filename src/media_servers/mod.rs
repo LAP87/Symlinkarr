@@ -54,12 +54,29 @@ impl MediaServerKind {
     }
 }
 
+pub(crate) fn display_server_list(servers: &[MediaServerKind]) -> String {
+    servers
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct LibraryInvalidationOutcome {
     pub server: Option<MediaServerKind>,
     pub requested_library_roots: usize,
     pub configured: bool,
     pub refresh: Option<LibraryRefreshTelemetry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub servers: Vec<LibraryInvalidationServerOutcome>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct LibraryInvalidationServerOutcome {
+    pub server: MediaServerKind,
+    pub requested_targets: usize,
+    pub refresh: LibraryRefreshTelemetry,
 }
 
 impl LibraryInvalidationOutcome {
@@ -75,7 +92,63 @@ impl LibraryInvalidationOutcome {
             ));
         }
 
+        if !self.servers.is_empty() {
+            let labels = self
+                .servers
+                .iter()
+                .map(|entry| entry.server.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let aggregate = self.refresh.as_ref()?;
+            if aggregate.aborted_due_to_cap {
+                return Some(format!(
+                    "{} refresh partially aborted by cap guard across {} server(s)",
+                    labels,
+                    self.servers.len()
+                ));
+            }
+            if aggregate.refreshed_batches > 0 {
+                return Some(format!(
+                    "{} refresh queued for {} request(s) across {} server(s)",
+                    labels,
+                    aggregate.refreshed_batches,
+                    self.servers.len()
+                ));
+            }
+            if aggregate.failed_batches > 0 || aggregate.skipped_batches > 0 {
+                return Some(format!(
+                    "{} refresh attempted with {} skipped and {} failed request(s) across {} server(s)",
+                    labels,
+                    aggregate.skipped_batches,
+                    aggregate.failed_batches,
+                    self.servers.len()
+                ));
+            }
+        }
+
         let refresh = self.refresh.as_ref()?;
+        if self.server.is_none() {
+            if refresh.aborted_due_to_cap {
+                return Some(format!(
+                    "media-server refresh aborted by cap guard for {} changed library root(s)",
+                    self.requested_library_roots
+                ));
+            }
+            if refresh.refreshed_batches > 0 {
+                return Some(format!(
+                    "media-server refresh queued for {} request(s)",
+                    refresh.refreshed_batches
+                ));
+            }
+            if refresh.failed_batches > 0 || refresh.skipped_batches > 0 {
+                return Some(format!(
+                    "media-server refresh attempted with {} skipped and {} failed request(s)",
+                    refresh.skipped_batches, refresh.failed_batches
+                ));
+            }
+            return None;
+        }
+
         let server = self.server.unwrap_or(MediaServerKind::Plex);
         if refresh.aborted_due_to_cap {
             return Some(format!(
@@ -100,6 +173,55 @@ impl LibraryInvalidationOutcome {
     }
 }
 
+fn merge_refresh_telemetry(
+    aggregate: &mut LibraryRefreshTelemetry,
+    addition: &LibraryRefreshTelemetry,
+) {
+    aggregate.requested_paths += addition.requested_paths;
+    aggregate.unique_paths += addition.unique_paths;
+    aggregate.planned_batches += addition.planned_batches;
+    aggregate.coalesced_batches += addition.coalesced_batches;
+    aggregate.coalesced_paths += addition.coalesced_paths;
+    aggregate.refreshed_batches += addition.refreshed_batches;
+    aggregate.refreshed_paths_covered += addition.refreshed_paths_covered;
+    aggregate.skipped_batches += addition.skipped_batches;
+    aggregate.unresolved_paths += addition.unresolved_paths;
+    aggregate.capped_batches += addition.capped_batches;
+    aggregate.aborted_due_to_cap |= addition.aborted_due_to_cap;
+    aggregate.failed_batches += addition.failed_batches;
+}
+
+fn refresh_targets_for_server(
+    server: MediaServerKind,
+    refresh_roots: &[PathBuf],
+    affected_paths: &[PathBuf],
+) -> Vec<PathBuf> {
+    match server {
+        MediaServerKind::Plex => refresh_roots.to_vec(),
+        MediaServerKind::Emby | MediaServerKind::Jellyfin => {
+            let mut paths = affected_paths.to_vec();
+            paths.sort();
+            paths.dedup();
+            paths
+        }
+    }
+}
+
+async fn refresh_paths_for_server(
+    cfg: &Config,
+    server: MediaServerKind,
+    refresh_paths: &[PathBuf],
+    emit_text: bool,
+) -> Result<LibraryRefreshTelemetry> {
+    match server {
+        MediaServerKind::Plex => plex::refresh_library_paths(cfg, refresh_paths, emit_text).await,
+        MediaServerKind::Emby => emby::refresh_library_paths(cfg, refresh_paths, emit_text).await,
+        MediaServerKind::Jellyfin => {
+            jellyfin::refresh_library_paths(cfg, refresh_paths, emit_text).await
+        }
+    }
+}
+
 pub(crate) async fn refresh_library_paths(
     cfg: &Config,
     refresh_paths: &[PathBuf],
@@ -109,24 +231,33 @@ pub(crate) async fn refresh_library_paths(
         return Ok(LibraryRefreshTelemetry::default());
     }
 
-    if let Some(server) = configured_invalidation_server(cfg) {
-        return match server {
-            MediaServerKind::Plex => {
-                plex::refresh_library_paths(cfg, refresh_paths, emit_text).await
-            }
-            MediaServerKind::Emby => {
-                emby::refresh_library_paths(cfg, refresh_paths, emit_text).await
-            }
-            MediaServerKind::Jellyfin => {
-                jellyfin::refresh_library_paths(cfg, refresh_paths, emit_text).await
-            }
-        };
+    let servers = configured_refresh_backends(cfg);
+    if servers.is_empty() {
+        return Ok(LibraryRefreshTelemetry {
+            requested_paths: refresh_paths.len(),
+            ..LibraryRefreshTelemetry::default()
+        });
     }
 
-    Ok(LibraryRefreshTelemetry {
-        requested_paths: refresh_paths.len(),
-        ..LibraryRefreshTelemetry::default()
-    })
+    let mut aggregate = LibraryRefreshTelemetry::default();
+    for server in servers {
+        match refresh_paths_for_server(cfg, server, refresh_paths, emit_text).await {
+            Ok(telemetry) => merge_refresh_telemetry(&mut aggregate, &telemetry),
+            Err(err) => {
+                if emit_text {
+                    crate::utils::user_println(format!(
+                        "   ⚠️  {} refresh failed: {}",
+                        server, err
+                    ));
+                }
+                aggregate.requested_paths += refresh_paths.len();
+                aggregate.failed_batches += 1;
+                aggregate.skipped_batches += 1;
+            }
+        }
+    }
+
+    Ok(aggregate)
 }
 
 pub(crate) async fn refresh_selected_library_roots(
@@ -167,32 +298,71 @@ pub(crate) async fn invalidate_after_mutation(
     emit_text: bool,
 ) -> Result<LibraryInvalidationOutcome> {
     let refresh_roots = refresh_root_paths_for_affected_paths(libraries, affected_paths);
-    let configured_server = configured_invalidation_server(cfg);
-    let configured = configured_server.is_some();
-    let refresh_targets = match configured_server {
-        Some(MediaServerKind::Plex) | None => refresh_roots.clone(),
-        Some(MediaServerKind::Emby) | Some(MediaServerKind::Jellyfin) => {
-            let mut paths = affected_paths.to_vec();
-            paths.sort();
-            paths.dedup();
-            paths
-        }
-    };
+    let configured_servers = configured_refresh_backends(cfg);
+    let configured = !configured_servers.is_empty();
 
-    if refresh_roots.is_empty() || refresh_targets.is_empty() {
+    if refresh_roots.is_empty() {
         return Ok(LibraryInvalidationOutcome {
+            server: configured_servers
+                .first()
+                .copied()
+                .filter(|_| configured_servers.len() == 1),
             configured,
             ..LibraryInvalidationOutcome::default()
         });
     }
 
     if configured {
-        let refresh = refresh_library_paths(cfg, &refresh_targets, emit_text).await?;
+        let mut aggregate = LibraryRefreshTelemetry::default();
+        let mut server_outcomes = Vec::new();
+        for server in configured_servers.iter().copied() {
+            let refresh_targets =
+                refresh_targets_for_server(server, &refresh_roots, affected_paths);
+            if refresh_targets.is_empty() {
+                continue;
+            }
+
+            match refresh_paths_for_server(cfg, server, &refresh_targets, emit_text).await {
+                Ok(refresh) => {
+                    merge_refresh_telemetry(&mut aggregate, &refresh);
+                    server_outcomes.push(LibraryInvalidationServerOutcome {
+                        server,
+                        requested_targets: refresh_targets.len(),
+                        refresh,
+                    });
+                }
+                Err(err) => {
+                    if emit_text {
+                        crate::utils::user_println(format!(
+                            "   ⚠️  {} refresh failed: {}",
+                            server, err
+                        ));
+                    }
+                    let refresh = LibraryRefreshTelemetry {
+                        requested_paths: refresh_targets.len(),
+                        skipped_batches: 1,
+                        failed_batches: 1,
+                        ..LibraryRefreshTelemetry::default()
+                    };
+                    merge_refresh_telemetry(&mut aggregate, &refresh);
+                    server_outcomes.push(LibraryInvalidationServerOutcome {
+                        server,
+                        requested_targets: refresh_targets.len(),
+                        refresh,
+                    });
+                }
+            }
+        }
+
         return Ok(LibraryInvalidationOutcome {
-            server: configured_server,
+            server: configured_servers
+                .first()
+                .copied()
+                .filter(|_| configured_servers.len() == 1),
             requested_library_roots: refresh_roots.len(),
             configured,
-            refresh: Some(refresh),
+            refresh: Some(aggregate),
+            servers: server_outcomes,
         });
     }
 
@@ -201,19 +371,12 @@ pub(crate) async fn invalidate_after_mutation(
         requested_library_roots: refresh_roots.len(),
         configured,
         refresh: None,
+        servers: Vec::new(),
     })
 }
 
-pub(crate) fn configured_invalidation_server(cfg: &Config) -> Option<MediaServerKind> {
-    let enabled = configured_refresh_backends(cfg);
-    match enabled.as_slice() {
-        [server] => Some(*server),
-        _ => None,
-    }
-}
-
 pub(crate) fn has_configured_invalidation_server(cfg: &Config) -> bool {
-    configured_invalidation_server(cfg).is_some()
+    !configured_refresh_backends(cfg).is_empty()
 }
 
 pub(crate) fn configured_refresh_backends(cfg: &Config) -> Vec<MediaServerKind> {
@@ -398,23 +561,25 @@ mod tests {
     }
 
     #[test]
-    fn configured_invalidation_server_returns_none_without_backend() {
+    fn configured_refresh_backends_returns_empty_without_backend() {
         let cfg = test_config();
-        assert_eq!(configured_invalidation_server(&cfg), None);
+        assert!(configured_refresh_backends(&cfg).is_empty());
         assert!(!has_configured_invalidation_server(&cfg));
     }
 
     #[test]
-    fn configured_invalidation_server_fails_closed_with_multiple_backends() {
+    fn configured_refresh_backends_supports_multiple_backends() {
         let mut cfg = test_config();
         cfg.plex.url = "http://localhost:32400".to_string();
         cfg.plex.token = "plex-token".to_string();
         cfg.emby.url = "http://localhost:8096".to_string();
         cfg.emby.api_key = "emby-key".to_string();
 
-        assert_eq!(configured_refresh_backends(&cfg).len(), 2);
-        assert_eq!(configured_invalidation_server(&cfg), None);
-        assert!(!has_configured_invalidation_server(&cfg));
+        assert_eq!(
+            configured_refresh_backends(&cfg),
+            vec![MediaServerKind::Plex, MediaServerKind::Emby]
+        );
+        assert!(has_configured_invalidation_server(&cfg));
     }
 
     #[tokio::test]
@@ -424,7 +589,9 @@ mod tests {
         let outcome = invalidate_after_mutation(
             &cfg,
             &[library],
-            &[PathBuf::from("/mnt/storage/plex/anime/Show/Season 01/E01.mkv")],
+            &[PathBuf::from(
+                "/mnt/storage/plex/anime/Show/Season 01/E01.mkv",
+            )],
             false,
         )
         .await
@@ -434,5 +601,41 @@ mod tests {
         assert!(!outcome.configured);
         assert_eq!(outcome.requested_library_roots, 1);
         assert!(outcome.refresh.is_none());
+        assert!(outcome.servers.is_empty());
+    }
+
+    #[test]
+    fn summary_suffix_mentions_multiple_backends_when_present() {
+        let outcome = LibraryInvalidationOutcome {
+            server: None,
+            requested_library_roots: 2,
+            configured: true,
+            refresh: Some(LibraryRefreshTelemetry {
+                refreshed_batches: 3,
+                ..LibraryRefreshTelemetry::default()
+            }),
+            servers: vec![
+                LibraryInvalidationServerOutcome {
+                    server: MediaServerKind::Plex,
+                    requested_targets: 2,
+                    refresh: LibraryRefreshTelemetry {
+                        refreshed_batches: 1,
+                        ..LibraryRefreshTelemetry::default()
+                    },
+                },
+                LibraryInvalidationServerOutcome {
+                    server: MediaServerKind::Emby,
+                    requested_targets: 4,
+                    refresh: LibraryRefreshTelemetry {
+                        refreshed_batches: 2,
+                        ..LibraryRefreshTelemetry::default()
+                    },
+                },
+            ],
+        };
+
+        let summary = outcome.summary_suffix().unwrap();
+        assert!(summary.contains("Plex, Emby"));
+        assert!(summary.contains("across 2 server(s)"));
     }
 }

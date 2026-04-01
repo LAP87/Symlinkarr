@@ -361,7 +361,7 @@ Not found:
 
 Notes:
 
-- `plex_refresh_ms` remains the phase runtime for compatibility, while the nested `plex_refresh` object exposes request pressure, coalescing, capping, cap-guard aborts, failures, and actual queued coverage.
+- `plex_refresh_ms` remains the phase runtime for compatibility, while the nested `plex_refresh` object exposes the aggregate request pressure, coalescing, capping, cap-guard aborts, failures, and actual queued coverage across all active media-server refresh backends.
 
 ## `GET /api/v1/report/anime-remediation`
 
@@ -441,17 +441,55 @@ Response:
   "skipped": 0,
   "safety_snapshot": "/home/lenny/apps/Symlinkarr/backups/safety-anime-remediation-20260330-201702.json",
   "media_server_invalidation": {
-    "server": "plex",
+    "server": null,
     "requested_library_roots": 1,
     "configured": true,
+    "servers": [
+      {
+        "server": "plex",
+        "requested_targets": 1,
+        "refresh": {
+          "requested_paths": 1,
+          "unique_paths": 1,
+          "planned_batches": 1,
+          "coalesced_batches": 0,
+          "coalesced_paths": 0,
+          "refreshed_batches": 1,
+          "refreshed_paths_covered": 1,
+          "skipped_batches": 0,
+          "unresolved_paths": 0,
+          "capped_batches": 0,
+          "aborted_due_to_cap": false,
+          "failed_batches": 0
+        }
+      },
+      {
+        "server": "emby",
+        "requested_targets": 12,
+        "refresh": {
+          "requested_paths": 12,
+          "unique_paths": 12,
+          "planned_batches": 1,
+          "coalesced_batches": 0,
+          "coalesced_paths": 0,
+          "refreshed_batches": 1,
+          "refreshed_paths_covered": 12,
+          "skipped_batches": 0,
+          "unresolved_paths": 0,
+          "capped_batches": 0,
+          "aborted_due_to_cap": false,
+          "failed_batches": 0
+        }
+      }
+    ],
     "refresh": {
-      "requested_paths": 1,
-      "unique_paths": 1,
-      "planned_batches": 1,
+      "requested_paths": 13,
+      "unique_paths": 13,
+      "planned_batches": 2,
       "coalesced_batches": 0,
       "coalesced_paths": 0,
-      "refreshed_batches": 1,
-      "refreshed_paths_covered": 1,
+      "refreshed_batches": 2,
+      "refreshed_paths_covered": 13,
       "skipped_batches": 0,
       "unresolved_paths": 0,
       "capped_batches": 0,
@@ -467,7 +505,9 @@ Notes:
 - `report_path` must canonicalize inside the configured backup directory; symlink escapes under the backup tree are rejected.
 - Apply keeps the same runtime safety gates as the CLI path.
 - `cleanup.prune.quarantine_foreign` must be enabled; this workflow is intentionally quarantine-first.
-- `media_server_invalidation` reports the post-apply library invalidation step. Plex, Emby, and Jellyfin are all valid backends behind the same module boundary, but only one refresh backend may be enabled at a time.
+- `media_server_invalidation` reports the post-apply library invalidation step.
+- `media_server_invalidation.refresh` is the aggregate refresh telemetry across all active media servers.
+- `media_server_invalidation.servers[]` carries the per-backend breakdown when one or more refresh backends were active.
 - The invalidation step uses only the library roots that actually contained changed symlinks, not every selected library root.
 
 If `plex_db` is omitted, Symlinkarr tries a few common local Plex DB paths first.
@@ -719,17 +759,55 @@ Response schema:
   "quarantined": 0,
   "skipped": 2,
   "media_server_invalidation": {
-    "server": "plex",
+    "server": null,
     "requested_library_roots": 2,
     "configured": true,
+    "servers": [
+      {
+        "server": "plex",
+        "requested_targets": 2,
+        "refresh": {
+          "requested_paths": 2,
+          "unique_paths": 2,
+          "planned_batches": 2,
+          "coalesced_batches": 0,
+          "coalesced_paths": 0,
+          "refreshed_batches": 2,
+          "refreshed_paths_covered": 2,
+          "skipped_batches": 0,
+          "unresolved_paths": 0,
+          "capped_batches": 0,
+          "aborted_due_to_cap": false,
+          "failed_batches": 0
+        }
+      },
+      {
+        "server": "emby",
+        "requested_targets": 17,
+        "refresh": {
+          "requested_paths": 17,
+          "unique_paths": 17,
+          "planned_batches": 1,
+          "coalesced_batches": 0,
+          "coalesced_paths": 0,
+          "refreshed_batches": 1,
+          "refreshed_paths_covered": 17,
+          "skipped_batches": 0,
+          "unresolved_paths": 0,
+          "capped_batches": 0,
+          "aborted_due_to_cap": false,
+          "failed_batches": 0
+        }
+      }
+    ],
     "refresh": {
-      "requested_paths": 2,
-      "unique_paths": 2,
-      "planned_batches": 2,
+      "requested_paths": 19,
+      "unique_paths": 19,
+      "planned_batches": 3,
       "coalesced_batches": 0,
       "coalesced_paths": 0,
-      "refreshed_batches": 2,
-      "refreshed_paths_covered": 2,
+      "refreshed_batches": 3,
+      "refreshed_paths_covered": 19,
       "skipped_batches": 0,
       "unresolved_paths": 0,
       "capped_batches": 0,

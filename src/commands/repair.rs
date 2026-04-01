@@ -14,7 +14,9 @@ use crate::commands::{
 };
 use crate::config::Config;
 use crate::db::Database;
-use crate::media_servers::{configured_invalidation_server, invalidate_after_mutation};
+use crate::media_servers::{
+    configured_refresh_backends, display_server_list, invalidate_after_mutation,
+};
 use crate::models::MediaType;
 use crate::repair;
 use crate::RepairAction;
@@ -328,10 +330,11 @@ pub(crate) async fn execute_repair_auto(
 
     let affected_paths = collect_repair_affected_paths(&results);
     if !dry_run && (repaired_count > 0 || stale_count > 0) && !affected_paths.is_empty() {
-        if let (true, Some(server)) = (emit_text, configured_invalidation_server(cfg)) {
+        let servers = configured_refresh_backends(cfg);
+        if emit_text && !servers.is_empty() {
             println!(
                 "   📺 Post-repair: refreshing affected library roots in {}...",
-                server
+                display_server_list(&servers)
             );
         }
         if let Err(err) =

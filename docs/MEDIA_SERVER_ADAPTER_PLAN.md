@@ -15,8 +15,9 @@ This document captures the next adapter steps after the first `media_servers` ro
 
 Today:
 
-- Plex, Emby, and Jellyfin can each be configured as the one active refresh backend.
-- Symlinkarr still fails closed if multiple refresh backends are enabled together.
+- Plex, Emby, and Jellyfin can be configured together for post-mutation invalidation fan-out.
+- Scan history still persists aggregate refresh counters under the legacy `plex_refresh_*` field names for compatibility.
+- CLI/web/API mutation responses can now expose per-backend invalidation results.
 - Plex remains the only backend with DB/report/remediation-specific code.
 - Emby and Jellyfin are path-invalidation adapters only for now.
 
@@ -86,11 +87,11 @@ Those should live beside `plex_db.rs`, not back at repo root.
 
 ### Phase 3
 
-If fan-out ever becomes desirable, design it deliberately. Do not silently refresh multiple servers from one mutation event until:
+Follow-up hardening after fan-out:
 
-- telemetry stays honest per backend
-- cap guards are enforced per backend
-- CLI/web/API surfaces can report partial success cleanly
+- keep aggregate scan telemetry understandable despite the legacy `plex_refresh_*` field names
+- decide whether scan history should also persist explicit per-backend refresh slices
+- extend the same fan-out semantics to any future Emby/Jellyfin remediation helpers
 
 ## Safety Rules
 
@@ -102,6 +103,5 @@ If fan-out ever becomes desirable, design it deliberately. Do not silently refre
 
 ## Open Questions
 
-- Should Symlinkarr support one active media-server backend at a time, or deliberate fan-out to multiple backends?
 - Do we want item-id persistence for Jellyfin/Emby later, or is path-based invalidation enough for `1.0`?
 - Should future Emby/Jellyfin health checks expose section/library counts in the same `status --health` shape as Plex?

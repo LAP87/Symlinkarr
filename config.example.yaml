@@ -110,7 +110,8 @@ tautulli:
 #   max_refresh_batches_per_run: 12
 #   abort_refresh_when_capped: true
 
-# Only one of plex/emby/jellyfin refresh backends may be enabled at a time.
+# Plex, Emby, and Jellyfin refresh backends can be enabled together.
+# Refresh telemetry is aggregated in scan history and reported per backend in mutation responses.
 
 radarr:
   url: "http://host.docker.internal:7878"
