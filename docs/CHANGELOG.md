@@ -16,6 +16,8 @@
   - files: `src/web/api/mod.rs`, `src/web/templates.rs`, `src/web/ui/dashboard.html`, `src/web/ui/scan.html`, `src/web/ui/scan_history.html`, `src/web/ui/scan_run.html`, `docs/API_SCHEMA.md`
 - `status --health --output json` and `/api/v1/health` now expose the active `refresh_backends` list, making multi-server fan-out visible without having to infer it from per-service flags.
   - files: `src/commands/status.rs`, `src/web/api/mod.rs`, `docs/API_SCHEMA.md`, `docs/CLI_MANUAL.md`, `README.md`
+- dashboard, scan, and scan-history overviews now surface per-backend refresh outcome badges directly, so partial failures are visible without opening the full scan detail page.
+  - files: `src/web/ui/dashboard.html`, `src/web/ui/scan.html`, `src/web/ui/scan_history.html`, `src/web/handlers.rs`
 
 ### Validation
 

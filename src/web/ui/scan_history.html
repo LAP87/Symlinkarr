@@ -114,6 +114,21 @@
                     {% if run.plex_refresh_skipped_batches > 0 %}
                     <span class="badge badge-danger">skip {{ run.plex_refresh_skipped_batches }}</span>
                     {% endif %}
+                    {% if !run.media_server_refresh.is_empty() %}
+                    <div>
+                        {% for refresh in run.media_server_refresh %}
+                        {% if refresh.failed_batches > 0 %}
+                        <span class="badge badge-danger">{{ refresh.server }} failed</span>
+                        {% else if refresh.aborted_due_to_cap %}
+                        <span class="badge badge-danger">{{ refresh.server }} guard abort</span>
+                        {% else if refresh.skipped_batches > 0 %}
+                        <span class="badge badge-warning">{{ refresh.server }} skip {{ refresh.skipped_batches }}</span>
+                        {% else %}
+                        <span class="badge badge-info">{{ refresh.server }} {{ refresh.refreshed_batches }}/{{ refresh.planned_batches }}</span>
+                        {% endif %}
+                        {% endfor %}
+                    </div>
+                    {% endif %}
                     {% else %}
                     <span class="text-muted">n/a</span>
                     {% endif %}

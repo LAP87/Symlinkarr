@@ -1637,7 +1637,9 @@ mod tests {
             plex_refresh_capped_batches: 1,
             plex_refresh_aborted_due_to_cap: true,
             plex_refresh_failed_batches: 0,
-            media_server_refresh_json: None,
+            media_server_refresh_json: Some(
+                r#"[{"server":"plex","requested_targets":4,"refresh":{"requested_paths":3,"unique_paths":2,"planned_batches":2,"coalesced_batches":1,"coalesced_paths":2,"refreshed_batches":1,"refreshed_paths_covered":3,"skipped_batches":1,"unresolved_paths":0,"capped_batches":1,"aborted_due_to_cap":true,"failed_batches":0}},{"server":"emby","requested_targets":4,"refresh":{"requested_paths":1,"unique_paths":1,"planned_batches":1,"coalesced_batches":0,"coalesced_paths":0,"refreshed_batches":1,"refreshed_paths_covered":1,"skipped_batches":0,"unresolved_paths":0,"capped_batches":0,"aborted_due_to_cap":false,"failed_batches":0}}]"#.to_string(),
+            ),
             dead_link_sweep_ms: 80,
             cache_hit_ratio: Some(0.85),
             candidate_slots: 1024,
@@ -1755,6 +1757,8 @@ mod tests {
         assert!(body.contains("Queue 1"));
         assert!(body.contains("Cache Hit"));
         assert!(body.contains("Media refresh protections activated"));
+        assert!(body.contains("Plex guard abort"));
+        assert!(body.contains("Emby 1/1"));
     }
 
     #[tokio::test]
@@ -1771,6 +1775,8 @@ mod tests {
         assert!(body.contains("1024"));
         assert!(body.contains("4/6"));
         assert!(body.contains("Media refresh protections activated"));
+        assert!(body.contains("Plex guard abort"));
+        assert!(body.contains("Emby 1/1"));
     }
 
     #[tokio::test]
@@ -2070,6 +2076,18 @@ mod tests {
 
         assert!(body.contains(&format!("/scan/history/{}", movie_run_id)));
         assert!(!body.contains(&format!("/scan/history/{}", anime_run_id)));
+    }
+
+    #[tokio::test]
+    async fn scan_history_renders_refresh_backend_badges() {
+        let ctx = test_context().await;
+        let body = render_body(
+            get_scan_history(State(ctx.state.clone()), Query(ScanHistoryQuery::default())).await,
+        )
+        .await;
+
+        assert!(body.contains("Plex guard abort"));
+        assert!(body.contains("Emby 1/1"));
     }
 
     #[tokio::test]
