@@ -1204,6 +1204,7 @@ mod tests {
             links_removed: 0,
             links_skipped: 0,
             ambiguous_skipped: 0,
+            skip_reason_json: None,
             runtime_checks_ms: 11,
             library_scan_ms: 22,
             source_inventory_ms: 33,

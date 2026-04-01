@@ -357,6 +357,11 @@ Response schema:
   "links_removed": 2,
   "links_skipped": 9314,
   "ambiguous_skipped": 70,
+  "skip_reasons": [
+    { "reason": "already_correct", "count": 6200 },
+    { "reason": "source_missing_before_link", "count": 3044 },
+    { "reason": "ambiguous_match", "count": 70 }
+  ],
   "runtime_checks_ms": 200,
   "library_scan_ms": 12400,
   "source_inventory_ms": 148200,
@@ -449,6 +454,7 @@ Notes:
 
 - `plex_refresh_ms` remains the phase runtime for compatibility, while the nested `plex_refresh` object exposes the aggregate request pressure, coalescing, capping, cap-guard aborts, failures, and actual queued coverage across all active media-server refresh backends.
 - `media_server_refresh` stores the per-backend refresh telemetry persisted with the scan run. Use it when you need to know which backend actually capped, skipped, or failed.
+- `skip_reasons` stores the structured aggregate reasons Symlinkarr persisted for skipped work during the run, combining linker guards and ambiguous-match skips into one operator-visible breakdown.
 
 ## `GET /api/v1/report/anime-remediation`
 

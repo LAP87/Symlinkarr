@@ -200,6 +200,12 @@ pub struct MediaServerRefreshServerView {
 }
 
 #[derive(Debug, Clone)]
+pub struct SkipReasonView {
+    pub reason: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Clone)]
 pub struct ScanRunView {
     pub id: i64,
     pub started_at: String,
@@ -215,6 +221,7 @@ pub struct ScanRunView {
     pub links_removed: i64,
     pub links_skipped: i64,
     pub ambiguous_skipped: i64,
+    pub skip_reasons: Vec<SkipReasonView>,
     pub runtime_checks: String,
     pub library_scan: String,
     pub source_inventory: String,
@@ -255,6 +262,22 @@ pub struct ScanRunView {
 }
 
 impl ScanRunView {
+    fn skip_reasons_from_record(record: &ScanHistoryRecord) -> Vec<SkipReasonView> {
+        let mut entries = record
+            .skip_reason_json
+            .as_deref()
+            .and_then(|json| {
+                serde_json::from_str::<std::collections::BTreeMap<String, i64>>(json).ok()
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(reason, count)| SkipReasonView { reason, count })
+            .collect::<Vec<_>>();
+
+        entries.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.reason.cmp(&b.reason)));
+        entries
+    }
+
     fn media_server_refresh_from_record(
         record: &ScanHistoryRecord,
     ) -> Vec<MediaServerRefreshServerView> {
@@ -279,6 +302,7 @@ impl ScanRunView {
     }
 
     pub fn from_record(record: ScanHistoryRecord) -> Self {
+        let skip_reasons = Self::skip_reasons_from_record(&record);
         let media_server_refresh = Self::media_server_refresh_from_record(&record);
         let total_runtime_ms = record.runtime_checks_ms
             + record.library_scan_ms
@@ -311,6 +335,7 @@ impl ScanRunView {
             links_removed: record.links_removed,
             links_skipped: record.links_skipped,
             ambiguous_skipped: record.ambiguous_skipped,
+            skip_reasons,
             runtime_checks: format_duration_ms(record.runtime_checks_ms),
             library_scan: format_duration_ms(record.library_scan_ms),
             source_inventory: format_duration_ms(record.source_inventory_ms),
@@ -717,6 +742,20 @@ mod tests {
             links_removed: 2,
             links_skipped: 9314,
             ambiguous_skipped: 70,
+            skip_reasons: vec![
+                SkipReasonView {
+                    reason: "already_correct".to_string(),
+                    count: 6200,
+                },
+                SkipReasonView {
+                    reason: "source_missing_before_link".to_string(),
+                    count: 3044,
+                },
+                SkipReasonView {
+                    reason: "ambiguous_match".to_string(),
+                    count: 70,
+                },
+            ],
             runtime_checks: "0.2s".to_string(),
             library_scan: "12.4s".to_string(),
             source_inventory: "148.2s".to_string(),
@@ -821,6 +860,9 @@ mod tests {
         assert!(html.contains("Queue and throttle signals"));
         assert!(html.contains("cap 1") || html.contains(">1<"));
         assert!(html.contains("Auto-Acquire"));
+        assert!(html.contains("Skip Reasons"));
+        assert!(html.contains("source_missing_before_link"));
+        assert!(html.contains(">3044<"));
         assert!(html.contains("Back to Scan History"));
         assert!(html.contains("77624480"));
     }

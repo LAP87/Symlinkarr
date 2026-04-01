@@ -33,6 +33,7 @@ pub struct ScanRunRecord {
     pub links_removed: i64,
     pub links_skipped: i64,
     pub ambiguous_skipped: i64,
+    pub skip_reason_json: Option<String>,
     pub runtime_checks_ms: i64,
     pub library_scan_ms: i64,
     pub source_inventory_ms: i64,
@@ -274,6 +275,7 @@ pub struct ScanHistoryRecord {
     pub links_removed: i64,
     pub links_skipped: i64,
     pub ambiguous_skipped: i64,
+    pub skip_reason_json: Option<String>,
     pub runtime_checks_ms: i64,
     pub library_scan_ms: i64,
     pub source_inventory_ms: i64,
@@ -317,7 +319,7 @@ pub struct Database {
     pool: SqlitePool,
 }
 
-const LATEST_SCHEMA_VERSION: i64 = 12;
+const LATEST_SCHEMA_VERSION: i64 = 13;
 
 // SqlitePool is Clone (wraps Arc), so Database can safely be Clone
 impl Clone for Database {
@@ -502,6 +504,7 @@ impl Database {
             10 => self.migration_v10_tx(tx).await,
             11 => self.migration_v11_tx(tx).await,
             12 => self.migration_v12_tx(tx).await,
+            13 => self.migration_v13_tx(tx).await,
             _ => anyhow::bail!("Unknown migration version {}", version),
         }
     }
@@ -607,6 +610,7 @@ impl Database {
                 links_removed INTEGER NOT NULL DEFAULT 0,
                 links_skipped INTEGER NOT NULL DEFAULT 0,
                 ambiguous_skipped INTEGER NOT NULL DEFAULT 0,
+                skip_reason_json TEXT,
                 runtime_checks_ms INTEGER NOT NULL DEFAULT 0,
                 library_scan_ms INTEGER NOT NULL DEFAULT 0,
                 source_inventory_ms INTEGER NOT NULL DEFAULT 0,
@@ -840,9 +844,29 @@ impl Database {
         Ok(())
     }
 
+    async fn migration_v13_tx(&self, tx: &mut sqlx::Transaction<'_, Sqlite>) -> Result<()> {
+        match sqlx::query("ALTER TABLE scan_runs ADD COLUMN skip_reason_json TEXT")
+            .execute(&mut **tx)
+            .await
+        {
+            Ok(_) => {}
+            Err(err) if err.to_string().contains("duplicate column name") => {}
+            Err(err) => return Err(err.into()),
+        }
+
+        Ok(())
+    }
+
     #[cfg(test)]
     async fn migrate_down_one(&self, current_version: i64) -> Result<()> {
         match current_version {
+            13 => {
+                if self.column_exists("scan_runs", "skip_reason_json").await? {
+                    sqlx::query("ALTER TABLE scan_runs DROP COLUMN skip_reason_json")
+                        .execute(&self.pool)
+                        .await?;
+                }
+            }
             12 => {
                 if self
                     .column_exists("scan_runs", "media_server_refresh_json")
@@ -1864,6 +1888,7 @@ impl Database {
                 links_removed,
                 links_skipped,
                 ambiguous_skipped,
+                skip_reason_json,
                 runtime_checks_ms,
                 library_scan_ms,
                 source_inventory_ms,
@@ -1899,7 +1924,7 @@ impl Database {
                 auto_acquire_failed,
                 auto_acquire_completed_linked,
                 auto_acquire_completed_unlinked
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(if run.dry_run { 1 } else { 0 })
         .bind(run.library_filter.as_deref())
@@ -1913,6 +1938,7 @@ impl Database {
         .bind(run.links_removed)
         .bind(run.links_skipped)
         .bind(run.ambiguous_skipped)
+        .bind(run.skip_reason_json.as_deref())
         .bind(run.runtime_checks_ms)
         .bind(run.library_scan_ms)
         .bind(run.source_inventory_ms)
@@ -2258,7 +2284,7 @@ impl Database {
         let rows = sqlx::query(
             "SELECT id, run_at, dry_run, library_filter, search_missing, library_items_found, source_items_found,
                     matches_found, links_created, links_updated, dead_marked,
-                    links_removed, links_skipped, ambiguous_skipped,
+                    links_removed, links_skipped, ambiguous_skipped, skip_reason_json,
                     runtime_checks_ms, library_scan_ms, source_inventory_ms,
                     matching_ms, title_enrichment_ms, linking_ms, plex_refresh_ms,
                     plex_refresh_requested_paths, plex_refresh_unique_paths,
@@ -2292,7 +2318,7 @@ impl Database {
         let row = sqlx::query(
             "SELECT id, run_at, dry_run, library_filter, search_missing, library_items_found, source_items_found,
                     matches_found, links_created, links_updated, dead_marked,
-                    links_removed, links_skipped, ambiguous_skipped,
+                    links_removed, links_skipped, ambiguous_skipped, skip_reason_json,
                     runtime_checks_ms, library_scan_ms, source_inventory_ms,
                     matching_ms, title_enrichment_ms, linking_ms, plex_refresh_ms,
                     plex_refresh_requested_paths, plex_refresh_unique_paths,
@@ -2363,6 +2389,7 @@ impl Database {
             links_removed: row.get("links_removed"),
             links_skipped: row.get("links_skipped"),
             ambiguous_skipped: row.get("ambiguous_skipped"),
+            skip_reason_json: row.get("skip_reason_json"),
             runtime_checks_ms: row.get("runtime_checks_ms"),
             library_scan_ms: row.get("library_scan_ms"),
             source_inventory_ms: row.get("source_inventory_ms"),
@@ -2847,6 +2874,19 @@ mod tests {
 
         assert!(db
             .column_exists("scan_runs", "media_server_refresh_json")
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_latest_migration_creates_skip_reason_json_column() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        assert!(db
+            .column_exists("scan_runs", "skip_reason_json")
             .await
             .unwrap());
     }
@@ -3691,6 +3731,10 @@ mod tests {
             links_removed: 1,
             links_skipped: 3,
             ambiguous_skipped: 7,
+            skip_reason_json: Some(
+                r#"{"already_correct":2,"source_missing_before_link":1,"ambiguous_match":7}"#
+                    .to_string(),
+            ),
             library_filter: Some("Anime".to_string()),
             search_missing: true,
             runtime_checks_ms: 11,
@@ -4021,6 +4065,7 @@ mod tests {
             source_items_found: 20,
             matches_found: 5,
             links_created: 2,
+            skip_reason_json: None,
             ..Default::default()
         })
         .await
@@ -4053,6 +4098,7 @@ mod tests {
                 links_removed: 0,
                 links_skipped: 0,
                 ambiguous_skipped: 0,
+                skip_reason_json: None,
                 ..Default::default()
             })
             .await
@@ -4087,6 +4133,7 @@ mod tests {
             matches_found: 5,
             links_created: 1,
             links_updated: 2,
+            skip_reason_json: None,
             ..Default::default()
         })
         .await
@@ -4100,6 +4147,7 @@ mod tests {
             matches_found: 15,
             links_created: 3,
             links_updated: 4,
+            skip_reason_json: None,
             ..Default::default()
         })
         .await

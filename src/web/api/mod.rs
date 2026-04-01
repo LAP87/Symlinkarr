@@ -202,6 +202,12 @@ pub struct ApiMediaServerRefreshServer {
 }
 
 #[derive(Serialize, Deserialize)]
+pub struct ApiSkipReasonCount {
+    pub reason: String,
+    pub count: i64,
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct ApiScanHistoryEntry {
     pub id: i64,
     pub started_at: String,
@@ -236,6 +242,7 @@ pub struct ApiScanRunDetail {
     pub links_removed: i64,
     pub links_skipped: i64,
     pub ambiguous_skipped: i64,
+    pub skip_reasons: Vec<ApiSkipReasonCount>,
     pub runtime_checks_ms: i64,
     pub library_scan_ms: i64,
     pub source_inventory_ms: i64,
@@ -892,6 +899,20 @@ fn media_server_refresh_from_record(
         .collect()
 }
 
+fn skip_reasons_from_record(record: &ScanHistoryRecord) -> Vec<ApiSkipReasonCount> {
+    let mut entries = record
+        .skip_reason_json
+        .as_deref()
+        .and_then(|json| serde_json::from_str::<std::collections::BTreeMap<String, i64>>(json).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(reason, count)| ApiSkipReasonCount { reason, count })
+        .collect::<Vec<_>>();
+
+    entries.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.reason.cmp(&b.reason)));
+    entries
+}
+
 fn scan_history_entry_from_record(record: ScanHistoryRecord) -> ApiScanHistoryEntry {
     let scope_label = scan_scope_label(&record);
     let total_runtime_ms = scan_total_runtime_ms(&record);
@@ -938,6 +959,7 @@ fn scan_run_detail_from_record(record: ScanHistoryRecord) -> ApiScanRunDetail {
     let started_at = record.started_at.clone();
     let plex_refresh = plex_refresh_summary_from_record(&record);
     let media_server_refresh = media_server_refresh_from_record(&record);
+    let skip_reasons = skip_reasons_from_record(&record);
 
     ApiScanRunDetail {
         id: record.id,
@@ -955,6 +977,7 @@ fn scan_run_detail_from_record(record: ScanHistoryRecord) -> ApiScanRunDetail {
         links_removed: record.links_removed,
         links_skipped: record.links_skipped,
         ambiguous_skipped: record.ambiguous_skipped,
+        skip_reasons,
         runtime_checks_ms: record.runtime_checks_ms,
         library_scan_ms: record.library_scan_ms,
         source_inventory_ms: record.source_inventory_ms,
@@ -1693,6 +1716,10 @@ mod tests {
             links_removed: 2,
             links_skipped: 9314,
             ambiguous_skipped: 70,
+            skip_reason_json: Some(
+                r#"{"already_correct":6200,"source_missing_before_link":3044,"ambiguous_match":70}"#
+                    .to_string(),
+            ),
             runtime_checks_ms: 200,
             library_scan_ms: 12_400,
             source_inventory_ms: 148_200,
@@ -1877,6 +1904,13 @@ mod tests {
         assert_eq!(json.plex_refresh.refreshed_batches, 4);
         assert_eq!(json.plex_refresh.capped_batches, 1);
         assert!(json.plex_refresh.aborted_due_to_cap);
+        assert_eq!(json.skip_reasons.len(), 3);
+        assert_eq!(json.skip_reasons[0].reason, "already_correct");
+        assert_eq!(json.skip_reasons[0].count, 6200);
+        assert_eq!(json.skip_reasons[1].reason, "source_missing_before_link");
+        assert_eq!(json.skip_reasons[1].count, 3044);
+        assert_eq!(json.skip_reasons[2].reason, "ambiguous_match");
+        assert_eq!(json.skip_reasons[2].count, 70);
         assert_eq!(json.auto_acquire_successes, 4);
         assert_eq!(json.auto_acquire_requests, 10);
         assert!(json.search_missing);
@@ -1915,6 +1949,7 @@ mod tests {
                 links_updated: 8,
                 dead_marked: 2,
                 links_removed: 1,
+                skip_reason_json: None,
                 runtime_checks_ms: 10,
                 library_scan_ms: 20,
                 source_inventory_ms: 30,
@@ -1989,6 +2024,7 @@ mod tests {
                 matches_found: 3,
                 links_created: 4,
                 links_updated: 5,
+                skip_reason_json: None,
                 ..Default::default()
             })
             .await

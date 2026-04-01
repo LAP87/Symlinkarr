@@ -74,6 +74,28 @@
 <section class="card">
     <div class="section-head">
         <div>
+            <p class="section-kicker">Skip Reasons</p>
+            <h2 class="section-title">Why work was skipped</h2>
+        </div>
+    </div>
+
+    {% if !run.skip_reasons.is_empty() %}
+    <div class="metric-grid metric-grid--compact">
+        {% for reason in run.skip_reasons %}
+        <div class="metric-card">
+            <span class="metric-label mono">{{ reason.reason }}</span>
+            <strong>{{ reason.count }}</strong>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <p class="text-muted">This run did not persist any structured skip reasons.</p>
+    {% endif %}
+</section>
+
+<section class="card">
+    <div class="section-head">
+        <div>
             <p class="section-kicker">Media Refresh</p>
             <h2 class="section-title">Queue and throttle signals</h2>
         </div>

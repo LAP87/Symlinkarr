@@ -26,6 +26,22 @@
 - local packaging smoke
   - result: produced `symlinkarr-v0.3.0-beta.1-linux-amd64.tar.gz` and matching `.sha256`
 
+## 2026-04-01 - Scan Skip Reason Visibility
+
+### Code Changes
+
+- persisted structured scan skip reasons on `scan_runs`, so completed runs now carry an operator-readable breakdown instead of only a single `links_skipped` aggregate.
+  - files: `src/db.rs`, `src/commands/scan.rs`, `src/linker.rs`
+- scan run detail in both web and JSON API now exposes those persisted reasons as sorted counts, making `already_correct`, `source_missing_before_link`, `ambiguous_match`, and guard skips visible without log digging.
+  - files: `src/web/templates.rs`, `src/web/ui/scan_run.html`, `src/web/api/mod.rs`, `docs/API_SCHEMA.md`
+
+### Validation
+
+- `CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-skip-reasons cargo test -q`
+  - result: passed locally
+- `LD_LIBRARY_PATH=/usr/lib:/usr/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-skip-reasons cargo clippy --all-targets --all-features -- -D warnings`
+  - result: passed locally
+
 ## 2026-04-01 - Per-Backend Scan Refresh History
 
 ### Code Changes

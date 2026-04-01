@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -430,6 +430,7 @@ pub(crate) async fn run_scan(
         links_removed: dead.removed as i64,
         links_skipped: (link_summary.skipped + dead.skipped) as i64,
         ambiguous_skipped: telemetry.match_stats.ambiguous_skipped as i64,
+        skip_reason_json: build_skip_reason_json(&telemetry, &link_summary, &dead)?,
         runtime_checks_ms: duration_ms_i64(telemetry.runtime_checks),
         library_scan_ms: duration_ms_i64(telemetry.library_scan),
         source_inventory_ms: duration_ms_i64(telemetry.source_inventory),
@@ -473,6 +474,31 @@ pub(crate) async fn run_scan(
 
     info!("=== Scan Complete ===");
     Ok((linked_total as i64, dead.removed as i64))
+}
+
+fn build_skip_reason_json(
+    telemetry: &ScanTelemetry,
+    link_summary: &LinkProcessSummary,
+    dead_summary: &crate::linker::DeadLinkSummary,
+) -> Result<Option<String>> {
+    let mut reasons: BTreeMap<String, i64> = BTreeMap::new();
+
+    for (reason, count) in &link_summary.skip_reasons {
+        *reasons.entry(reason.clone()).or_insert(0) += *count as i64;
+    }
+    for (reason, count) in &dead_summary.skip_reasons {
+        *reasons.entry(reason.clone()).or_insert(0) += *count as i64;
+    }
+    if telemetry.match_stats.ambiguous_skipped > 0 {
+        *reasons.entry("ambiguous_match".to_string()).or_insert(0) +=
+            telemetry.match_stats.ambiguous_skipped as i64;
+    }
+
+    if reasons.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(serde_json::to_string(&reasons)?))
+    }
 }
 
 async fn collect_source_items(

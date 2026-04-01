@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -24,20 +24,27 @@ pub struct LinkProcessSummary {
     pub created: u64,
     pub updated: u64,
     pub skipped: u64,
+    pub skip_reasons: BTreeMap<String, u64>,
     pub refresh_paths: Vec<PathBuf>,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct DeadLinkSummary {
     pub dead_marked: u64,
     pub removed: u64,
     pub skipped: u64,
+    pub skip_reasons: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LinkWriteResult {
     outcome: LinkWriteOutcome,
+    skip_reason: Option<&'static str>,
     refresh_path: Option<PathBuf>,
+}
+
+fn increment_skip_reason(skip_reasons: &mut BTreeMap<String, u64>, reason: &str) {
+    *skip_reasons.entry(reason.to_string()).or_insert(0) += 1;
 }
 
 fn destructive_source_exists(
@@ -134,6 +141,7 @@ impl Linker {
                 )
                 .await;
                 summary.skipped += 1;
+                increment_skip_reason(&mut summary.skip_reasons, "source_missing_before_link");
                 continue;
             }
 
@@ -145,7 +153,12 @@ impl Linker {
                     match result.outcome {
                         LinkWriteOutcome::Created => summary.created += 1,
                         LinkWriteOutcome::Updated => summary.updated += 1,
-                        LinkWriteOutcome::Skipped => summary.skipped += 1,
+                        LinkWriteOutcome::Skipped => {
+                            summary.skipped += 1;
+                            if let Some(reason) = result.skip_reason {
+                                increment_skip_reason(&mut summary.skip_reasons, reason);
+                            }
+                        }
                     }
                     if let Some(path) = result.refresh_path {
                         summary.refresh_paths.push(path);
@@ -202,6 +215,7 @@ impl Linker {
                                 .await;
                                 return Ok(LinkWriteResult {
                                     outcome: LinkWriteOutcome::Skipped,
+                                    skip_reason: Some("already_correct"),
                                     refresh_path: None,
                                 });
                             }
@@ -299,6 +313,7 @@ impl Linker {
                         }
                         return Ok(LinkWriteResult {
                             outcome: LinkWriteOutcome::Skipped,
+                            skip_reason: Some("already_correct_disk"),
                             refresh_path: None,
                         });
                     }
@@ -319,6 +334,7 @@ impl Linker {
                 .await;
                 return Ok(LinkWriteResult {
                     outcome: LinkWriteOutcome::Skipped,
+                    skip_reason: Some("regular_file_guard"),
                     refresh_path: None,
                 });
             }
@@ -348,6 +364,7 @@ impl Linker {
                 } else {
                     LinkWriteOutcome::Created
                 },
+                skip_reason: None,
                 refresh_path: None,
             });
         } else {
@@ -418,6 +435,7 @@ impl Linker {
             .await;
             Ok(LinkWriteResult {
                 outcome: LinkWriteOutcome::Updated,
+                skip_reason: None,
                 refresh_path: Some(m.library_item.path.clone()),
             })
         } else {
@@ -432,6 +450,7 @@ impl Linker {
             .await;
             Ok(LinkWriteResult {
                 outcome: LinkWriteOutcome::Created,
+                skip_reason: None,
                 refresh_path: Some(m.library_item.path.clone()),
             })
         }
@@ -629,6 +648,7 @@ impl Linker {
                             )
                             .await;
                             summary.skipped += 1;
+                            increment_skip_reason(&mut summary.skip_reasons, "directory_guard");
                             continue;
                         }
                     }
@@ -655,6 +675,7 @@ impl Linker {
                     )
                     .await;
                     summary.skipped += 1;
+                    increment_skip_reason(&mut summary.skip_reasons, "not_symlink");
                 }
             }
         }

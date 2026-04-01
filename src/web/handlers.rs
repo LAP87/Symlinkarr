@@ -1618,6 +1618,7 @@ mod tests {
             links_removed: 0,
             links_skipped: 7,
             ambiguous_skipped: 1,
+            skip_reason_json: None,
             runtime_checks_ms: 10,
             library_scan_ms: 20,
             source_inventory_ms: 30,
@@ -2043,6 +2044,7 @@ mod tests {
                 matches_found: 4,
                 links_created: 1,
                 links_updated: 0,
+                skip_reason_json: None,
                 ..Default::default()
             })
             .await
