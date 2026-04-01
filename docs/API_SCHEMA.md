@@ -492,7 +492,21 @@ Response:
   "eligible_groups": 1,
   "blocked_groups": 11,
   "cleanup_candidates": 16,
-  "confirmation_token": "02e1e466038800b0"
+  "confirmation_token": "02e1e466038800b0",
+  "blocked_reason_summary": [
+    {
+      "code": "legacy_roots_still_tracked",
+      "label": "legacy roots still contain tracked DB links",
+      "recommended_action": "Do not auto-remediate yet; first move or prune the DB-tracked legacy links.",
+      "groups": 7
+    },
+    {
+      "code": "legacy_roots_contain_real_media",
+      "label": "legacy roots contain real media files",
+      "recommended_action": "Manual migration required; move or relink real media files before remediation.",
+      "groups": 4
+    }
+  ]
 }
 ```
 
@@ -501,6 +515,7 @@ Notes:
 - The API does not accept an arbitrary output path; preview plans are always written under the configured backup directory.
 - `report_path` is returned as a canonical absolute path so preview → apply round-trips keep working even when `backup.path` is configured relatively.
 - This endpoint is the JSON/API analogue of `cleanup remediate-anime` preview and keeps the same eligibility gate.
+- `blocked_reason_summary` is the operator-facing summary of why groups were blocked and what should happen next before they can become eligible.
 - If `plex_db` is supplied explicitly, that exact path must exist; Symlinkarr no longer silently falls back to a default Plex DB when an override path is wrong.
 
 ## `POST /api/v1/cleanup/anime-remediation/apply`

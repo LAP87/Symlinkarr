@@ -304,6 +304,14 @@ pub struct ApiAnimeRemediationPreviewRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct ApiAnimeRemediationBlockedReasonSummary {
+    pub code: String,
+    pub label: String,
+    pub recommended_action: String,
+    pub groups: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ApiAnimeRemediationPreviewResponse {
     pub success: bool,
     pub message: String,
@@ -315,6 +323,7 @@ pub struct ApiAnimeRemediationPreviewResponse {
     pub blocked_groups: usize,
     pub cleanup_candidates: usize,
     pub confirmation_token: String,
+    pub blocked_reason_summary: Vec<ApiAnimeRemediationBlockedReasonSummary>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -339,6 +348,20 @@ pub struct ApiAnimeRemediationApplyResponse {
     pub skipped: usize,
     pub safety_snapshot: Option<String>,
     pub media_server_invalidation: Option<LibraryInvalidationOutcome>,
+}
+
+fn api_blocked_reason_summary(
+    summary: &[crate::commands::cleanup::AnimeRemediationBlockedReasonSummary],
+) -> Vec<ApiAnimeRemediationBlockedReasonSummary> {
+    summary
+        .iter()
+        .map(|entry| ApiAnimeRemediationBlockedReasonSummary {
+            code: entry.code.as_str().to_string(),
+            label: entry.label.clone(),
+            recommended_action: entry.recommended_action.clone(),
+            groups: entry.groups,
+        })
+        .collect()
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1137,6 +1160,7 @@ pub async fn api_post_anime_remediation_preview(
                 blocked_groups: 0,
                 cleanup_candidates: 0,
                 confirmation_token: String::new(),
+                blocked_reason_summary: Vec::new(),
             }),
         );
     };
@@ -1171,6 +1195,7 @@ pub async fn api_post_anime_remediation_preview(
                 blocked_groups: plan.blocked_groups,
                 cleanup_candidates: plan.cleanup_candidates,
                 confirmation_token: plan.confirmation_token.clone(),
+                blocked_reason_summary: api_blocked_reason_summary(&plan.blocked_reason_summary),
             }),
         ),
         Err(err) => (
@@ -1186,6 +1211,7 @@ pub async fn api_post_anime_remediation_preview(
                 blocked_groups: 0,
                 cleanup_candidates: 0,
                 confirmation_token: String::new(),
+                blocked_reason_summary: Vec::new(),
             }),
         ),
     }
@@ -2898,6 +2924,7 @@ mod tests {
         assert_eq!(json.total_groups, 1);
         assert_eq!(json.eligible_groups, 1);
         assert_eq!(json.cleanup_candidates, 1);
+        assert!(json.blocked_reason_summary.is_empty());
         let report_path = std::path::PathBuf::from(&json.report_path);
         assert!(report_path.is_absolute());
         assert!(report_path.starts_with(root.join("backups")));

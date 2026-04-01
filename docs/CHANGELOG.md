@@ -42,6 +42,22 @@
 - `LD_LIBRARY_PATH=/usr/lib:/usr/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-skip-reasons cargo clippy --all-targets --all-features -- -D warnings`
   - result: passed locally
 
+## 2026-04-01 - Anime Remediation Block Reason Guidance
+
+### Code Changes
+
+- replaced free-form anime remediation blocker strings with structured blocker codes, messages, and recommended actions, while keeping preview plan loading backward-compatible with older string-based report files.
+  - files: `src/commands/cleanup.rs`
+- anime remediation preview now summarizes the top blocked reason classes for operators, so the API and CLI can explain why groups stayed blocked instead of just returning counts.
+  - files: `src/commands/cleanup.rs`, `src/web/api/mod.rs`, `docs/API_SCHEMA.md`
+
+### Validation
+
+- `CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-remediation-trust-test cargo test -q`
+  - result: passed locally
+- `LD_LIBRARY_PATH=/usr/lib:/usr/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-remediation-trust-clippy cargo clippy --all-targets --all-features -- -D warnings`
+  - result: passed locally
+
 ## 2026-04-01 - Per-Backend Scan Refresh History
 
 ### Code Changes

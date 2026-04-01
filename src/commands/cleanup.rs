@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use tracing::info;
 use walkdir::WalkDir;
 
@@ -54,10 +54,129 @@ pub(crate) struct CleanupAnimeRemediationArgs<'a> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AnimeRemediationBlockCode {
+    RecommendedRootUntrackedDb,
+    LegacyRootsStillTracked,
+    LegacyRootsContainRealMedia,
+    NoLegacySymlinkCandidates,
+    ManualReviewRequired,
+}
+
+impl AnimeRemediationBlockCode {
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            Self::RecommendedRootUntrackedDb => "recommended_root_untracked_db",
+            Self::LegacyRootsStillTracked => "legacy_roots_still_tracked",
+            Self::LegacyRootsContainRealMedia => "legacy_roots_contain_real_media",
+            Self::NoLegacySymlinkCandidates => "no_legacy_symlink_candidates",
+            Self::ManualReviewRequired => "manual_review_required",
+        }
+    }
+
+    fn label(&self) -> &'static str {
+        match self {
+            Self::RecommendedRootUntrackedDb => "recommended tagged root is not DB-anchored yet",
+            Self::LegacyRootsStillTracked => "legacy roots still contain tracked DB links",
+            Self::LegacyRootsContainRealMedia => "legacy roots contain real media files",
+            Self::NoLegacySymlinkCandidates => "no removable legacy symlink candidates were found",
+            Self::ManualReviewRequired => "manual review required",
+        }
+    }
+
+    fn recommended_action(&self) -> &'static str {
+        match self {
+            Self::RecommendedRootUntrackedDb => {
+                "Run a normal scan until the tagged root owns tracked links before remediation."
+            }
+            Self::LegacyRootsStillTracked => {
+                "Do not auto-remediate yet; first move or prune the DB-tracked legacy links."
+            }
+            Self::LegacyRootsContainRealMedia => {
+                "Manual migration required; move or relink real media files before remediation."
+            }
+            Self::NoLegacySymlinkCandidates => {
+                "Nothing safe to quarantine automatically; inspect the legacy roots manually."
+            }
+            Self::ManualReviewRequired => {
+                "Review this title manually before attempting remediation."
+            }
+        }
+    }
+
+    fn from_legacy_message(message: &str) -> Self {
+        if message == "recommended tagged root has no tracked DB links" {
+            Self::RecommendedRootUntrackedDb
+        } else if message.starts_with("legacy roots still contain ")
+            && message.contains(" tracked DB links")
+        {
+            Self::LegacyRootsStillTracked
+        } else if message.starts_with("legacy roots contain ")
+            && message.contains(" non-symlink media files")
+        {
+            Self::LegacyRootsContainRealMedia
+        } else if message == "no legacy symlink candidates found under legacy roots" {
+            Self::NoLegacySymlinkCandidates
+        } else {
+            Self::ManualReviewRequired
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct AnimeRemediationBlockReason {
+    pub(crate) code: AnimeRemediationBlockCode,
+    pub(crate) message: String,
+    pub(crate) recommended_action: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct AnimeRemediationBlockedReasonSummary {
+    pub(crate) code: AnimeRemediationBlockCode,
+    pub(crate) label: String,
+    pub(crate) recommended_action: String,
+    pub(crate) groups: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum AnimeRemediationBlockReasonCompat {
+    Structured(AnimeRemediationBlockReason),
+    Legacy(String),
+}
+
+fn deserialize_anime_remediation_block_reasons<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Vec<AnimeRemediationBlockReason>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = Vec::<AnimeRemediationBlockReasonCompat>::deserialize(deserializer)?;
+    Ok(raw
+        .into_iter()
+        .map(|entry| match entry {
+            AnimeRemediationBlockReasonCompat::Structured(reason) => reason,
+            AnimeRemediationBlockReasonCompat::Legacy(message) => {
+                let code = AnimeRemediationBlockCode::from_legacy_message(&message);
+                AnimeRemediationBlockReason {
+                    code: code.clone(),
+                    message,
+                    recommended_action: code.recommended_action().to_string(),
+                }
+            }
+        })
+        .collect())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct AnimeRemediationPlanGroup {
     normalized_title: String,
     eligible: bool,
-    block_reasons: Vec<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_anime_remediation_block_reasons"
+    )]
+    block_reasons: Vec<AnimeRemediationBlockReason>,
     recommended_tagged_root: crate::commands::report::AnimeRootUsageSample,
     alternate_tagged_roots: Vec<crate::commands::report::AnimeRootUsageSample>,
     legacy_roots: Vec<crate::commands::report::AnimeRootUsageSample>,
@@ -82,6 +201,8 @@ pub(crate) struct AnimeRemediationPlanReport {
     pub(crate) blocked_groups: usize,
     pub(crate) cleanup_candidates: usize,
     pub(crate) confirmation_token: String,
+    #[serde(default)]
+    pub(crate) blocked_reason_summary: Vec<AnimeRemediationBlockedReasonSummary>,
     pub(crate) groups: Vec<AnimeRemediationPlanGroup>,
     pub(crate) cleanup_report: cleanup_audit::CleanupReport,
 }
@@ -95,6 +216,17 @@ struct LegacyRootScan {
 
 const ANIME_REMEDIATION_REPORT_VERSION: u32 = 1;
 const ANIME_REMEDIATION_SAMPLE_LIMIT: usize = 6;
+
+fn make_anime_block_reason(
+    code: AnimeRemediationBlockCode,
+    message: String,
+) -> AnimeRemediationBlockReason {
+    AnimeRemediationBlockReason {
+        recommended_action: code.recommended_action().to_string(),
+        message,
+        code,
+    }
+}
 
 pub(crate) async fn run_cleanup(
     cfg: &Config,
@@ -539,6 +671,7 @@ async fn run_cleanup_anime_remediation(
             "blocked_groups": plan.blocked_groups,
             "cleanup_candidates": plan.cleanup_candidates,
             "confirmation_token": plan.confirmation_token,
+            "blocked_reason_summary": plan.blocked_reason_summary,
             "groups": plan.groups,
         }));
     } else {
@@ -551,6 +684,20 @@ async fn run_cleanup_anime_remediation(
         println!("   Candidate symlinks: {}", plan.cleanup_candidates);
         println!("   Confirmation token: {}", plan.confirmation_token);
 
+        if !plan.blocked_reason_summary.is_empty() {
+            println!("   Top block reasons:");
+            for summary in plan
+                .blocked_reason_summary
+                .iter()
+                .take(ANIME_REMEDIATION_SAMPLE_LIMIT)
+            {
+                println!(
+                    "      - {} groups: {} -> {}",
+                    summary.groups, summary.label, summary.recommended_action
+                );
+            }
+        }
+
         if !plan.groups.is_empty() {
             println!("   Top groups:");
             for group in plan.groups.iter().take(ANIME_REMEDIATION_SAMPLE_LIMIT) {
@@ -562,10 +709,21 @@ async fn run_cleanup_anime_remediation(
                         group.recommended_tagged_root.path.display()
                     );
                 } else {
+                    let action = group
+                        .block_reasons
+                        .first()
+                        .map(|reason| reason.recommended_action.as_str())
+                        .unwrap_or("Review this title manually before attempting remediation.");
                     println!(
-                        "      - {}: blocked ({})",
+                        "      - {}: blocked ({}) -> {}",
                         group.normalized_title,
-                        group.block_reasons.join("; ")
+                        group
+                            .block_reasons
+                            .iter()
+                            .map(|reason| reason.message.as_str())
+                            .collect::<Vec<_>>()
+                            .join("; "),
+                        action
                     );
                 }
             }
@@ -934,6 +1092,7 @@ async fn build_anime_remediation_plan_report(
         .cloned()
         .collect();
     let blocked_groups = plan_groups.len().saturating_sub(eligible_groups.len());
+    let blocked_reason_summary = build_anime_remediation_blocked_reason_summary(&plan_groups);
     let cleanup_report = build_anime_remediation_cleanup_report(&eligible_groups);
     let preview_outcome = build_anime_remediation_prune_preview(cfg, db, &cleanup_report).await?;
 
@@ -947,6 +1106,7 @@ async fn build_anime_remediation_plan_report(
         blocked_groups,
         cleanup_candidates: preview_outcome.candidates,
         confirmation_token: preview_outcome.confirmation_token,
+        blocked_reason_summary,
         groups: plan_groups,
         cleanup_report,
     })
@@ -988,22 +1148,34 @@ fn build_anime_remediation_plan_group(
         .sum();
     let mut block_reasons = Vec::new();
     if sample.recommended_tagged_root.db_active_links == 0 {
-        block_reasons.push("recommended tagged root has no tracked DB links".to_string());
+        block_reasons.push(make_anime_block_reason(
+            AnimeRemediationBlockCode::RecommendedRootUntrackedDb,
+            "recommended tagged root has no tracked DB links".to_string(),
+        ));
     }
     if legacy_db_total > 0 {
-        block_reasons.push(format!(
-            "legacy roots still contain {} tracked DB links",
-            legacy_db_total
+        block_reasons.push(make_anime_block_reason(
+            AnimeRemediationBlockCode::LegacyRootsStillTracked,
+            format!(
+                "legacy roots still contain {} tracked DB links",
+                legacy_db_total
+            ),
         ));
     }
     if legacy_media_files > 0 {
-        block_reasons.push(format!(
-            "legacy roots contain {} non-symlink media files",
-            legacy_media_files
+        block_reasons.push(make_anime_block_reason(
+            AnimeRemediationBlockCode::LegacyRootsContainRealMedia,
+            format!(
+                "legacy roots contain {} non-symlink media files",
+                legacy_media_files
+            ),
         ));
     }
     if candidate_paths.is_empty() {
-        block_reasons.push("no legacy symlink candidates found under legacy roots".to_string());
+        block_reasons.push(make_anime_block_reason(
+            AnimeRemediationBlockCode::NoLegacySymlinkCandidates,
+            "no legacy symlink candidates found under legacy roots".to_string(),
+        ));
     }
 
     let candidate_symlink_samples = candidate_paths
@@ -1157,6 +1329,32 @@ fn build_anime_remediation_cleanup_report(
         },
         findings,
     }
+}
+
+fn build_anime_remediation_blocked_reason_summary(
+    groups: &[AnimeRemediationPlanGroup],
+) -> Vec<AnimeRemediationBlockedReasonSummary> {
+    let mut counts: std::collections::BTreeMap<String, AnimeRemediationBlockedReasonSummary> =
+        std::collections::BTreeMap::new();
+
+    for group in groups.iter().filter(|group| !group.eligible) {
+        for reason in &group.block_reasons {
+            let key = format!("{:?}", reason.code);
+            let entry = counts
+                .entry(key)
+                .or_insert_with(|| AnimeRemediationBlockedReasonSummary {
+                    code: reason.code.clone(),
+                    label: reason.code.label().to_string(),
+                    recommended_action: reason.recommended_action.clone(),
+                    groups: 0,
+                });
+            entry.groups += 1;
+        }
+    }
+
+    let mut summary = counts.into_values().collect::<Vec<_>>();
+    summary.sort_by(|a, b| b.groups.cmp(&a.groups).then_with(|| a.label.cmp(&b.label)));
+    summary
 }
 
 async fn build_anime_remediation_prune_preview(
@@ -1378,7 +1576,35 @@ mod tests {
         assert!(group
             .block_reasons
             .iter()
-            .any(|reason| reason.contains("non-symlink media files")));
+            .any(|reason| reason.message.contains("non-symlink media files")));
+        assert!(group.block_reasons.iter().any(|reason| matches!(
+            reason.code,
+            AnimeRemediationBlockCode::LegacyRootsContainRealMedia
+        )));
+    }
+
+    #[test]
+    fn build_anime_remediation_blocked_reason_summary_counts_groups_per_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = test_config(dir.path());
+
+        let legacy_root = cfg.libraries[0].path.join("Show A");
+        std::fs::create_dir_all(legacy_root.join("Season 01")).unwrap();
+        std::fs::write(legacy_root.join("Season 01/Show A - S01E01.mkv"), b"video").unwrap();
+
+        let blocked = build_anime_remediation_plan_group(&sample_group(dir.path())).unwrap();
+        let summary = build_anime_remediation_blocked_reason_summary(&[blocked]);
+
+        assert_eq!(summary.len(), 2);
+        assert!(matches!(
+            summary[0].code,
+            AnimeRemediationBlockCode::LegacyRootsContainRealMedia
+        ));
+        assert_eq!(summary[0].groups, 1);
+        assert_eq!(
+            summary[0].recommended_action,
+            "Manual migration required; move or relink real media files before remediation."
+        );
     }
 
     #[tokio::test]
@@ -1462,6 +1688,7 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&report_path).unwrap()).unwrap();
         assert_eq!(plan.eligible_groups, 1);
         assert_eq!(plan.cleanup_candidates, 1);
+        assert!(plan.blocked_reason_summary.is_empty());
 
         run_cleanup_anime_remediation(
             &cfg,
@@ -1520,6 +1747,7 @@ mod tests {
                 blocked_groups: 0,
                 cleanup_candidates: 0,
                 confirmation_token: "token".to_string(),
+                blocked_reason_summary: Vec::new(),
                 groups: Vec::new(),
                 cleanup_report: cleanup_audit::CleanupReport {
                     version: 1,
@@ -1555,5 +1783,77 @@ mod tests {
         assert!(err
             .to_string()
             .contains("cleanup.prune.quarantine_foreign=true"));
+    }
+
+    #[test]
+    fn anime_remediation_plan_report_loads_legacy_string_block_reasons() {
+        let report_json = serde_json::json!({
+            "version": ANIME_REMEDIATION_REPORT_VERSION,
+            "created_at": Utc::now(),
+            "plex_db_path": "/tmp/plex.db",
+            "title_filter": serde_json::Value::Null,
+            "total_groups": 1,
+            "eligible_groups": 0,
+            "blocked_groups": 1,
+            "cleanup_candidates": 0,
+            "confirmation_token": "token",
+            "groups": [{
+                "normalized_title": "show a",
+                "eligible": false,
+                "block_reasons": [
+                    "legacy roots still contain 3 tracked DB links",
+                    "no legacy symlink candidates found under legacy roots"
+                ],
+                "recommended_tagged_root": {
+                    "path": "/anime/Show A (2024) {tvdb-1}",
+                    "filesystem_symlinks": 1,
+                    "db_active_links": 0
+                },
+                "alternate_tagged_roots": [],
+                "legacy_roots": [{
+                    "path": "/anime/Show A",
+                    "filesystem_symlinks": 3,
+                    "db_active_links": 3
+                }],
+                "legacy_symlink_candidates": 0,
+                "broken_symlink_candidates": 0,
+                "legacy_media_files": 0,
+                "candidate_symlink_samples": [],
+                "plex_live_rows": 2,
+                "plex_deleted_rows": 0,
+                "plex_guid_kinds": ["anidb", "tvdb"],
+                "plex_guids": ["anidb-100", "tvdb-1"]
+            }],
+            "cleanup_report": {
+                "version": 1,
+                "created_at": Utc::now(),
+                "scope": "anime",
+                "summary": {
+                    "total_findings": 0,
+                    "critical": 0,
+                    "high": 0,
+                    "warning": 0,
+                    "quarantine_candidates": 0
+                },
+                "findings": []
+            }
+        });
+
+        let report: AnimeRemediationPlanReport = serde_json::from_value(report_json).unwrap();
+
+        assert_eq!(report.groups.len(), 1);
+        assert_eq!(report.groups[0].block_reasons.len(), 2);
+        assert!(matches!(
+            report.groups[0].block_reasons[0].code,
+            AnimeRemediationBlockCode::LegacyRootsStillTracked
+        ));
+        assert_eq!(
+            report.groups[0].block_reasons[0].recommended_action,
+            "Do not auto-remediate yet; first move or prune the DB-tracked legacy links."
+        );
+        assert!(matches!(
+            report.groups[0].block_reasons[1].code,
+            AnimeRemediationBlockCode::NoLegacySymlinkCandidates
+        ));
     }
 }
