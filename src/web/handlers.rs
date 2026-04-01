@@ -20,7 +20,7 @@ use crate::commands::discover::load_discovery_snapshot;
 use crate::commands::doctor::{collect_doctor_checks, DoctorCheckMode};
 use crate::commands::report::build_anime_remediation_report;
 use crate::commands::selected_libraries;
-use crate::db::{AcquisitionJobCounts, ScanHistoryRecord};
+use crate::db::{AcquisitionJobCounts, LinkEventHistoryRecord, ScanHistoryRecord};
 
 use super::templates::*;
 use super::{
@@ -265,6 +265,20 @@ async fn filtered_scan_history(
         .collect::<Vec<_>>();
 
     (filters, filtered)
+}
+
+fn skip_event_views(events: Vec<LinkEventHistoryRecord>) -> Vec<SkipEventView> {
+    events
+        .into_iter()
+        .map(|event| SkipEventView {
+            event_at: event.event_at,
+            action: event.action,
+            reason: event.note.unwrap_or_else(|| "unknown".to_string()),
+            target_path: event.target_path.display().to_string(),
+            source_path: event.source_path.map(|path| path.display().to_string()),
+            media_id: event.media_id,
+        })
+        .collect()
 }
 
 /// GET / - Dashboard page
@@ -529,8 +543,23 @@ pub async fn get_scan_run_detail(
 ) -> impl IntoResponse {
     match state.database.get_scan_run(id).await {
         Ok(Some(run)) => {
+            let skip_events = match run.run_token.as_deref() {
+                Some(token) => match state
+                    .database
+                    .get_skip_link_events_for_run_token(token, 25)
+                    .await
+                {
+                    Ok(events) => skip_event_views(events),
+                    Err(e) => {
+                        error!("Failed to load skip events for scan run {}: {}", id, e);
+                        Vec::new()
+                    }
+                },
+                None => Vec::new(),
+            };
             let template = ScanRunDetailTemplate {
                 run: ScanRunView::from_record(run),
+                skip_events,
             };
             Html(template.render().unwrap_or_else(|e| e.to_string())).into_response()
         }
@@ -1608,6 +1637,7 @@ mod tests {
         db.record_scan_run(&ScanRunRecord {
             dry_run: true,
             library_filter: Some("Anime".to_string()),
+            run_token: Some("scan-run-handler".to_string()),
             search_missing: true,
             library_items_found: 1,
             source_items_found: 42,
@@ -2027,6 +2057,7 @@ mod tests {
         assert!(body.contains("Scan Run Detail"));
         assert!(body.contains("Outcome summary"));
         assert!(body.contains("#1") || body.contains(&format!("#{}", run.id)));
+        assert!(body.contains("Recent concrete skip events"));
         assert!(body.contains("1024"));
     }
 

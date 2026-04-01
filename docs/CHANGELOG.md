@@ -58,6 +58,22 @@
 - `LD_LIBRARY_PATH=/usr/lib:/usr/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-remediation-trust-clippy cargo clippy --all-targets --all-features -- -D warnings`
   - result: passed locally
 
+## 2026-04-01 - Run-Scoped Skip Event Samples
+
+### Code Changes
+
+- added explicit scan `run_token` correlation between `scan_runs` and `link_events`, so skip/dead-link samples can be tied back to the exact scan that produced them instead of relying on timestamp guesses.
+  - files: `src/db.rs`, `src/commands/scan.rs`, `src/linker.rs`
+- `/api/v1/scan/:id` and the scan run detail page now expose concrete skip-event samples with reason, action, target path, source path, and media id alongside the aggregated skip counts.
+  - files: `src/web/api/mod.rs`, `src/web/handlers.rs`, `src/web/templates.rs`, `src/web/ui/scan_run.html`, `docs/API_SCHEMA.md`
+
+### Validation
+
+- `CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-run-detail-test cargo test -q`
+  - result: passed locally
+- `LD_LIBRARY_PATH=/usr/lib:/usr/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-run-detail-clippy cargo clippy --all-targets --all-features -- -D warnings`
+  - result: passed locally
+
 ## 2026-04-01 - Per-Backend Scan Refresh History
 
 ### Code Changes

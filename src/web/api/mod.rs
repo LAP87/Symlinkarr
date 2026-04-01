@@ -208,6 +208,16 @@ pub struct ApiSkipReasonCount {
 }
 
 #[derive(Serialize, Deserialize)]
+pub struct ApiSkipEventSample {
+    pub event_at: String,
+    pub action: String,
+    pub reason: String,
+    pub target_path: String,
+    pub source_path: Option<String>,
+    pub media_id: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct ApiScanHistoryEntry {
     pub id: i64,
     pub started_at: String,
@@ -243,6 +253,7 @@ pub struct ApiScanRunDetail {
     pub links_skipped: i64,
     pub ambiguous_skipped: i64,
     pub skip_reasons: Vec<ApiSkipReasonCount>,
+    pub skip_event_samples: Vec<ApiSkipEventSample>,
     pub runtime_checks_ms: i64,
     pub library_scan_ms: i64,
     pub source_inventory_ms: i64,
@@ -936,6 +947,22 @@ fn skip_reasons_from_record(record: &ScanHistoryRecord) -> Vec<ApiSkipReasonCoun
     entries
 }
 
+fn api_skip_event_samples(
+    events: Vec<crate::db::LinkEventHistoryRecord>,
+) -> Vec<ApiSkipEventSample> {
+    events
+        .into_iter()
+        .map(|event| ApiSkipEventSample {
+            event_at: event.event_at,
+            action: event.action,
+            reason: event.note.unwrap_or_else(|| "unknown".to_string()),
+            target_path: event.target_path.display().to_string(),
+            source_path: event.source_path.map(|path| path.display().to_string()),
+            media_id: event.media_id,
+        })
+        .collect()
+}
+
 fn scan_history_entry_from_record(record: ScanHistoryRecord) -> ApiScanHistoryEntry {
     let scope_label = scan_scope_label(&record);
     let total_runtime_ms = scan_total_runtime_ms(&record);
@@ -975,7 +1002,10 @@ fn scan_history_entry_from_record(record: ScanHistoryRecord) -> ApiScanHistoryEn
     }
 }
 
-fn scan_run_detail_from_record(record: ScanHistoryRecord) -> ApiScanRunDetail {
+fn scan_run_detail_from_record(
+    record: ScanHistoryRecord,
+    skip_event_samples: Vec<ApiSkipEventSample>,
+) -> ApiScanRunDetail {
     let scope_label = scan_scope_label(&record);
     let total_runtime_ms = scan_total_runtime_ms(&record);
     let auto_acquire_successes = scan_auto_acquire_successes(&record);
@@ -1001,6 +1031,7 @@ fn scan_run_detail_from_record(record: ScanHistoryRecord) -> ApiScanRunDetail {
         links_skipped: record.links_skipped,
         ambiguous_skipped: record.ambiguous_skipped,
         skip_reasons,
+        skip_event_samples,
         runtime_checks_ms: record.runtime_checks_ms,
         library_scan_ms: record.library_scan_ms,
         source_inventory_ms: record.source_inventory_ms,
@@ -1080,7 +1111,26 @@ pub async fn api_get_scan_run(
     Path(id): Path<i64>,
 ) -> Result<Json<ApiScanRunDetail>, (StatusCode, Json<ApiErrorResponse>)> {
     match state.database.get_scan_run(id).await {
-        Ok(Some(run)) => Ok(Json(scan_run_detail_from_record(run))),
+        Ok(Some(run)) => {
+            let skip_event_samples = match run.run_token.as_deref() {
+                Some(token) => state
+                    .database
+                    .get_skip_link_events_for_run_token(token, 25)
+                    .await
+                    .map(api_skip_event_samples)
+                    .map_err(|e| {
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(ApiErrorResponse {
+                                error: format!("Failed to load scan run {} skip events: {}", id, e),
+                            }),
+                        )
+                    })?,
+                None => Vec::new(),
+            };
+
+            Ok(Json(scan_run_detail_from_record(run, skip_event_samples)))
+        }
         Ok(None) => Err((
             StatusCode::NOT_FOUND,
             Json(ApiErrorResponse {
@@ -1732,6 +1782,7 @@ mod tests {
         db.record_scan_run(&ScanRunRecord {
             dry_run: true,
             library_filter: Some("Anime".to_string()),
+            run_token: Some("scan-run-test".to_string()),
             search_missing: true,
             library_items_found: 3906,
             source_items_found: 101542,
@@ -1784,6 +1835,16 @@ mod tests {
             auto_acquire_completed_linked: 0,
             auto_acquire_completed_unlinked: 0,
         })
+        .await
+        .unwrap();
+        db.record_link_event_fields_with_run_token(
+            Some("scan-run-test"),
+            "skipped",
+            &root.join("anime/Show A (2024) {tvdb-1}/Season 01/Show A - S01E01.mkv"),
+            Some(&root.join("rd/Show.A.S01E01.mkv")),
+            Some("tvdb-1"),
+            Some("source_missing_before_link"),
+        )
         .await
         .unwrap();
 
@@ -1937,6 +1998,15 @@ mod tests {
         assert_eq!(json.skip_reasons[1].count, 3044);
         assert_eq!(json.skip_reasons[2].reason, "ambiguous_match");
         assert_eq!(json.skip_reasons[2].count, 70);
+        assert_eq!(json.skip_event_samples.len(), 1);
+        assert_eq!(
+            json.skip_event_samples[0].reason,
+            "source_missing_before_link"
+        );
+        assert_eq!(json.skip_event_samples[0].action, "skipped");
+        assert!(json.skip_event_samples[0]
+            .target_path
+            .contains("Show A - S01E01.mkv"));
         assert_eq!(json.auto_acquire_successes, 4);
         assert_eq!(json.auto_acquire_requests, 10);
         assert!(json.search_missing);

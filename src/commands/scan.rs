@@ -78,6 +78,7 @@ pub(crate) async fn run_scan(
     let mut auto_acquire_summary = AutoAcquireBatchSummary::default();
     let mut auto_acquire_missing_requests = 0usize;
     let mut auto_acquire_cutoff_requests = 0usize;
+    let run_token = generate_scan_run_token();
 
     let selected_libraries = selected_libraries(cfg, library_filter)?;
 
@@ -172,7 +173,9 @@ pub(crate) async fn run_scan(
     telemetry.episode_title_enrichment = title_enrichment_started.elapsed();
 
     let linking_started = Instant::now();
-    let link_summary = linker.process_matches(&matches, db).await?;
+    let link_summary = linker
+        .process_matches(&matches, db, Some(&run_token))
+        .await?;
     telemetry.linking = linking_started.elapsed();
     info!(
         "Step 4/4: symlinks created={}, updated={}, skipped={} in {}",
@@ -236,7 +239,7 @@ pub(crate) async fn run_scan(
             .map(|lib| lib.path.clone())
             .collect();
         let dead = linker
-            .check_dead_links_scoped(db, Some(&library_roots))
+            .check_dead_links_scoped(db, Some(&library_roots), Some(&run_token))
             .await?;
         telemetry.dead_link_sweep = dead_started.elapsed();
         if dead.dead_marked > 0 {
@@ -420,6 +423,7 @@ pub(crate) async fn run_scan(
     db.record_scan_run(&crate::db::ScanRunRecord {
         dry_run: effective_dry_run,
         library_filter: library_filter.map(str::to_string),
+        run_token: Some(run_token),
         search_missing,
         library_items_found: library_items.len() as i64,
         source_items_found: source_items.len() as i64,
@@ -474,6 +478,16 @@ pub(crate) async fn run_scan(
 
     info!("=== Scan Complete ===");
     Ok((linked_total as i64, dead.removed as i64))
+}
+
+fn generate_scan_run_token() -> String {
+    let mut bytes = [0u8; 16];
+    if getrandom::getrandom(&mut bytes).is_ok() {
+        return bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    }
+
+    let now = chrono::Utc::now().timestamp_millis();
+    format!("scan-{now:x}-{:08x}", std::process::id())
 }
 
 fn build_skip_reason_json(

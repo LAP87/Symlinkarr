@@ -362,6 +362,16 @@ Response schema:
     { "reason": "source_missing_before_link", "count": 3044 },
     { "reason": "ambiguous_match", "count": 70 }
   ],
+  "skip_event_samples": [
+    {
+      "event_at": "2026-03-21 21:12:01",
+      "action": "skipped",
+      "reason": "source_missing_before_link",
+      "target_path": "/mnt/storage/plex/anime/Show A (2024) {tvdb-1}/Season 01/Show A - S01E01.mkv",
+      "source_path": "/mnt/storage/rd/Show.A.S01E01.mkv",
+      "media_id": "tvdb-1"
+    }
+  ],
   "runtime_checks_ms": 200,
   "library_scan_ms": 12400,
   "source_inventory_ms": 148200,
@@ -455,6 +465,7 @@ Notes:
 - `plex_refresh_ms` remains the phase runtime for compatibility, while the nested `plex_refresh` object exposes the aggregate request pressure, coalescing, capping, cap-guard aborts, failures, and actual queued coverage across all active media-server refresh backends.
 - `media_server_refresh` stores the per-backend refresh telemetry persisted with the scan run. Use it when you need to know which backend actually capped, skipped, or failed.
 - `skip_reasons` stores the structured aggregate reasons Symlinkarr persisted for skipped work during the run, combining linker guards and ambiguous-match skips into one operator-visible breakdown.
+- `skip_event_samples` stores concrete run-scoped skip/dead-mark samples tied to the same scan run, so operators can inspect real target/source paths without grepping logs.
 
 ## `GET /api/v1/report/anime-remediation`
 

@@ -23,6 +23,7 @@ pub struct HousekeepingStats {
 pub struct ScanRunRecord {
     pub dry_run: bool,
     pub library_filter: Option<String>,
+    pub run_token: Option<String>,
     pub search_missing: bool,
     pub library_items_found: i64,
     pub source_items_found: i64,
@@ -82,6 +83,17 @@ pub struct DeadLinkSeed {
 #[derive(Debug, Clone, Default)]
 pub struct LinkEventRecord {
     pub run_id: Option<i64>,
+    pub run_token: Option<String>,
+    pub action: String,
+    pub target_path: PathBuf,
+    pub source_path: Option<PathBuf>,
+    pub media_id: Option<String>,
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkEventHistoryRecord {
+    pub event_at: String,
     pub action: String,
     pub target_path: PathBuf,
     pub source_path: Option<PathBuf>,
@@ -265,6 +277,7 @@ pub struct ScanHistoryRecord {
     pub started_at: String,
     pub dry_run: bool,
     pub library_filter: Option<String>,
+    pub run_token: Option<String>,
     pub search_missing: bool,
     pub library_items_found: i64,
     pub source_items_found: i64,
@@ -319,7 +332,7 @@ pub struct Database {
     pool: SqlitePool,
 }
 
-const LATEST_SCHEMA_VERSION: i64 = 13;
+const LATEST_SCHEMA_VERSION: i64 = 14;
 
 // SqlitePool is Clone (wraps Arc), so Database can safely be Clone
 impl Clone for Database {
@@ -505,6 +518,7 @@ impl Database {
             11 => self.migration_v11_tx(tx).await,
             12 => self.migration_v12_tx(tx).await,
             13 => self.migration_v13_tx(tx).await,
+            14 => self.migration_v14_tx(tx).await,
             _ => anyhow::bail!("Unknown migration version {}", version),
         }
     }
@@ -600,6 +614,7 @@ impl Database {
                 run_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 dry_run INTEGER NOT NULL DEFAULT 0,
                 library_filter TEXT,
+                run_token TEXT,
                 search_missing INTEGER NOT NULL DEFAULT 0,
                 library_items_found INTEGER NOT NULL DEFAULT 0,
                 source_items_found INTEGER NOT NULL DEFAULT 0,
@@ -648,6 +663,7 @@ impl Database {
             "CREATE TABLE IF NOT EXISTS link_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 run_id INTEGER,
+                run_token TEXT,
                 event_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 action TEXT NOT NULL,
                 target_path TEXT NOT NULL,
@@ -857,9 +873,53 @@ impl Database {
         Ok(())
     }
 
+    async fn migration_v14_tx(&self, tx: &mut sqlx::Transaction<'_, Sqlite>) -> Result<()> {
+        match sqlx::query("ALTER TABLE scan_runs ADD COLUMN run_token TEXT")
+            .execute(&mut **tx)
+            .await
+        {
+            Ok(_) => {}
+            Err(err) if err.to_string().contains("duplicate column name") => {}
+            Err(err) => return Err(err.into()),
+        }
+
+        match sqlx::query("ALTER TABLE link_events ADD COLUMN run_token TEXT")
+            .execute(&mut **tx)
+            .await
+        {
+            Ok(_) => {}
+            Err(err) if err.to_string().contains("duplicate column name") => {}
+            Err(err) => return Err(err.into()),
+        }
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_link_events_run_token_event_at
+             ON link_events(run_token, event_at)",
+        )
+        .execute(&mut **tx)
+        .await?;
+
+        Ok(())
+    }
+
     #[cfg(test)]
     async fn migrate_down_one(&self, current_version: i64) -> Result<()> {
         match current_version {
+            14 => {
+                sqlx::query("DROP INDEX IF EXISTS idx_link_events_run_token_event_at")
+                    .execute(&self.pool)
+                    .await?;
+                if self.column_exists("link_events", "run_token").await? {
+                    sqlx::query("ALTER TABLE link_events DROP COLUMN run_token")
+                        .execute(&self.pool)
+                        .await?;
+                }
+                if self.column_exists("scan_runs", "run_token").await? {
+                    sqlx::query("ALTER TABLE scan_runs DROP COLUMN run_token")
+                        .execute(&self.pool)
+                        .await?;
+                }
+            }
             13 => {
                 if self.column_exists("scan_runs", "skip_reason_json").await? {
                     sqlx::query("ALTER TABLE scan_runs DROP COLUMN skip_reason_json")
@@ -1878,6 +1938,7 @@ impl Database {
             "INSERT INTO scan_runs (
                 dry_run,
                 library_filter,
+                run_token,
                 search_missing,
                 library_items_found,
                 source_items_found,
@@ -1924,10 +1985,11 @@ impl Database {
                 auto_acquire_failed,
                 auto_acquire_completed_linked,
                 auto_acquire_completed_unlinked
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(if run.dry_run { 1 } else { 0 })
         .bind(run.library_filter.as_deref())
+        .bind(run.run_token.as_deref())
         .bind(if run.search_missing { 1 } else { 0 })
         .bind(run.library_items_found)
         .bind(run.source_items_found)
@@ -1992,10 +2054,11 @@ impl Database {
             .transpose()?;
 
         sqlx::query(
-            "INSERT INTO link_events (run_id, action, target_path, source_path, media_id, note)
-             VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO link_events (run_id, run_token, action, target_path, source_path, media_id, note)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(event.run_id)
+        .bind(event.run_token.as_deref())
         .bind(&event.action)
         .bind(target_path)
         .bind(source_path)
@@ -2014,6 +2077,26 @@ impl Database {
         media_id: Option<&str>,
         note: Option<&str>,
     ) -> Result<()> {
+        self.record_link_event_fields_with_run_token(
+            None,
+            action,
+            target_path,
+            source_path,
+            media_id,
+            note,
+        )
+        .await
+    }
+
+    pub async fn record_link_event_fields_with_run_token(
+        &self,
+        run_token: Option<&str>,
+        action: &str,
+        target_path: &Path,
+        source_path: Option<&Path>,
+        media_id: Option<&str>,
+        note: Option<&str>,
+    ) -> Result<()> {
         self.record_link_event(&LinkEventRecord {
             action: action.to_string(),
             target_path: target_path.to_path_buf(),
@@ -2021,6 +2104,7 @@ impl Database {
             media_id: media_id.map(|m| m.to_string()),
             note: note.map(|n| n.to_string()),
             run_id: None,
+            run_token: run_token.map(|token| token.to_string()),
         })
         .await
     }
@@ -2282,7 +2366,7 @@ impl Database {
     #[allow(dead_code)]
     pub async fn get_scan_history(&self, limit: i64) -> Result<Vec<ScanHistoryRecord>> {
         let rows = sqlx::query(
-            "SELECT id, run_at, dry_run, library_filter, search_missing, library_items_found, source_items_found,
+            "SELECT id, run_at, dry_run, library_filter, run_token, search_missing, library_items_found, source_items_found,
                     matches_found, links_created, links_updated, dead_marked,
                     links_removed, links_skipped, ambiguous_skipped, skip_reason_json,
                     runtime_checks_ms, library_scan_ms, source_inventory_ms,
@@ -2316,7 +2400,7 @@ impl Database {
 
     pub async fn get_scan_run(&self, id: i64) -> Result<Option<ScanHistoryRecord>> {
         let row = sqlx::query(
-            "SELECT id, run_at, dry_run, library_filter, search_missing, library_items_found, source_items_found,
+            "SELECT id, run_at, dry_run, library_filter, run_token, search_missing, library_items_found, source_items_found,
                     matches_found, links_created, links_updated, dead_marked,
                     links_removed, links_skipped, ambiguous_skipped, skip_reason_json,
                     runtime_checks_ms, library_scan_ms, source_inventory_ms,
@@ -2342,6 +2426,40 @@ impl Database {
         .await?;
 
         Ok(row.map(|row| self.row_to_scan_history_record(&row)))
+    }
+
+    pub async fn get_skip_link_events_for_run_token(
+        &self,
+        run_token: &str,
+        limit: i64,
+    ) -> Result<Vec<LinkEventHistoryRecord>> {
+        let rows = sqlx::query(
+            "SELECT event_at, action, target_path, source_path, media_id, note
+             FROM link_events
+             WHERE run_token = ?
+               AND action IN ('skipped', 'dead_skipped', 'dead_marked')
+             ORDER BY event_at DESC, id DESC
+             LIMIT ?",
+        )
+        .bind(run_token)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(|row| {
+                Ok(LinkEventHistoryRecord {
+                    event_at: row.get("event_at"),
+                    action: row.get("action"),
+                    target_path: PathBuf::from(row.get::<String, _>("target_path")),
+                    source_path: row
+                        .get::<Option<String>, _>("source_path")
+                        .map(PathBuf::from),
+                    media_id: row.get("media_id"),
+                    note: row.get("note"),
+                })
+            })
+            .collect()
     }
 
     // --- Helpers ---
@@ -2379,6 +2497,7 @@ impl Database {
             started_at: row.get("run_at"),
             dry_run: row.get::<i64, _>("dry_run") != 0,
             library_filter: row.get("library_filter"),
+            run_token: row.get("run_token"),
             search_missing: row.get::<i64, _>("search_missing") != 0,
             library_items_found: row.get("library_items_found"),
             source_items_found: row.get("source_items_found"),
@@ -3722,6 +3841,7 @@ mod tests {
 
         let run = ScanRunRecord {
             dry_run: true,
+            run_token: Some("scan-run-db".to_string()),
             library_items_found: 42,
             source_items_found: 100,
             matches_found: 38,

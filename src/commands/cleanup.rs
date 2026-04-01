@@ -325,7 +325,7 @@ async fn run_cleanup_dead(
         cfg.features.reconcile_links,
     );
     let dead = linker
-        .check_dead_links_scoped(db, Some(&library_roots))
+        .check_dead_links_scoped(db, Some(&library_roots), None)
         .await?;
     let invalidation = if dead.removed > 0 {
         maybe_refresh_media_servers_after_cleanup(

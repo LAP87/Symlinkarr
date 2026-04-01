@@ -206,6 +206,16 @@ pub struct SkipReasonView {
 }
 
 #[derive(Debug, Clone)]
+pub struct SkipEventView {
+    pub event_at: String,
+    pub action: String,
+    pub reason: String,
+    pub target_path: String,
+    pub source_path: Option<String>,
+    pub media_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct ScanRunView {
     pub id: i64,
     pub started_at: String,
@@ -469,6 +479,7 @@ pub struct ScanHistoryTemplate {
 #[template(path = "web/ui/scan_run.html")]
 pub struct ScanRunDetailTemplate {
     pub run: ScanRunView,
+    pub skip_events: Vec<SkipEventView>,
 }
 
 // ─── Cleanup ────────────────────────────────────────────────────────
@@ -850,6 +861,14 @@ mod tests {
     fn scan_run_detail_template_renders_full_run_summary() {
         let template = ScanRunDetailTemplate {
             run: sample_scan_run_view(),
+            skip_events: vec![SkipEventView {
+                event_at: "2026-03-21 21:12:00".to_string(),
+                action: "skipped".to_string(),
+                reason: "source_missing_before_link".to_string(),
+                target_path: "/library/Show A/Season 01/Show A - S01E01.mkv".to_string(),
+                source_path: Some("/rd/Show.A.S01E01.mkv".to_string()),
+                media_id: Some("tvdb-1".to_string()),
+            }],
         };
 
         let html = template.render().unwrap();
@@ -863,6 +882,8 @@ mod tests {
         assert!(html.contains("Skip Reasons"));
         assert!(html.contains("source_missing_before_link"));
         assert!(html.contains(">3044<"));
+        assert!(html.contains("Recent concrete skip events"));
+        assert!(html.contains("/library/Show A/Season 01/Show A - S01E01.mkv"));
         assert!(html.contains("Back to Scan History"));
         assert!(html.contains("77624480"));
     }

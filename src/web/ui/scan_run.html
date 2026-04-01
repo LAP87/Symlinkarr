@@ -96,6 +96,58 @@
 <section class="card">
     <div class="section-head">
         <div>
+            <p class="section-kicker">Skip Samples</p>
+            <h2 class="section-title">Recent concrete skip events</h2>
+        </div>
+    </div>
+
+    {% if !skip_events.is_empty() %}
+    <table class="data-table dense-table">
+        <thead>
+            <tr>
+                <th>Time</th>
+                <th>Reason</th>
+                <th>Action</th>
+                <th>Target</th>
+                <th>Source</th>
+                <th>Media</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for event in skip_events %}
+            <tr>
+                <td class="mono">{{ event.event_at }}</td>
+                <td class="mono">{{ event.reason }}</td>
+                <td>{{ event.action }}</td>
+                <td><code class="mono">{{ event.target_path }}</code></td>
+                <td>
+                    {% match event.source_path %}
+                    {% when Some with (source_path) %}
+                    <code class="mono">{{ source_path }}</code>
+                    {% when None %}
+                    <span class="text-muted">None</span>
+                    {% endmatch %}
+                </td>
+                <td>
+                    {% match event.media_id %}
+                    {% when Some with (media_id) %}
+                    <code class="mono">{{ media_id }}</code>
+                    {% when None %}
+                    <span class="text-muted">Unknown</span>
+                    {% endmatch %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="text-muted">No run-scoped skip event samples were persisted for this run.</p>
+    {% endif %}
+</section>
+
+<section class="card">
+    <div class="section-head">
+        <div>
             <p class="section-kicker">Media Refresh</p>
             <h2 class="section-title">Queue and throttle signals</h2>
         </div>

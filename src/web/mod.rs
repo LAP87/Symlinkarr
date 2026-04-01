@@ -1194,6 +1194,7 @@ mod tests {
         db.record_scan_run(&ScanRunRecord {
             dry_run: true,
             library_filter: Some("Anime".to_string()),
+            run_token: Some("scan-run-web".to_string()),
             search_missing: true,
             library_items_found: 1,
             source_items_found: 5,

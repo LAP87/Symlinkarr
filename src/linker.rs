@@ -98,6 +98,7 @@ impl Linker {
         &self,
         matches: &[MatchResult],
         db: &Database,
+        run_token: Option<&str>,
     ) -> Result<LinkProcessSummary> {
         info!("Processing {} matched items...", matches.len());
         let mut summary = LinkProcessSummary::default();
@@ -133,6 +134,7 @@ impl Linker {
                 );
                 self.log_link_event(
                     db,
+                    run_token,
                     "skipped",
                     &target_path,
                     Some(&m.source_item.path),
@@ -146,7 +148,7 @@ impl Linker {
             }
 
             match self
-                .create_link(m, &target_path, db, &mut existing_links)
+                .create_link(m, &target_path, db, &mut existing_links, run_token)
                 .await
             {
                 Ok(result) => {
@@ -189,6 +191,7 @@ impl Linker {
         target_path: &PathBuf,
         db: &Database,
         existing_links: &mut HashMap<PathBuf, LinkRecord>,
+        run_token: Option<&str>,
     ) -> Result<LinkWriteResult> {
         let media_id = m.library_item.id.to_string();
 
@@ -206,6 +209,7 @@ impl Linker {
                                 debug!("Symlink already exists and is correct: {:?}", target_path);
                                 self.log_link_event(
                                     db,
+                                    run_token,
                                     "skipped",
                                     target_path,
                                     Some(&m.source_item.path),
@@ -292,6 +296,7 @@ impl Linker {
                             existing_links.insert(target_path.clone(), record);
                             self.log_link_event(
                                 db,
+                                run_token,
                                 "backfilled",
                                 target_path,
                                 Some(&m.source_item.path),
@@ -303,6 +308,7 @@ impl Linker {
                             debug!("Symlink on disk is already correct: {:?}", target_path);
                             self.log_link_event(
                                 db,
+                                run_token,
                                 "skipped",
                                 target_path,
                                 Some(&m.source_item.path),
@@ -325,6 +331,7 @@ impl Linker {
                 );
                 self.log_link_event(
                     db,
+                    run_token,
                     "skipped",
                     target_path,
                     Some(&m.source_item.path),
@@ -347,6 +354,7 @@ impl Linker {
             );
             self.log_link_event(
                 db,
+                run_token,
                 if is_update {
                     "dry_run_updated"
                 } else {
@@ -426,6 +434,7 @@ impl Linker {
         if is_update {
             self.log_link_event(
                 db,
+                run_token,
                 "updated",
                 target_path,
                 Some(&m.source_item.path),
@@ -441,6 +450,7 @@ impl Linker {
         } else {
             self.log_link_event(
                 db,
+                run_token,
                 "created",
                 target_path,
                 Some(&m.source_item.path),
@@ -563,7 +573,7 @@ impl Linker {
     /// Check all active links and mark dead ones.
     #[allow(dead_code)] // Compatibility wrapper around scoped variant
     pub async fn check_dead_links(&self, db: &Database) -> Result<DeadLinkSummary> {
-        self.check_dead_links_scoped(db, None).await
+        self.check_dead_links_scoped(db, None, None).await
     }
 
     /// Check all active links and mark dead ones, optionally scoped to library roots.
@@ -571,6 +581,7 @@ impl Linker {
         &self,
         db: &Database,
         allowed_library_roots: Option<&[PathBuf]>,
+        run_token: Option<&str>,
     ) -> Result<DeadLinkSummary> {
         let active_links = db.get_active_links_scoped(allowed_library_roots).await?;
         let mut summary = DeadLinkSummary::default();
@@ -621,6 +632,7 @@ impl Linker {
                 db.mark_dead_path(&link.target_path).await?;
                 self.log_link_event(
                     db,
+                    run_token,
                     "dead_marked",
                     &link.target_path,
                     Some(&link.source_path),
@@ -640,6 +652,7 @@ impl Linker {
                             );
                             self.log_link_event(
                                 db,
+                                run_token,
                                 "dead_skipped",
                                 &link.target_path,
                                 Some(&link.source_path),
@@ -657,6 +670,7 @@ impl Linker {
                     info!("Removed dead symlink: {:?}", link.target_path);
                     self.log_link_event(
                         db,
+                        run_token,
                         "dead_removed",
                         &link.target_path,
                         Some(&link.source_path),
@@ -667,6 +681,7 @@ impl Linker {
                 } else if !self.dry_run && !link.target_path.is_symlink() {
                     self.log_link_event(
                         db,
+                        run_token,
                         "dead_skipped",
                         &link.target_path,
                         Some(&link.source_path),
@@ -699,9 +714,11 @@ impl Linker {
         Ok(summary)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn log_link_event(
         &self,
         db: &Database,
+        run_token: Option<&str>,
         action: &str,
         target_path: &std::path::Path,
         source_path: Option<&std::path::Path>,
@@ -709,7 +726,14 @@ impl Linker {
         note: Option<&str>,
     ) {
         if let Err(e) = db
-            .record_link_event_fields(action, target_path, source_path, media_id, note)
+            .record_link_event_fields_with_run_token(
+                run_token,
+                action,
+                target_path,
+                source_path,
+                media_id,
+                note,
+            )
             .await
         {
             warn!(
@@ -1053,7 +1077,7 @@ mod tests {
             .unwrap();
 
         let outcome = linker
-            .create_link(&m, &target_path, &db, &mut existing_links)
+            .create_link(&m, &target_path, &db, &mut existing_links, None)
             .await
             .unwrap();
 
@@ -1088,7 +1112,7 @@ mod tests {
             .unwrap();
 
         let err = linker
-            .create_link(&m, &target_path, &db, &mut existing_links)
+            .create_link(&m, &target_path, &db, &mut existing_links, None)
             .await
             .unwrap_err();
 
@@ -1109,7 +1133,7 @@ mod tests {
         let linker = Linker::new(false, true, "");
 
         let summary = linker
-            .process_matches(&[sample_movie_match(&lib_path, &source_path)], &db)
+            .process_matches(&[sample_movie_match(&lib_path, &source_path)], &db, None)
             .await
             .unwrap();
 
@@ -1151,7 +1175,7 @@ mod tests {
             .unwrap();
 
         let outcome = linker
-            .create_link(&m, &target_path, &db, &mut existing_links)
+            .create_link(&m, &target_path, &db, &mut existing_links, None)
             .await
             .unwrap();
 
@@ -1187,7 +1211,7 @@ mod tests {
             .unwrap();
 
         let outcome = linker
-            .create_link(&m, &target_path, &db, &mut existing_links)
+            .create_link(&m, &target_path, &db, &mut existing_links, None)
             .await
             .unwrap();
 
@@ -1239,7 +1263,7 @@ mod tests {
             .unwrap();
 
         let outcome = linker
-            .create_link(&m, &target_path, &db, &mut existing_links)
+            .create_link(&m, &target_path, &db, &mut existing_links, None)
             .await
             .unwrap();
 
