@@ -1,0 +1,184 @@
+{% extends "web/ui/base.html" %}
+
+{% block title %}Anime Remediation Result - Symlinkarr{% endblock %}
+{% block nav_cleanup %}active{% endblock %}
+
+{% block content %}
+<div class="page-header page-header--split">
+    <div>
+        <p class="page-kicker">Cleanup</p>
+        <h1>&#127909; Anime Remediation</h1>
+        <p class="page-lead">This is the guarded remediation workflow. Preview first, then apply only from the saved report and confirmation token.</p>
+    </div>
+    <div class="actions">
+        <a href="/cleanup/anime-remediation" class="btn btn-secondary">&#8592; Back to Backlog</a>
+        <a href="/cleanup" class="btn btn-secondary">&#129529; Back to Cleanup</a>
+    </div>
+</div>
+
+<div class="alert {% if success %}alert-success{% else %}alert-error{% endif %}">
+    <strong>{% if success %}Operation completed.{% else %}Operation failed.{% endif %}</strong>
+    {{ message }}
+</div>
+
+{% match preview %}
+{% when Some with (data) %}
+<div class="split-grid">
+    <section class="card hero-card hero-card--accent">
+        <p class="hero-label">Preview summary</p>
+        <div class="hero-value">{{ data.cleanup_candidates }}</div>
+        <p class="hero-copy">Candidate symlinks that the guarded plan would quarantine or remove if you apply it from this exact saved report.</p>
+        <div class="hero-inline-stats">
+            <span>Eligible <strong>{{ data.eligible_groups }}</strong></span>
+            <span>Blocked <strong>{{ data.blocked_groups }}</strong></span>
+        </div>
+    </section>
+
+    <section class="card">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Saved plan</p>
+                <h2 class="section-title">Review and confirm</h2>
+            </div>
+        </div>
+        <div class="metric-grid metric-grid--compact">
+            <div class="metric-card"><span class="metric-label">Total groups</span><strong>{{ data.total_groups }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Eligible</span><strong>{{ data.eligible_groups }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Blocked</span><strong>{{ data.blocked_groups }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Plex DB</span><strong class="mono">{{ data.plex_db_path }}</strong></div>
+        </div>
+        <p class="mt-2 mb-1">Report file: <code class="mono">{{ data.report_path.display() }}</code></p>
+        <p class="mb-1">Confirmation token: <code class="mono">{{ data.confirmation_token }}</code></p>
+        {% if !data.title_filter.is_empty() %}
+        <p class="text-muted">Title filter: <code class="mono">{{ data.title_filter }}</code></p>
+        {% endif %}
+    </section>
+</div>
+
+{% if !data.blocked_reason_summary.is_empty() %}
+<section class="card">
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Blocked reasons</p>
+            <h2 class="section-title">What still needs manual review</h2>
+        </div>
+    </div>
+    <div class="metric-grid metric-grid--compact">
+        {% for item in data.blocked_reason_summary %}
+        <div class="metric-card">
+            <span class="metric-label">{{ item.label }}</span>
+            <strong>{{ item.groups }}</strong>
+            <div class="text-muted">{{ item.recommended_action }}</div>
+        </div>
+        {% endfor %}
+    </div>
+</section>
+{% endif %}
+
+{% if !data.groups.is_empty() %}
+<section class="card">
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Plan contents</p>
+            <h2 class="section-title">Groups in this saved plan</h2>
+        </div>
+    </div>
+    <div class="table-wrap">
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>Title</th>
+                    <th>Status</th>
+                    <th>Recommended root</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for group in data.groups %}
+                <tr>
+                    <td><strong>{{ group.normalized_title }}</strong></td>
+                    <td>
+                        {% if group.eligible %}
+                        <span class="badge badge-success">Eligible</span>
+                        {% else %}
+                        <span class="badge badge-warning">Blocked</span>
+                        {% endif %}
+                    </td>
+                    <td><code class="mono">{{ group.recommended_tagged_root.display() }}</code></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endif %}
+
+<section class="card">
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Apply gate</p>
+            <h2 class="section-title">Apply this exact saved plan</h2>
+            <p class="text-muted">Paste the token from the preview above. This stays quarantine-first for foreign material and only acts on the saved report file.</p>
+        </div>
+    </div>
+    <form action="/cleanup/anime-remediation/apply" method="post" class="stack-form">
+        <input type="hidden" name="report" value="{{ data.report_path.display() }}">
+        <div class="form-group">
+            <label class="form-label" for="anime-remediation-token">Confirmation Token</label>
+            <input id="anime-remediation-token" name="token" type="text" class="form-control field-max-lg" placeholder="Paste the preview token exactly">
+        </div>
+        <div class="form-group">
+            <label class="form-label" for="anime-remediation-max-delete">Max Deletes (optional)</label>
+            <input id="anime-remediation-max-delete" name="max_delete" type="number" min="1" class="form-control field-max-sm" placeholder="Unlimited when blank">
+            <small class="text-muted">Use this when you want to cap the first apply pass for extra caution.</small>
+        </div>
+        <div class="actions">
+            <button type="submit" class="btn btn-primary">&#9888;&#65039; Apply Guarded Remediation</button>
+            <a href="/cleanup/anime-remediation" class="btn btn-secondary">&#128065; Re-open Backlog</a>
+        </div>
+    </form>
+</section>
+{% when None %}
+{% endmatch %}
+
+{% match apply %}
+{% when Some with (data) %}
+<div class="split-grid">
+    <section class="card hero-card hero-card--accent">
+        <p class="hero-label">Apply result</p>
+        <div class="hero-value">{{ data.candidates }}</div>
+        <p class="hero-copy">Candidates processed from the saved anime remediation plan.</p>
+        <div class="hero-inline-stats">
+            <span>Quarantined <strong>{{ data.quarantined }}</strong></span>
+            <span>Removed <strong>{{ data.removed }}</strong></span>
+            <span>Skipped <strong>{{ data.skipped }}</strong></span>
+        </div>
+    </section>
+
+    <section class="card">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Outcome</p>
+                <h2 class="section-title">What changed</h2>
+            </div>
+        </div>
+        <div class="metric-grid metric-grid--compact">
+            <div class="metric-card"><span class="metric-label">Total groups</span><strong>{{ data.total_groups }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Eligible</span><strong>{{ data.eligible_groups }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Blocked</span><strong>{{ data.blocked_groups }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Report</span><strong class="mono">{{ data.report_path.display() }}</strong></div>
+        </div>
+        {% match data.safety_snapshot %}
+        {% when Some with (path) %}
+        <p class="mt-2 mb-1">Safety snapshot: <code class="mono">{{ path.display() }}</code></p>
+        {% when None %}
+        {% endmatch %}
+        {% match data.media_server_invalidation_summary %}
+        {% when Some with (summary) %}
+        <p class="text-muted mt-1">Media refresh: {{ summary }}</p>
+        {% when None %}
+        {% endmatch %}
+    </section>
+</div>
+{% when None %}
+{% endmatch %}
+{% endblock %}

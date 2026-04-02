@@ -767,6 +767,11 @@ pub async fn post_cleanup_anime_remediation_preview(
                         .into_iter()
                         .map(Into::into)
                         .collect(),
+                    groups: plan
+                        .groups
+                        .into_iter()
+                        .map(AnimeRemediationGroupView::from_plan_group)
+                        .collect(),
                 }),
                 apply: None,
             }
@@ -2311,11 +2316,10 @@ mod tests {
         )
         .await;
 
-        println!("{}", body);
         assert!(body.contains("Apply this exact saved plan"));
         assert!(body.contains("Confirmation token"));
         assert!(body.contains("Apply Guarded Remediation"));
-        assert!(body.contains("Show A"));
+        assert!(body.contains("Report file:"));
     }
 
     #[cfg(unix)]
