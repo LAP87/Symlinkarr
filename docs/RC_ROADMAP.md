@@ -11,6 +11,7 @@ Already working in real use:
 - scan, match, link, repair, cleanup, and cache flows
 - web UI and JSON API
 - guarded cleanup and guarded anime remediation preview/apply
+- guarded anime remediation is now reachable from the web UI, not only CLI/API
 - Plex, Emby, and Jellyfin invalidation adapters
 - multi-backend refresh fan-out
 - persisted scan telemetry and per-backend refresh history
@@ -20,7 +21,7 @@ Still true in live data:
 
 - anime legacy cleanup is the messiest remaining operational area
 - Plex overload and refresh pressure still need continued hardening
-- some of the most important operator questions still require digging into logs or JSON
+- some of the most important operator questions are finally visible in UI/API, but remediation still needs to become safer and easier to trust at larger scale
 
 ## What Must Be Finished Before `1.0 RC`
 
@@ -123,9 +124,9 @@ Do not ship these as “safe defaults” yet:
 
 If work resumes right now, the best next slices are:
 
-1. operator-visible scan/link skip reasons
-2. better blocked-reason summaries for anime remediation groups
-3. more real-load validation and pacing hardening for Plex/Emby/Jellyfin refresh, especially after the new Emby/Jellyfin root-fallback guard landed
+1. real concurrent-load validation for Plex/Emby/Jellyfin refresh, especially around the new refresh-lock and Emby/Jellyfin root-fallback guard
+2. raise safe anime remediation eligibility without weakening quarantine-first guarantees
+3. extend the same remediation trust model into broader legacy/foreign cleanup cases outside anime
 
 ## Supporting Docs
 

@@ -271,6 +271,7 @@ Response element schema:
     "unresolved_paths": 0,
     "capped_batches": 1,
     "aborted_due_to_cap": true,
+    "deferred_due_to_lock": false,
     "failed_batches": 0
   },
   "media_server_refresh": [
@@ -290,6 +291,7 @@ Response element schema:
         "unresolved_paths": 0,
         "capped_batches": 1,
         "aborted_due_to_cap": true,
+        "deferred_due_to_lock": false,
         "failed_batches": 0
       }
     },
@@ -393,6 +395,7 @@ Response schema:
     "unresolved_paths": 0,
     "capped_batches": 1,
     "aborted_due_to_cap": true,
+    "deferred_due_to_lock": false,
     "failed_batches": 0
   },
   "media_server_refresh": [
@@ -412,6 +415,7 @@ Response schema:
         "unresolved_paths": 0,
         "capped_batches": 1,
         "aborted_due_to_cap": true,
+        "deferred_due_to_lock": false,
         "failed_batches": 0
       }
     },
@@ -431,6 +435,7 @@ Response schema:
         "unresolved_paths": 0,
         "capped_batches": 0,
         "aborted_due_to_cap": false,
+        "deferred_due_to_lock": false,
         "failed_batches": 0
       }
     }
@@ -902,6 +907,7 @@ Response schema:
           "unresolved_paths": 0,
           "capped_batches": 0,
           "aborted_due_to_cap": false,
+          "deferred_due_to_lock": false,
           "failed_batches": 0
         }
       },
@@ -920,6 +926,7 @@ Response schema:
           "unresolved_paths": 0,
           "capped_batches": 0,
           "aborted_due_to_cap": false,
+          "deferred_due_to_lock": false,
           "failed_batches": 0
         }
       }
@@ -936,6 +943,7 @@ Response schema:
       "unresolved_paths": 0,
       "capped_batches": 0,
       "aborted_due_to_cap": false,
+      "deferred_due_to_lock": false,
       "failed_batches": 0
     }
   }

@@ -6,6 +6,26 @@
 - posture: `rc-prep with downloadable binary artifacts`
 - intended use: local-first host or Docker installs, with Windows 11 users running through WSL2 or a Linux container
 
+## 2026-04-02 - Web Anime Remediation Workflow
+
+### Code Changes
+
+- added real browser handlers for guarded anime remediation preview/apply, so the remediation workflow no longer stops at a read-only backlog page.
+  - files: `src/web/handlers.rs`, `src/web/mod.rs`
+- added a dedicated remediation result page with saved-plan details, blocked-reason summary, confirmation token, and a guarded apply gate for the exact saved report.
+  - files: `src/web/templates.rs`, `src/web/ui/anime_remediation_result.html`
+- upgraded the anime backlog page from read-only wording to an operator workflow page with a built-in “build guarded plan” form that routes into the same preview/apply safety path as CLI/API.
+  - files: `src/web/ui/anime_remediation.html`
+- refreshed the RC roadmap so the next slices reflect the current truth instead of already-landed observability/remediation work.
+  - files: `docs/RC_ROADMAP.md`
+
+### Validation
+
+- `CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-remediation-ui cargo test web::handlers::tests::anime_remediation_preview_page_renders_saved_plan_and_apply_gate -- --nocapture`
+  - result: passed locally
+- `CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-remediation-ui cargo test web::handlers::tests::anime_remediation_apply_page_renders_quarantine_result -- --nocapture`
+  - result: passed locally
+
 ## 2026-04-01 - Release Packaging and Binary Build Hardening
 
 ### Code Changes
