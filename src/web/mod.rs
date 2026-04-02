@@ -836,6 +836,14 @@ fn create_router(state: WebState) -> Router {
             "/cleanup/anime-remediation",
             get(handlers::get_cleanup_anime_remediation),
         )
+        .route(
+            "/cleanup/anime-remediation/preview",
+            post(handlers::post_cleanup_anime_remediation_preview),
+        )
+        .route(
+            "/cleanup/anime-remediation/apply",
+            post(handlers::post_cleanup_anime_remediation_apply),
+        )
         .route("/cleanup/audit", post(handlers::post_cleanup_audit))
         .route("/cleanup/prune", get(handlers::get_cleanup_prune))
         .route("/cleanup/prune", post(handlers::post_cleanup_prune))

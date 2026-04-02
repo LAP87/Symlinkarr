@@ -738,3 +738,23 @@ Accounts with large RD libraries (10k+ torrents) triggered cascading `429 Too Ma
   - `backups/cleanup-reports/symlinkarr-cleanup-anime-threshold-v2.json`
 - pre-change safety backup:
   - `backups/backup-20260224-185003.json`
+# 2026-04-02
+
+## Media-Server Hardening
+
+- Emby and Jellyfin invalidation now support a guarded `fallback_to_library_roots_when_capped` path. When a targeted invalidation storm would exceed the configured cap and abort entirely, Symlinkarr can fall back to a much smaller set of library-root invalidations instead of leaving the media server stale.
+- post-link scan refresh now goes through the same affected-path invalidation flow as cleanup and repair, so Plex/Emby/Jellyfin all share the same cap/fallback semantics after mutations.
+- concurrent Symlinkarr mutation runs now serialize media-server refreshes behind a lock. Later runs surface `deferred_due_to_lock` in scan history/API/UI instead of issuing overlapping refresh storms.
+
+## Web Remediation
+
+- the anime remediation page is no longer read-only. Web operators can now build a saved guarded remediation plan and apply that exact plan from the browser using the same report/token workflow as the CLI and JSON API.
+- web remediation apply results now surface the same post-mutation media-server invalidation summary as the CLI path.
+
+### Verification
+
+- `cargo test -q`
+- `cargo clippy --all-targets --all-features -- -D warnings`
+- `symlinkarr config validate --output json`
+- `symlinkarr status --health --output json`
+- `symlinkarr scan --library Anime`

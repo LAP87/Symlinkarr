@@ -117,7 +117,9 @@
                     {% if !run.media_server_refresh.is_empty() %}
                     <div>
                         {% for refresh in run.media_server_refresh %}
-                        {% if refresh.failed_batches > 0 %}
+                        {% if refresh.deferred_due_to_lock %}
+                        <span class="badge badge-warning">{{ refresh.server }} deferred</span>
+                        {% else if refresh.failed_batches > 0 %}
                         <span class="badge badge-danger">{{ refresh.server }} failed</span>
                         {% else if refresh.aborted_due_to_cap %}
                         <span class="badge badge-danger">{{ refresh.server }} guard abort</span>

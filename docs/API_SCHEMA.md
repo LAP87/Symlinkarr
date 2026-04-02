@@ -309,6 +309,7 @@ Response element schema:
         "unresolved_paths": 0,
         "capped_batches": 0,
         "aborted_due_to_cap": false,
+        "deferred_due_to_lock": false,
         "failed_batches": 0
       }
     }
@@ -464,6 +465,7 @@ Notes:
 
 - `plex_refresh_ms` remains the phase runtime for compatibility, while the nested `plex_refresh` object exposes the aggregate request pressure, coalescing, capping, cap-guard aborts, failures, and actual queued coverage across all active media-server refresh backends.
 - `media_server_refresh` stores the per-backend refresh telemetry persisted with the scan run. Use it when you need to know which backend actually capped, skipped, or failed.
+- `deferred_due_to_lock` means a later Symlinkarr process saw another run already holding the media-refresh lock and deliberately skipped issuing concurrent refresh requests.
 - `skip_reasons` stores the structured aggregate reasons Symlinkarr persisted for skipped work during the run, combining linker guards and ambiguous-match skips into one operator-visible breakdown.
 - `skip_event_samples` stores concrete run-scoped skip/dead-mark samples tied to the same scan run, so operators can inspect real target/source paths without grepping logs.
 
@@ -579,6 +581,7 @@ Response:
           "unresolved_paths": 0,
           "capped_batches": 0,
           "aborted_due_to_cap": false,
+          "deferred_due_to_lock": false,
           "failed_batches": 0
         }
       },
@@ -597,6 +600,7 @@ Response:
           "unresolved_paths": 0,
           "capped_batches": 0,
           "aborted_due_to_cap": false,
+          "deferred_due_to_lock": false,
           "failed_batches": 0
         }
       }
@@ -613,6 +617,7 @@ Response:
       "unresolved_paths": 0,
       "capped_batches": 0,
       "aborted_due_to_cap": false,
+      "deferred_due_to_lock": false,
       "failed_batches": 0
     }
   }

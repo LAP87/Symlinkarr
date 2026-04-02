@@ -1,9 +1,12 @@
-use std::path::PathBuf;
+use std::fs::{File, OpenOptions};
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::config::{Config, LibraryConfig};
+use crate::config::{Config, LibraryConfig, MediaBrowserConfig};
 
 pub(crate) mod emby;
 pub(crate) mod jellyfin;
@@ -23,6 +26,8 @@ pub(crate) struct LibraryRefreshTelemetry {
     pub unresolved_paths: usize,
     pub capped_batches: usize,
     pub aborted_due_to_cap: bool,
+    #[serde(default)]
+    pub deferred_due_to_lock: bool,
     pub failed_batches: usize,
 }
 
@@ -107,6 +112,12 @@ impl LibraryInvalidationOutcome {
                 .collect::<Vec<_>>()
                 .join(", ");
             let aggregate = self.refresh.as_ref()?;
+            if aggregate.deferred_due_to_lock {
+                return Some(format!(
+                    "{} refresh deferred because another Symlinkarr process is already refreshing a media server",
+                    labels
+                ));
+            }
             if aggregate.aborted_due_to_cap {
                 return Some(format!(
                     "{} refresh partially aborted by cap guard across {} server(s)",
@@ -135,6 +146,12 @@ impl LibraryInvalidationOutcome {
 
         let refresh = self.refresh.as_ref()?;
         if self.server.is_none() {
+            if refresh.deferred_due_to_lock {
+                return Some(format!(
+                    "media-server refresh deferred because another Symlinkarr process is already refreshing a media server for {} changed library root(s)",
+                    self.requested_library_roots
+                ));
+            }
             if refresh.aborted_due_to_cap {
                 return Some(format!(
                     "media-server refresh aborted by cap guard for {} changed library root(s)",
@@ -157,6 +174,12 @@ impl LibraryInvalidationOutcome {
         }
 
         let server = self.server.unwrap_or(MediaServerKind::Plex);
+        if refresh.deferred_due_to_lock {
+            return Some(format!(
+                "{} refresh deferred because another Symlinkarr process is already refreshing a media server for {} changed library root(s)",
+                server, self.requested_library_roots
+            ));
+        }
         if refresh.aborted_due_to_cap {
             return Some(format!(
                 "{} refresh aborted by cap guard for {} changed library root(s)",
@@ -195,21 +218,182 @@ fn merge_refresh_telemetry(
     aggregate.unresolved_paths += addition.unresolved_paths;
     aggregate.capped_batches += addition.capped_batches;
     aggregate.aborted_due_to_cap |= addition.aborted_due_to_cap;
+    aggregate.deferred_due_to_lock |= addition.deferred_due_to_lock;
     aggregate.failed_batches += addition.failed_batches;
 }
 
+#[derive(Debug)]
+struct MediaRefreshGuard {
+    _file: File,
+}
+
+fn media_refresh_lock_path(cfg: &Config) -> PathBuf {
+    let base = if cfg.backup.path.is_absolute() {
+        cfg.backup.path.clone()
+    } else {
+        Path::new(&cfg.db_path)
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."))
+    };
+    base.join(".media-server-refresh.lock")
+}
+
+#[cfg(unix)]
+fn try_acquire_media_refresh_guard(cfg: &Config) -> Result<Option<MediaRefreshGuard>> {
+    let lock_path = media_refresh_lock_path(cfg);
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)?;
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if rc == 0 {
+        return Ok(Some(MediaRefreshGuard { _file: file }));
+    }
+
+    let err = std::io::Error::last_os_error();
+    match err.raw_os_error() {
+        Some(code) if code == libc::EWOULDBLOCK || code == libc::EAGAIN => Ok(None),
+        _ => Err(err.into()),
+    }
+}
+
+#[cfg(not(unix))]
+fn try_acquire_media_refresh_guard(cfg: &Config) -> Result<Option<MediaRefreshGuard>> {
+    let lock_path = media_refresh_lock_path(cfg);
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)?;
+    Ok(Some(MediaRefreshGuard { _file: file }))
+}
+
+#[cfg(unix)]
+impl Drop for MediaRefreshGuard {
+    fn drop(&mut self) {
+        let _ = unsafe { libc::flock(self._file.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
+
+fn emit_refresh_lock_contention(emit_text: bool, servers: &[MediaServerKind]) {
+    if emit_text {
+        crate::utils::user_println(format!(
+            "   ⚠️  Media refresh deferred: another Symlinkarr process already holds the refresh lock for {}",
+            display_server_list(servers)
+        ));
+    }
+}
+
+fn deferred_refresh_telemetry(requested_paths: usize) -> LibraryRefreshTelemetry {
+    LibraryRefreshTelemetry {
+        requested_paths,
+        deferred_due_to_lock: true,
+        ..LibraryRefreshTelemetry::default()
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct RefreshTargetPlan {
+    targets: Vec<PathBuf>,
+    coalesced_paths: usize,
+    coalesced_batches: usize,
+    root_fallback_applied: bool,
+}
+
+fn dedup_non_empty_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
+    let mut unique = paths
+        .iter()
+        .filter(|path| !path.as_os_str().is_empty())
+        .cloned()
+        .collect::<Vec<_>>();
+    unique.sort();
+    unique.dedup();
+    unique
+}
+
+fn planned_media_browser_batches(cfg: &MediaBrowserConfig, paths: &[PathBuf]) -> usize {
+    let unique = dedup_non_empty_paths(paths);
+    if unique.is_empty() {
+        return 0;
+    }
+
+    let batch_size = cfg.refresh_batch_size.max(1);
+    unique.len().div_ceil(batch_size)
+}
+
+fn select_media_browser_refresh_targets(
+    cfg: &MediaBrowserConfig,
+    refresh_roots: &[PathBuf],
+    affected_paths: &[PathBuf],
+) -> RefreshTargetPlan {
+    let targeted = dedup_non_empty_paths(affected_paths);
+    if targeted.is_empty() {
+        return RefreshTargetPlan::default();
+    }
+
+    if !cfg.abort_refresh_when_capped || !cfg.fallback_to_library_roots_when_capped {
+        return RefreshTargetPlan {
+            targets: targeted,
+            ..RefreshTargetPlan::default()
+        };
+    }
+
+    let targeted_batches = planned_media_browser_batches(cfg, &targeted);
+    if cfg.max_refresh_batches_per_run == 0 || targeted_batches <= cfg.max_refresh_batches_per_run {
+        return RefreshTargetPlan {
+            targets: targeted,
+            ..RefreshTargetPlan::default()
+        };
+    }
+
+    let roots = dedup_non_empty_paths(refresh_roots);
+    if roots.is_empty() {
+        return RefreshTargetPlan {
+            targets: targeted,
+            ..RefreshTargetPlan::default()
+        };
+    }
+
+    let root_batches = planned_media_browser_batches(cfg, &roots);
+    if root_batches == 0
+        || root_batches > cfg.max_refresh_batches_per_run
+        || root_batches >= targeted_batches
+    {
+        return RefreshTargetPlan {
+            targets: targeted,
+            ..RefreshTargetPlan::default()
+        };
+    }
+
+    RefreshTargetPlan {
+        targets: roots.clone(),
+        coalesced_paths: targeted.len().saturating_sub(roots.len()),
+        coalesced_batches: targeted_batches.saturating_sub(root_batches),
+        root_fallback_applied: true,
+    }
+}
+
 fn refresh_targets_for_server(
+    cfg: &Config,
     server: MediaServerKind,
     refresh_roots: &[PathBuf],
     affected_paths: &[PathBuf],
-) -> Vec<PathBuf> {
+) -> RefreshTargetPlan {
     match server {
-        MediaServerKind::Plex => refresh_roots.to_vec(),
-        MediaServerKind::Emby | MediaServerKind::Jellyfin => {
-            let mut paths = affected_paths.to_vec();
-            paths.sort();
-            paths.dedup();
-            paths
+        MediaServerKind::Plex => RefreshTargetPlan {
+            targets: dedup_non_empty_paths(refresh_roots),
+            ..RefreshTargetPlan::default()
+        },
+        MediaServerKind::Emby => {
+            select_media_browser_refresh_targets(&cfg.emby, refresh_roots, affected_paths)
+        }
+        MediaServerKind::Jellyfin => {
+            select_media_browser_refresh_targets(&cfg.jellyfin, refresh_roots, affected_paths)
         }
     }
 }
@@ -260,6 +444,27 @@ pub(crate) async fn refresh_library_paths_detailed(
             servers: Vec::new(),
         });
     }
+
+    let Some(_guard) = try_acquire_media_refresh_guard(cfg)? else {
+        emit_refresh_lock_contention(emit_text, &servers);
+        let mut aggregate = LibraryRefreshTelemetry::default();
+        let server_outcomes = servers
+            .into_iter()
+            .map(|server| {
+                let refresh = deferred_refresh_telemetry(refresh_paths.len());
+                merge_refresh_telemetry(&mut aggregate, &refresh);
+                LibraryInvalidationServerOutcome {
+                    server,
+                    requested_targets: refresh_paths.len(),
+                    refresh,
+                }
+            })
+            .collect();
+        return Ok(LibraryRefreshOutcome {
+            aggregate,
+            servers: server_outcomes,
+        });
+    };
 
     let mut aggregate = LibraryRefreshTelemetry::default();
     let mut server_outcomes = Vec::new();
@@ -355,21 +560,67 @@ pub(crate) async fn invalidate_after_mutation(
     }
 
     if configured {
+        let Some(_guard) = try_acquire_media_refresh_guard(cfg)? else {
+            emit_refresh_lock_contention(emit_text, &configured_servers);
+            let mut aggregate = LibraryRefreshTelemetry::default();
+            let mut server_outcomes = Vec::new();
+            for server in configured_servers.iter().copied() {
+                let refresh_plan =
+                    refresh_targets_for_server(cfg, server, &refresh_roots, affected_paths);
+                if refresh_plan.targets.is_empty() {
+                    continue;
+                }
+
+                let mut refresh = deferred_refresh_telemetry(refresh_plan.targets.len());
+                refresh.coalesced_batches = refresh_plan.coalesced_batches;
+                refresh.coalesced_paths = refresh_plan.coalesced_paths;
+                merge_refresh_telemetry(&mut aggregate, &refresh);
+                server_outcomes.push(LibraryInvalidationServerOutcome {
+                    server,
+                    requested_targets: refresh_plan.targets.len(),
+                    refresh,
+                });
+            }
+
+            return Ok(LibraryInvalidationOutcome {
+                server: configured_servers
+                    .first()
+                    .copied()
+                    .filter(|_| configured_servers.len() == 1),
+                requested_library_roots: refresh_roots.len(),
+                configured,
+                refresh: Some(aggregate),
+                servers: server_outcomes,
+            });
+        };
+
         let mut aggregate = LibraryRefreshTelemetry::default();
         let mut server_outcomes = Vec::new();
         for server in configured_servers.iter().copied() {
-            let refresh_targets =
-                refresh_targets_for_server(server, &refresh_roots, affected_paths);
-            if refresh_targets.is_empty() {
+            let refresh_plan =
+                refresh_targets_for_server(cfg, server, &refresh_roots, affected_paths);
+            if refresh_plan.targets.is_empty() {
                 continue;
             }
 
-            match refresh_paths_for_server(cfg, server, &refresh_targets, emit_text).await {
-                Ok(refresh) => {
+            if emit_text && refresh_plan.root_fallback_applied {
+                crate::utils::user_println(format!(
+                    "   📺 {}: falling back to {} library-root invalidation target(s) to stay under the cap; avoided {} targeted path(s) and {} queued request(s)",
+                    server,
+                    refresh_plan.targets.len(),
+                    refresh_plan.coalesced_paths,
+                    refresh_plan.coalesced_batches
+                ));
+            }
+
+            match refresh_paths_for_server(cfg, server, &refresh_plan.targets, emit_text).await {
+                Ok(mut refresh) => {
+                    refresh.coalesced_paths += refresh_plan.coalesced_paths;
+                    refresh.coalesced_batches += refresh_plan.coalesced_batches;
                     merge_refresh_telemetry(&mut aggregate, &refresh);
                     server_outcomes.push(LibraryInvalidationServerOutcome {
                         server,
-                        requested_targets: refresh_targets.len(),
+                        requested_targets: refresh_plan.targets.len(),
                         refresh,
                     });
                 }
@@ -381,7 +632,9 @@ pub(crate) async fn invalidate_after_mutation(
                         ));
                     }
                     let refresh = LibraryRefreshTelemetry {
-                        requested_paths: refresh_targets.len(),
+                        requested_paths: refresh_plan.targets.len(),
+                        coalesced_batches: refresh_plan.coalesced_batches,
+                        coalesced_paths: refresh_plan.coalesced_paths,
                         skipped_batches: 1,
                         failed_batches: 1,
                         ..LibraryRefreshTelemetry::default()
@@ -389,7 +642,7 @@ pub(crate) async fn invalidate_after_mutation(
                     merge_refresh_telemetry(&mut aggregate, &refresh);
                     server_outcomes.push(LibraryInvalidationServerOutcome {
                         server,
-                        requested_targets: refresh_targets.len(),
+                        requested_targets: refresh_plan.targets.len(),
                         refresh,
                     });
                 }
@@ -624,6 +877,88 @@ mod tests {
         assert!(has_configured_invalidation_server(&cfg));
     }
 
+    #[test]
+    fn media_browser_target_plan_falls_back_to_library_roots_when_cap_would_abort() {
+        let mut cfg = test_config();
+        cfg.emby.url = "http://localhost:8096".to_string();
+        cfg.emby.api_key = "emby-key".to_string();
+        cfg.emby.refresh_batch_size = 2;
+        cfg.emby.max_refresh_batches_per_run = 1;
+        cfg.emby.abort_refresh_when_capped = true;
+        cfg.emby.fallback_to_library_roots_when_capped = true;
+
+        let plan = refresh_targets_for_server(
+            &cfg,
+            MediaServerKind::Emby,
+            &[PathBuf::from("/mnt/storage/plex/anime")],
+            &[
+                PathBuf::from("/mnt/storage/plex/anime/Show 1/Season 01/E01.mkv"),
+                PathBuf::from("/mnt/storage/plex/anime/Show 2/Season 01/E01.mkv"),
+                PathBuf::from("/mnt/storage/plex/anime/Show 3/Season 01/E01.mkv"),
+            ],
+        );
+
+        assert_eq!(plan.targets, vec![PathBuf::from("/mnt/storage/plex/anime")]);
+        assert!(plan.root_fallback_applied);
+        assert_eq!(plan.coalesced_paths, 2);
+        assert_eq!(plan.coalesced_batches, 1);
+    }
+
+    #[test]
+    fn media_browser_target_plan_keeps_targeted_paths_when_fallback_disabled() {
+        let mut cfg = test_config();
+        cfg.jellyfin.url = "http://localhost:8097".to_string();
+        cfg.jellyfin.api_key = "jellyfin-key".to_string();
+        cfg.jellyfin.refresh_batch_size = 2;
+        cfg.jellyfin.max_refresh_batches_per_run = 1;
+        cfg.jellyfin.abort_refresh_when_capped = true;
+        cfg.jellyfin.fallback_to_library_roots_when_capped = false;
+
+        let plan = refresh_targets_for_server(
+            &cfg,
+            MediaServerKind::Jellyfin,
+            &[PathBuf::from("/mnt/storage/plex/anime")],
+            &[
+                PathBuf::from("/mnt/storage/plex/anime/Show 1/Season 01/E01.mkv"),
+                PathBuf::from("/mnt/storage/plex/anime/Show 2/Season 01/E01.mkv"),
+                PathBuf::from("/mnt/storage/plex/anime/Show 3/Season 01/E01.mkv"),
+            ],
+        );
+
+        assert_eq!(plan.targets.len(), 3);
+        assert!(!plan.root_fallback_applied);
+        assert_eq!(plan.coalesced_paths, 0);
+        assert_eq!(plan.coalesced_batches, 0);
+    }
+
+    #[test]
+    fn media_browser_target_plan_skips_fallback_when_roots_still_exceed_cap() {
+        let mut cfg = test_config();
+        cfg.emby.url = "http://localhost:8096".to_string();
+        cfg.emby.api_key = "emby-key".to_string();
+        cfg.emby.refresh_batch_size = 1;
+        cfg.emby.max_refresh_batches_per_run = 1;
+        cfg.emby.abort_refresh_when_capped = true;
+        cfg.emby.fallback_to_library_roots_when_capped = true;
+
+        let plan = refresh_targets_for_server(
+            &cfg,
+            MediaServerKind::Emby,
+            &[
+                PathBuf::from("/mnt/storage/plex/anime"),
+                PathBuf::from("/mnt/storage/plex/series"),
+            ],
+            &[
+                PathBuf::from("/mnt/storage/plex/anime/Show 1/Season 01/E01.mkv"),
+                PathBuf::from("/mnt/storage/plex/series/Show 2/Season 01/E01.mkv"),
+                PathBuf::from("/mnt/storage/plex/series/Show 3/Season 01/E01.mkv"),
+            ],
+        );
+
+        assert_eq!(plan.targets.len(), 3);
+        assert!(!plan.root_fallback_applied);
+    }
+
     #[tokio::test]
     async fn invalidate_after_mutation_reports_unconfigured_when_no_backend_exists() {
         let cfg = test_config();
@@ -679,5 +1014,66 @@ mod tests {
         let summary = outcome.summary_suffix().unwrap();
         assert!(summary.contains("Plex, Emby"));
         assert!(summary.contains("across 2 server(s)"));
+    }
+
+    #[test]
+    fn summary_suffix_mentions_lock_deferral_when_present() {
+        let outcome = LibraryInvalidationOutcome {
+            server: None,
+            requested_library_roots: 2,
+            configured: true,
+            refresh: Some(LibraryRefreshTelemetry {
+                deferred_due_to_lock: true,
+                ..LibraryRefreshTelemetry::default()
+            }),
+            servers: vec![LibraryInvalidationServerOutcome {
+                server: MediaServerKind::Plex,
+                requested_targets: 2,
+                refresh: LibraryRefreshTelemetry {
+                    requested_paths: 2,
+                    deferred_due_to_lock: true,
+                    ..LibraryRefreshTelemetry::default()
+                },
+            }],
+        };
+
+        let summary = outcome.summary_suffix().unwrap();
+        assert!(summary.contains("deferred"));
+        assert!(summary.contains("already refreshing"));
+    }
+
+    #[tokio::test]
+    async fn refresh_library_paths_detailed_defers_when_lock_is_held() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = test_config();
+        cfg.plex.url = "http://localhost:32400".to_string();
+        cfg.plex.token = "plex-token".to_string();
+        cfg.backup.path = dir.path().join("backups");
+        std::fs::create_dir_all(&cfg.backup.path).unwrap();
+
+        let lock_path = media_refresh_lock_path(&cfg);
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .unwrap();
+        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        assert_eq!(rc, 0);
+
+        let outcome = refresh_library_paths_detailed(
+            &cfg,
+            &[PathBuf::from(
+                "/mnt/storage/plex/anime/Show/Season 01/E01.mkv",
+            )],
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert!(outcome.aggregate.deferred_due_to_lock);
+        assert_eq!(outcome.servers.len(), 1);
+        assert!(outcome.servers[0].refresh.deferred_due_to_lock);
     }
 }

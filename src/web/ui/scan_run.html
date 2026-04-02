@@ -179,6 +179,7 @@
             <strong>{{ refresh.refreshed_batches }}/{{ refresh.planned_batches }}</strong>
             <div class="text-muted">
                 targets {{ refresh.requested_targets }}
+                {% if refresh.deferred_due_to_lock %}| deferred{% endif %}
                 {% if refresh.skipped_batches > 0 %}| skip {{ refresh.skipped_batches }}{% endif %}
                 {% if refresh.failed_batches > 0 %}| fail {{ refresh.failed_batches }}{% endif %}
                 {% if refresh.aborted_due_to_cap %}| guard abort{% endif %}

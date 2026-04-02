@@ -198,6 +198,7 @@ pub struct MediaServerRefreshServerView {
     pub skipped_batches: i64,
     pub failed_batches: i64,
     pub aborted_due_to_cap: bool,
+    pub deferred_due_to_lock: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -308,6 +309,7 @@ impl ScanRunView {
                 skipped_batches: entry.refresh.skipped_batches as i64,
                 failed_batches: entry.refresh.failed_batches as i64,
                 aborted_due_to_cap: entry.refresh.aborted_due_to_cap,
+                deferred_due_to_lock: entry.refresh.deferred_due_to_lock,
             })
             .collect()
     }
@@ -704,6 +706,43 @@ pub struct AnimeRemediationTemplate {
     pub error_message: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct AnimeRemediationPreviewResultView {
+    pub report_path: PathBuf,
+    pub plex_db_path: String,
+    pub title_filter: String,
+    pub total_groups: usize,
+    pub eligible_groups: usize,
+    pub blocked_groups: usize,
+    pub cleanup_candidates: usize,
+    pub confirmation_token: String,
+    pub blocked_reason_summary: Vec<AnimeRemediationBlockedReasonView>,
+    pub groups: Vec<AnimeRemediationGroupView>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AnimeRemediationApplyResultView {
+    pub report_path: PathBuf,
+    pub total_groups: usize,
+    pub eligible_groups: usize,
+    pub blocked_groups: usize,
+    pub candidates: usize,
+    pub quarantined: usize,
+    pub removed: usize,
+    pub skipped: usize,
+    pub safety_snapshot: Option<PathBuf>,
+    pub media_server_invalidation_summary: Option<String>,
+}
+
+#[derive(Template)]
+#[template(path = "web/ui/anime_remediation_result.html")]
+pub struct AnimeRemediationResultTemplate {
+    pub success: bool,
+    pub message: String,
+    pub preview: Option<AnimeRemediationPreviewResultView>,
+    pub apply: Option<AnimeRemediationApplyResultView>,
+}
+
 // ─── Links ──────────────────────────────────────────────────────────
 
 #[derive(Template)]
@@ -874,6 +913,7 @@ mod tests {
                 skipped_batches: 1,
                 failed_batches: 0,
                 aborted_due_to_cap: true,
+                deferred_due_to_lock: false,
             }],
             dead_link_sweep: "0.7s".to_string(),
             total_runtime: "288.2s".to_string(),
@@ -966,6 +1006,20 @@ mod tests {
         assert!(html.contains("/library/Show A/Season 01/Show A - S01E01.mkv"));
         assert!(html.contains("Back to Scan History"));
         assert!(html.contains("77624480"));
+    }
+
+    #[test]
+    fn scan_run_detail_template_renders_deferred_media_refresh_status() {
+        let mut run = sample_scan_run_view();
+        run.media_server_refresh[0].deferred_due_to_lock = true;
+
+        let template = ScanRunDetailTemplate {
+            run,
+            skip_events: Vec::new(),
+        };
+
+        let html = template.render().unwrap();
+        assert!(html.contains("deferred"));
     }
 
     #[test]

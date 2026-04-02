@@ -21,6 +21,7 @@ If your current stack looks like "RD mount + Sonarr/Radarr + a messy library ful
 - repairs dead links and finds missing content
 - audits bad, stale, or misplaced links before cleanup
 - supports Plex, Emby, and Jellyfin refresh after mutations
+- caps and guards media refresh pressure so large mutations do not blindly stampede the media server
 
 No media server is required.
 

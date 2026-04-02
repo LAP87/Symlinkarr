@@ -604,6 +604,9 @@ pub struct MediaBrowserConfig {
     /// Abort the entire invalidation phase when the planned batch count exceeds the limit
     #[serde(default = "default_media_browser_abort_refresh_when_capped")]
     pub abort_refresh_when_capped: bool,
+    /// Fall back to library-root invalidation when targeted paths would exceed the cap
+    #[serde(default = "default_media_browser_fallback_to_library_roots_when_capped")]
+    pub fallback_to_library_roots_when_capped: bool,
 }
 
 fn default_media_browser_refresh_enabled() -> bool {
@@ -626,6 +629,10 @@ fn default_media_browser_abort_refresh_when_capped() -> bool {
     true
 }
 
+fn default_media_browser_fallback_to_library_roots_when_capped() -> bool {
+    true
+}
+
 impl Default for MediaBrowserConfig {
     fn default() -> Self {
         Self {
@@ -636,6 +643,8 @@ impl Default for MediaBrowserConfig {
             refresh_batch_size: default_media_browser_refresh_batch_size(),
             max_refresh_batches_per_run: default_media_browser_max_refresh_batches_per_run(),
             abort_refresh_when_capped: default_media_browser_abort_refresh_when_capped(),
+            fallback_to_library_roots_when_capped:
+                default_media_browser_fallback_to_library_roots_when_capped(),
         }
     }
 }

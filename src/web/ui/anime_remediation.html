@@ -8,7 +8,7 @@
     <div>
         <p class="page-kicker">Cleanup</p>
         <h1>&#127909; Anime Remediation Backlog</h1>
-        <p class="page-lead">Read-only worklist for mixed anime roots and Plex Hama split groups. Use it to see which tagged root should survive before any future remediation/apply flow.</p>
+        <p class="page-lead">Operator worklist for mixed anime roots and Plex Hama split groups. Review the backlog here, then build a guarded remediation plan before applying anything.</p>
     </div>
     <div class="header-badges">
         {% match summary %}
@@ -34,6 +34,31 @@
 
 {% match summary %}
 {% when Some with (data) %}
+<section class="card">
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Workflow</p>
+            <h2 class="section-title">Build a guarded remediation plan</h2>
+            <p class="text-muted">This creates a saved plan under the backup directory, shows the confirmation token, and only then allows apply. It does not mutate anything by itself.</p>
+        </div>
+    </div>
+    <form action="/cleanup/anime-remediation/preview" method="post" class="stack-form">
+        <div class="form-group">
+            <label class="form-label" for="anime-remediation-plex-db">Plex DB Path</label>
+            <input id="anime-remediation-plex-db" name="plex_db" type="text" class="form-control mono" value="{{ data.plex_db_path }}">
+            <small class="text-muted">Use a standard local Plex DB path or override it here if this machine stores Plex elsewhere.</small>
+        </div>
+        <div class="form-group">
+            <label class="form-label" for="anime-remediation-title">Title Filter (optional)</label>
+            <input id="anime-remediation-title" name="title" type="text" class="form-control field-max-lg" placeholder="Narrow the preview to one title when you want a safer first apply pass">
+        </div>
+        <div class="actions">
+            <button type="submit" class="btn btn-primary">&#128269; Build Guarded Plan</button>
+            <a href="/cleanup" class="btn btn-secondary">&#129529; Back to Cleanup</a>
+        </div>
+    </form>
+</section>
+
 <div class="split-grid">
     <section class="card hero-card hero-card--accent">
         <p class="hero-label">Current backlog</p>
@@ -51,7 +76,7 @@
                 <h2 class="section-title">Why this page exists</h2>
             </div>
         </div>
-        <p class="text-muted">This page is intentionally read-only. It answers three questions: which tagged root should win, how much legacy symlink drift still exists, and whether Plex still has a live AniDB/TVDB split for that title.</p>
+        <p class="text-muted">This page answers three questions before any apply step: which tagged root should win, how much legacy symlink drift still exists, and whether Plex still has a live AniDB/TVDB split for that title.</p>
         <div class="metric-grid metric-grid--compact mt-2">
             <div class="metric-card">
                 <span class="metric-label">Mixed roots</span>

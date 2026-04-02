@@ -21,7 +21,7 @@ use crate::linker::{LinkProcessSummary, Linker};
 use crate::matcher::{MatchRunOutput, MatchTelemetry, Matcher};
 use crate::media_servers::{
     configured_refresh_backends, display_server_list, has_configured_invalidation_server,
-    refresh_library_paths_detailed, LibraryInvalidationServerOutcome, LibraryRefreshTelemetry,
+    invalidate_after_mutation, LibraryInvalidationServerOutcome, LibraryRefreshTelemetry,
 };
 use crate::models::{LibraryItem, MatchResult, MediaId, MediaType, SourceItem};
 use crate::source_scanner::SourceScanner;
@@ -196,17 +196,18 @@ pub(crate) async fn run_scan(
 
     if linked_total > 0 && !effective_dry_run && has_configured_invalidation_server(cfg) {
         let plex_refresh_started = Instant::now();
-        match refresh_library_paths_detailed(
+        match invalidate_after_mutation(
             cfg,
+            &selected_libraries,
             &link_summary.refresh_paths,
             output != OutputFormat::Json,
         )
         .await
         {
-            Ok(plex_stats) => {
+            Ok(outcome) => {
                 telemetry.plex_refresh = plex_refresh_started.elapsed();
-                telemetry.plex_refresh_stats = plex_stats.aggregate;
-                telemetry.media_server_refresh_servers = plex_stats.servers;
+                telemetry.plex_refresh_stats = outcome.refresh.unwrap_or_default();
+                telemetry.media_server_refresh_servers = outcome.servers;
             }
             Err(e) => {
                 telemetry.plex_refresh = plex_refresh_started.elapsed();
@@ -639,7 +640,7 @@ fn log_scan_telemetry(
     );
 
     info!(
-        "Scan telemetry details: cache_hit_ratio={}, cached_items={}, filesystem_items={}, metadata_alias_prep={}, candidate_scan={}, destination_reduce={}, metadata_errors={}, worker_count={}, candidate_slots={}, scored_candidates={}, exact_id_hits={}, ambiguous_skipped={}, refresh_requested_paths={}, refresh_unique_paths={}, refresh_batches={}, coalesced_batches={}, refreshed_batches={}, refreshed_paths_covered={}, skipped_refresh_batches={}, capped_refresh_batches={}, refresh_aborted_due_to_cap={}, failed_refresh_batches={}, unresolved_refresh_paths={}",
+        "Scan telemetry details: cache_hit_ratio={}, cached_items={}, filesystem_items={}, metadata_alias_prep={}, candidate_scan={}, destination_reduce={}, metadata_errors={}, worker_count={}, candidate_slots={}, scored_candidates={}, exact_id_hits={}, ambiguous_skipped={}, refresh_requested_paths={}, refresh_unique_paths={}, refresh_batches={}, coalesced_batches={}, refreshed_batches={}, refreshed_paths_covered={}, skipped_refresh_batches={}, capped_refresh_batches={}, refresh_aborted_due_to_cap={}, refresh_deferred_due_to_lock={}, failed_refresh_batches={}, unresolved_refresh_paths={}",
         telemetry
             .source_inventory_stats
             .cache_hit_ratio()
@@ -665,6 +666,7 @@ fn log_scan_telemetry(
         telemetry.plex_refresh_stats.skipped_batches,
         telemetry.plex_refresh_stats.capped_batches,
         telemetry.plex_refresh_stats.aborted_due_to_cap,
+        telemetry.plex_refresh_stats.deferred_due_to_lock,
         telemetry.plex_refresh_stats.failed_batches,
         telemetry.plex_refresh_stats.unresolved_paths,
     );
@@ -681,7 +683,7 @@ fn log_scan_telemetry(
         fmt_duration(telemetry.dead_link_sweep),
     ));
     user_println(format!(
-        "   📊 Scan details: matches={} created={} updated={} skipped={} ambiguous={} candidates={} scored={} exact-id={} cache-hit={} refresh={}/{} skipped={} capped={}{}",
+        "   📊 Scan details: matches={} created={} updated={} skipped={} ambiguous={} candidates={} scored={} exact-id={} cache-hit={} refresh={}/{} skipped={} capped={}{}{}",
         matches.len(),
         link_summary.created,
         link_summary.updated,
@@ -701,6 +703,11 @@ fn log_scan_telemetry(
         telemetry.plex_refresh_stats.capped_batches,
         if telemetry.plex_refresh_stats.aborted_due_to_cap {
             " aborted"
+        } else {
+            ""
+        },
+        if telemetry.plex_refresh_stats.deferred_due_to_lock {
+            " deferred"
         } else {
             ""
         },
@@ -811,5 +818,36 @@ mod tests {
         );
 
         assert!(summary.ends_with("capped=2 aborted"));
+    }
+
+    #[test]
+    fn scan_telemetry_summary_marks_deferred_refreshes() {
+        let telemetry = ScanTelemetry {
+            plex_refresh_stats: LibraryRefreshTelemetry {
+                planned_batches: 1,
+                deferred_due_to_lock: true,
+                ..LibraryRefreshTelemetry::default()
+            },
+            ..ScanTelemetry::default()
+        };
+        let summary = format!(
+            "refresh={}/{} skipped={} capped={}{}{}",
+            telemetry.plex_refresh_stats.refreshed_batches,
+            telemetry.plex_refresh_stats.planned_batches,
+            telemetry.plex_refresh_stats.skipped_batches,
+            telemetry.plex_refresh_stats.capped_batches,
+            if telemetry.plex_refresh_stats.aborted_due_to_cap {
+                " aborted"
+            } else {
+                ""
+            },
+            if telemetry.plex_refresh_stats.deferred_due_to_lock {
+                " deferred"
+            } else {
+                ""
+            }
+        );
+
+        assert!(summary.ends_with("capped=0 deferred"));
     }
 }

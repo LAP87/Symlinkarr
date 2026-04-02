@@ -191,6 +191,7 @@ pub struct ApiPlexRefreshSummary {
     pub unresolved_paths: i64,
     pub capped_batches: i64,
     pub aborted_due_to_cap: bool,
+    pub deferred_due_to_lock: bool,
     pub failed_batches: i64,
 }
 
@@ -892,6 +893,7 @@ fn plex_refresh_summary_from_record(record: &ScanHistoryRecord) -> ApiPlexRefres
         unresolved_paths: record.plex_refresh_unresolved_paths,
         capped_batches: record.plex_refresh_capped_batches,
         aborted_due_to_cap: record.plex_refresh_aborted_due_to_cap,
+        deferred_due_to_lock: false,
         failed_batches: record.plex_refresh_failed_batches,
     }
 }
@@ -912,6 +914,7 @@ fn api_refresh_summary_from_telemetry(
         unresolved_paths: telemetry.unresolved_paths as i64,
         capped_batches: telemetry.capped_batches as i64,
         aborted_due_to_cap: telemetry.aborted_due_to_cap,
+        deferred_due_to_lock: telemetry.deferred_due_to_lock,
         failed_batches: telemetry.failed_batches as i64,
     }
 }

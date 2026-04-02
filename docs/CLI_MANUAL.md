@@ -136,6 +136,8 @@ Notes:
 - Native Windows is not supported; use WSL2 or a Linux container on Windows 11.
 - Plex refresh pacing is configured in `config.yaml` under `plex.refresh_delay_ms`, `plex.refresh_coalesce_threshold`, and `plex.max_refresh_batches_per_run`.
 - `plex.abort_refresh_when_capped` is the RC-safe default: if the refresh plan exceeds the per-run cap, Symlinkarr aborts the whole Plex refresh phase instead of queueing only the first batches.
+- Emby and Jellyfin invalidation are configured under `emby.*` and `jellyfin.*`. `refresh_batch_size`, `max_refresh_batches_per_run`, and `abort_refresh_when_capped` control load, and `fallback_to_library_roots_when_capped` lets Symlinkarr fall back to a few library-root invalidations when a targeted path storm would otherwise be aborted entirely.
+- Concurrent Symlinkarr mutation runs now serialize media-server refreshes behind a lock. Later runs report the refresh as deferred instead of stampeding Plex, Emby, or Jellyfin in parallel.
 
 ### `cleanup`
 

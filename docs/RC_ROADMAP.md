@@ -30,11 +30,9 @@ This is the biggest remaining category.
 
 Must finish:
 
-- make the anime remediation backlog more actionable than it is today
-- improve blocked-group explanations so the operator sees exactly why a title is not eligible
 - increase safe eligibility where possible without lowering cleanup safety
 - keep every remediation path quarantine-first for foreign/legacy material
-- expose the remediation workflow more fully in the web UI, not just read-only backlog views
+- keep the new web preview/apply remediation flow as safe and informative as the CLI path
 
 Why:
 
@@ -64,7 +62,7 @@ Must finish:
 
 - continue tuning refresh pacing, cap guards, and abort behavior against real library load
 - keep partial-failure semantics honest across scan, cleanup, repair, and remediation
-- decide whether Emby or Jellyfin need a guarded fallback to full library refresh
+- validate the new Emby/Jellyfin library-root fallback and refresh-lock semantics under real concurrent load
 - avoid media-server overload during cleanup/remediation runs
 
 Why:
@@ -127,7 +125,7 @@ If work resumes right now, the best next slices are:
 
 1. operator-visible scan/link skip reasons
 2. better blocked-reason summaries for anime remediation groups
-3. more real-load validation and pacing hardening for Plex/Emby/Jellyfin refresh
+3. more real-load validation and pacing hardening for Plex/Emby/Jellyfin refresh, especially after the new Emby/Jellyfin root-fallback guard landed
 
 ## Supporting Docs
 
