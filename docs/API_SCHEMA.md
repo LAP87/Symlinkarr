@@ -965,6 +965,7 @@ Notes:
 - Cleanup apply now refreshes only the library roots that actually had changed symlinks. If no media-server refresh is configured, the field is still present on success with `configured=false`.
 - `blocked_candidates` counts rows that were reviewed by prune logic but intentionally held back by trust or policy gates.
 - `blocked_reason_summary` explains the top reasons prune refused to touch those rows automatically.
+- prune apply now fails with `400 Bad Request` when a report has zero actionable candidates left and only policy-blocked rows remain, instead of returning a success-shaped no-op.
 
 ## `GET /api/v1/links`
 

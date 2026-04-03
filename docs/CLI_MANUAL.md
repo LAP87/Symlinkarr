@@ -171,6 +171,7 @@ Notes:
 - `cleanup audit` supports `anime`, `tv`, `movie`, and `all`.
 - `cleanup prune` is intentionally two-step. Preview first, then apply.
 - `cleanup prune --include-legacy-anime-roots` opt-ins warning-only anime findings where an untagged legacy root coexists with a tagged `{tvdb-*}`/`{tmdb-*}` root. These candidates are quarantined as `foreign`, not deleted.
+- prune preview now surfaces `blocked candidates` when rows were reviewed but held back by trust or policy gates, and `cleanup prune --apply` refuses to run as a no-op when only blocked rows remain.
 - successful destructive cleanup flows now trigger a guarded media-server invalidation of affected library roots when refresh is configured. Plex, Emby, and Jellyfin can now fan out together, and mutation responses report per-backend invalidation details.
 - that invalidation step now keys off the actual changed symlink paths, so prune/remediation no longer refresh every selected library root by default.
 - `cleanup remediate-anime` is the guarded follow-up for the correlated anime backlog from `report --plex-db ...`. Preview writes a remediation plan JSON with eligible and blocked titles, then apply reuses that exact report plus a confirmation token.
