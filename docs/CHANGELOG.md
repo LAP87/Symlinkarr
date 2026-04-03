@@ -18,6 +18,8 @@
   - files: `src/linker.rs`
 - made foreign-link quarantine more atomic by moving the live symlink out of the library path before staging the quarantine copy, reducing the duplicate-live-link window during cleanup.
   - files: `src/cleanup_audit.rs`
+- made repair rollback refuse to recreate a known-missing original source, so DB failures after a successful repair do not silently put users back onto a dead symlink.
+  - files: `src/repair.rs`
 - made scanner traversal explicitly `follow_links(false)` and added a stronger `/dev/urandom` fallback for browser-session token generation.
   - files: `src/source_scanner.rs`, `src/library_scanner.rs`, `src/web/mod.rs`
 
