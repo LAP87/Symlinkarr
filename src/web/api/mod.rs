@@ -2052,10 +2052,16 @@ mod tests {
         assert_eq!(health.refresh_backends, vec!["plex", "emby"]);
         assert_eq!(health.deferred_refresh.pending_targets, 3);
         assert_eq!(health.deferred_refresh.servers.len(), 2);
-        assert_eq!(health.deferred_refresh.servers[0].server, "plex");
-        assert_eq!(health.deferred_refresh.servers[0].queued_targets, 2);
-        assert_eq!(health.deferred_refresh.servers[1].server, "emby");
-        assert_eq!(health.deferred_refresh.servers[1].queued_targets, 1);
+        assert!(health
+            .deferred_refresh
+            .servers
+            .iter()
+            .any(|entry| entry.server == "plex" && entry.queued_targets == 2));
+        assert!(health
+            .deferred_refresh
+            .servers
+            .iter()
+            .any(|entry| entry.server == "emby" && entry.queued_targets == 1));
     }
 
     #[tokio::test]

@@ -2037,7 +2037,11 @@ mod tests {
     async fn dashboard_renders_deferred_refresh_backlog() {
         let ctx = test_context().await;
         std::fs::write(
-            ctx.state.config.backup.path.join(".media-server-refresh.queue.json"),
+            ctx.state
+                .config
+                .backup
+                .path
+                .join(".media-server-refresh.queue.json"),
             r#"{
               "servers": [
                 { "server": "plex", "paths": ["/library/anime", "/library/anime-2"] },
