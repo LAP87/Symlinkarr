@@ -538,12 +538,15 @@ pub struct CleanupResultTemplate {
 pub struct PrunePreviewTemplate {
     pub findings: Vec<crate::cleanup_audit::CleanupFinding>,
     pub total: usize,
+    pub actionable_candidates: usize,
     pub critical: usize,
     pub high: usize,
     pub warning: usize,
+    pub blocked_candidates: usize,
     pub managed_candidates: usize,
     pub foreign_candidates: usize,
     pub reason_counts: Vec<crate::cleanup_audit::PruneReasonCount>,
+    pub blocked_reason_summary: Vec<crate::cleanup_audit::PruneBlockedReasonSummary>,
     pub legacy_anime_root_groups: Vec<crate::cleanup_audit::LegacyAnimeRootGroupCount>,
     pub report_path: Option<PathBuf>,
     pub confirmation_token: Option<String>,
@@ -592,6 +595,8 @@ pub struct AnimeRemediationGroupView {
     pub block_reasons: Vec<String>,
     pub recommended_action: Option<String>,
     pub candidate_symlink_samples: Vec<PathBuf>,
+    pub broken_symlink_samples: Vec<PathBuf>,
+    pub legacy_media_file_samples: Vec<PathBuf>,
 }
 
 impl From<AnimeRemediationSample> for AnimeRemediationGroupView {
@@ -633,6 +638,8 @@ impl From<AnimeRemediationSample> for AnimeRemediationGroupView {
             block_reasons: Vec::new(),
             recommended_action: None,
             candidate_symlink_samples: Vec::new(),
+            broken_symlink_samples: Vec::new(),
+            legacy_media_file_samples: Vec::new(),
         }
     }
 }
@@ -684,6 +691,8 @@ impl AnimeRemediationGroupView {
                 .collect(),
             recommended_action,
             candidate_symlink_samples: value.candidate_symlink_samples,
+            broken_symlink_samples: value.broken_symlink_samples,
+            legacy_media_file_samples: value.legacy_media_file_samples,
         }
     }
 }
@@ -1125,6 +1134,8 @@ mod tests {
             critical: 1,
             high: 0,
             warning: 0,
+            actionable_candidates: 1,
+            blocked_candidates: 0,
             managed_candidates: 1,
             foreign_candidates: 0,
             reason_counts: vec![PruneReasonCount {
@@ -1133,6 +1144,7 @@ mod tests {
                 managed: 1,
                 foreign: 0,
             }],
+            blocked_reason_summary: vec![],
             legacy_anime_root_groups: vec![],
             report_path: Some(PathBuf::from("/tmp/cleanup-audit-all.json")),
             confirmation_token: Some("abcdef1234567890".to_string()),
@@ -1175,6 +1187,8 @@ mod tests {
             critical: 0,
             high: 0,
             warning: 1,
+            actionable_candidates: 1,
+            blocked_candidates: 0,
             managed_candidates: 0,
             foreign_candidates: 1,
             reason_counts: vec![PruneReasonCount {
@@ -1183,6 +1197,7 @@ mod tests {
                 managed: 0,
                 foreign: 1,
             }],
+            blocked_reason_summary: vec![],
             legacy_anime_root_groups: vec![crate::cleanup_audit::LegacyAnimeRootGroupCount {
                 normalized_title: "Show".to_string(),
                 total: 1,
@@ -1197,6 +1212,57 @@ mod tests {
         assert!(html.contains("Legacy Anime Root Groups"));
         assert!(html.contains("/plex/Show (2024) {tvdb-123}"));
         assert!(html.contains("legacy root"));
+    }
+
+    #[test]
+    fn prune_preview_template_renders_blocked_reason_summary() {
+        let template = PrunePreviewTemplate {
+            findings: vec![CleanupFinding {
+                symlink_path: PathBuf::from("/plex/Show/Season 01/Show - S01E01.mkv"),
+                source_path: PathBuf::from("/rd/Show.S01E01.mkv"),
+                media_id: "tvdb-1".to_string(),
+                severity: FindingSeverity::Warning,
+                confidence: 0.75,
+                reasons: vec![FindingReason::DuplicateEpisodeSlot],
+                parsed: ParsedContext {
+                    library_title: "Show".to_string(),
+                    parsed_title: "Show".to_string(),
+                    season: Some(1),
+                    episode: Some(1),
+                },
+                alternate_match: None,
+                legacy_anime_root: None,
+                db_tracked: false,
+                ownership: CleanupOwnership::Foreign,
+            }],
+            total: 1,
+            critical: 0,
+            high: 0,
+            warning: 1,
+            actionable_candidates: 0,
+            blocked_candidates: 3,
+            managed_candidates: 0,
+            foreign_candidates: 0,
+            reason_counts: vec![],
+            blocked_reason_summary: vec![crate::cleanup_audit::PruneBlockedReasonSummary {
+                code: crate::cleanup_audit::PruneBlockedReasonCode::DuplicateSlotNeedsTrackedAnchor,
+                label: "duplicate slots without a tracked anchor are blocked".to_string(),
+                candidates: 3,
+                recommended_action:
+                    "Keep scanning until one canonical tracked link owns the slot before auto-pruning the duplicates."
+                        .to_string(),
+            }],
+            legacy_anime_root_groups: vec![],
+            report_path: Some(PathBuf::from("/tmp/cleanup-audit-all.json")),
+            confirmation_token: Some("abcdef1234567890".to_string()),
+            error_message: None,
+        };
+
+        let html = template.render().unwrap();
+        assert!(html.contains("duplicate slots without a tracked anchor are blocked"));
+        assert!(html.contains("Keep scanning until one canonical tracked link owns the slot"));
+        assert!(html.contains("Apply blocked"));
+        assert!(!html.contains("Apply Prune"));
     }
 
     #[test]
@@ -1247,7 +1313,15 @@ mod tests {
                     "Do not auto-remediate yet; first move or prune the DB-tracked legacy links."
                         .to_string(),
                 ),
-                candidate_symlink_samples: Vec::new(),
+                candidate_symlink_samples: vec![PathBuf::from(
+                    "/plex/anime/Mobile Suit Gundam SEED/Season 01/Show - S01E01.mkv",
+                )],
+                broken_symlink_samples: vec![PathBuf::from(
+                    "/plex/anime/Mobile Suit Gundam SEED/Season 01/Show - S01E02.mkv",
+                )],
+                legacy_media_file_samples: vec![PathBuf::from(
+                    "/plex/anime/Mobile Suit Gundam SEED/Season 01/Show - S01E03.mkv",
+                )],
             }],
             error_message: None,
         };
@@ -1260,5 +1334,67 @@ mod tests {
         assert!(html.contains("hama-anidb"));
         assert!(html.contains("visible blocked"));
         assert!(html.contains("legacy roots still contain tracked DB links"));
+        assert!(html.contains("Candidate symlinks"));
+        assert!(html.contains("Broken legacy symlinks"));
+        assert!(html.contains("Real media files blocking auto-remediation"));
+    }
+
+    #[test]
+    fn anime_remediation_result_template_renders_review_samples() {
+        let template = AnimeRemediationResultTemplate {
+            success: true,
+            message: "preview built".to_string(),
+            preview: Some(AnimeRemediationPreviewResultView {
+                report_path: PathBuf::from("/tmp/anime-remediation.json"),
+                plex_db_path: "/tmp/plex.db".to_string(),
+                title_filter: String::new(),
+                total_groups: 1,
+                eligible_groups: 0,
+                blocked_groups: 1,
+                cleanup_candidates: 2,
+                confirmation_token: "abc123".to_string(),
+                blocked_reason_summary: vec![],
+                groups: vec![AnimeRemediationGroupView {
+                    normalized_title: "Horimiya".to_string(),
+                    recommended_tagged_root: PathBuf::from(
+                        "/plex/anime/Horimiya (2021) {tvdb-123}",
+                    ),
+                    recommended_filesystem_symlinks: 12,
+                    recommended_db_active_links: 12,
+                    alternate_tagged_roots: vec![],
+                    legacy_roots: vec![PathBuf::from("/plex/anime/Horimiya")],
+                    legacy_symlink_total: 3,
+                    legacy_db_total: 0,
+                    plex_total_rows: 2,
+                    plex_live_rows: 2,
+                    plex_deleted_rows: 0,
+                    plex_guid_kinds: vec!["hama-tvdb".to_string()],
+                    plex_guids: vec!["com.plexapp.agents.hama://tvdb-123".to_string()],
+                    eligible: false,
+                    block_reasons: vec!["legacy roots contain 13 non-symlink media files".into()],
+                    recommended_action: Some(
+                        "Manual migration required; move or relink real media files before remediation."
+                            .into(),
+                    ),
+                    candidate_symlink_samples: vec![PathBuf::from(
+                        "/plex/anime/Horimiya/Season 01/Horimiya - S01E01.mkv",
+                    )],
+                    broken_symlink_samples: vec![PathBuf::from(
+                        "/plex/anime/Horimiya/Season 01/Horimiya - S01E02.mkv",
+                    )],
+                    legacy_media_file_samples: vec![PathBuf::from(
+                        "/plex/anime/Horimiya/Season 01/Horimiya - S01E03.mkv",
+                    )],
+                }],
+            }),
+            apply: None,
+        };
+
+        let html = template.render().unwrap();
+        assert!(html.contains("Plan contents"));
+        assert!(html.contains("Candidate symlinks"));
+        assert!(html.contains("Broken legacy symlinks"));
+        assert!(html.contains("Blocking real media files"));
+        assert!(html.contains("Horimiya - S01E03.mkv"));
     }
 }

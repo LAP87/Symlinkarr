@@ -504,12 +504,36 @@ pub struct ApiCleanupPruneResponse {
     pub success: bool,
     pub message: String,
     pub candidates: usize,
+    pub blocked_candidates: usize,
     pub managed_candidates: usize,
     pub foreign_candidates: usize,
+    pub blocked_reason_summary: Vec<ApiPruneBlockedReasonSummary>,
     pub removed: usize,
     pub quarantined: usize,
     pub skipped: usize,
     pub media_server_invalidation: Option<LibraryInvalidationOutcome>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApiPruneBlockedReasonSummary {
+    pub code: String,
+    pub label: String,
+    pub candidates: usize,
+    pub recommended_action: String,
+}
+
+fn api_prune_blocked_reason_summary(
+    summary: &[crate::cleanup_audit::PruneBlockedReasonSummary],
+) -> Vec<ApiPruneBlockedReasonSummary> {
+    summary
+        .iter()
+        .map(|entry| ApiPruneBlockedReasonSummary {
+            code: entry.code.to_string(),
+            label: entry.label.clone(),
+            candidates: entry.candidates,
+            recommended_action: entry.recommended_action.clone(),
+        })
+        .collect()
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1562,8 +1586,10 @@ pub async fn api_post_cleanup_prune(
                     success: false,
                     message: format!("Prune failed: {}", err),
                     candidates: 0,
+                    blocked_candidates: 0,
                     managed_candidates: 0,
                     foreign_candidates: 0,
+                    blocked_reason_summary: Vec::new(),
                     removed: 0,
                     quarantined: 0,
                     skipped: 0,
@@ -1582,8 +1608,10 @@ pub async fn api_post_cleanup_prune(
                     success: false,
                     message: format!("Prune failed: {}", e),
                     candidates: 0,
+                    blocked_candidates: 0,
                     managed_candidates: 0,
                     foreign_candidates: 0,
+                    blocked_reason_summary: Vec::new(),
                     removed: 0,
                     quarantined: 0,
                     skipped: 0,
@@ -1613,8 +1641,12 @@ pub async fn api_post_cleanup_prune(
                 success: true,
                 message: "Prune applied".to_string(),
                 candidates: outcome.candidates,
+                blocked_candidates: outcome.blocked_candidates,
                 managed_candidates: outcome.managed_candidates,
                 foreign_candidates: outcome.foreign_candidates,
+                blocked_reason_summary: api_prune_blocked_reason_summary(
+                    &outcome.blocked_reason_summary,
+                ),
                 removed: outcome.removed,
                 quarantined: outcome.quarantined,
                 skipped: outcome.skipped,
@@ -1627,8 +1659,10 @@ pub async fn api_post_cleanup_prune(
                 success: false,
                 message: format!("Prune failed: {}", e),
                 candidates: 0,
+                blocked_candidates: 0,
                 managed_candidates: 0,
                 foreign_candidates: 0,
+                blocked_reason_summary: Vec::new(),
                 removed: 0,
                 quarantined: 0,
                 skipped: 0,
@@ -2646,12 +2680,89 @@ mod tests {
 
         assert!(response.success);
         assert_eq!(response.candidates, 1);
+        assert_eq!(response.blocked_candidates, 0);
         assert_eq!(response.managed_candidates, 1);
         assert_eq!(response.foreign_candidates, 0);
+        assert!(response.blocked_reason_summary.is_empty());
         assert_eq!(response.removed, 1);
         assert_eq!(response.quarantined, 0);
         assert_eq!(response.skipped, 0);
         assert!(!symlink_path.exists());
+    }
+
+    #[tokio::test]
+    async fn api_post_cleanup_prune_reports_blocked_policy_candidates() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = test_config(dir.path());
+        cfg.cleanup.prune.quarantine_foreign = false;
+
+        let library_root = cfg.libraries[0].path.clone();
+        let source_root = cfg.sources[0].path.clone();
+        let source_path = source_root.join("source.mkv");
+        let symlink_path = library_root.join("Show - S01E01.mkv");
+        std::fs::write(&source_path, "video").unwrap();
+        std::os::unix::fs::symlink(&source_path, &symlink_path).unwrap();
+
+        let db = Database::new(&cfg.db_path).await.unwrap();
+        let report = CleanupReport {
+            version: 1,
+            created_at: chrono::Utc::now(),
+            scope: CleanupScope::Anime,
+            findings: vec![crate::cleanup_audit::CleanupFinding {
+                symlink_path: symlink_path.clone(),
+                source_path: source_path.clone(),
+                media_id: "tvdb-1".to_string(),
+                severity: crate::cleanup_audit::FindingSeverity::High,
+                confidence: 1.0,
+                reasons: vec![crate::cleanup_audit::FindingReason::BrokenSource],
+                parsed: crate::cleanup_audit::ParsedContext {
+                    library_title: "Show".to_string(),
+                    parsed_title: "Show".to_string(),
+                    season: Some(1),
+                    episode: Some(1),
+                },
+                alternate_match: None,
+                legacy_anime_root: None,
+                db_tracked: false,
+                ownership: crate::cleanup_audit::CleanupOwnership::Foreign,
+            }],
+            summary: crate::cleanup_audit::CleanupSummary {
+                total_findings: 1,
+                critical: 0,
+                high: 1,
+                warning: 0,
+            },
+        };
+        let report_path = cfg.backup.path.join("report.json");
+        std::fs::write(&report_path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
+
+        let preview =
+            crate::cleanup_audit::run_prune(&cfg, &db, &report_path, false, false, None, None)
+                .await
+                .unwrap();
+        assert_eq!(preview.candidates, 0);
+        assert_eq!(preview.blocked_candidates, 1);
+
+        let state = WebState::new(cfg, db);
+        let response = api_post_cleanup_prune(
+            State(state),
+            Json(ApiCleanupPruneRequest {
+                report_path: report_path.to_string_lossy().to_string(),
+                token: preview.confirmation_token,
+                max_delete: None,
+            }),
+        )
+        .await;
+        let body = response.into_response();
+        assert_eq!(body.status(), StatusCode::BAD_REQUEST);
+        let bytes = to_bytes(body.into_body(), usize::MAX).await.unwrap();
+        let response: ApiCleanupPruneResponse = serde_json::from_slice(&bytes).unwrap();
+
+        assert!(!response.success);
+        assert!(response.message.contains("no actionable candidates remain"));
+        assert_eq!(response.candidates, 0);
+        assert_eq!(response.blocked_candidates, 0);
+        assert!(response.blocked_reason_summary.is_empty());
     }
 
     #[tokio::test]

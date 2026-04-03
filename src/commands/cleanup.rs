@@ -183,7 +183,12 @@ pub(crate) struct AnimeRemediationPlanGroup {
     pub(crate) legacy_symlink_candidates: usize,
     pub(crate) broken_symlink_candidates: usize,
     pub(crate) legacy_media_files: usize,
+    #[serde(default)]
     pub(crate) candidate_symlink_samples: Vec<PathBuf>,
+    #[serde(default)]
+    pub(crate) broken_symlink_samples: Vec<PathBuf>,
+    #[serde(default)]
+    pub(crate) legacy_media_file_samples: Vec<PathBuf>,
     pub(crate) plex_live_rows: usize,
     pub(crate) plex_deleted_rows: usize,
     pub(crate) plex_guid_kinds: Vec<String>,
@@ -211,7 +216,9 @@ pub(crate) struct AnimeRemediationPlanReport {
 struct LegacyRootScan {
     symlink_paths: Vec<PathBuf>,
     broken_symlink_paths: Vec<PathBuf>,
+    broken_symlink_samples: Vec<PathBuf>,
     media_files: Vec<PathBuf>,
+    media_file_samples: Vec<PathBuf>,
 }
 
 const ANIME_REMEDIATION_REPORT_VERSION: u32 = 1;
@@ -494,6 +501,7 @@ pub(crate) async fn run_cleanup_prune(
         print_json(&serde_json::json!({
             "apply": apply,
             "candidates": outcome.candidates,
+            "blocked_candidates": outcome.blocked_candidates,
             "high_or_critical_candidates": outcome.high_or_critical_candidates,
             "safe_warning_duplicate_candidates": outcome.safe_warning_duplicate_candidates,
             "legacy_anime_root_candidates": outcome.legacy_anime_root_candidates,
@@ -501,6 +509,7 @@ pub(crate) async fn run_cleanup_prune(
             "managed_candidates": outcome.managed_candidates,
             "foreign_candidates": outcome.foreign_candidates,
             "reason_counts": outcome.reason_counts,
+            "blocked_reason_summary": outcome.blocked_reason_summary,
             "removed": outcome.removed,
             "quarantined": outcome.quarantined,
             "skipped": outcome.skipped,
@@ -534,6 +543,10 @@ pub(crate) async fn run_cleanup_prune(
             "   Foreign quarantine candidates: {}",
             outcome.foreign_candidates
         );
+        println!(
+            "   Blocked by policy or trust gates: {}",
+            outcome.blocked_candidates
+        );
         if !outcome.reason_counts.is_empty() {
             println!("   Top candidate reasons:");
             for bucket in outcome.reason_counts.iter().take(6) {
@@ -550,6 +563,15 @@ pub(crate) async fn run_cleanup_prune(
                 for root in group.tagged_roots.iter().take(2) {
                     println!("          tagged root: {}", root.display());
                 }
+            }
+        }
+        if !outcome.blocked_reason_summary.is_empty() {
+            println!("   Top blocked reasons:");
+            for summary in outcome.blocked_reason_summary.iter().take(6) {
+                println!(
+                    "      - {} candidates: {} -> {}",
+                    summary.candidates, summary.label, summary.recommended_action
+                );
             }
         }
         println!("   Removed: {}", outcome.removed);
@@ -1129,6 +1151,8 @@ pub(crate) fn assess_anime_remediation_group(
     sample: &AnimeRemediationSample,
 ) -> Result<AnimeRemediationPlanGroup> {
     let mut candidate_paths = BTreeSet::new();
+    let mut broken_symlink_sample_paths = BTreeSet::new();
+    let mut legacy_media_file_sample_paths = BTreeSet::new();
     let mut broken_symlink_candidates = 0usize;
     let mut legacy_media_files = 0usize;
 
@@ -1136,6 +1160,16 @@ pub(crate) fn assess_anime_remediation_group(
         let scan = scan_legacy_root(&legacy_root.path);
         broken_symlink_candidates += scan.broken_symlink_paths.len();
         legacy_media_files += scan.media_files.len();
+        for path in scan.broken_symlink_samples {
+            if broken_symlink_sample_paths.len() < ANIME_REMEDIATION_SAMPLE_LIMIT {
+                broken_symlink_sample_paths.insert(path);
+            }
+        }
+        for path in scan.media_file_samples {
+            if legacy_media_file_sample_paths.len() < ANIME_REMEDIATION_SAMPLE_LIMIT {
+                legacy_media_file_sample_paths.insert(path);
+            }
+        }
         for path in scan.symlink_paths {
             candidate_paths.insert(path);
         }
@@ -1195,6 +1229,8 @@ pub(crate) fn assess_anime_remediation_group(
         broken_symlink_candidates,
         legacy_media_files,
         candidate_symlink_samples,
+        broken_symlink_samples: broken_symlink_sample_paths.into_iter().collect(),
+        legacy_media_file_samples: legacy_media_file_sample_paths.into_iter().collect(),
         plex_live_rows: sample.plex_live_rows,
         plex_deleted_rows: sample.plex_deleted_rows,
         plex_guid_kinds: sample.plex_guid_kinds.clone(),
@@ -1217,10 +1253,16 @@ fn scan_legacy_root(root: &Path) -> LegacyRootScan {
             let path = entry.path().to_path_buf();
             if symlink_source_missing(&path) {
                 scan.broken_symlink_paths.push(path.clone());
+                if scan.broken_symlink_samples.len() < ANIME_REMEDIATION_SAMPLE_LIMIT {
+                    scan.broken_symlink_samples.push(path.clone());
+                }
             }
             scan.symlink_paths.push(path);
         } else if file_type.is_file() && is_media_file_path(entry.path()) {
             scan.media_files.push(entry.path().to_path_buf());
+            if scan.media_file_samples.len() < ANIME_REMEDIATION_SAMPLE_LIMIT {
+                scan.media_file_samples.push(entry.path().to_path_buf());
+            }
         }
     }
 

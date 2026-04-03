@@ -148,6 +148,7 @@
                 <th>Plex rows</th>
                 <th>GUID kinds</th>
                 <th>Alt tagged roots</th>
+                <th>Review samples</th>
             </tr>
         </thead>
         <tbody>
@@ -210,6 +211,31 @@
                         {% endfor %}
                         {% if group.alternate_tagged_roots|length == 0 %}
                         <span class="text-muted">None</span>
+                        {% endif %}
+                    </div>
+                </td>
+                <td>
+                    <div class="badge-stack">
+                        {% if group.candidate_symlink_samples|length > 0 %}
+                        <strong>Candidate symlinks</strong>
+                        {% for sample in group.candidate_symlink_samples %}
+                        <code class="mono">{{ sample.display() }}</code>
+                        {% endfor %}
+                        {% endif %}
+                        {% if group.broken_symlink_samples|length > 0 %}
+                        <strong>Broken legacy symlinks</strong>
+                        {% for sample in group.broken_symlink_samples %}
+                        <code class="mono">{{ sample.display() }}</code>
+                        {% endfor %}
+                        {% endif %}
+                        {% if group.legacy_media_file_samples|length > 0 %}
+                        <strong>Real media files blocking auto-remediation</strong>
+                        {% for sample in group.legacy_media_file_samples %}
+                        <code class="mono">{{ sample.display() }}</code>
+                        {% endfor %}
+                        {% endif %}
+                        {% if group.candidate_symlink_samples|length == 0 && group.broken_symlink_samples|length == 0 && group.legacy_media_file_samples|length == 0 %}
+                        <span class="text-muted">No sample paths captured</span>
                         {% endif %}
                     </div>
                 </td>

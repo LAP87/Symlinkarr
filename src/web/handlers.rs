@@ -945,12 +945,15 @@ pub async fn get_cleanup_prune(
             PrunePreviewTemplate {
                 findings: vec![],
                 total: 0,
+                actionable_candidates: 0,
                 critical: 0,
                 high: 0,
                 warning: 0,
+                blocked_candidates: 0,
                 managed_candidates: 0,
                 foreign_candidates: 0,
                 reason_counts: vec![],
+                blocked_reason_summary: vec![],
                 legacy_anime_root_groups: vec![],
                 report_path: None,
                 confirmation_token: None,
@@ -968,12 +971,15 @@ pub async fn get_cleanup_prune(
                 PrunePreviewTemplate {
                     findings: vec![],
                     total: 0,
+                    actionable_candidates: 0,
                     critical: 0,
                     high: 0,
                     warning: 0,
+                    blocked_candidates: 0,
                     managed_candidates: 0,
                     foreign_candidates: 0,
                     reason_counts: vec![],
+                    blocked_reason_summary: vec![],
                     legacy_anime_root_groups: vec![],
                     report_path: None,
                     confirmation_token: None,
@@ -990,12 +996,15 @@ pub async fn get_cleanup_prune(
             PrunePreviewTemplate {
                 findings: vec![],
                 total: 0,
+                actionable_candidates: 0,
                 critical: 0,
                 high: 0,
                 warning: 0,
+                blocked_candidates: 0,
                 managed_candidates: 0,
                 foreign_candidates: 0,
                 reason_counts: vec![],
+                blocked_reason_summary: vec![],
                 legacy_anime_root_groups: vec![],
                 report_path: None,
                 confirmation_token: None,
@@ -1018,12 +1027,15 @@ pub async fn get_cleanup_prune(
                 PrunePreviewTemplate {
                     findings: vec![],
                     total: 0,
+                    actionable_candidates: 0,
                     critical: 0,
                     high: 0,
                     warning: 0,
+                    blocked_candidates: 0,
                     managed_candidates: 0,
                     foreign_candidates: 0,
                     reason_counts: vec![],
+                    blocked_reason_summary: vec![],
                     legacy_anime_root_groups: vec![],
                     report_path: None,
                     confirmation_token: None,
@@ -1043,12 +1055,15 @@ pub async fn get_cleanup_prune(
                 PrunePreviewTemplate {
                     findings: vec![],
                     total: 0,
+                    actionable_candidates: 0,
                     critical: 0,
                     high: 0,
                     warning: 0,
+                    blocked_candidates: 0,
                     managed_candidates: 0,
                     foreign_candidates: 0,
                     reason_counts: vec![],
+                    blocked_reason_summary: vec![],
                     legacy_anime_root_groups: vec![],
                     report_path: None,
                     confirmation_token: None,
@@ -1076,9 +1091,17 @@ pub async fn get_cleanup_prune(
     let template = PrunePreviewTemplate {
         findings: report.findings.clone(),
         total: report.findings.len(),
+        actionable_candidates: prune_plan
+            .as_ref()
+            .map(|plan| plan.candidate_paths.len())
+            .unwrap_or(0),
         critical: report.summary.critical,
         high: report.summary.high,
         warning: report.summary.warning,
+        blocked_candidates: prune_plan
+            .as_ref()
+            .map(|plan| plan.blocked_candidates)
+            .unwrap_or(0),
         managed_candidates: prune_plan
             .as_ref()
             .map(|plan| plan.managed_candidates)
@@ -1090,6 +1113,10 @@ pub async fn get_cleanup_prune(
         reason_counts: prune_plan
             .as_ref()
             .map(|plan| plan.reason_counts.clone())
+            .unwrap_or_default(),
+        blocked_reason_summary: prune_plan
+            .as_ref()
+            .map(|plan| plan.blocked_reason_summary.clone())
             .unwrap_or_default(),
         legacy_anime_root_groups: prune_plan
             .as_ref()

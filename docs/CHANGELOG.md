@@ -6,6 +6,24 @@
 - posture: `rc-prep with downloadable binary artifacts`
 - intended use: local-first host or Docker installs, with Windows 11 users running through WSL2 or a Linux container
 
+## 2026-04-03 - Anime Remediation Evidence Samples
+
+### Code Changes
+
+- enriched anime remediation plan groups with captured sample paths for removable legacy symlink candidates, broken legacy symlinks, and real media files that block safe auto-remediation.
+  - files: `src/commands/cleanup.rs`
+- surfaced those evidence samples directly in the anime backlog and guarded preview pages, so blocked groups show why they need manual work instead of only a reason label.
+  - files: `src/web/templates.rs`, `src/web/ui/anime_remediation.html`, `src/web/ui/anime_remediation_result.html`
+- prune preview now surfaces blocked candidates and structured blocked-reason summaries, so broader cleanup trust gaps outside anime are visible instead of silently hidden behind smaller actionable counts.
+  - files: `src/cleanup_audit.rs`, `src/web/templates.rs`, `src/web/ui/prune_preview.html`, `src/web/handlers.rs`, `docs/API_SCHEMA.md`
+
+### Validation
+
+- `CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-remediation-ui cargo test -q`
+  - result: passed locally
+- `LD_LIBRARY_PATH=/usr/lib:/usr/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-remediation-ui cargo clippy --all-targets --all-features -- -D warnings`
+  - result: passed locally
+
 ## 2026-04-02 - Web Anime Remediation Workflow
 
 ### Code Changes

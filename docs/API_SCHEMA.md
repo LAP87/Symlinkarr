@@ -882,8 +882,17 @@ Response schema:
   "success": true,
   "message": "Prune applied",
   "candidates": 17,
+  "blocked_candidates": 4,
   "managed_candidates": 17,
   "foreign_candidates": 0,
+  "blocked_reason_summary": [
+    {
+      "code": "duplicate_slot_needs_tracked_anchor",
+      "label": "duplicate slots without a tracked anchor are blocked",
+      "candidates": 4,
+      "recommended_action": "Keep scanning until one canonical tracked link owns the slot before auto-pruning the duplicates."
+    }
+  ],
   "removed": 17,
   "quarantined": 0,
   "skipped": 2,
@@ -954,6 +963,8 @@ Notes:
 
 - `media_server_invalidation` is emitted only for apply, not preview.
 - Cleanup apply now refreshes only the library roots that actually had changed symlinks. If no media-server refresh is configured, the field is still present on success with `configured=false`.
+- `blocked_candidates` counts rows that were reviewed by prune logic but intentionally held back by trust or policy gates.
+- `blocked_reason_summary` explains the top reasons prune refused to touch those rows automatically.
 
 ## `GET /api/v1/links`
 

@@ -90,6 +90,7 @@
                     <th>Title</th>
                     <th>Status</th>
                     <th>Recommended root</th>
+                    <th>Review samples</th>
                 </tr>
             </thead>
             <tbody>
@@ -104,6 +105,31 @@
                         {% endif %}
                     </td>
                     <td><code class="mono">{{ group.recommended_tagged_root.display() }}</code></td>
+                    <td>
+                        <div class="badge-stack">
+                            {% if group.candidate_symlink_samples|length > 0 %}
+                            <strong>Candidate symlinks</strong>
+                            {% for sample in group.candidate_symlink_samples %}
+                            <code class="mono">{{ sample.display() }}</code>
+                            {% endfor %}
+                            {% endif %}
+                            {% if group.broken_symlink_samples|length > 0 %}
+                            <strong>Broken legacy symlinks</strong>
+                            {% for sample in group.broken_symlink_samples %}
+                            <code class="mono">{{ sample.display() }}</code>
+                            {% endfor %}
+                            {% endif %}
+                            {% if group.legacy_media_file_samples|length > 0 %}
+                            <strong>Blocking real media files</strong>
+                            {% for sample in group.legacy_media_file_samples %}
+                            <code class="mono">{{ sample.display() }}</code>
+                            {% endfor %}
+                            {% endif %}
+                            {% if group.candidate_symlink_samples|length == 0 && group.broken_symlink_samples|length == 0 && group.legacy_media_file_samples|length == 0 %}
+                            <span class="text-muted">No sample paths captured</span>
+                            {% endif %}
+                        </div>
+                    </td>
                 </tr>
                 {% endfor %}
             </tbody>
