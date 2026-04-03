@@ -1376,6 +1376,49 @@ mod tests {
         assert!(media_refresh_queue_path(&cfg).exists());
     }
 
+    #[tokio::test]
+    async fn refresh_library_paths_detailed_reports_only_backends_with_pending_targets_on_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = test_config();
+        cfg.plex.url = "http://localhost:32400".to_string();
+        cfg.plex.token = "plex-token".to_string();
+        cfg.emby.url = "http://localhost:8096".to_string();
+        cfg.emby.api_key = "emby-token".to_string();
+        cfg.backup.path = dir.path().join("backups");
+        std::fs::create_dir_all(&cfg.backup.path).unwrap();
+
+        queue_deferred_refresh_targets(
+            &cfg,
+            &[(
+                MediaServerKind::Emby,
+                vec![PathBuf::from(
+                    "/mnt/storage/plex/anime/Show/Season 01/E01.mkv",
+                )],
+            )],
+        )
+        .unwrap();
+
+        let lock_path = media_refresh_lock_path(&cfg);
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .unwrap();
+        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        assert_eq!(rc, 0);
+
+        let outcome = refresh_library_paths_detailed(&cfg, &[], false)
+            .await
+            .unwrap();
+        assert!(outcome.aggregate.deferred_due_to_lock);
+        assert_eq!(outcome.servers.len(), 1);
+        assert_eq!(outcome.servers[0].server, MediaServerKind::Emby);
+        assert_eq!(outcome.servers[0].requested_targets, 1);
+        assert_eq!(outcome.servers[0].refresh.requested_paths, 1);
+    }
+
     #[test]
     fn try_acquire_media_refresh_guard_creates_missing_parent_directory() {
         let dir = tempfile::tempdir().unwrap();
@@ -1420,7 +1463,7 @@ mod tests {
         )
         .unwrap();
 
-        let queue = take_deferred_refresh_queue(&cfg).unwrap();
+        let queue = load_deferred_refresh_queue(&cfg).unwrap();
         assert_eq!(queue.servers.len(), 2);
         assert_eq!(
             queue.servers[0],
@@ -1439,6 +1482,38 @@ mod tests {
                 paths: vec![PathBuf::from("/mnt/storage/plex/series")]
             }
         );
+        store_deferred_refresh_queue(&cfg, &DeferredRefreshQueue::default()).unwrap();
         assert!(!media_refresh_queue_path(&cfg).exists());
+    }
+
+    #[tokio::test]
+    async fn refresh_library_paths_detailed_requeues_failed_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = test_config();
+        cfg.plex.url = "http://127.0.0.1:9".to_string();
+        cfg.plex.token = "plex-token".to_string();
+        cfg.backup.path = dir.path().join("backups");
+        std::fs::create_dir_all(&cfg.backup.path).unwrap();
+
+        let deferred = PathBuf::from("/mnt/storage/plex/anime/Queued/Season 01/E01.mkv");
+        let new_target = PathBuf::from("/mnt/storage/plex/anime/New/Season 01/E02.mkv");
+        queue_deferred_refresh_targets(&cfg, &[(MediaServerKind::Plex, vec![deferred.clone()])])
+            .unwrap();
+
+        let outcome =
+            refresh_library_paths_detailed(&cfg, std::slice::from_ref(&new_target), false)
+                .await
+                .unwrap();
+
+        assert_eq!(outcome.servers.len(), 1);
+        assert_eq!(outcome.servers[0].server, MediaServerKind::Plex);
+        assert_eq!(outcome.servers[0].refresh.failed_batches, 1);
+
+        let queue = load_deferred_refresh_queue(&cfg).unwrap();
+        assert_eq!(queue.servers.len(), 1);
+        assert_eq!(queue.servers[0].server, MediaServerKind::Plex);
+        let mut queued_paths = queue.servers[0].paths.clone();
+        queued_paths.sort();
+        assert_eq!(queued_paths, vec![new_target, deferred]);
     }
 }

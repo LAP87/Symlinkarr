@@ -2278,13 +2278,16 @@ pub(crate) fn build_prune_plan(
             })
             .count();
         if blocked_legacy_count > 0 {
-            for finding in report.findings.iter().filter(|finding| !finding.db_tracked).filter(
-                |finding| {
+            for finding in report
+                .findings
+                .iter()
+                .filter(|finding| !finding.db_tracked)
+                .filter(|finding| {
                     finding
                         .reasons
                         .contains(&FindingReason::LegacyAnimeRootDuplicate)
-                },
-            ) {
+                })
+            {
                 blocked_by_path.insert(
                     finding.symlink_path.clone(),
                     PruneBlockedReasonCode::LegacyAnimeRootsExcludedByDefault,
@@ -2333,7 +2336,10 @@ pub(crate) fn build_prune_plan(
                 Some(PruneDisposition::Quarantine)
             }
             CleanupOwnership::Foreign => {
-                blocked_by_path.insert(path.clone(), PruneBlockedReasonCode::ForeignQuarantineDisabled);
+                blocked_by_path.insert(
+                    path.clone(),
+                    PruneBlockedReasonCode::ForeignQuarantineDisabled,
+                );
                 *blocked_reason_counts
                     .entry(PruneBlockedReasonCode::ForeignQuarantineDisabled)
                     .or_insert(0) += 1;
@@ -3271,6 +3277,10 @@ mod tests {
                 foreign: 1,
             }]
         );
+        assert_eq!(
+            plan.action_for_path(Path::new("/lib/Show/Season 01/Show - S01E01.mkv")),
+            PrunePathAction::Quarantine
+        );
     }
 
     #[test]
@@ -3304,6 +3314,43 @@ mod tests {
             plan.blocked_reason_summary[0].code,
             PruneBlockedReasonCode::ForeignQuarantineDisabled
         );
+    }
+
+    #[test]
+    fn test_build_prune_plan_marks_untracked_duplicate_without_anchor_as_blocked() {
+        let first = test_cleanup_finding(
+            "tvdb-1",
+            1,
+            3,
+            FindingSeverity::Warning,
+            vec![FindingReason::DuplicateEpisodeSlot],
+            "/lib/Show - S01E03 legacy-a.mkv",
+            "/src/show-s01e03.mkv",
+        );
+
+        let second = test_cleanup_finding(
+            "tvdb-1",
+            1,
+            3,
+            FindingSeverity::Warning,
+            vec![FindingReason::DuplicateEpisodeSlot],
+            "/lib/Show - S01E03 legacy-b.mkv",
+            "/src/show-s01e03.mkv",
+        );
+
+        let report = report_with_findings(Utc::now(), vec![first.clone(), second.clone()]);
+        let plan = build_prune_plan(&report, true, false);
+
+        assert!(plan.candidate_paths.is_empty());
+        assert_eq!(plan.blocked_candidates, 2);
+        assert_eq!(
+            plan.action_for_path(&first.symlink_path),
+            PrunePathAction::Blocked(PruneBlockedReasonCode::DuplicateSlotNeedsTrackedAnchor)
+        );
+        assert!(plan.blocked_reason_summary.iter().any(|entry| {
+            entry.code == PruneBlockedReasonCode::DuplicateSlotNeedsTrackedAnchor
+                && entry.candidates == 2
+        }));
     }
 
     fn test_config(library_root: &Path, source_root: &Path) -> Config {

@@ -12,6 +12,7 @@ use super::{
     ActiveCleanupAuditJob, ActiveRepairJob, ActiveScanJob, LastCleanupAuditOutcome,
     LastRepairOutcome, LastScanOutcome,
 };
+use crate::cleanup_audit::{CleanupFinding, PrunePathAction};
 use crate::cleanup_audit::{CleanupReport, CleanupScope};
 use crate::commands::cleanup::{AnimeRemediationBlockedReasonSummary, AnimeRemediationPlanGroup};
 use crate::commands::report::AnimeRemediationSample;
@@ -19,7 +20,6 @@ use crate::config::Config;
 use crate::db::{AcquisitionJobCounts, ScanHistoryRecord};
 use crate::media_servers::{DeferredRefreshSummary, LibraryInvalidationServerOutcome};
 use crate::models::LinkRecord;
-use crate::cleanup_audit::{CleanupFinding, PrunePathAction};
 
 // ─── Dashboard ──────────────────────────────────────────────────────
 
@@ -595,18 +595,22 @@ pub struct PruneFindingView {
 
 impl PruneFindingView {
     pub fn from_finding(finding: CleanupFinding, action: PrunePathAction) -> Self {
-        let (action_label, action_badge_class, blocked_reason_label, blocked_reason_recommended_action) =
-            match action {
-                PrunePathAction::Delete => ("Delete", "badge-danger", None, None),
-                PrunePathAction::Quarantine => ("Quarantine", "badge-warning", None, None),
-                PrunePathAction::Blocked(code) => (
-                    "Blocked",
-                    "badge-secondary",
-                    Some(code.label().to_string()),
-                    Some(code.recommended_action().to_string()),
-                ),
-                PrunePathAction::ObserveOnly => ("Observe", "badge-info", None, None),
-            };
+        let (
+            action_label,
+            action_badge_class,
+            blocked_reason_label,
+            blocked_reason_recommended_action,
+        ) = match action {
+            PrunePathAction::Delete => ("Delete", "badge-danger", None, None),
+            PrunePathAction::Quarantine => ("Quarantine", "badge-warning", None, None),
+            PrunePathAction::Blocked(code) => (
+                "Blocked",
+                "badge-secondary",
+                Some(code.label().to_string()),
+                Some(code.recommended_action().to_string()),
+            ),
+            PrunePathAction::ObserveOnly => ("Observe", "badge-info", None, None),
+        };
 
         Self {
             finding,
@@ -1170,31 +1174,34 @@ mod tests {
     #[test]
     fn prune_preview_template_renders_alternate_match_context() {
         let template = PrunePreviewTemplate {
-            findings: vec![PruneFindingView::from_finding(CleanupFinding {
-                symlink_path: PathBuf::from("/plex/Chuck (2007)/Season 01/Chuck - S01E01.mkv"),
-                source_path: PathBuf::from("/rd/Chucky.S01E01.mkv"),
-                media_id: "tvdb-1".to_string(),
-                severity: FindingSeverity::Critical,
-                confidence: 0.98,
-                reasons: vec![
-                    FindingReason::ParserTitleMismatch,
-                    FindingReason::AlternateLibraryMatch,
-                ],
-                parsed: ParsedContext {
-                    library_title: "Chuck (2007)".to_string(),
-                    parsed_title: "Chucky".to_string(),
-                    season: Some(1),
-                    episode: Some(1),
+            findings: vec![PruneFindingView::from_finding(
+                CleanupFinding {
+                    symlink_path: PathBuf::from("/plex/Chuck (2007)/Season 01/Chuck - S01E01.mkv"),
+                    source_path: PathBuf::from("/rd/Chucky.S01E01.mkv"),
+                    media_id: "tvdb-1".to_string(),
+                    severity: FindingSeverity::Critical,
+                    confidence: 0.98,
+                    reasons: vec![
+                        FindingReason::ParserTitleMismatch,
+                        FindingReason::AlternateLibraryMatch,
+                    ],
+                    parsed: ParsedContext {
+                        library_title: "Chuck (2007)".to_string(),
+                        parsed_title: "Chucky".to_string(),
+                        season: Some(1),
+                        episode: Some(1),
+                    },
+                    alternate_match: Some(AlternateMatchContext {
+                        media_id: "tvdb-2".to_string(),
+                        title: "Chucky (2021)".to_string(),
+                        score: 1.0,
+                    }),
+                    legacy_anime_root: None,
+                    db_tracked: true,
+                    ownership: CleanupOwnership::Managed,
                 },
-                alternate_match: Some(AlternateMatchContext {
-                    media_id: "tvdb-2".to_string(),
-                    title: "Chucky (2021)".to_string(),
-                    score: 1.0,
-                }),
-                legacy_anime_root: None,
-                db_tracked: true,
-                ownership: CleanupOwnership::Managed,
-            }, PrunePathAction::Delete)],
+                PrunePathAction::Delete,
+            )],
             total: 1,
             critical: 1,
             high: 0,
@@ -1226,28 +1233,31 @@ mod tests {
     #[test]
     fn prune_preview_template_renders_legacy_anime_root_context() {
         let template = PrunePreviewTemplate {
-            findings: vec![PruneFindingView::from_finding(CleanupFinding {
-                symlink_path: PathBuf::from("/plex/Show/Season 01/Show - S01E01.mkv"),
-                source_path: PathBuf::from("/rd/Show.S01E01.mkv"),
-                media_id: String::new(),
-                severity: FindingSeverity::Warning,
-                confidence: 0.55,
-                reasons: vec![FindingReason::LegacyAnimeRootDuplicate],
-                parsed: ParsedContext {
-                    library_title: "Show".to_string(),
-                    parsed_title: "Show".to_string(),
-                    season: Some(1),
-                    episode: Some(1),
+            findings: vec![PruneFindingView::from_finding(
+                CleanupFinding {
+                    symlink_path: PathBuf::from("/plex/Show/Season 01/Show - S01E01.mkv"),
+                    source_path: PathBuf::from("/rd/Show.S01E01.mkv"),
+                    media_id: String::new(),
+                    severity: FindingSeverity::Warning,
+                    confidence: 0.55,
+                    reasons: vec![FindingReason::LegacyAnimeRootDuplicate],
+                    parsed: ParsedContext {
+                        library_title: "Show".to_string(),
+                        parsed_title: "Show".to_string(),
+                        season: Some(1),
+                        episode: Some(1),
+                    },
+                    alternate_match: None,
+                    legacy_anime_root: Some(crate::cleanup_audit::LegacyAnimeRootDetails {
+                        normalized_title: "Show".to_string(),
+                        untagged_root: PathBuf::from("/plex/Show"),
+                        tagged_roots: vec![PathBuf::from("/plex/Show (2024) {tvdb-123}")],
+                    }),
+                    db_tracked: false,
+                    ownership: CleanupOwnership::Foreign,
                 },
-                alternate_match: None,
-                legacy_anime_root: Some(crate::cleanup_audit::LegacyAnimeRootDetails {
-                    normalized_title: "Show".to_string(),
-                    untagged_root: PathBuf::from("/plex/Show"),
-                    tagged_roots: vec![PathBuf::from("/plex/Show (2024) {tvdb-123}")],
-                }),
-                db_tracked: false,
-                ownership: CleanupOwnership::Foreign,
-            }, PrunePathAction::Quarantine)],
+                PrunePathAction::Quarantine,
+            )],
             total: 1,
             critical: 0,
             high: 0,
