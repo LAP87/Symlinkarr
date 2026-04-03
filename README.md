@@ -21,6 +21,7 @@ If your current stack looks like "RD mount + Sonarr/Radarr + a messy library ful
 - repairs dead links and finds missing content
 - audits bad, stale, or misplaced links before cleanup
 - supports Plex, Emby, and Jellyfin refresh after mutations
+- caps and guards media refresh pressure so large mutations do not blindly stampede the media server
 
 No media server is required.
 
@@ -107,6 +108,12 @@ From a release binary:
 ```
 
 Web UI default: `http://127.0.0.1:8726`
+
+If you expose the web UI beyond loopback, configure auth:
+
+- `web.username` + `web.password` protect the HTML UI and API with HTTP Basic auth
+- `web.api_key` protects JSON API clients via `Authorization: Bearer ...` or `X-API-Key`
+- if you only configure `web.api_key`, the HTML UI is still readable unless you also add Basic auth or put it behind a trusted reverse proxy
 
 ## Common Commands
 

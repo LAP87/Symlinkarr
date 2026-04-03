@@ -12,12 +12,13 @@ use super::{
     ActiveCleanupAuditJob, ActiveRepairJob, ActiveScanJob, LastCleanupAuditOutcome,
     LastRepairOutcome, LastScanOutcome,
 };
+use crate::cleanup_audit::{CleanupFinding, PrunePathAction};
 use crate::cleanup_audit::{CleanupReport, CleanupScope};
 use crate::commands::cleanup::{AnimeRemediationBlockedReasonSummary, AnimeRemediationPlanGroup};
 use crate::commands::report::AnimeRemediationSample;
 use crate::config::Config;
 use crate::db::{AcquisitionJobCounts, ScanHistoryRecord};
-use crate::media_servers::LibraryInvalidationServerOutcome;
+use crate::media_servers::{DeferredRefreshSummary, LibraryInvalidationServerOutcome};
 use crate::models::LinkRecord;
 
 // ─── Dashboard ──────────────────────────────────────────────────────
@@ -53,6 +54,34 @@ impl From<AcquisitionJobCounts> for QueueOverview {
             no_result: value.no_result,
             failed: value.failed,
             completed_unlinked: value.completed_unlinked,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DeferredRefreshSummaryView {
+    pub pending_targets: usize,
+    pub servers: Vec<DeferredRefreshServerView>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DeferredRefreshServerView {
+    pub server: String,
+    pub queued_targets: usize,
+}
+
+impl From<DeferredRefreshSummary> for DeferredRefreshSummaryView {
+    fn from(value: DeferredRefreshSummary) -> Self {
+        Self {
+            pending_targets: value.pending_targets,
+            servers: value
+                .servers
+                .into_iter()
+                .map(|entry| DeferredRefreshServerView {
+                    server: entry.server.to_string(),
+                    queued_targets: entry.queued_targets,
+                })
+                .collect(),
         }
     }
 }
@@ -198,6 +227,7 @@ pub struct MediaServerRefreshServerView {
     pub skipped_batches: i64,
     pub failed_batches: i64,
     pub aborted_due_to_cap: bool,
+    pub deferred_due_to_lock: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -308,6 +338,7 @@ impl ScanRunView {
                 skipped_batches: entry.refresh.skipped_batches as i64,
                 failed_batches: entry.refresh.failed_batches as i64,
                 aborted_due_to_cap: entry.refresh.aborted_due_to_cap,
+                deferred_due_to_lock: entry.refresh.deferred_due_to_lock,
             })
             .collect()
     }
@@ -415,6 +446,7 @@ pub struct DashboardTemplate {
     pub latest_run: Option<ScanRunView>,
     pub recent_runs: Vec<ScanRunView>,
     pub queue: QueueOverview,
+    pub deferred_refresh: DeferredRefreshSummaryView,
 }
 
 // ─── Status ─────────────────────────────────────────────────────────
@@ -439,6 +471,7 @@ pub struct HealthCheck {
 #[template(path = "web/ui/health.html")]
 pub struct HealthTemplate {
     pub checks: std::collections::HashMap<String, HealthCheck>,
+    pub deferred_refresh: DeferredRefreshSummaryView,
 }
 
 // ─── Scan ───────────────────────────────────────────────────────────
@@ -534,18 +567,59 @@ pub struct CleanupResultTemplate {
 #[derive(Template)]
 #[template(path = "web/ui/prune_preview.html")]
 pub struct PrunePreviewTemplate {
-    pub findings: Vec<crate::cleanup_audit::CleanupFinding>,
+    pub findings: Vec<PruneFindingView>,
     pub total: usize,
+    pub actionable_candidates: usize,
     pub critical: usize,
     pub high: usize,
     pub warning: usize,
+    pub blocked_candidates: usize,
     pub managed_candidates: usize,
     pub foreign_candidates: usize,
     pub reason_counts: Vec<crate::cleanup_audit::PruneReasonCount>,
+    pub blocked_reason_summary: Vec<crate::cleanup_audit::PruneBlockedReasonSummary>,
     pub legacy_anime_root_groups: Vec<crate::cleanup_audit::LegacyAnimeRootGroupCount>,
     pub report_path: Option<PathBuf>,
     pub confirmation_token: Option<String>,
     pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PruneFindingView {
+    pub finding: CleanupFinding,
+    pub action_label: String,
+    pub action_badge_class: &'static str,
+    pub blocked_reason_label: Option<String>,
+    pub blocked_reason_recommended_action: Option<String>,
+}
+
+impl PruneFindingView {
+    pub fn from_finding(finding: CleanupFinding, action: PrunePathAction) -> Self {
+        let (
+            action_label,
+            action_badge_class,
+            blocked_reason_label,
+            blocked_reason_recommended_action,
+        ) = match action {
+            PrunePathAction::Delete => ("Delete", "badge-danger", None, None),
+            PrunePathAction::Quarantine => ("Quarantine", "badge-warning", None, None),
+            PrunePathAction::Blocked(code) => (
+                "Blocked",
+                "badge-secondary",
+                Some(code.label().to_string()),
+                Some(code.recommended_action().to_string()),
+            ),
+            PrunePathAction::ObserveOnly => ("Observe", "badge-info", None, None),
+        };
+
+        Self {
+            finding,
+            action_label: action_label.to_string(),
+            action_badge_class,
+            blocked_reason_label,
+            blocked_reason_recommended_action,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -559,13 +633,19 @@ pub struct AnimeRemediationSummaryView {
     pub correlated_hama_split_groups: usize,
     pub remediation_groups: usize,
     pub returned_groups: usize,
+    pub visible_groups: usize,
     pub eligible_groups: usize,
     pub blocked_groups: usize,
+    pub state_filter: String,
+    pub reason_filter: String,
+    pub title_filter: String,
     pub blocked_reason_summary: Vec<AnimeRemediationBlockedReasonView>,
+    pub available_blocked_reasons: Vec<AnimeRemediationBlockedReasonView>,
 }
 
 #[derive(Debug, Clone)]
 pub struct AnimeRemediationBlockedReasonView {
+    pub code: String,
     pub label: String,
     pub groups: usize,
     pub recommended_action: String,
@@ -590,6 +670,8 @@ pub struct AnimeRemediationGroupView {
     pub block_reasons: Vec<String>,
     pub recommended_action: Option<String>,
     pub candidate_symlink_samples: Vec<PathBuf>,
+    pub broken_symlink_samples: Vec<PathBuf>,
+    pub legacy_media_file_samples: Vec<PathBuf>,
 }
 
 impl From<AnimeRemediationSample> for AnimeRemediationGroupView {
@@ -631,6 +713,8 @@ impl From<AnimeRemediationSample> for AnimeRemediationGroupView {
             block_reasons: Vec::new(),
             recommended_action: None,
             candidate_symlink_samples: Vec::new(),
+            broken_symlink_samples: Vec::new(),
+            legacy_media_file_samples: Vec::new(),
         }
     }
 }
@@ -682,6 +766,8 @@ impl AnimeRemediationGroupView {
                 .collect(),
             recommended_action,
             candidate_symlink_samples: value.candidate_symlink_samples,
+            broken_symlink_samples: value.broken_symlink_samples,
+            legacy_media_file_samples: value.legacy_media_file_samples,
         }
     }
 }
@@ -689,6 +775,7 @@ impl AnimeRemediationGroupView {
 impl From<AnimeRemediationBlockedReasonSummary> for AnimeRemediationBlockedReasonView {
     fn from(value: AnimeRemediationBlockedReasonSummary) -> Self {
         Self {
+            code: value.code.as_str().to_string(),
             label: value.label,
             groups: value.groups,
             recommended_action: value.recommended_action,
@@ -702,6 +789,43 @@ pub struct AnimeRemediationTemplate {
     pub summary: Option<AnimeRemediationSummaryView>,
     pub groups: Vec<AnimeRemediationGroupView>,
     pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AnimeRemediationPreviewResultView {
+    pub report_path: PathBuf,
+    pub plex_db_path: String,
+    pub title_filter: String,
+    pub total_groups: usize,
+    pub eligible_groups: usize,
+    pub blocked_groups: usize,
+    pub cleanup_candidates: usize,
+    pub confirmation_token: String,
+    pub blocked_reason_summary: Vec<AnimeRemediationBlockedReasonView>,
+    pub groups: Vec<AnimeRemediationGroupView>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AnimeRemediationApplyResultView {
+    pub report_path: PathBuf,
+    pub total_groups: usize,
+    pub eligible_groups: usize,
+    pub blocked_groups: usize,
+    pub candidates: usize,
+    pub quarantined: usize,
+    pub removed: usize,
+    pub skipped: usize,
+    pub safety_snapshot: Option<PathBuf>,
+    pub media_server_invalidation_summary: Option<String>,
+}
+
+#[derive(Template)]
+#[template(path = "web/ui/anime_remediation_result.html")]
+pub struct AnimeRemediationResultTemplate {
+    pub success: bool,
+    pub message: String,
+    pub preview: Option<AnimeRemediationPreviewResultView>,
+    pub apply: Option<AnimeRemediationApplyResultView>,
 }
 
 // ─── Links ──────────────────────────────────────────────────────────
@@ -874,6 +998,7 @@ mod tests {
                 skipped_batches: 1,
                 failed_batches: 0,
                 aborted_due_to_cap: true,
+                deferred_due_to_lock: false,
             }],
             dead_link_sweep: "0.7s".to_string(),
             total_runtime: "288.2s".to_string(),
@@ -969,6 +1094,20 @@ mod tests {
     }
 
     #[test]
+    fn scan_run_detail_template_renders_deferred_media_refresh_status() {
+        let mut run = sample_scan_run_view();
+        run.media_server_refresh[0].deferred_due_to_lock = true;
+
+        let template = ScanRunDetailTemplate {
+            run,
+            skip_events: Vec::new(),
+        };
+
+        let html = template.render().unwrap();
+        assert!(html.contains("deferred"));
+    }
+
+    #[test]
     fn cleanup_result_template_renders_report_summary() {
         let template = CleanupResultTemplate {
             success: true,
@@ -1042,35 +1181,40 @@ mod tests {
     #[test]
     fn prune_preview_template_renders_alternate_match_context() {
         let template = PrunePreviewTemplate {
-            findings: vec![CleanupFinding {
-                symlink_path: PathBuf::from("/plex/Chuck (2007)/Season 01/Chuck - S01E01.mkv"),
-                source_path: PathBuf::from("/rd/Chucky.S01E01.mkv"),
-                media_id: "tvdb-1".to_string(),
-                severity: FindingSeverity::Critical,
-                confidence: 0.98,
-                reasons: vec![
-                    FindingReason::ParserTitleMismatch,
-                    FindingReason::AlternateLibraryMatch,
-                ],
-                parsed: ParsedContext {
-                    library_title: "Chuck (2007)".to_string(),
-                    parsed_title: "Chucky".to_string(),
-                    season: Some(1),
-                    episode: Some(1),
+            findings: vec![PruneFindingView::from_finding(
+                CleanupFinding {
+                    symlink_path: PathBuf::from("/plex/Chuck (2007)/Season 01/Chuck - S01E01.mkv"),
+                    source_path: PathBuf::from("/rd/Chucky.S01E01.mkv"),
+                    media_id: "tvdb-1".to_string(),
+                    severity: FindingSeverity::Critical,
+                    confidence: 0.98,
+                    reasons: vec![
+                        FindingReason::ParserTitleMismatch,
+                        FindingReason::AlternateLibraryMatch,
+                    ],
+                    parsed: ParsedContext {
+                        library_title: "Chuck (2007)".to_string(),
+                        parsed_title: "Chucky".to_string(),
+                        season: Some(1),
+                        episode: Some(1),
+                    },
+                    alternate_match: Some(AlternateMatchContext {
+                        media_id: "tvdb-2".to_string(),
+                        title: "Chucky (2021)".to_string(),
+                        score: 1.0,
+                    }),
+                    legacy_anime_root: None,
+                    db_tracked: true,
+                    ownership: CleanupOwnership::Managed,
                 },
-                alternate_match: Some(AlternateMatchContext {
-                    media_id: "tvdb-2".to_string(),
-                    title: "Chucky (2021)".to_string(),
-                    score: 1.0,
-                }),
-                legacy_anime_root: None,
-                db_tracked: true,
-                ownership: CleanupOwnership::Managed,
-            }],
+                PrunePathAction::Delete,
+            )],
             total: 1,
             critical: 1,
             high: 0,
             warning: 0,
+            actionable_candidates: 1,
+            blocked_candidates: 0,
             managed_candidates: 1,
             foreign_candidates: 0,
             reason_counts: vec![PruneReasonCount {
@@ -1079,6 +1223,7 @@ mod tests {
                 managed: 1,
                 foreign: 0,
             }],
+            blocked_reason_summary: vec![],
             legacy_anime_root_groups: vec![],
             report_path: Some(PathBuf::from("/tmp/cleanup-audit-all.json")),
             confirmation_token: Some("abcdef1234567890".to_string()),
@@ -1095,32 +1240,37 @@ mod tests {
     #[test]
     fn prune_preview_template_renders_legacy_anime_root_context() {
         let template = PrunePreviewTemplate {
-            findings: vec![CleanupFinding {
-                symlink_path: PathBuf::from("/plex/Show/Season 01/Show - S01E01.mkv"),
-                source_path: PathBuf::from("/rd/Show.S01E01.mkv"),
-                media_id: String::new(),
-                severity: FindingSeverity::Warning,
-                confidence: 0.55,
-                reasons: vec![FindingReason::LegacyAnimeRootDuplicate],
-                parsed: ParsedContext {
-                    library_title: "Show".to_string(),
-                    parsed_title: "Show".to_string(),
-                    season: Some(1),
-                    episode: Some(1),
+            findings: vec![PruneFindingView::from_finding(
+                CleanupFinding {
+                    symlink_path: PathBuf::from("/plex/Show/Season 01/Show - S01E01.mkv"),
+                    source_path: PathBuf::from("/rd/Show.S01E01.mkv"),
+                    media_id: String::new(),
+                    severity: FindingSeverity::Warning,
+                    confidence: 0.55,
+                    reasons: vec![FindingReason::LegacyAnimeRootDuplicate],
+                    parsed: ParsedContext {
+                        library_title: "Show".to_string(),
+                        parsed_title: "Show".to_string(),
+                        season: Some(1),
+                        episode: Some(1),
+                    },
+                    alternate_match: None,
+                    legacy_anime_root: Some(crate::cleanup_audit::LegacyAnimeRootDetails {
+                        normalized_title: "Show".to_string(),
+                        untagged_root: PathBuf::from("/plex/Show"),
+                        tagged_roots: vec![PathBuf::from("/plex/Show (2024) {tvdb-123}")],
+                    }),
+                    db_tracked: false,
+                    ownership: CleanupOwnership::Foreign,
                 },
-                alternate_match: None,
-                legacy_anime_root: Some(crate::cleanup_audit::LegacyAnimeRootDetails {
-                    normalized_title: "Show".to_string(),
-                    untagged_root: PathBuf::from("/plex/Show"),
-                    tagged_roots: vec![PathBuf::from("/plex/Show (2024) {tvdb-123}")],
-                }),
-                db_tracked: false,
-                ownership: CleanupOwnership::Foreign,
-            }],
+                PrunePathAction::Quarantine,
+            )],
             total: 1,
             critical: 0,
             high: 0,
             warning: 1,
+            actionable_candidates: 1,
+            blocked_candidates: 0,
             managed_candidates: 0,
             foreign_candidates: 1,
             reason_counts: vec![PruneReasonCount {
@@ -1129,6 +1279,7 @@ mod tests {
                 managed: 0,
                 foreign: 1,
             }],
+            blocked_reason_summary: vec![],
             legacy_anime_root_groups: vec![crate::cleanup_audit::LegacyAnimeRootGroupCount {
                 normalized_title: "Show".to_string(),
                 total: 1,
@@ -1146,6 +1297,59 @@ mod tests {
     }
 
     #[test]
+    fn prune_preview_template_renders_blocked_reason_summary() {
+        let template = PrunePreviewTemplate {
+            findings: vec![PruneFindingView::from_finding(CleanupFinding {
+                symlink_path: PathBuf::from("/plex/Show/Season 01/Show - S01E01.mkv"),
+                source_path: PathBuf::from("/rd/Show.S01E01.mkv"),
+                media_id: "tvdb-1".to_string(),
+                severity: FindingSeverity::Warning,
+                confidence: 0.75,
+                reasons: vec![FindingReason::DuplicateEpisodeSlot],
+                parsed: ParsedContext {
+                    library_title: "Show".to_string(),
+                    parsed_title: "Show".to_string(),
+                    season: Some(1),
+                    episode: Some(1),
+                },
+                alternate_match: None,
+                legacy_anime_root: None,
+                db_tracked: false,
+                ownership: CleanupOwnership::Foreign,
+            }, PrunePathAction::Blocked(
+                crate::cleanup_audit::PruneBlockedReasonCode::DuplicateSlotNeedsTrackedAnchor,
+            ))],
+            total: 1,
+            critical: 0,
+            high: 0,
+            warning: 1,
+            actionable_candidates: 0,
+            blocked_candidates: 3,
+            managed_candidates: 0,
+            foreign_candidates: 0,
+            reason_counts: vec![],
+            blocked_reason_summary: vec![crate::cleanup_audit::PruneBlockedReasonSummary {
+                code: crate::cleanup_audit::PruneBlockedReasonCode::DuplicateSlotNeedsTrackedAnchor,
+                label: "duplicate slots without a tracked anchor are blocked".to_string(),
+                candidates: 3,
+                recommended_action:
+                    "Keep scanning until one canonical tracked link owns the slot before auto-pruning the duplicates."
+                        .to_string(),
+            }],
+            legacy_anime_root_groups: vec![],
+            report_path: Some(PathBuf::from("/tmp/cleanup-audit-all.json")),
+            confirmation_token: Some("abcdef1234567890".to_string()),
+            error_message: None,
+        };
+
+        let html = template.render().unwrap();
+        assert!(html.contains("duplicate slots without a tracked anchor are blocked"));
+        assert!(html.contains("Keep scanning until one canonical tracked link owns the slot"));
+        assert!(html.contains("Apply blocked"));
+        assert!(!html.contains("Apply Prune"));
+    }
+
+    #[test]
     fn anime_remediation_template_renders_backlog_summary() {
         let template = AnimeRemediationTemplate {
             summary: Some(AnimeRemediationSummaryView {
@@ -1158,9 +1362,22 @@ mod tests {
                 correlated_hama_split_groups: 106,
                 remediation_groups: 106,
                 returned_groups: 50,
+                visible_groups: 49,
                 eligible_groups: 1,
                 blocked_groups: 49,
+                state_filter: "blocked".to_string(),
+                reason_filter: "legacy_roots_still_tracked".to_string(),
+                title_filter: "Gundam".to_string(),
                 blocked_reason_summary: vec![AnimeRemediationBlockedReasonView {
+                    code: "legacy_roots_still_tracked".to_string(),
+                    label: "legacy roots still contain tracked DB links".to_string(),
+                    groups: 32,
+                    recommended_action:
+                        "Do not auto-remediate yet; first move or prune the DB-tracked legacy links."
+                            .to_string(),
+                }],
+                available_blocked_reasons: vec![AnimeRemediationBlockedReasonView {
+                    code: "legacy_roots_still_tracked".to_string(),
                     label: "legacy roots still contain tracked DB links".to_string(),
                     groups: 32,
                     recommended_action:
@@ -1193,7 +1410,15 @@ mod tests {
                     "Do not auto-remediate yet; first move or prune the DB-tracked legacy links."
                         .to_string(),
                 ),
-                candidate_symlink_samples: Vec::new(),
+                candidate_symlink_samples: vec![PathBuf::from(
+                    "/plex/anime/Mobile Suit Gundam SEED/Season 01/Show - S01E01.mkv",
+                )],
+                broken_symlink_samples: vec![PathBuf::from(
+                    "/plex/anime/Mobile Suit Gundam SEED/Season 01/Show - S01E02.mkv",
+                )],
+                legacy_media_file_samples: vec![PathBuf::from(
+                    "/plex/anime/Mobile Suit Gundam SEED/Season 01/Show - S01E03.mkv",
+                )],
             }],
             error_message: None,
         };
@@ -1206,5 +1431,69 @@ mod tests {
         assert!(html.contains("hama-anidb"));
         assert!(html.contains("visible blocked"));
         assert!(html.contains("legacy roots still contain tracked DB links"));
+        assert!(html.contains("Download Filtered TSV"));
+        assert!(html.contains("Apply Filters"));
+        assert!(html.contains("Candidate symlinks"));
+        assert!(html.contains("Broken legacy symlinks"));
+        assert!(html.contains("Real media files blocking auto-remediation"));
+    }
+
+    #[test]
+    fn anime_remediation_result_template_renders_review_samples() {
+        let template = AnimeRemediationResultTemplate {
+            success: true,
+            message: "preview built".to_string(),
+            preview: Some(AnimeRemediationPreviewResultView {
+                report_path: PathBuf::from("/tmp/anime-remediation.json"),
+                plex_db_path: "/tmp/plex.db".to_string(),
+                title_filter: String::new(),
+                total_groups: 1,
+                eligible_groups: 0,
+                blocked_groups: 1,
+                cleanup_candidates: 2,
+                confirmation_token: "abc123".to_string(),
+                blocked_reason_summary: vec![],
+                groups: vec![AnimeRemediationGroupView {
+                    normalized_title: "Horimiya".to_string(),
+                    recommended_tagged_root: PathBuf::from(
+                        "/plex/anime/Horimiya (2021) {tvdb-123}",
+                    ),
+                    recommended_filesystem_symlinks: 12,
+                    recommended_db_active_links: 12,
+                    alternate_tagged_roots: vec![],
+                    legacy_roots: vec![PathBuf::from("/plex/anime/Horimiya")],
+                    legacy_symlink_total: 3,
+                    legacy_db_total: 0,
+                    plex_total_rows: 2,
+                    plex_live_rows: 2,
+                    plex_deleted_rows: 0,
+                    plex_guid_kinds: vec!["hama-tvdb".to_string()],
+                    plex_guids: vec!["com.plexapp.agents.hama://tvdb-123".to_string()],
+                    eligible: false,
+                    block_reasons: vec!["legacy roots contain 13 non-symlink media files".into()],
+                    recommended_action: Some(
+                        "Manual migration required; move or relink real media files before remediation."
+                            .into(),
+                    ),
+                    candidate_symlink_samples: vec![PathBuf::from(
+                        "/plex/anime/Horimiya/Season 01/Horimiya - S01E01.mkv",
+                    )],
+                    broken_symlink_samples: vec![PathBuf::from(
+                        "/plex/anime/Horimiya/Season 01/Horimiya - S01E02.mkv",
+                    )],
+                    legacy_media_file_samples: vec![PathBuf::from(
+                        "/plex/anime/Horimiya/Season 01/Horimiya - S01E03.mkv",
+                    )],
+                }],
+            }),
+            apply: None,
+        };
+
+        let html = template.render().unwrap();
+        assert!(html.contains("Plan contents"));
+        assert!(html.contains("Candidate symlinks"));
+        assert!(html.contains("Broken legacy symlinks"));
+        assert!(html.contains("Blocking real media files"));
+        assert!(html.contains("Horimiya - S01E03.mkv"));
     }
 }

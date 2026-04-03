@@ -1,6 +1,6 @@
 #![allow(dead_code)] // Module scaffolded for future TVDB integration
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::Deserialize;
 use tracing::{debug, info, warn};
@@ -162,7 +162,10 @@ impl TvdbClient {
                 self.authenticate().await?;
             }
 
-            let token = self.token.as_ref().unwrap();
+            let token = self
+                .token
+                .as_ref()
+                .context("TVDB authenticate succeeded but did not return a token")?;
 
             // Fetch series details with aliases
             let url = format!("{}/series/{}/extended", TVDB_BASE_URL, tvdb_id);

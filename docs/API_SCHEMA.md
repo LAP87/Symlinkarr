@@ -8,16 +8,21 @@ Base path:
 /api/v1
 ```
 
-The API is currently local-first and intended to back the bundled web UI. There is still no full user auth layer in front of these routes, so treat it as trusted-local-network tooling rather than a public internet API.
+The API is local-first and intended to back the bundled web UI.
 
 By default, the web server binds to `127.0.0.1`. Set `web.bind_address: "0.0.0.0"` only when you intentionally want external reachability, such as a container with explicit port publishing, and pair it with `web.allow_remote: true`. Cross-origin access is not enabled by default.
 
-For mutating browser requests, Symlinkarr now enforces two layers:
+Symlinkarr now has two optional auth layers:
+
+- `web.username` + `web.password` enable HTTP Basic auth for the bundled HTML UI and JSON API
+- `web.api_key` enables API auth for non-browser clients via `Authorization: Bearer ...` or `X-API-Key`
+
+If only `web.api_key` is configured, the JSON API is protected but the HTML UI is not. For mutating browser requests, Symlinkarr also enforces:
 
 - same-origin `Origin`/`Referer` validation for browser-style `POST` requests
 - an issued host-only browser session cookie (`SameSite=Strict`) that is set by same-origin `GET` responses and required on later browser mutations
 
-Non-browser local clients that do not send `Origin` or `Referer` headers are still allowed to call mutating endpoints without that browser session cookie.
+Non-browser local clients that do not send `Origin` or `Referer` headers are still allowed to call mutating endpoints without that browser session cookie, but they must satisfy any configured API auth.
 
 ## Conventions
 
@@ -69,13 +74,21 @@ Response:
   "plex": "configured",
   "emby": "configured",
   "jellyfin": "missing",
-  "refresh_backends": ["plex", "emby"]
+  "refresh_backends": ["plex", "emby"],
+  "deferred_refresh": {
+    "pending_targets": 3,
+    "servers": [
+      { "server": "plex", "queued_targets": 2 },
+      { "server": "emby", "queued_targets": 1 }
+    ]
+  }
 }
 ```
 
 Notes:
 
 - `refresh_backends` lists the refresh/invalidation backends that are both configured and enabled right now. A server may still show as `"configured"` in its individual field even if it is not currently active for refresh fan-out.
+- `deferred_refresh` reports queued refresh targets that were persisted because another Symlinkarr run held the media-refresh lock or because a later mutation pass still needs to drain them.
 
 ## `GET /api/v1/discover`
 
@@ -271,6 +284,7 @@ Response element schema:
     "unresolved_paths": 0,
     "capped_batches": 1,
     "aborted_due_to_cap": true,
+    "deferred_due_to_lock": false,
     "failed_batches": 0
   },
   "media_server_refresh": [
@@ -290,6 +304,7 @@ Response element schema:
         "unresolved_paths": 0,
         "capped_batches": 1,
         "aborted_due_to_cap": true,
+        "deferred_due_to_lock": false,
         "failed_batches": 0
       }
     },
@@ -309,6 +324,7 @@ Response element schema:
         "unresolved_paths": 0,
         "capped_batches": 0,
         "aborted_due_to_cap": false,
+        "deferred_due_to_lock": false,
         "failed_batches": 0
       }
     }
@@ -392,6 +408,7 @@ Response schema:
     "unresolved_paths": 0,
     "capped_batches": 1,
     "aborted_due_to_cap": true,
+    "deferred_due_to_lock": false,
     "failed_batches": 0
   },
   "media_server_refresh": [
@@ -411,6 +428,7 @@ Response schema:
         "unresolved_paths": 0,
         "capped_batches": 1,
         "aborted_due_to_cap": true,
+        "deferred_due_to_lock": false,
         "failed_batches": 0
       }
     },
@@ -430,6 +448,7 @@ Response schema:
         "unresolved_paths": 0,
         "capped_batches": 0,
         "aborted_due_to_cap": false,
+        "deferred_due_to_lock": false,
         "failed_batches": 0
       }
     }
@@ -464,6 +483,7 @@ Notes:
 
 - `plex_refresh_ms` remains the phase runtime for compatibility, while the nested `plex_refresh` object exposes the aggregate request pressure, coalescing, capping, cap-guard aborts, failures, and actual queued coverage across all active media-server refresh backends.
 - `media_server_refresh` stores the per-backend refresh telemetry persisted with the scan run. Use it when you need to know which backend actually capped, skipped, or failed.
+- `deferred_due_to_lock` means a later Symlinkarr process saw another run already holding the media-refresh lock and deliberately skipped issuing concurrent refresh requests.
 - `skip_reasons` stores the structured aggregate reasons Symlinkarr persisted for skipped work during the run, combining linker guards and ambiguous-match skips into one operator-visible breakdown.
 - `skip_event_samples` stores concrete run-scoped skip/dead-mark samples tied to the same scan run, so operators can inspect real target/source paths without grepping logs.
 
@@ -475,6 +495,18 @@ Query params:
 
 - `plex_db=<PATH>` optional override for Plex's library database path
 - `full=true|false` optional; when `true`, returns the full backlog instead of the default sample-limited slice
+- `state=all|eligible|blocked` optional visibility filter for the assessed backlog
+- `reason=<code>` optional blocker-class filter such as `legacy_roots_contain_real_media`
+- `title=<substring>` optional case-insensitive title filter
+- `format=json|tsv` optional; `tsv` returns the filtered assessed backlog as a manual worklist export
+
+Response notes:
+
+- JSON now returns the assessed backlog, not just the raw correlated sample list. Each group includes `eligible`, structured `block_reasons`, sample paths, and the recommended tagged root.
+- `visible_groups`, `eligible_groups`, and `blocked_groups` describe the filtered slice after `state` / `reason` / `title` have been applied.
+- `available_blocked_reasons` is the stable catalog for building filter UIs without hard-coding blocker labels.
+- `blocked_reason_summary` is recalculated from the filtered slice, so operators can see which blocker classes dominate the current view.
+- TSV exports use the same filtered slice and include blocker codes, blocker messages, recommended actions, and captured sample paths.
 
 ## `POST /api/v1/cleanup/anime-remediation/preview`
 
@@ -579,6 +611,7 @@ Response:
           "unresolved_paths": 0,
           "capped_batches": 0,
           "aborted_due_to_cap": false,
+          "deferred_due_to_lock": false,
           "failed_batches": 0
         }
       },
@@ -597,6 +630,7 @@ Response:
           "unresolved_paths": 0,
           "capped_batches": 0,
           "aborted_due_to_cap": false,
+          "deferred_due_to_lock": false,
           "failed_batches": 0
         }
       }
@@ -613,6 +647,7 @@ Response:
       "unresolved_paths": 0,
       "capped_batches": 0,
       "aborted_due_to_cap": false,
+      "deferred_due_to_lock": false,
       "failed_batches": 0
     }
   }
@@ -872,8 +907,17 @@ Response schema:
   "success": true,
   "message": "Prune applied",
   "candidates": 17,
+  "blocked_candidates": 4,
   "managed_candidates": 17,
   "foreign_candidates": 0,
+  "blocked_reason_summary": [
+    {
+      "code": "duplicate_slot_needs_tracked_anchor",
+      "label": "duplicate slots without a tracked anchor are blocked",
+      "candidates": 4,
+      "recommended_action": "Keep scanning until one canonical tracked link owns the slot before auto-pruning the duplicates."
+    }
+  ],
   "removed": 17,
   "quarantined": 0,
   "skipped": 2,
@@ -897,6 +941,7 @@ Response schema:
           "unresolved_paths": 0,
           "capped_batches": 0,
           "aborted_due_to_cap": false,
+          "deferred_due_to_lock": false,
           "failed_batches": 0
         }
       },
@@ -915,6 +960,7 @@ Response schema:
           "unresolved_paths": 0,
           "capped_batches": 0,
           "aborted_due_to_cap": false,
+          "deferred_due_to_lock": false,
           "failed_batches": 0
         }
       }
@@ -931,6 +977,7 @@ Response schema:
       "unresolved_paths": 0,
       "capped_batches": 0,
       "aborted_due_to_cap": false,
+      "deferred_due_to_lock": false,
       "failed_batches": 0
     }
   }
@@ -941,6 +988,9 @@ Notes:
 
 - `media_server_invalidation` is emitted only for apply, not preview.
 - Cleanup apply now refreshes only the library roots that actually had changed symlinks. If no media-server refresh is configured, the field is still present on success with `configured=false`.
+- `blocked_candidates` counts rows that were reviewed by prune logic but intentionally held back by trust or policy gates.
+- `blocked_reason_summary` explains the top reasons prune refused to touch those rows automatically.
+- prune apply now fails with `400 Bad Request` when a report has zero actionable candidates left and only policy-blocked rows remain, instead of returning a success-shaped no-op.
 
 ## `GET /api/v1/links`
 

@@ -127,15 +127,23 @@ web:
   bind_address: "127.0.0.1"
   allow_remote: false
   port: 8726
+  username: ""
+  password: ""
+  api_key: ""
 ```
 
 Notes:
 
 - Loopback is the safe default for host installs.
 - For Docker or another explicitly exposed setup, set `bind_address: "0.0.0.0"` and `allow_remote: true`.
+- `web.username` + `web.password` enable HTTP Basic auth for the bundled HTML UI and JSON API.
+- `web.api_key` enables API auth for `Authorization: Bearer ...` or `X-API-Key` clients.
+- `web.api_key` alone does not protect the HTML UI; pair it with Basic auth or a trusted reverse proxy if the web UI is remotely reachable.
 - Native Windows is not supported; use WSL2 or a Linux container on Windows 11.
 - Plex refresh pacing is configured in `config.yaml` under `plex.refresh_delay_ms`, `plex.refresh_coalesce_threshold`, and `plex.max_refresh_batches_per_run`.
 - `plex.abort_refresh_when_capped` is the RC-safe default: if the refresh plan exceeds the per-run cap, Symlinkarr aborts the whole Plex refresh phase instead of queueing only the first batches.
+- Emby and Jellyfin invalidation are configured under `emby.*` and `jellyfin.*`. `refresh_batch_size`, `max_refresh_batches_per_run`, and `abort_refresh_when_capped` control load, and `fallback_to_library_roots_when_capped` lets Symlinkarr fall back to a few library-root invalidations when a targeted path storm would otherwise be aborted entirely.
+- Concurrent Symlinkarr mutation runs now serialize media-server refreshes behind a lock. Later runs report the refresh as deferred instead of stampeding Plex, Emby, or Jellyfin in parallel.
 
 ### `cleanup`
 
@@ -169,6 +177,7 @@ Notes:
 - `cleanup audit` supports `anime`, `tv`, `movie`, and `all`.
 - `cleanup prune` is intentionally two-step. Preview first, then apply.
 - `cleanup prune --include-legacy-anime-roots` opt-ins warning-only anime findings where an untagged legacy root coexists with a tagged `{tvdb-*}`/`{tmdb-*}` root. These candidates are quarantined as `foreign`, not deleted.
+- prune preview now surfaces `blocked candidates` when rows were reviewed but held back by trust or policy gates, and `cleanup prune --apply` refuses to run as a no-op when only blocked rows remain.
 - successful destructive cleanup flows now trigger a guarded media-server invalidation of affected library roots when refresh is configured. Plex, Emby, and Jellyfin can now fan out together, and mutation responses report per-backend invalidation details.
 - that invalidation step now keys off the actual changed symlink paths, so prune/remediation no longer refresh every selected library root by default.
 - `cleanup remediate-anime` is the guarded follow-up for the correlated anime backlog from `report --plex-db ...`. Preview writes a remediation plan JSON with eligible and blocked titles, then apply reuses that exact report plus a confirmation token.

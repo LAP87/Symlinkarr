@@ -99,6 +99,7 @@ tautulli:
 #   refresh_batch_size: 64
 #   max_refresh_batches_per_run: 12
 #   abort_refresh_when_capped: true
+#   fallback_to_library_roots_when_capped: true
 
 # Optional: targeted Jellyfin invalidation after Symlinkarr links or relinks content
 # jellyfin:
@@ -109,6 +110,7 @@ tautulli:
 #   refresh_batch_size: 64
 #   max_refresh_batches_per_run: 12
 #   abort_refresh_when_capped: true
+#   fallback_to_library_roots_when_capped: true
 
 # Plex, Emby, and Jellyfin refresh backends can be enabled together.
 # Refresh telemetry is aggregated in scan history and reported per backend in mutation responses.
@@ -136,3 +138,9 @@ web:
   bind_address: "127.0.0.1"
   allow_remote: false
   port: 8726
+  # Optional browser auth for the built-in UI and API.
+  # Prefer env:/secretfile: when security.require_secret_provider=true.
+  username: ""
+  password: ""
+  # Optional API auth for non-browser clients. Accepts X-API-Key or Bearer.
+  api_key: ""

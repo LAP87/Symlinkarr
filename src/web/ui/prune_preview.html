@@ -52,12 +52,20 @@
 
         <div class="metric-grid metric-grid--compact">
             <div class="metric-card">
+                <span class="metric-label">Actionable now</span>
+                <strong>{{ actionable_candidates }}</strong>
+            </div>
+            <div class="metric-card">
                 <span class="metric-label">Managed delete</span>
                 <strong>{{ managed_candidates }}</strong>
             </div>
             <div class="metric-card">
                 <span class="metric-label">Foreign quarantine</span>
                 <strong>{{ foreign_candidates }}</strong>
+            </div>
+            <div class="metric-card">
+                <span class="metric-label">Blocked candidates</span>
+                <strong>{{ blocked_candidates }}</strong>
             </div>
             <div class="metric-card">
                 <span class="metric-label">Token required</span>
@@ -84,6 +92,20 @@
             </div>
         </div>
         {% endif %}
+        {% if blocked_reason_summary|length > 0 %}
+        <div class="mt-2">
+            <p class="section-kicker">Blocked candidates</p>
+            <div class="metric-grid metric-grid--compact">
+                {% for item in blocked_reason_summary %}
+                <div class="metric-card">
+                    <span class="metric-label">{{ item.label }}</span>
+                    <strong>{{ item.candidates }}</strong>
+                    <div class="text-muted">{{ item.recommended_action }}</div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
 
         {% match report_path %}
         {% when Some with (path) %}
@@ -105,6 +127,12 @@
     <p class="mt-1">
         Managed Symlinkarr links are deleted. Foreign or untracked symlinks are quarantined instead of deleted. Warning-only anomalies are shown for context, but they are not the primary prune target unless they also appear in a safer duplicate or broken-source path.
     </p>
+    {% if actionable_candidates == 0 && blocked_candidates > 0 %}
+    <p class="mt-1">
+        <strong>No actionable prune candidates remain right now.</strong>
+        This report still contains blocked rows, but policy/trust gates prevent apply from doing anything useful. Review the blocked reasons below before changing policy.
+    </p>
+    {% endif %}
 </div>
 {% match report_path %}
 {% when Some with (path) %}
@@ -124,6 +152,10 @@
         <div class="metric-card">
             <span class="metric-label">Foreign quarantine</span>
             <strong>{{ foreign_candidates }}</strong>
+        </div>
+        <div class="metric-card">
+            <span class="metric-label">Blocked candidates</span>
+            <strong>{{ blocked_candidates }}</strong>
         </div>
         <div class="metric-card">
             <span class="metric-label">Report file</span>
@@ -150,6 +182,20 @@
         </div>
     </div>
     {% endif %}
+    {% if blocked_reason_summary|length > 0 %}
+    <div class="alert alert-warning mb-2">
+        <strong>Blocked candidates still need manual work:</strong>
+        <div class="metric-grid metric-grid--compact mt-1">
+            {% for item in blocked_reason_summary %}
+            <div class="metric-card">
+                <span class="metric-label">{{ item.label }}</span>
+                <strong>{{ item.candidates }}</strong>
+                <div class="text-muted">{{ item.recommended_action }}</div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
     <table class="data-table dense-table">
         <thead>
             <tr>
@@ -157,6 +203,7 @@
                 <th>Symlink Path</th>
                 <th>Source Path</th>
                 <th>Media ID</th>
+                <th>Planned action</th>
                 <th>Ownership</th>
                 <th>Season/Episode</th>
                 <th>Better Match</th>
@@ -167,7 +214,7 @@
             {% for finding in findings %}
             <tr>
                 <td>
-                    {% match finding.severity %}
+                    {% match finding.finding.severity %}
                     {% when crate::cleanup_audit::FindingSeverity::Critical %}
                     <span class="badge badge-danger">Critical</span>
                     {% when crate::cleanup_audit::FindingSeverity::High %}
@@ -176,11 +223,26 @@
                     <span class="badge badge-info">Warning</span>
                     {% endmatch %}
                 </td>
-                <td><code class="mono">{{ finding.symlink_path.display() }}</code></td>
-                <td><code class="mono">{{ finding.source_path.display() }}</code></td>
-                <td>{{ finding.media_id }}</td>
+                <td><code class="mono">{{ finding.finding.symlink_path.display() }}</code></td>
+                <td><code class="mono">{{ finding.finding.source_path.display() }}</code></td>
+                <td>{{ finding.finding.media_id }}</td>
                 <td>
-                    {% match finding.ownership %}
+                    <div class="badge-stack">
+                        <span class="badge {{ finding.action_badge_class }}">{{ finding.action_label }}</span>
+                        {% match finding.blocked_reason_label %}
+                        {% when Some with (label) %}
+                        <span class="text-muted">{{ label }}</span>
+                        {% when None %}
+                        {% endmatch %}
+                        {% match finding.blocked_reason_recommended_action %}
+                        {% when Some with (action) %}
+                        <span class="text-muted">{{ action }}</span>
+                        {% when None %}
+                        {% endmatch %}
+                    </div>
+                </td>
+                <td>
+                    {% match finding.finding.ownership %}
                     {% when crate::cleanup_audit::CleanupOwnership::Managed %}
                     <span class="badge badge-danger">Managed</span>
                     {% when crate::cleanup_audit::CleanupOwnership::Foreign %}
@@ -188,14 +250,14 @@
                     {% endmatch %}
                 </td>
                 <td>
-                    {% match finding.parsed.season %}
+                    {% match finding.finding.parsed.season %}
                     {% when Some with (s) %}
-                        {% match finding.parsed.episode %}
+                        {% match finding.finding.parsed.episode %}
                         {% when Some with (e) %}S{{ s }}E{{ e }}{% when None %}S{{ s }}{% endmatch %}
                     {% when None %}N/A{% endmatch %}
                 </td>
                 <td>
-                    {% match finding.alternate_match %}
+                    {% match finding.finding.alternate_match %}
                     {% when Some with (alt) %}
                     <div class="badge-stack">
                         <strong>{{ alt.title }}</strong>
@@ -203,7 +265,7 @@
                         <span class="badge badge-warning">score {{ "{:.2}"|format(alt.score) }}</span>
                     </div>
                     {% when None %}
-                        {% match finding.legacy_anime_root %}
+                        {% match finding.finding.legacy_anime_root %}
                         {% when Some with (legacy) %}
                         <div class="badge-stack">
                             <strong>{{ legacy.normalized_title }}</strong>
@@ -219,7 +281,7 @@
                 </td>
                 <td>
                     <span class="badge-stack">
-                        {% for reason in finding.reasons %}
+                        {% for reason in finding.finding.reasons %}
                         <span class="badge badge-info">{{ reason }}</span>
                         {% endfor %}
                     </span>
@@ -231,6 +293,7 @@
 </div>
 
 <div class="card">
+    {% if actionable_candidates > 0 %}
     <form action="/cleanup/prune" method="post">
         <input type="hidden" name="report" value="{{ path.display() }}">
         <div class="form-group">
@@ -247,6 +310,15 @@
             <a href="/cleanup" class="btn btn-secondary">&#8592; Back to Cleanup</a>
         </div>
     </form>
+    {% else %}
+    <div class="alert alert-warning">
+        <h3>&#9888;&#65039; Apply blocked</h3>
+        <p>This preview has no actionable prune candidates. Apply is disabled because it would currently be a no-op.</p>
+    </div>
+    <div class="actions mt-2">
+        <a href="/cleanup" class="btn btn-secondary">&#8592; Back to Cleanup</a>
+    </div>
+    {% endif %}
 </div>
 {% when None %}
 <div class="alert alert-warning">

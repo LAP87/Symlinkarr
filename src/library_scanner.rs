@@ -35,6 +35,7 @@ impl LibraryScanner {
         let mut items = Vec::new();
 
         for entry in WalkDir::new(&lib.path)
+            .follow_links(false)
             .min_depth(1)
             .max_depth(lib.depth)
             .into_iter()

@@ -1007,6 +1007,13 @@ impl Repairer {
     ) -> Result<()> {
         let symlink_path = &dead_link.symlink_path;
 
+        if !dead_link.original_source.exists() {
+            anyhow::bail!(
+                "rollback refused: original source {:?} is still missing",
+                dead_link.original_source
+            );
+        }
+
         if let Ok(meta) = std::fs::symlink_metadata(symlink_path) {
             if !meta.file_type().is_symlink() {
                 anyhow::bail!(
@@ -1843,6 +1850,8 @@ mod tests {
         let symlink_path = tmp.path().join("Show - S01E01.mkv");
         let original_source = tmp.path().join("old-source.mkv");
         let replacement_source = tmp.path().join("new-source.mkv");
+        std::fs::write(&original_source, "old").unwrap();
+        std::fs::write(&replacement_source, "new").unwrap();
 
         std::os::unix::fs::symlink(&replacement_source, &symlink_path).unwrap();
 
@@ -1870,6 +1879,47 @@ mod tests {
             .unwrap();
 
         assert_eq!(std::fs::read_link(&symlink_path).unwrap(), original_source);
+    }
+
+    #[test]
+    fn test_rollback_repair_refuses_to_restore_missing_original_symlink() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let repairer = Repairer::new();
+        let symlink_path = tmp.path().join("Show - S01E01.mkv");
+        let original_source = tmp.path().join("old-source.mkv");
+        let replacement_source = tmp.path().join("new-source.mkv");
+        std::fs::write(&replacement_source, "new").unwrap();
+
+        std::os::unix::fs::symlink(&replacement_source, &symlink_path).unwrap();
+
+        let dead_link = DeadLink {
+            symlink_path: symlink_path.clone(),
+            original_source: original_source.clone(),
+            media_id: "tvdb-123".to_string(),
+            media_type: MediaType::Tv,
+            content_type: ContentType::Tv,
+            meta: parse_trash_filename("Show - S01E01.mkv"),
+            original_size: None,
+        };
+        let replacement = ReplacementCandidate {
+            path: replacement_source.clone(),
+            parsed_title: "show".to_string(),
+            season: Some(1),
+            episode: Some(1),
+            quality: None,
+            file_size: 0,
+            score: 1.0,
+        };
+
+        let err = repairer
+            .rollback_repair_link(&dead_link, &replacement)
+            .unwrap_err();
+
+        assert!(err.to_string().contains("original source"));
+        assert_eq!(
+            std::fs::read_link(&symlink_path).unwrap(),
+            replacement_source
+        );
     }
 
     #[tokio::test]

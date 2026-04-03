@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::Result;
@@ -62,6 +62,40 @@ fn destructive_source_exists(
         );
     }
     Ok(source_health.is_healthy())
+}
+
+fn resolve_link_target(link_path: &Path, target: &Path) -> PathBuf {
+    if target.is_absolute() {
+        target.to_path_buf()
+    } else {
+        link_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(target)
+    }
+}
+
+fn verify_link_target(target_path: &Path, expected_source: &Path) -> Result<()> {
+    let meta = std::fs::symlink_metadata(target_path)?;
+    if !meta.file_type().is_symlink() {
+        anyhow::bail!(
+            "post-write verification failed: {:?} is no longer a symlink",
+            target_path
+        );
+    }
+
+    let actual_target = std::fs::read_link(target_path)?;
+    let resolved_target = resolve_link_target(target_path, &actual_target);
+    if resolved_target != expected_source {
+        anyhow::bail!(
+            "post-write verification failed: {:?} points to {:?} instead of {:?}",
+            target_path,
+            resolved_target,
+            expected_source
+        );
+    }
+
+    Ok(())
 }
 
 /// Creates and manages symlinks from Real-Debrid sources to Plex library.
@@ -416,6 +450,7 @@ impl Linker {
                 let _ = std::fs::remove_file(&temp_path);
                 std::os::unix::fs::symlink(&m.source_item.path, &temp_path)?;
                 std::fs::rename(&temp_path, target_path)?;
+                verify_link_target(target_path, &m.source_item.path)?;
             }
 
             tx.commit().await?;
@@ -1270,6 +1305,37 @@ mod tests {
         assert_eq!(outcome.outcome, LinkWriteOutcome::Updated);
         assert_eq!(outcome.refresh_path, Some(lib_path.clone()));
         assert_eq!(fs::read_link(&target).unwrap(), PathBuf::from(&new_source));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_verify_link_target_accepts_matching_symlink() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let source = dir.path().join("rd").join("video.mkv");
+        let target = dir.path().join("library").join("video.mkv");
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(&source, "video").unwrap();
+        std::os::unix::fs::symlink(&source, &target).unwrap();
+
+        verify_link_target(&target, &source).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_verify_link_target_rejects_wrong_destination() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let source = dir.path().join("rd").join("video.mkv");
+        let other_source = dir.path().join("rd").join("other.mkv");
+        let target = dir.path().join("library").join("video.mkv");
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(&source, "video").unwrap();
+        fs::write(&other_source, "video").unwrap();
+        std::os::unix::fs::symlink(&other_source, &target).unwrap();
+
+        let err = verify_link_target(&target, &source).unwrap_err();
+        assert!(err.to_string().contains("post-write verification failed"));
     }
 
     #[test]

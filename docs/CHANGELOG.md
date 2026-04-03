@@ -6,6 +6,104 @@
 - posture: `rc-prep with downloadable binary artifacts`
 - intended use: local-first host or Docker installs, with Windows 11 users running through WSL2 or a Linux container
 
+## 2026-04-03 - Runtime Hardening Pass
+
+### Code Changes
+
+- replaced process-global dotenv mutation with a local overlay that is only consulted during config resolution, removing the unsafe `set_var` startup path while preserving `env:` semantics and real-environment precedence.
+  - files: `src/config.rs`
+- parallelized media-server refresh fan-out so a stalled or failing backend no longer serially blocks the others inside the same refresh phase.
+  - files: `src/media_servers/mod.rs`
+- hardened link writes with post-rename symlink verification, so the final target is checked before the DB transaction commits.
+  - files: `src/linker.rs`
+- made foreign-link quarantine more atomic by moving the live symlink out of the library path before staging the quarantine copy, reducing the duplicate-live-link window during cleanup.
+  - files: `src/cleanup_audit.rs`
+- made repair rollback refuse to recreate a known-missing original source, so DB failures after a successful repair do not silently put users back onto a dead symlink.
+  - files: `src/repair.rs`
+- made scanner traversal explicitly `follow_links(false)` and added a stronger `/dev/urandom` fallback for browser-session token generation.
+  - files: `src/source_scanner.rs`, `src/library_scanner.rs`, `src/web/mod.rs`
+
+### Validation
+
+- `CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-auth cargo test -q`
+  - result: passed locally
+- `LD_LIBRARY_PATH=/usr/lib:/usr/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-auth cargo clippy --all-targets --all-features -- -D warnings`
+  - result: passed locally
+
+## 2026-04-03 - Optional Web and API Authentication
+
+### Code Changes
+
+- added optional `web.username` / `web.password` HTTP Basic auth for the bundled HTML UI and JSON API, so operators can harden remote or proxied installs without giving up the built-in UI.
+  - files: `src/config.rs`, `src/web/mod.rs`, `config.example.yaml`, `config.docker.yaml`
+- added optional `web.api_key` auth for API clients via `Authorization: Bearer ...` or `X-API-Key`, so automation can authenticate without needing browser-oriented Basic auth flows.
+  - files: `src/config.rs`, `src/web/mod.rs`
+- tightened config/runtime validation and secret handling for the new auth fields, including remote-bind warnings when the JSON API is protected but the HTML UI is still open.
+  - files: `src/config.rs`
+- updated operator docs so README, CLI manual, and API schema all describe the same auth model instead of still claiming there is no full auth layer.
+  - files: `README.md`, `docs/CLI_MANUAL.md`, `docs/API_SCHEMA.md`
+
+### Validation
+
+- `CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-manual-remediation cargo test -q`
+  - result: passed locally
+
+## 2026-04-03 - Anime Remediation Filters and Manual Export
+
+### Code Changes
+
+- added assessed-backlog filters for anime remediation state, blocker reason, and title substring, so operators can work blocked titles in smaller slices instead of wading through the full queue every time.
+  - files: `src/commands/cleanup.rs`, `src/web/handlers.rs`, `src/web/templates.rs`, `src/web/ui/anime_remediation.html`, `src/web/api/mod.rs`
+- `GET /api/v1/report/anime-remediation` can now emit the filtered assessed backlog as TSV via `format=tsv`, carrying blocker codes, recommended actions, and captured sample paths for manual migration/export workflows.
+  - files: `src/commands/cleanup.rs`, `src/web/api/mod.rs`, `docs/API_SCHEMA.md`
+- the anime remediation backlog page now exposes those filters and a filtered TSV download form, turning the page into a practical manual-remediation work surface without weakening the guarded apply gate.
+  - files: `src/web/ui/anime_remediation.html`, `src/web/templates.rs`, `src/web/handlers.rs`
+
+### Validation
+
+- `CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-manual-remediation cargo test -q anime_remediation`
+  - result: passed locally
+
+## 2026-04-03 - Anime Remediation Evidence Samples
+
+### Code Changes
+
+- enriched anime remediation plan groups with captured sample paths for removable legacy symlink candidates, broken legacy symlinks, and real media files that block safe auto-remediation.
+  - files: `src/commands/cleanup.rs`
+- surfaced those evidence samples directly in the anime backlog and guarded preview pages, so blocked groups show why they need manual work instead of only a reason label.
+  - files: `src/web/templates.rs`, `src/web/ui/anime_remediation.html`, `src/web/ui/anime_remediation_result.html`
+- prune preview now surfaces blocked candidates and structured blocked-reason summaries, so broader cleanup trust gaps outside anime are visible instead of silently hidden behind smaller actionable counts.
+  - files: `src/cleanup_audit.rs`, `src/web/templates.rs`, `src/web/ui/prune_preview.html`, `src/web/handlers.rs`, `docs/API_SCHEMA.md`
+- status, `/api/v1/health`, dashboard, and health page now surface deferred media-refresh backlog per backend, so queued invalidations are visible before the next mutation pass drains them.
+  - files: `src/media_servers/mod.rs`, `src/commands/status.rs`, `src/web/api/mod.rs`, `src/web/handlers.rs`, `src/web/templates.rs`, `src/web/ui/dashboard.html`, `src/web/ui/health.html`, `docs/API_SCHEMA.md`
+
+### Validation
+
+- `CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-remediation-ui cargo test -q`
+  - result: passed locally
+- `LD_LIBRARY_PATH=/usr/lib:/usr/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-remediation-ui cargo clippy --all-targets --all-features -- -D warnings`
+  - result: passed locally
+
+## 2026-04-02 - Web Anime Remediation Workflow
+
+### Code Changes
+
+- added real browser handlers for guarded anime remediation preview/apply, so the remediation workflow no longer stops at a read-only backlog page.
+  - files: `src/web/handlers.rs`, `src/web/mod.rs`
+- added a dedicated remediation result page with saved-plan details, blocked-reason summary, confirmation token, and a guarded apply gate for the exact saved report.
+  - files: `src/web/templates.rs`, `src/web/ui/anime_remediation_result.html`
+- upgraded the anime backlog page from read-only wording to an operator workflow page with a built-in “build guarded plan” form that routes into the same preview/apply safety path as CLI/API.
+  - files: `src/web/ui/anime_remediation.html`
+- refreshed the RC roadmap so the next slices reflect the current truth instead of already-landed observability/remediation work.
+  - files: `docs/RC_ROADMAP.md`
+
+### Validation
+
+- `CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-remediation-ui cargo test web::handlers::tests::anime_remediation_preview_page_renders_saved_plan_and_apply_gate -- --nocapture`
+  - result: passed locally
+- `CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-remediation-ui cargo test web::handlers::tests::anime_remediation_apply_page_renders_quarantine_result -- --nocapture`
+  - result: passed locally
+
 ## 2026-04-01 - Release Packaging and Binary Build Hardening
 
 ### Code Changes
@@ -738,3 +836,23 @@ Accounts with large RD libraries (10k+ torrents) triggered cascading `429 Too Ma
   - `backups/cleanup-reports/symlinkarr-cleanup-anime-threshold-v2.json`
 - pre-change safety backup:
   - `backups/backup-20260224-185003.json`
+# 2026-04-02
+
+## Media-Server Hardening
+
+- Emby and Jellyfin invalidation now support a guarded `fallback_to_library_roots_when_capped` path. When a targeted invalidation storm would exceed the configured cap and abort entirely, Symlinkarr can fall back to a much smaller set of library-root invalidations instead of leaving the media server stale.
+- post-link scan refresh now goes through the same affected-path invalidation flow as cleanup and repair, so Plex/Emby/Jellyfin all share the same cap/fallback semantics after mutations.
+- concurrent Symlinkarr mutation runs now serialize media-server refreshes behind a lock. Later runs surface `deferred_due_to_lock` in scan history/API/UI instead of issuing overlapping refresh storms.
+
+## Web Remediation
+
+- the anime remediation page is no longer read-only. Web operators can now build a saved guarded remediation plan and apply that exact plan from the browser using the same report/token workflow as the CLI and JSON API.
+- web remediation apply results now surface the same post-mutation media-server invalidation summary as the CLI path.
+
+### Verification
+
+- `cargo test -q`
+- `cargo clippy --all-targets --all-features -- -D warnings`
+- `symlinkarr config validate --output json`
+- `symlinkarr status --health --output json`
+- `symlinkarr scan --library Anime`

@@ -42,4 +42,23 @@
         </tbody>
     </table>
 </div>
+
+<div class="card">
+    <h2 class="section-title">Deferred Media Refresh</h2>
+    {% if deferred_refresh.pending_targets > 0 %}
+    <div class="alert alert-warning">
+        <strong>{{ deferred_refresh.pending_targets }} refresh target(s) are queued.</strong>
+        Another Symlinkarr run previously held the refresh lock or deferred invalidation under load.
+    </div>
+    <div class="badge-stack">
+        {% for server in deferred_refresh.servers %}
+        <span class="badge badge-warning">{{ server.server }}: {{ server.queued_targets }}</span>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="alert alert-success">
+        <strong>&#9989; No deferred refresh backlog.</strong>
+    </div>
+    {% endif %}
+</div>
 {% endblock %}

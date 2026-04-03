@@ -177,6 +177,7 @@ pub struct CleanupReport {
 #[derive(Debug, Clone)]
 pub struct PruneOutcome {
     pub candidates: usize,
+    pub blocked_candidates: usize,
     pub high_or_critical_candidates: usize,
     pub safe_warning_duplicate_candidates: usize,
     pub legacy_anime_root_candidates: usize,
@@ -184,6 +185,7 @@ pub struct PruneOutcome {
     pub managed_candidates: usize,
     pub foreign_candidates: usize,
     pub reason_counts: Vec<PruneReasonCount>,
+    pub blocked_reason_summary: Vec<PruneBlockedReasonSummary>,
     pub removed: usize,
     pub quarantined: usize,
     pub skipped: usize,
@@ -200,6 +202,7 @@ enum PruneDisposition {
 #[derive(Debug, Clone)]
 pub(crate) struct PrunePlan {
     pub candidate_paths: Vec<PathBuf>,
+    pub blocked_candidates: usize,
     pub high_or_critical_candidates: usize,
     pub safe_warning_duplicate_candidates: usize,
     pub legacy_anime_root_candidates: usize,
@@ -207,8 +210,33 @@ pub(crate) struct PrunePlan {
     pub managed_candidates: usize,
     pub foreign_candidates: usize,
     pub reason_counts: Vec<PruneReasonCount>,
+    pub blocked_reason_summary: Vec<PruneBlockedReasonSummary>,
     pub confirmation_token: String,
     dispositions: HashMap<PathBuf, PruneDisposition>,
+    blocked_by_path: HashMap<PathBuf, PruneBlockedReasonCode>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PrunePathAction {
+    Delete,
+    Quarantine,
+    Blocked(PruneBlockedReasonCode),
+    ObserveOnly,
+}
+
+impl PrunePlan {
+    pub(crate) fn action_for_path(&self, path: &Path) -> PrunePathAction {
+        match self.dispositions.get(path).copied() {
+            Some(PruneDisposition::Delete) => PrunePathAction::Delete,
+            Some(PruneDisposition::Quarantine) => PrunePathAction::Quarantine,
+            None => self
+                .blocked_by_path
+                .get(path)
+                .copied()
+                .map(PrunePathAction::Blocked)
+                .unwrap_or(PrunePathAction::ObserveOnly),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -217,6 +245,90 @@ pub struct PruneReasonCount {
     pub total: usize,
     pub managed: usize,
     pub foreign: usize,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum PruneBlockedReasonCode {
+    ForeignQuarantineDisabled,
+    DuplicateSlotNeedsTrackedAnchor,
+    DuplicateSlotTainted,
+    DuplicateSlotMultipleTrackedAnchors,
+    DuplicateSlotSourceMismatch,
+    LegacyAnimeRootsExcludedByDefault,
+}
+
+impl PruneBlockedReasonCode {
+    pub(crate) fn label(&self) -> &'static str {
+        match self {
+            Self::ForeignQuarantineDisabled => {
+                "foreign candidates are blocked because quarantine is disabled"
+            }
+            Self::DuplicateSlotNeedsTrackedAnchor => {
+                "duplicate slots without a tracked anchor are blocked"
+            }
+            Self::DuplicateSlotTainted => "duplicate slots with extra anomaly reasons are blocked",
+            Self::DuplicateSlotMultipleTrackedAnchors => {
+                "duplicate slots with multiple tracked anchors are blocked"
+            }
+            Self::DuplicateSlotSourceMismatch => {
+                "duplicate slots with mismatched source files are blocked"
+            }
+            Self::LegacyAnimeRootsExcludedByDefault => {
+                "legacy anime-root warnings are excluded by default"
+            }
+        }
+    }
+
+    pub(crate) fn recommended_action(&self) -> &'static str {
+        match self {
+            Self::ForeignQuarantineDisabled => {
+                "Enable cleanup.prune.quarantine_foreign or review the foreign symlinks manually before applying prune."
+            }
+            Self::DuplicateSlotNeedsTrackedAnchor => {
+                "Keep scanning until one canonical tracked link owns the slot before auto-pruning the duplicates."
+            }
+            Self::DuplicateSlotTainted => {
+                "Do not auto-prune mixed anomaly slots; inspect the title manually and clear the extra mismatch first."
+            }
+            Self::DuplicateSlotMultipleTrackedAnchors => {
+                "Resolve which tracked path should win before letting prune remove anything else in that slot."
+            }
+            Self::DuplicateSlotSourceMismatch => {
+                "Do not auto-prune duplicates that point at different source files; inspect the release choice manually."
+            }
+            Self::LegacyAnimeRootsExcludedByDefault => {
+                "Use the guarded anime remediation workflow or explicitly opt in to legacy anime-root cleanup after review."
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for PruneBlockedReasonCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ForeignQuarantineDisabled => write!(f, "foreign_quarantine_disabled"),
+            Self::DuplicateSlotNeedsTrackedAnchor => {
+                write!(f, "duplicate_slot_needs_tracked_anchor")
+            }
+            Self::DuplicateSlotTainted => write!(f, "duplicate_slot_tainted"),
+            Self::DuplicateSlotMultipleTrackedAnchors => {
+                write!(f, "duplicate_slot_multiple_tracked_anchors")
+            }
+            Self::DuplicateSlotSourceMismatch => write!(f, "duplicate_slot_source_mismatch"),
+            Self::LegacyAnimeRootsExcludedByDefault => {
+                write!(f, "legacy_anime_roots_excluded_by_default")
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PruneBlockedReasonSummary {
+    pub code: PruneBlockedReasonCode,
+    pub label: String,
+    pub candidates: usize,
+    pub recommended_action: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -230,6 +342,8 @@ pub struct LegacyAnimeRootGroupCount {
 pub(crate) struct SafeDuplicatePrunePlan {
     pub prune_paths: Vec<PathBuf>,
     pub managed_paths: HashSet<PathBuf>,
+    pub blocked_reason_counts: HashMap<PruneBlockedReasonCode, usize>,
+    pub blocked_by_path: HashMap<PathBuf, PruneBlockedReasonCode>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -812,12 +926,20 @@ impl<'a> CleanupAuditor<'a> {
             let db = self.db.clone();
 
             join_set.spawn(async move {
-                let _permit = sem
-                    .acquire_owned()
-                    .await
-                    .expect("cleanup metadata semaphore should stay alive");
+                let permit = match sem.acquire_owned().await {
+                    Ok(permit) => permit,
+                    Err(_) => {
+                        return (
+                            key,
+                            Err(anyhow::anyhow!(
+                                "cleanup metadata semaphore unexpectedly closed"
+                            )),
+                        );
+                    }
+                };
                 let result =
                     fetch_metadata_static(&tmdb, tvdb.as_ref(), metadata_mode, &item, &db).await;
+                drop(permit);
                 (key, result)
             });
         }
@@ -1031,6 +1153,7 @@ pub async fn run_prune(
     if !apply {
         return Ok(PruneOutcome {
             candidates: plan.candidate_paths.len(),
+            blocked_candidates: plan.blocked_candidates,
             high_or_critical_candidates: plan.high_or_critical_candidates,
             safe_warning_duplicate_candidates: plan.safe_warning_duplicate_candidates,
             legacy_anime_root_candidates: plan.legacy_anime_root_candidates,
@@ -1038,12 +1161,24 @@ pub async fn run_prune(
             managed_candidates: plan.managed_candidates,
             foreign_candidates: plan.foreign_candidates,
             reason_counts: plan.reason_counts.clone(),
+            blocked_reason_summary: plan.blocked_reason_summary.clone(),
             removed: 0,
             quarantined: 0,
             skipped: 0,
             confirmation_token: plan.confirmation_token,
             affected_paths: plan.candidate_paths,
         });
+    }
+
+    if plan.candidate_paths.is_empty() {
+        if let Some(blocked) = plan.blocked_reason_summary.first() {
+            anyhow::bail!(
+                "Refusing prune apply: no actionable candidates remain; {} path(s) are blocked by current policy ({})",
+                blocked.candidates,
+                blocked.code
+            );
+        }
+        anyhow::bail!("Refusing prune apply: report contains no actionable prune candidates");
     }
 
     let delete_cap = max_delete.unwrap_or(cfg.cleanup.prune.default_max_delete);
@@ -1135,6 +1270,7 @@ pub async fn run_prune(
                                     .await;
                                 skipped += 1;
                             } else {
+                                removed += 1;
                                 if let Err(e) = db.mark_removed_path(symlink_path).await {
                                     warn!(
                                         "Cleanup prune: removed {:?} but failed DB mark_removed: {}",
@@ -1142,26 +1278,24 @@ pub async fn run_prune(
                                     );
                                     let _ = db
                                         .record_link_event_fields(
-                                            "prune_skipped",
+                                            "prune_removed",
                                             symlink_path,
                                             None,
                                             None,
                                             Some("db_mark_removed_failed"),
                                         )
                                         .await;
-                                    skipped += 1;
-                                    continue;
+                                } else {
+                                    let _ = db
+                                        .record_link_event_fields(
+                                            "prune_removed",
+                                            symlink_path,
+                                            None,
+                                            None,
+                                            None,
+                                        )
+                                        .await;
                                 }
-                                let _ = db
-                                    .record_link_event_fields(
-                                        "prune_removed",
-                                        symlink_path,
-                                        None,
-                                        None,
-                                        None,
-                                    )
-                                    .await;
-                                removed += 1;
                             }
                         }
                         Some(PruneDisposition::Quarantine) => {
@@ -1268,6 +1402,7 @@ pub async fn run_prune(
 
     Ok(PruneOutcome {
         candidates: plan.candidate_paths.len(),
+        blocked_candidates: plan.blocked_candidates,
         high_or_critical_candidates: plan.high_or_critical_candidates,
         safe_warning_duplicate_candidates: plan.safe_warning_duplicate_candidates,
         legacy_anime_root_candidates: plan.legacy_anime_root_candidates,
@@ -1275,6 +1410,7 @@ pub async fn run_prune(
         managed_candidates: plan.managed_candidates,
         foreign_candidates: plan.foreign_candidates,
         reason_counts: plan.reason_counts,
+        blocked_reason_summary: plan.blocked_reason_summary,
         removed,
         quarantined,
         skipped,
@@ -1290,8 +1426,44 @@ pub(crate) fn quarantine_symlink_for_cleanup(cfg: &Config, symlink_path: &Path) 
     if let Some(parent) = destination.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    create_symlink_like(&resolved_target, &destination)?;
-    std::fs::remove_file(symlink_path)?;
+
+    if let Err(err) = std::fs::rename(symlink_path, &destination) {
+        if err.raw_os_error() != Some(libc::EXDEV) {
+            return Err(err.into());
+        }
+    } else {
+        return Ok(destination);
+    }
+
+    let staging_path = quarantine_staging_path(symlink_path);
+    std::fs::rename(symlink_path, &staging_path)?;
+
+    if let Err(create_err) = create_symlink_like(&resolved_target, &destination) {
+        let rollback_result = std::fs::rename(&staging_path, symlink_path);
+        return match rollback_result {
+            Ok(()) => Err(anyhow::anyhow!(
+                "failed to stage quarantined symlink at {}: {}",
+                destination.display(),
+                create_err
+            )),
+            Err(rollback_err) => Err(anyhow::anyhow!(
+                "failed to stage quarantined symlink at {}: {}; rollback also failed for {}: {}",
+                destination.display(),
+                create_err,
+                symlink_path.display(),
+                rollback_err
+            )),
+        };
+    }
+
+    if let Err(remove_err) = std::fs::remove_file(&staging_path) {
+        return Err(anyhow::anyhow!(
+            "quarantine staging cleanup failed for {}: {}",
+            staging_path.display(),
+            remove_err
+        ));
+    }
+
     Ok(destination)
 }
 
@@ -1351,6 +1523,27 @@ fn unique_quarantine_path(initial: PathBuf) -> PathBuf {
     }
 
     unreachable!("quarantine path search should always terminate")
+}
+
+fn quarantine_staging_path(original: &Path) -> PathBuf {
+    let parent = original
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let name = original
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("quarantine-staging");
+
+    for idx in 0.. {
+        let candidate = parent.join(format!(".{name}.symlinkarr-quarantine-{idx}.tmp"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+
+    unreachable!("staging path search should always terminate")
 }
 
 #[cfg(unix)]
@@ -1978,38 +2171,35 @@ pub(crate) fn collect_safe_duplicate_prune_plan(
 ) -> SafeDuplicatePrunePlan {
     let mut tainted_slots: HashSet<(String, u32, u32)> = HashSet::new();
     let mut managed_paths = HashSet::new();
-    let mut by_slot_source: HashMap<(String, u32, u32, PathBuf), Vec<&CleanupFinding>> =
-        HashMap::new();
+    let mut by_slot: HashMap<(String, u32, u32), Vec<&CleanupFinding>> = HashMap::new();
+    let mut blocked_reason_counts: HashMap<PruneBlockedReasonCode, usize> = HashMap::new();
+    let mut blocked_by_path: HashMap<PathBuf, PruneBlockedReasonCode> = HashMap::new();
 
     for finding in findings {
         let Some(slot_key) = finding_slot_key(finding) else {
             continue;
         };
 
+        by_slot.entry(slot_key.clone()).or_default().push(finding);
+
         if is_safe_duplicate_candidate(&finding.reasons) {
             managed_paths.insert(finding.symlink_path.clone());
-            let (media_id, season, episode) = slot_key;
-            by_slot_source
-                .entry((media_id, season, episode, finding.source_path.clone()))
-                .or_default()
-                .push(finding);
         } else {
             tainted_slots.insert(slot_key);
         }
     }
 
     let mut prune_paths = Vec::new();
-    for ((media_id, season, episode, _source_path), findings) in by_slot_source {
-        if findings.len() < 2 {
+    for (slot_key, findings) in by_slot {
+        let safe_findings: Vec<_> = findings
+            .into_iter()
+            .filter(|finding| is_safe_duplicate_candidate(&finding.reasons))
+            .collect();
+        if safe_findings.len() < 2 {
             continue;
         }
 
-        let slot_key = (media_id, season, episode);
-        if tainted_slots.contains(&slot_key) {
-            continue;
-        }
-
-        let mut tracked_paths: Vec<_> = findings
+        let mut tracked_paths: Vec<_> = safe_findings
             .iter()
             .filter(|finding| finding.db_tracked)
             .map(|finding| finding.symlink_path.clone())
@@ -2017,21 +2207,71 @@ pub(crate) fn collect_safe_duplicate_prune_plan(
         tracked_paths.sort();
         tracked_paths.dedup();
 
-        let mut untracked_paths: Vec<_> = findings
+        let mut untracked_paths: Vec<_> = safe_findings
             .iter()
             .filter(|finding| !finding.db_tracked)
             .map(|finding| finding.symlink_path.clone())
             .collect();
         untracked_paths.sort();
         untracked_paths.dedup();
-
-        if tracked_paths.len() > 1 {
+        if untracked_paths.is_empty() {
             continue;
         }
 
-        if tracked_paths.len() == 1 {
-            prune_paths.extend(untracked_paths);
+        if tainted_slots.contains(&slot_key) {
+            for path in &untracked_paths {
+                blocked_by_path.insert(path.clone(), PruneBlockedReasonCode::DuplicateSlotTainted);
+            }
+            *blocked_reason_counts
+                .entry(PruneBlockedReasonCode::DuplicateSlotTainted)
+                .or_insert(0) += untracked_paths.len();
+            continue;
         }
+
+        let unique_sources: HashSet<_> = safe_findings
+            .iter()
+            .map(|finding| finding.source_path.clone())
+            .collect();
+        if unique_sources.len() > 1 {
+            for path in &untracked_paths {
+                blocked_by_path.insert(
+                    path.clone(),
+                    PruneBlockedReasonCode::DuplicateSlotSourceMismatch,
+                );
+            }
+            *blocked_reason_counts
+                .entry(PruneBlockedReasonCode::DuplicateSlotSourceMismatch)
+                .or_insert(0) += untracked_paths.len();
+            continue;
+        }
+
+        if tracked_paths.is_empty() {
+            for path in &untracked_paths {
+                blocked_by_path.insert(
+                    path.clone(),
+                    PruneBlockedReasonCode::DuplicateSlotNeedsTrackedAnchor,
+                );
+            }
+            *blocked_reason_counts
+                .entry(PruneBlockedReasonCode::DuplicateSlotNeedsTrackedAnchor)
+                .or_insert(0) += untracked_paths.len();
+            continue;
+        }
+
+        if tracked_paths.len() > 1 {
+            for path in &untracked_paths {
+                blocked_by_path.insert(
+                    path.clone(),
+                    PruneBlockedReasonCode::DuplicateSlotMultipleTrackedAnchors,
+                );
+            }
+            *blocked_reason_counts
+                .entry(PruneBlockedReasonCode::DuplicateSlotMultipleTrackedAnchors)
+                .or_insert(0) += untracked_paths.len();
+            continue;
+        }
+
+        prune_paths.extend(untracked_paths);
     }
 
     prune_paths.sort();
@@ -2040,6 +2280,8 @@ pub(crate) fn collect_safe_duplicate_prune_plan(
     SafeDuplicatePrunePlan {
         prune_paths,
         managed_paths,
+        blocked_reason_counts,
+        blocked_by_path,
     }
 }
 
@@ -2049,6 +2291,8 @@ pub(crate) fn build_prune_plan(
     include_legacy_anime_roots: bool,
 ) -> PrunePlan {
     let safe_duplicate_plan = collect_safe_duplicate_prune_plan(&report.findings);
+    let mut blocked_reason_counts = safe_duplicate_plan.blocked_reason_counts.clone();
+    let mut blocked_by_path = safe_duplicate_plan.blocked_by_path.clone();
     let legacy_anime_root_candidates: Vec<_> = report
         .findings
         .iter()
@@ -2071,6 +2315,39 @@ pub(crate) fn build_prune_plan(
         })
         .filter(|f| !safe_duplicate_plan.managed_paths.contains(&f.symlink_path))
         .collect();
+
+    if !include_legacy_anime_roots {
+        let blocked_legacy_count = report
+            .findings
+            .iter()
+            .filter(|finding| !finding.db_tracked)
+            .filter(|finding| {
+                finding
+                    .reasons
+                    .contains(&FindingReason::LegacyAnimeRootDuplicate)
+            })
+            .count();
+        if blocked_legacy_count > 0 {
+            for finding in report
+                .findings
+                .iter()
+                .filter(|finding| !finding.db_tracked)
+                .filter(|finding| {
+                    finding
+                        .reasons
+                        .contains(&FindingReason::LegacyAnimeRootDuplicate)
+                })
+            {
+                blocked_by_path.insert(
+                    finding.symlink_path.clone(),
+                    PruneBlockedReasonCode::LegacyAnimeRootsExcludedByDefault,
+                );
+            }
+            *blocked_reason_counts
+                .entry(PruneBlockedReasonCode::LegacyAnimeRootsExcludedByDefault)
+                .or_insert(0) += blocked_legacy_count;
+        }
+    }
 
     let ownership_by_path: HashMap<_, _> = report
         .findings
@@ -2108,7 +2385,16 @@ pub(crate) fn build_prune_plan(
                 foreign_candidates += 1;
                 Some(PruneDisposition::Quarantine)
             }
-            CleanupOwnership::Foreign => None,
+            CleanupOwnership::Foreign => {
+                blocked_by_path.insert(
+                    path.clone(),
+                    PruneBlockedReasonCode::ForeignQuarantineDisabled,
+                );
+                *blocked_reason_counts
+                    .entry(PruneBlockedReasonCode::ForeignQuarantineDisabled)
+                    .or_insert(0) += 1;
+                None
+            }
         };
         if let Some(disposition) = disposition {
             dispositions.insert(path.clone(), disposition);
@@ -2163,10 +2449,30 @@ pub(crate) fn build_prune_plan(
             .cmp(&a.total)
             .then_with(|| a.normalized_title.cmp(&b.normalized_title))
     });
+    let mut blocked_reason_summary: Vec<_> = blocked_reason_counts
+        .into_iter()
+        .filter(|(_, candidates)| *candidates > 0)
+        .map(|(code, candidates)| PruneBlockedReasonSummary {
+            code,
+            label: code.label().to_string(),
+            candidates,
+            recommended_action: code.recommended_action().to_string(),
+        })
+        .collect();
+    blocked_reason_summary.sort_by(|a, b| {
+        b.candidates
+            .cmp(&a.candidates)
+            .then_with(|| a.label.cmp(&b.label))
+    });
+    let blocked_candidates = blocked_reason_summary
+        .iter()
+        .map(|item| item.candidates)
+        .sum();
 
     PrunePlan {
         confirmation_token: prune_confirmation_token(report, &candidate_paths, &dispositions),
         candidate_paths,
+        blocked_candidates,
         high_or_critical_candidates: high_or_critical_candidates.len(),
         safe_warning_duplicate_candidates: safe_duplicate_plan.prune_paths.len(),
         legacy_anime_root_candidates: legacy_anime_root_candidates.len(),
@@ -2174,7 +2480,9 @@ pub(crate) fn build_prune_plan(
         managed_candidates,
         foreign_candidates,
         reason_counts,
+        blocked_reason_summary,
         dispositions,
+        blocked_by_path,
     }
 }
 
@@ -2773,8 +3081,13 @@ mod tests {
             ),
         ];
 
-        let prunes = collect_safe_duplicate_prune_plan(&findings).prune_paths;
-        assert!(prunes.is_empty());
+        let plan = collect_safe_duplicate_prune_plan(&findings);
+        assert!(plan.prune_paths.is_empty());
+        assert_eq!(
+            plan.blocked_reason_counts
+                .get(&PruneBlockedReasonCode::DuplicateSlotNeedsTrackedAnchor),
+            Some(&2)
+        );
     }
 
     #[test]
@@ -2800,8 +3113,13 @@ mod tests {
             ),
         ];
 
-        let prunes = collect_safe_duplicate_prune_plan(&findings).prune_paths;
-        assert!(prunes.is_empty());
+        let plan = collect_safe_duplicate_prune_plan(&findings);
+        assert!(plan.prune_paths.is_empty());
+        assert_eq!(
+            plan.blocked_reason_counts
+                .get(&PruneBlockedReasonCode::DuplicateSlotSourceMismatch),
+            Some(&2)
+        );
     }
 
     #[test]
@@ -2839,8 +3157,13 @@ mod tests {
             ),
         ];
 
-        let prunes = collect_safe_duplicate_prune_plan(&findings).prune_paths;
-        assert!(prunes.is_empty());
+        let plan = collect_safe_duplicate_prune_plan(&findings);
+        assert!(plan.prune_paths.is_empty());
+        assert_eq!(
+            plan.blocked_reason_counts
+                .get(&PruneBlockedReasonCode::DuplicateSlotTainted),
+            Some(&2)
+        );
     }
 
     #[test]
@@ -2944,6 +3267,11 @@ mod tests {
         let plan = build_prune_plan(&report, true, false);
         assert_eq!(plan.candidate_paths.len(), 0);
         assert_eq!(plan.legacy_anime_root_candidates, 0);
+        assert_eq!(plan.blocked_candidates, 1);
+        assert_eq!(
+            plan.blocked_reason_summary[0].code,
+            PruneBlockedReasonCode::LegacyAnimeRootsExcludedByDefault
+        );
     }
 
     #[test]
@@ -2999,6 +3327,80 @@ mod tests {
                 foreign: 1,
             }]
         );
+        assert_eq!(
+            plan.action_for_path(Path::new("/lib/Show/Season 01/Show - S01E01.mkv")),
+            PrunePathAction::Quarantine
+        );
+    }
+
+    #[test]
+    fn test_build_prune_plan_reports_foreign_quarantine_disabled() {
+        let report = report_with_findings(
+            Utc::now(),
+            vec![CleanupFinding {
+                symlink_path: PathBuf::from("/lib/Show/Season 01/Show - S01E02.mkv"),
+                source_path: PathBuf::from("/src/Show.S01E02.mkv"),
+                media_id: "tvdb-1".to_string(),
+                severity: FindingSeverity::High,
+                confidence: 1.0,
+                reasons: vec![FindingReason::BrokenSource],
+                parsed: ParsedContext {
+                    library_title: "Show".to_string(),
+                    parsed_title: "Show".to_string(),
+                    season: Some(1),
+                    episode: Some(2),
+                },
+                alternate_match: None,
+                legacy_anime_root: None,
+                db_tracked: false,
+                ownership: CleanupOwnership::Foreign,
+            }],
+        );
+
+        let plan = build_prune_plan(&report, false, false);
+        assert!(plan.candidate_paths.is_empty());
+        assert_eq!(plan.blocked_candidates, 1);
+        assert_eq!(
+            plan.blocked_reason_summary[0].code,
+            PruneBlockedReasonCode::ForeignQuarantineDisabled
+        );
+    }
+
+    #[test]
+    fn test_build_prune_plan_marks_untracked_duplicate_without_anchor_as_blocked() {
+        let first = test_cleanup_finding(
+            "tvdb-1",
+            1,
+            3,
+            FindingSeverity::Warning,
+            vec![FindingReason::DuplicateEpisodeSlot],
+            "/lib/Show - S01E03 legacy-a.mkv",
+            "/src/show-s01e03.mkv",
+        );
+
+        let second = test_cleanup_finding(
+            "tvdb-1",
+            1,
+            3,
+            FindingSeverity::Warning,
+            vec![FindingReason::DuplicateEpisodeSlot],
+            "/lib/Show - S01E03 legacy-b.mkv",
+            "/src/show-s01e03.mkv",
+        );
+
+        let report = report_with_findings(Utc::now(), vec![first.clone(), second.clone()]);
+        let plan = build_prune_plan(&report, true, false);
+
+        assert!(plan.candidate_paths.is_empty());
+        assert_eq!(plan.blocked_candidates, 2);
+        assert_eq!(
+            plan.action_for_path(&first.symlink_path),
+            PrunePathAction::Blocked(PruneBlockedReasonCode::DuplicateSlotNeedsTrackedAnchor)
+        );
+        assert!(plan.blocked_reason_summary.iter().any(|entry| {
+            entry.code == PruneBlockedReasonCode::DuplicateSlotNeedsTrackedAnchor
+                && entry.candidates == 2
+        }));
     }
 
     fn test_config(library_root: &Path, source_root: &Path) -> Config {
@@ -3383,6 +3785,46 @@ cleanup:
         assert_eq!(std::fs::read_link(&quarantined_path).unwrap(), source_file);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn test_quarantine_symlink_for_cleanup_leaves_original_when_destination_unwritable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let library_root = dir.path().join("library");
+        let source_root = dir.path().join("rd");
+        let quarantine_root = dir.path().join("quarantine");
+        std::fs::create_dir_all(&library_root).unwrap();
+        std::fs::create_dir_all(&source_root).unwrap();
+        std::fs::create_dir_all(&quarantine_root).unwrap();
+
+        let source_file = source_root.join("source.mkv");
+        std::fs::write(&source_file, "video").unwrap();
+        let symlink_path = library_root.join("Show - S01E99.mkv");
+        std::os::unix::fs::symlink(&source_file, &symlink_path).unwrap();
+
+        let mut cfg = test_config(&library_root, &source_root);
+        cfg.cleanup.prune.quarantine_path = quarantine_root.clone();
+
+        let mut perms = std::fs::metadata(&quarantine_root).unwrap().permissions();
+        perms.set_mode(0o555);
+        std::fs::set_permissions(&quarantine_root, perms).unwrap();
+
+        let result = quarantine_symlink_for_cleanup(&cfg, &symlink_path);
+
+        let mut restore = std::fs::metadata(&quarantine_root).unwrap().permissions();
+        restore.set_mode(0o755);
+        std::fs::set_permissions(&quarantine_root, restore).unwrap();
+
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("Permission denied")
+                || err.to_string().contains("permission denied")
+        );
+        assert!(symlink_path.is_symlink());
+        assert!(!quarantine_root.join("library/Show - S01E99.mkv").exists());
+    }
+
     #[tokio::test]
     async fn test_prune_preview_skips_foreign_when_quarantine_disabled() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -3408,8 +3850,54 @@ cleanup:
             .await
             .unwrap();
         assert_eq!(preview.candidates, 0);
+        assert_eq!(preview.blocked_candidates, 1);
         assert_eq!(preview.managed_candidates, 0);
         assert_eq!(preview.foreign_candidates, 0);
+        assert_eq!(preview.blocked_reason_summary.len(), 1);
+        assert_eq!(
+            preview.blocked_reason_summary[0].code,
+            PruneBlockedReasonCode::ForeignQuarantineDisabled
+        );
+    }
+
+    #[tokio::test]
+    async fn test_prune_apply_rejects_when_all_candidates_are_blocked_by_policy() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let library_root = dir.path().join("library");
+        let source_root = dir.path().join("rd");
+        std::fs::create_dir_all(&library_root).unwrap();
+        std::fs::create_dir_all(&source_root).unwrap();
+
+        let mut cfg = test_config(&library_root, &source_root);
+        cfg.cleanup.prune.quarantine_foreign = false;
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        let source_file = source_root.join("source.mkv");
+        let symlink_path = library_root.join("foreign.mkv");
+        let report =
+            report_with_findings(Utc::now(), vec![high_finding(&symlink_path, &source_file)]);
+        let report_path = dir.path().join("foreign-disabled-report.json");
+        std::fs::write(&report_path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
+
+        let preview = run_prune(&cfg, &db, &report_path, false, false, None, None)
+            .await
+            .unwrap();
+        let err = run_prune(
+            &cfg,
+            &db,
+            &report_path,
+            true,
+            false,
+            None,
+            Some(&preview.confirmation_token),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(err.to_string().contains("no actionable candidates remain"));
+        assert!(err.to_string().contains("foreign_quarantine_disabled"));
     }
 
     #[cfg(unix)]
