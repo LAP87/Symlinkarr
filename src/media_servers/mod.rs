@@ -4,6 +4,7 @@ use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{Config, LibraryConfig, MediaBrowserConfig};
@@ -587,6 +588,15 @@ fn refresh_targets_for_server(
     }
 }
 
+#[derive(Debug, Clone)]
+struct PlannedServerRefresh {
+    server: MediaServerKind,
+    targets: Vec<PathBuf>,
+    requested_targets: usize,
+    coalesced_batches: usize,
+    coalesced_paths: usize,
+}
+
 async fn refresh_paths_for_server(
     cfg: &Config,
     server: MediaServerKind,
@@ -600,6 +610,76 @@ async fn refresh_paths_for_server(
             jellyfin::refresh_library_paths(cfg, refresh_paths, emit_text).await
         }
     }
+}
+
+async fn execute_planned_server_refreshes(
+    cfg: &Config,
+    planned_refreshes: Vec<PlannedServerRefresh>,
+    emit_text: bool,
+) -> (
+    LibraryRefreshTelemetry,
+    Vec<LibraryInvalidationServerOutcome>,
+    Vec<DeferredRefreshQueueServer>,
+) {
+    let mut aggregate = LibraryRefreshTelemetry::default();
+    let mut server_outcomes = Vec::new();
+    let mut remaining_queue = Vec::new();
+    let mut pending = FuturesUnordered::new();
+
+    for planned in planned_refreshes {
+        let cfg = cfg.clone();
+        pending.push(async move {
+            let result =
+                refresh_paths_for_server(&cfg, planned.server, &planned.targets, emit_text).await;
+            (planned, result)
+        });
+    }
+
+    while let Some((planned, result)) = pending.next().await {
+        match result {
+            Ok(mut refresh) => {
+                refresh.coalesced_batches += planned.coalesced_batches;
+                refresh.coalesced_paths += planned.coalesced_paths;
+                merge_refresh_telemetry(&mut aggregate, &refresh);
+                server_outcomes.push(LibraryInvalidationServerOutcome {
+                    server: planned.server,
+                    requested_targets: planned.requested_targets,
+                    refresh,
+                });
+            }
+            Err(err) => {
+                remaining_queue.push(DeferredRefreshQueueServer {
+                    server: planned.server,
+                    paths: planned.targets.clone(),
+                });
+                if emit_text {
+                    crate::utils::user_println(format!(
+                        "   ⚠️  {} refresh failed: {}",
+                        planned.server, err
+                    ));
+                }
+                let refresh = LibraryRefreshTelemetry {
+                    requested_paths: planned.requested_targets,
+                    coalesced_batches: planned.coalesced_batches,
+                    coalesced_paths: planned.coalesced_paths,
+                    skipped_batches: 1,
+                    failed_batches: 1,
+                    ..LibraryRefreshTelemetry::default()
+                };
+                merge_refresh_telemetry(&mut aggregate, &refresh);
+                server_outcomes.push(LibraryInvalidationServerOutcome {
+                    server: planned.server,
+                    requested_targets: planned.requested_targets,
+                    refresh,
+                });
+            }
+        }
+    }
+
+    server_outcomes.sort_by_key(|entry| entry.server.service_key());
+    remaining_queue.sort_by_key(|entry| entry.server.service_key());
+
+    (aggregate, server_outcomes, remaining_queue)
 }
 
 pub(crate) async fn refresh_library_paths(
@@ -680,8 +760,6 @@ pub(crate) async fn refresh_library_paths_detailed(
 
     let _queue_guard = acquire_deferred_refresh_queue_guard(cfg)?;
     let deferred_queue = load_deferred_refresh_queue(cfg)?;
-    let mut aggregate = LibraryRefreshTelemetry::default();
-    let mut server_outcomes = Vec::new();
     let mut remaining_queue = DeferredRefreshQueue {
         servers: deferred_queue
             .servers
@@ -690,6 +768,7 @@ pub(crate) async fn refresh_library_paths_detailed(
             .cloned()
             .collect(),
     };
+    let mut planned_refreshes = Vec::new();
     for server in servers {
         let old_deferred_paths = deferred_queue
             .servers
@@ -713,41 +792,17 @@ pub(crate) async fn refresh_library_paths_detailed(
             continue;
         }
 
-        match refresh_paths_for_server(cfg, server, &server_targets, emit_text).await {
-            Ok(telemetry) => {
-                merge_refresh_telemetry(&mut aggregate, &telemetry);
-                server_outcomes.push(LibraryInvalidationServerOutcome {
-                    server,
-                    requested_targets: server_targets.len(),
-                    refresh: telemetry,
-                });
-            }
-            Err(err) => {
-                remaining_queue.servers.push(DeferredRefreshQueueServer {
-                    server,
-                    paths: server_targets.clone(),
-                });
-                if emit_text {
-                    crate::utils::user_println(format!(
-                        "   ⚠️  {} refresh failed: {}",
-                        server, err
-                    ));
-                }
-                let failed = LibraryRefreshTelemetry {
-                    requested_paths: server_targets.len(),
-                    failed_batches: 1,
-                    skipped_batches: 1,
-                    ..LibraryRefreshTelemetry::default()
-                };
-                merge_refresh_telemetry(&mut aggregate, &failed);
-                server_outcomes.push(LibraryInvalidationServerOutcome {
-                    server,
-                    requested_targets: server_targets.len(),
-                    refresh: failed,
-                });
-            }
-        }
+        planned_refreshes.push(PlannedServerRefresh {
+            server,
+            requested_targets: server_targets.len(),
+            targets: server_targets,
+            coalesced_batches: 0,
+            coalesced_paths: 0,
+        });
     }
+    let (aggregate, server_outcomes, failed_entries) =
+        execute_planned_server_refreshes(cfg, planned_refreshes, emit_text).await;
+    remaining_queue.servers.extend(failed_entries);
     remaining_queue
         .servers
         .sort_by_key(|entry| entry.server.service_key());
@@ -858,8 +913,6 @@ pub(crate) async fn invalidate_after_mutation(
 
         let _queue_guard = acquire_deferred_refresh_queue_guard(cfg)?;
         let deferred_queue = load_deferred_refresh_queue(cfg)?;
-        let mut aggregate = LibraryRefreshTelemetry::default();
-        let mut server_outcomes = Vec::new();
         let mut remaining_queue = DeferredRefreshQueue {
             servers: deferred_queue
                 .servers
@@ -868,6 +921,7 @@ pub(crate) async fn invalidate_after_mutation(
                 .cloned()
                 .collect(),
         };
+        let mut planned_refreshes = Vec::new();
         for server in configured_servers.iter().copied() {
             let refresh_plan =
                 refresh_targets_for_server(cfg, server, &refresh_roots, affected_paths);
@@ -903,45 +957,17 @@ pub(crate) async fn invalidate_after_mutation(
                 ));
             }
 
-            match refresh_paths_for_server(cfg, server, &effective_targets, emit_text).await {
-                Ok(mut refresh) => {
-                    refresh.coalesced_paths += refresh_plan.coalesced_paths;
-                    refresh.coalesced_batches += refresh_plan.coalesced_batches;
-                    merge_refresh_telemetry(&mut aggregate, &refresh);
-                    server_outcomes.push(LibraryInvalidationServerOutcome {
-                        server,
-                        requested_targets: effective_targets.len(),
-                        refresh,
-                    });
-                }
-                Err(err) => {
-                    remaining_queue.servers.push(DeferredRefreshQueueServer {
-                        server,
-                        paths: effective_targets.clone(),
-                    });
-                    if emit_text {
-                        crate::utils::user_println(format!(
-                            "   ⚠️  {} refresh failed: {}",
-                            server, err
-                        ));
-                    }
-                    let refresh = LibraryRefreshTelemetry {
-                        requested_paths: effective_targets.len(),
-                        coalesced_batches: refresh_plan.coalesced_batches,
-                        coalesced_paths: refresh_plan.coalesced_paths,
-                        skipped_batches: 1,
-                        failed_batches: 1,
-                        ..LibraryRefreshTelemetry::default()
-                    };
-                    merge_refresh_telemetry(&mut aggregate, &refresh);
-                    server_outcomes.push(LibraryInvalidationServerOutcome {
-                        server,
-                        requested_targets: effective_targets.len(),
-                        refresh,
-                    });
-                }
-            }
+            planned_refreshes.push(PlannedServerRefresh {
+                server,
+                requested_targets: effective_targets.len(),
+                targets: effective_targets,
+                coalesced_batches: refresh_plan.coalesced_batches,
+                coalesced_paths: refresh_plan.coalesced_paths,
+            });
         }
+        let (aggregate, server_outcomes, failed_entries) =
+            execute_planned_server_refreshes(cfg, planned_refreshes, emit_text).await;
+        remaining_queue.servers.extend(failed_entries);
         remaining_queue
             .servers
             .sort_by_key(|entry| entry.server.service_key());

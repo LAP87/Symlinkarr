@@ -127,12 +127,18 @@ web:
   bind_address: "127.0.0.1"
   allow_remote: false
   port: 8726
+  username: ""
+  password: ""
+  api_key: ""
 ```
 
 Notes:
 
 - Loopback is the safe default for host installs.
 - For Docker or another explicitly exposed setup, set `bind_address: "0.0.0.0"` and `allow_remote: true`.
+- `web.username` + `web.password` enable HTTP Basic auth for the bundled HTML UI and JSON API.
+- `web.api_key` enables API auth for `Authorization: Bearer ...` or `X-API-Key` clients.
+- `web.api_key` alone does not protect the HTML UI; pair it with Basic auth or a trusted reverse proxy if the web UI is remotely reachable.
 - Native Windows is not supported; use WSL2 or a Linux container on Windows 11.
 - Plex refresh pacing is configured in `config.yaml` under `plex.refresh_delay_ms`, `plex.refresh_coalesce_threshold`, and `plex.max_refresh_batches_per_run`.
 - `plex.abort_refresh_when_capped` is the RC-safe default: if the refresh plan exceeds the per-run cap, Symlinkarr aborts the whole Plex refresh phase instead of queueing only the first batches.

@@ -6,6 +6,62 @@
 - posture: `rc-prep with downloadable binary artifacts`
 - intended use: local-first host or Docker installs, with Windows 11 users running through WSL2 or a Linux container
 
+## 2026-04-03 - Runtime Hardening Pass
+
+### Code Changes
+
+- replaced process-global dotenv mutation with a local overlay that is only consulted during config resolution, removing the unsafe `set_var` startup path while preserving `env:` semantics and real-environment precedence.
+  - files: `src/config.rs`
+- parallelized media-server refresh fan-out so a stalled or failing backend no longer serially blocks the others inside the same refresh phase.
+  - files: `src/media_servers/mod.rs`
+- hardened link writes with post-rename symlink verification, so the final target is checked before the DB transaction commits.
+  - files: `src/linker.rs`
+- made foreign-link quarantine more atomic by moving the live symlink out of the library path before staging the quarantine copy, reducing the duplicate-live-link window during cleanup.
+  - files: `src/cleanup_audit.rs`
+- made scanner traversal explicitly `follow_links(false)` and added a stronger `/dev/urandom` fallback for browser-session token generation.
+  - files: `src/source_scanner.rs`, `src/library_scanner.rs`, `src/web/mod.rs`
+
+### Validation
+
+- `CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-auth cargo test -q`
+  - result: passed locally
+- `LD_LIBRARY_PATH=/usr/lib:/usr/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-auth cargo clippy --all-targets --all-features -- -D warnings`
+  - result: passed locally
+
+## 2026-04-03 - Optional Web and API Authentication
+
+### Code Changes
+
+- added optional `web.username` / `web.password` HTTP Basic auth for the bundled HTML UI and JSON API, so operators can harden remote or proxied installs without giving up the built-in UI.
+  - files: `src/config.rs`, `src/web/mod.rs`, `config.example.yaml`, `config.docker.yaml`
+- added optional `web.api_key` auth for API clients via `Authorization: Bearer ...` or `X-API-Key`, so automation can authenticate without needing browser-oriented Basic auth flows.
+  - files: `src/config.rs`, `src/web/mod.rs`
+- tightened config/runtime validation and secret handling for the new auth fields, including remote-bind warnings when the JSON API is protected but the HTML UI is still open.
+  - files: `src/config.rs`
+- updated operator docs so README, CLI manual, and API schema all describe the same auth model instead of still claiming there is no full auth layer.
+  - files: `README.md`, `docs/CLI_MANUAL.md`, `docs/API_SCHEMA.md`
+
+### Validation
+
+- `CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-manual-remediation cargo test -q`
+  - result: passed locally
+
+## 2026-04-03 - Anime Remediation Filters and Manual Export
+
+### Code Changes
+
+- added assessed-backlog filters for anime remediation state, blocker reason, and title substring, so operators can work blocked titles in smaller slices instead of wading through the full queue every time.
+  - files: `src/commands/cleanup.rs`, `src/web/handlers.rs`, `src/web/templates.rs`, `src/web/ui/anime_remediation.html`, `src/web/api/mod.rs`
+- `GET /api/v1/report/anime-remediation` can now emit the filtered assessed backlog as TSV via `format=tsv`, carrying blocker codes, recommended actions, and captured sample paths for manual migration/export workflows.
+  - files: `src/commands/cleanup.rs`, `src/web/api/mod.rs`, `docs/API_SCHEMA.md`
+- the anime remediation backlog page now exposes those filters and a filtered TSV download form, turning the page into a practical manual-remediation work surface without weakening the guarded apply gate.
+  - files: `src/web/ui/anime_remediation.html`, `src/web/templates.rs`, `src/web/handlers.rs`
+
+### Validation
+
+- `CARGO_TARGET_DIR=/home/lenny/.cache/symlinkarr-manual-remediation cargo test -q anime_remediation`
+  - result: passed locally
+
 ## 2026-04-03 - Anime Remediation Evidence Samples
 
 ### Code Changes

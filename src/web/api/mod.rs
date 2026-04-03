@@ -2,8 +2,8 @@
 
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
-    response::IntoResponse,
+    http::{header::CONTENT_TYPE, StatusCode},
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -13,13 +13,16 @@ use tracing::info;
 use crate::backup::BackupManager;
 use crate::cleanup_audit::{self, CleanupReport, CleanupScope};
 use crate::commands::cleanup::{
-    apply_anime_remediation_plan_with_refresh, apply_cleanup_prune_with_refresh,
-    preview_anime_remediation_plan, CleanupPruneApplyArgs,
+    anime_remediation_block_reason_catalog, apply_anime_remediation_plan_with_refresh,
+    apply_cleanup_prune_with_refresh, assess_anime_remediation_groups,
+    filter_anime_remediation_groups, preview_anime_remediation_plan,
+    render_anime_remediation_groups_tsv, summarize_anime_remediation_blocked_reasons,
+    AnimeRemediationGroupFilters, AnimeRemediationPlanGroup, CleanupPruneApplyArgs,
 };
 use crate::commands::config::validate_config_report;
 use crate::commands::discover::load_discovery_snapshot;
 use crate::commands::doctor::{collect_doctor_checks, DoctorCheckMode};
-use crate::commands::report::{build_anime_remediation_report, AnimeRemediationSample};
+use crate::commands::report::build_anime_remediation_report;
 use crate::commands::selected_libraries;
 use crate::config::Config;
 use crate::db::{Database, ScanHistoryRecord};
@@ -29,8 +32,8 @@ use crate::media_servers::{
 };
 
 use super::{
-    latest_cleanup_report_created_at, should_surface_cleanup_audit_outcome,
-    should_surface_scan_outcome, WebState,
+    clamp_link_list_limit, latest_cleanup_report_created_at, resolve_cleanup_report_path,
+    should_surface_cleanup_audit_outcome, should_surface_scan_outcome, WebState,
 };
 
 /// Create the API router
@@ -306,6 +309,10 @@ pub struct ApiErrorResponse {
 pub struct ApiAnimeRemediationQuery {
     pub plex_db: Option<String>,
     pub full: Option<bool>,
+    pub state: Option<String>,
+    pub reason: Option<String>,
+    pub title: Option<String>,
+    pub format: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -319,7 +326,15 @@ pub struct ApiAnimeRemediationResponse {
     pub correlated_hama_split_groups: usize,
     pub remediation_groups: usize,
     pub returned_groups: usize,
-    pub groups: Vec<AnimeRemediationSample>,
+    pub visible_groups: usize,
+    pub eligible_groups: usize,
+    pub blocked_groups: usize,
+    pub state_filter: String,
+    pub reason_filter: Option<String>,
+    pub title_filter: Option<String>,
+    pub blocked_reason_summary: Vec<ApiAnimeRemediationBlockedReasonSummary>,
+    pub available_blocked_reasons: Vec<ApiAnimeRemediationBlockedReasonSummary>,
+    pub groups: Vec<AnimeRemediationPlanGroup>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -426,52 +441,6 @@ pub struct ApiRepairOutcome {
 pub struct ApiRepairStatusResponse {
     pub active_job: Option<ApiRepairJob>,
     pub last_outcome: Option<ApiRepairOutcome>,
-}
-
-fn resolve_cleanup_report_path(
-    backup_dir: &std::path::Path,
-    report: &str,
-) -> anyhow::Result<std::path::PathBuf> {
-    let trimmed = report.trim();
-    if trimmed.is_empty() {
-        anyhow::bail!("Cleanup report path is required");
-    }
-
-    let requested = std::path::Path::new(trimmed);
-    let backup_root = backup_dir
-        .canonicalize()
-        .unwrap_or_else(|_| backup_dir.to_path_buf());
-
-    if requested.is_absolute() {
-        let canonical = requested
-            .canonicalize()
-            .map_err(|_| anyhow::anyhow!("Cleanup report not found: {}", requested.display()))?;
-        if !canonical.starts_with(&backup_root) {
-            anyhow::bail!("Cleanup report must be inside the configured backup directory");
-        }
-        return Ok(canonical);
-    }
-
-    if requested.components().any(|component| {
-        matches!(
-            component,
-            std::path::Component::ParentDir
-                | std::path::Component::RootDir
-                | std::path::Component::Prefix(_)
-        )
-    }) {
-        anyhow::bail!("Cleanup report path escapes the configured backup directory");
-    }
-
-    let joined = backup_dir.join(requested);
-    let canonical = joined
-        .canonicalize()
-        .map_err(|_| anyhow::anyhow!("Cleanup report not found: {}", joined.display()))?;
-    if !canonical.starts_with(&backup_root) {
-        anyhow::bail!("Cleanup report must be inside the configured backup directory");
-    }
-
-    Ok(canonical)
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1214,7 +1183,21 @@ pub async fn api_get_scan_run(
 pub async fn api_get_anime_remediation(
     State(state): State<WebState>,
     Query(query): Query<ApiAnimeRemediationQuery>,
-) -> Result<Json<ApiAnimeRemediationResponse>, (StatusCode, Json<ApiErrorResponse>)> {
+) -> Result<Response, (StatusCode, Json<ApiErrorResponse>)> {
+    let filters = AnimeRemediationGroupFilters::parse(
+        query.state.as_deref(),
+        query.reason.as_deref(),
+        query.title.as_deref(),
+    )
+    .map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ApiErrorResponse {
+                error: format!("Invalid anime remediation filters: {}", e),
+            }),
+        )
+    })?;
+
     let Some(plex_db_path) = resolve_plex_db_path(query.plex_db.as_deref()) else {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -1226,20 +1209,73 @@ pub async fn api_get_anime_remediation(
     };
 
     let full = query.full.unwrap_or(false);
+    let wants_tsv = matches!(query.format.as_deref(), Some("tsv"));
+    if let Some(format) = query.format.as_deref() {
+        if format != "json" && format != "tsv" {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ApiErrorResponse {
+                    error: format!(
+                        "Invalid anime remediation format '{}' (expected json or tsv)",
+                        format
+                    ),
+                }),
+            ));
+        }
+    }
     match build_anime_remediation_report(&state.config, &state.database, &plex_db_path, full).await
     {
-        Ok(Some(report)) => Ok(Json(ApiAnimeRemediationResponse {
-            generated_at: report.generated_at,
-            plex_db_path: plex_db_path.to_string_lossy().to_string(),
-            full,
-            filesystem_mixed_root_groups: report.filesystem_mixed_root_groups,
-            plex_duplicate_show_groups: report.plex_duplicate_show_groups,
-            plex_hama_anidb_tvdb_groups: report.plex_hama_anidb_tvdb_groups,
-            correlated_hama_split_groups: report.correlated_hama_split_groups,
-            remediation_groups: report.remediation_groups,
-            returned_groups: report.returned_groups,
-            groups: report.groups,
-        })),
+        Ok(Some(report)) => {
+            let assessed_groups = assess_anime_remediation_groups(&report.groups).map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiErrorResponse {
+                        error: format!("Failed to assess anime remediation backlog: {}", e),
+                    }),
+                )
+            })?;
+            let filtered_groups =
+                filter_anime_remediation_groups(assessed_groups.clone(), &filters);
+            if wants_tsv {
+                let body = render_anime_remediation_groups_tsv(&filtered_groups);
+                return Ok((
+                    [(CONTENT_TYPE, "text/tab-separated-values; charset=utf-8")],
+                    body,
+                )
+                    .into_response());
+            }
+
+            let eligible_groups = filtered_groups
+                .iter()
+                .filter(|group| group.eligible)
+                .count();
+            let blocked_groups = filtered_groups.len().saturating_sub(eligible_groups);
+            Ok(Json(ApiAnimeRemediationResponse {
+                generated_at: report.generated_at,
+                plex_db_path: plex_db_path.to_string_lossy().to_string(),
+                full,
+                filesystem_mixed_root_groups: report.filesystem_mixed_root_groups,
+                plex_duplicate_show_groups: report.plex_duplicate_show_groups,
+                plex_hama_anidb_tvdb_groups: report.plex_hama_anidb_tvdb_groups,
+                correlated_hama_split_groups: report.correlated_hama_split_groups,
+                remediation_groups: report.remediation_groups,
+                returned_groups: report.returned_groups,
+                visible_groups: filtered_groups.len(),
+                eligible_groups,
+                blocked_groups,
+                state_filter: filters.visibility.as_str().to_string(),
+                reason_filter: filters.block_code.map(|code| code.as_str().to_string()),
+                title_filter: filters.title_contains.clone(),
+                blocked_reason_summary: api_blocked_reason_summary(
+                    &summarize_anime_remediation_blocked_reasons(&filtered_groups),
+                ),
+                available_blocked_reasons: api_blocked_reason_summary(
+                    &anime_remediation_block_reason_catalog(),
+                ),
+                groups: filtered_groups,
+            })
+            .into_response())
+        }
         Ok(None) => Err((
             StatusCode::NOT_FOUND,
             Json(ApiErrorResponse {
@@ -1705,10 +1741,7 @@ pub async fn api_get_links(
     State(state): State<WebState>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Json<Vec<ApiLink>> {
-    let limit: i64 = params
-        .get("limit")
-        .and_then(|l| l.parse().ok())
-        .unwrap_or(100);
+    let limit = clamp_link_list_limit(params.get("limit").and_then(|l| l.parse().ok()));
     let status_filter = params.get("status").map(|s| s.as_str());
 
     let links = match status_filter {
@@ -3072,6 +3105,10 @@ mod tests {
             Query(ApiAnimeRemediationQuery {
                 plex_db: Some(plex_db_path.to_string_lossy().to_string()),
                 full: Some(true),
+                state: None,
+                reason: None,
+                title: None,
+                format: None,
             }),
         )
         .await
@@ -3087,8 +3124,95 @@ mod tests {
         assert_eq!(json.correlated_hama_split_groups, 1);
         assert_eq!(json.remediation_groups, 1);
         assert_eq!(json.returned_groups, 1);
+        assert_eq!(json.visible_groups, 1);
+        assert_eq!(json.eligible_groups, 1);
+        assert_eq!(json.blocked_groups, 0);
+        assert!(json.blocked_reason_summary.is_empty());
         assert_eq!(json.groups[0].recommended_tagged_root.path, tagged_root);
         assert_eq!(json.groups[0].legacy_roots[0].path, legacy_root);
+    }
+
+    #[tokio::test]
+    async fn api_get_anime_remediation_can_export_filtered_tsv() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let mut cfg = test_config(&root);
+        let anime_root = cfg.libraries[0].path.clone();
+        let tagged_root = anime_root.join("Show A (2024) {tvdb-1}");
+        let legacy_root = anime_root.join("Show A");
+
+        std::fs::create_dir_all(tagged_root.join("Season 01")).unwrap();
+        std::fs::create_dir_all(legacy_root.join("Season 01")).unwrap();
+        std::fs::write(legacy_root.join("Season 01/Show A - S01E01.mkv"), b"video").unwrap();
+
+        let db = Database::new(&cfg.db_path).await.unwrap();
+        let tracked_source = cfg.sources[0].path.join("Show.A.S01E01.mkv");
+        let tracked_target = tagged_root.join("Season 01/Show A - S01E01.mkv");
+        std::fs::write(&tracked_source, b"video").unwrap();
+        db.insert_link(&LinkRecord {
+            id: None,
+            source_path: tracked_source,
+            target_path: tracked_target,
+            media_id: "tvdb-1".to_string(),
+            media_type: MediaType::Tv,
+            status: LinkStatus::Active,
+            created_at: None,
+            updated_at: None,
+        })
+        .await
+        .unwrap();
+
+        let plex_db_path = root.join("plex.db");
+        create_test_plex_duplicate_db(&plex_db_path).await;
+        let options = SqliteConnectOptions::from_str(plex_db_path.to_str().unwrap()).unwrap();
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO section_locations (id, library_section_id, root_path) VALUES (1, 1, ?)",
+        )
+        .bind(anime_root.to_string_lossy().to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO metadata_items (id, library_section_id, metadata_type, title, original_title, year, guid, deleted_at)
+             VALUES (1, 1, 2, 'Show A', '', 2024, 'com.plexapp.agents.hama://anidb-100', NULL),
+                    (2, 1, 2, 'Show A', '', 2024, 'com.plexapp.agents.hama://tvdb-1', NULL)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        cfg.libraries[0].path = anime_root;
+        let state = WebState::new(cfg, db);
+        let response = api_get_anime_remediation(
+            State(state),
+            Query(ApiAnimeRemediationQuery {
+                plex_db: Some(plex_db_path.to_string_lossy().to_string()),
+                full: Some(true),
+                state: Some("blocked".to_string()),
+                reason: Some("legacy_roots_contain_real_media".to_string()),
+                title: Some("Show A".to_string()),
+                format: Some("tsv".to_string()),
+            }),
+        )
+        .await
+        .unwrap()
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(CONTENT_TYPE).unwrap(),
+            "text/tab-separated-values; charset=utf-8"
+        );
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(body.contains("normalized_title"));
+        assert!(body.contains("legacy_roots_contain_real_media"));
+        assert!(body.contains("Show A"));
     }
 
     #[cfg(unix)]

@@ -154,6 +154,7 @@ impl SourceScanner {
         let mut items = Vec::new();
 
         for entry in WalkDir::new(&source.path)
+            .follow_links(false)
             .into_iter()
             .filter_map(|e| e.ok())
             .filter(|e| e.file_type().is_file() || e.file_type().is_symlink())

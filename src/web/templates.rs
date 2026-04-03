@@ -633,13 +633,19 @@ pub struct AnimeRemediationSummaryView {
     pub correlated_hama_split_groups: usize,
     pub remediation_groups: usize,
     pub returned_groups: usize,
+    pub visible_groups: usize,
     pub eligible_groups: usize,
     pub blocked_groups: usize,
+    pub state_filter: String,
+    pub reason_filter: String,
+    pub title_filter: String,
     pub blocked_reason_summary: Vec<AnimeRemediationBlockedReasonView>,
+    pub available_blocked_reasons: Vec<AnimeRemediationBlockedReasonView>,
 }
 
 #[derive(Debug, Clone)]
 pub struct AnimeRemediationBlockedReasonView {
+    pub code: String,
     pub label: String,
     pub groups: usize,
     pub recommended_action: String,
@@ -769,6 +775,7 @@ impl AnimeRemediationGroupView {
 impl From<AnimeRemediationBlockedReasonSummary> for AnimeRemediationBlockedReasonView {
     fn from(value: AnimeRemediationBlockedReasonSummary) -> Self {
         Self {
+            code: value.code.as_str().to_string(),
             label: value.label,
             groups: value.groups,
             recommended_action: value.recommended_action,
@@ -1355,9 +1362,22 @@ mod tests {
                 correlated_hama_split_groups: 106,
                 remediation_groups: 106,
                 returned_groups: 50,
+                visible_groups: 49,
                 eligible_groups: 1,
                 blocked_groups: 49,
+                state_filter: "blocked".to_string(),
+                reason_filter: "legacy_roots_still_tracked".to_string(),
+                title_filter: "Gundam".to_string(),
                 blocked_reason_summary: vec![AnimeRemediationBlockedReasonView {
+                    code: "legacy_roots_still_tracked".to_string(),
+                    label: "legacy roots still contain tracked DB links".to_string(),
+                    groups: 32,
+                    recommended_action:
+                        "Do not auto-remediate yet; first move or prune the DB-tracked legacy links."
+                            .to_string(),
+                }],
+                available_blocked_reasons: vec![AnimeRemediationBlockedReasonView {
+                    code: "legacy_roots_still_tracked".to_string(),
                     label: "legacy roots still contain tracked DB links".to_string(),
                     groups: 32,
                     recommended_action:
@@ -1411,6 +1431,8 @@ mod tests {
         assert!(html.contains("hama-anidb"));
         assert!(html.contains("visible blocked"));
         assert!(html.contains("legacy roots still contain tracked DB links"));
+        assert!(html.contains("Download Filtered TSV"));
+        assert!(html.contains("Apply Filters"));
         assert!(html.contains("Candidate symlinks"));
         assert!(html.contains("Broken legacy symlinks"));
         assert!(html.contains("Real media files blocking auto-remediation"));

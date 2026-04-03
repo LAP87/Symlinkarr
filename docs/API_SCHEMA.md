@@ -8,16 +8,21 @@ Base path:
 /api/v1
 ```
 
-The API is currently local-first and intended to back the bundled web UI. There is still no full user auth layer in front of these routes, so treat it as trusted-local-network tooling rather than a public internet API.
+The API is local-first and intended to back the bundled web UI.
 
 By default, the web server binds to `127.0.0.1`. Set `web.bind_address: "0.0.0.0"` only when you intentionally want external reachability, such as a container with explicit port publishing, and pair it with `web.allow_remote: true`. Cross-origin access is not enabled by default.
 
-For mutating browser requests, Symlinkarr now enforces two layers:
+Symlinkarr now has two optional auth layers:
+
+- `web.username` + `web.password` enable HTTP Basic auth for the bundled HTML UI and JSON API
+- `web.api_key` enables API auth for non-browser clients via `Authorization: Bearer ...` or `X-API-Key`
+
+If only `web.api_key` is configured, the JSON API is protected but the HTML UI is not. For mutating browser requests, Symlinkarr also enforces:
 
 - same-origin `Origin`/`Referer` validation for browser-style `POST` requests
 - an issued host-only browser session cookie (`SameSite=Strict`) that is set by same-origin `GET` responses and required on later browser mutations
 
-Non-browser local clients that do not send `Origin` or `Referer` headers are still allowed to call mutating endpoints without that browser session cookie.
+Non-browser local clients that do not send `Origin` or `Referer` headers are still allowed to call mutating endpoints without that browser session cookie, but they must satisfy any configured API auth.
 
 ## Conventions
 
@@ -490,6 +495,18 @@ Query params:
 
 - `plex_db=<PATH>` optional override for Plex's library database path
 - `full=true|false` optional; when `true`, returns the full backlog instead of the default sample-limited slice
+- `state=all|eligible|blocked` optional visibility filter for the assessed backlog
+- `reason=<code>` optional blocker-class filter such as `legacy_roots_contain_real_media`
+- `title=<substring>` optional case-insensitive title filter
+- `format=json|tsv` optional; `tsv` returns the filtered assessed backlog as a manual worklist export
+
+Response notes:
+
+- JSON now returns the assessed backlog, not just the raw correlated sample list. Each group includes `eligible`, structured `block_reasons`, sample paths, and the recommended tagged root.
+- `visible_groups`, `eligible_groups`, and `blocked_groups` describe the filtered slice after `state` / `reason` / `title` have been applied.
+- `available_blocked_reasons` is the stable catalog for building filter UIs without hard-coding blocker labels.
+- `blocked_reason_summary` is recalculated from the filtered slice, so operators can see which blocker classes dominate the current view.
+- TSV exports use the same filtered slice and include blocker codes, blocker messages, recommended actions, and captured sample paths.
 
 ## `POST /api/v1/cleanup/anime-remediation/preview`
 

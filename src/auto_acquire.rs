@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use regex::Regex;
 use tokio::time::sleep;
@@ -627,10 +627,10 @@ async fn load_persistent_queue(
             | AcquisitionJobStatus::Failed => pending.push_back(QueuedAcquire {
                 job_id: job.id,
                 attempts: job.attempts,
-                request: job_to_request(&job),
+                request: job_to_request(&job)?,
             }),
-            AcquisitionJobStatus::Downloading => downloading.push(job_to_submitted(&job)),
-            AcquisitionJobStatus::Relinking => relinking.push(job_to_relinking(&job)),
+            AcquisitionJobStatus::Downloading => downloading.push(job_to_submitted(&job)?),
+            AcquisitionJobStatus::Relinking => relinking.push(job_to_relinking(&job)?),
             AcquisitionJobStatus::CompletedLinked => {}
         }
     }
@@ -687,12 +687,17 @@ fn request_key(check: &RelinkCheck) -> Result<String> {
     })
 }
 
-fn job_to_request(job: &AcquisitionJobRecord) -> AutoAcquireRequest {
+fn job_to_request(job: &AcquisitionJobRecord) -> Result<AutoAcquireRequest> {
     let relink_check = match job.relink_kind {
         AcquisitionRelinkKind::MediaId => RelinkCheck::MediaId(job.relink_value.clone()),
         AcquisitionRelinkKind::MediaEpisode => {
             let (media_id, season, episode) = parse_media_episode_value(&job.relink_value)
-                .expect("invalid stored media-episode relink value");
+                .with_context(|| {
+                    format!(
+                        "corrupt media-episode relink value '{}' in job {}",
+                        job.relink_value, job.id
+                    )
+                })?;
             RelinkCheck::MediaEpisode {
                 media_id,
                 season,
@@ -704,7 +709,7 @@ fn job_to_request(job: &AcquisitionJobRecord) -> AutoAcquireRequest {
         }
     };
 
-    AutoAcquireRequest {
+    Ok(AutoAcquireRequest {
         label: job.label.clone(),
         query: job.query.clone(),
         query_hints: job.query_hints.clone(),
@@ -713,15 +718,15 @@ fn job_to_request(job: &AcquisitionJobRecord) -> AutoAcquireRequest {
         arr: job.arr.clone(),
         library_filter: job.library_filter.clone(),
         relink_check,
-    }
+    })
 }
 
-fn job_to_submitted(job: &AcquisitionJobRecord) -> SubmittedAcquire {
+fn job_to_submitted(job: &AcquisitionJobRecord) -> Result<SubmittedAcquire> {
     let submitted_at = job.submitted_at.unwrap_or_else(Utc::now);
-    SubmittedAcquire {
+    Ok(SubmittedAcquire {
         job_id: job.id,
         attempts: job.attempts,
-        request: job_to_request(job),
+        request: job_to_request(job)?,
         arr: job.arr.clone(),
         release_title: job
             .release_title
@@ -736,15 +741,15 @@ fn job_to_submitted(job: &AcquisitionJobRecord) -> SubmittedAcquire {
         ),
         submitted_at,
         reused_existing: false,
-    }
+    })
 }
 
-fn job_to_relinking(job: &AcquisitionJobRecord) -> RelinkPendingAcquire {
-    let submitted = job_to_submitted(job);
-    RelinkPendingAcquire {
+fn job_to_relinking(job: &AcquisitionJobRecord) -> Result<RelinkPendingAcquire> {
+    let submitted = job_to_submitted(job)?;
+    Ok(RelinkPendingAcquire {
         submitted,
         completed_at: job.completed_at.unwrap_or_else(Utc::now),
-    }
+    })
 }
 
 async fn persist_terminal_outcome(

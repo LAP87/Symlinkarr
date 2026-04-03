@@ -138,3 +138,9 @@ web:
   bind_address: "127.0.0.1"
   allow_remote: false
   port: 8726
+  # Optional browser auth for the built-in UI and API.
+  # Prefer env:/secretfile: when security.require_secret_provider=true.
+  username: ""
+  password: ""
+  # Optional API auth for non-browser clients. Accepts X-API-Key or Bearer.
+  api_key: ""

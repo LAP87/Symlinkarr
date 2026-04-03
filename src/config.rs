@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 use crate::models::MediaType;
 use crate::utils::{fast_path_health, PathHealth};
 
+type DotenvOverlay = std::collections::HashMap<String, String>;
+
 /// Content type that controls which filename parser to use.
 /// Separate from MediaType — Anime maps to MediaType::Tv in the DB.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -134,6 +136,12 @@ pub struct WebConfig {
     pub allow_remote: bool,
     #[serde(default = "default_web_port")]
     pub port: u16,
+    #[serde(default)]
+    pub username: String,
+    #[serde(default)]
+    pub password: String,
+    #[serde(default)]
+    pub api_key: String,
 }
 
 fn default_web_bind_address() -> String {
@@ -151,6 +159,9 @@ impl Default for WebConfig {
             bind_address: default_web_bind_address(),
             allow_remote: false,
             port: default_web_port(),
+            username: String::new(),
+            password: String::new(),
+            api_key: String::new(),
         }
     }
 }
@@ -179,6 +190,24 @@ impl WebConfig {
 
     pub fn requires_remote_ack(&self) -> bool {
         !self.binds_loopback_only()
+    }
+
+    pub fn has_basic_auth(&self) -> bool {
+        !self.username.trim().is_empty() && !self.password.is_empty()
+    }
+
+    pub fn has_partial_basic_auth(&self) -> bool {
+        let has_username = !self.username.trim().is_empty();
+        let has_password = !self.password.is_empty();
+        has_username ^ has_password
+    }
+
+    pub fn has_api_key_auth(&self) -> bool {
+        !self.api_key.is_empty()
+    }
+
+    pub fn auth_enabled(&self) -> bool {
+        self.has_basic_auth() || self.has_api_key_auth()
     }
 }
 
@@ -925,14 +954,14 @@ impl Config {
 
         for path in &paths {
             if path.exists() {
-                load_dotenv_chain(path)?;
+                let dotenv_overlay = load_dotenv_chain(path)?;
                 let config_str = std::fs::read_to_string(path)?;
                 let mut value: serde_yaml::Value = serde_yaml::from_str(&config_str)?;
                 apply_legacy_aliases(&mut value);
                 warn_for_plaintext_secrets(&value);
                 let secret_files = collect_secret_file_paths(&value, path.parent());
                 let mut config: Config = serde_yaml::from_value(value)?;
-                config.resolve_secret_fields(path.parent())?;
+                config.resolve_secret_fields(path.parent(), &dotenv_overlay)?;
                 config.loaded_from = Some(path.to_path_buf());
                 config.secret_files = secret_files;
                 tracing::info!("Configuration loaded from {:?}", path);
@@ -1043,6 +1072,27 @@ impl Config {
                         "web.bind_address={} requires web.allow_remote=true before Symlinkarr will expose the web UI beyond loopback",
                         bind_address
                     ));
+                }
+            }
+
+            if self.web.has_partial_basic_auth() {
+                report.errors.push(
+                    "web.username and web.password must either both be set or both be empty"
+                        .to_string(),
+                );
+            }
+
+            if self.web.requires_remote_ack() && self.web.allow_remote {
+                if !self.web.auth_enabled() {
+                    report.warnings.push(
+                        "web.allow_remote=true without web auth leaves the built-in web UI unauthenticated; prefer web.username/web.password or a trusted reverse proxy"
+                            .to_string(),
+                    );
+                } else if self.web.has_api_key_auth() && !self.web.has_basic_auth() {
+                    report.warnings.push(
+                        "web.api_key secures the JSON API, but the HTML UI remains unauthenticated without web.username/web.password"
+                            .to_string(),
+                    );
                 }
             }
         }
@@ -1262,30 +1312,38 @@ impl Config {
         self.web.enabled
     }
 
-    fn resolve_secret_fields(&mut self, config_dir: Option<&Path>) -> Result<()> {
+    fn resolve_secret_fields(
+        &mut self,
+        config_dir: Option<&Path>,
+        dotenv_overlay: &DotenvOverlay,
+    ) -> Result<()> {
         self.api.tmdb_api_key = resolve_secret(
             &self.api.tmdb_api_key,
             "api.tmdb_api_key",
             self.security.require_secret_provider,
             config_dir,
+            Some(dotenv_overlay),
         )?;
         self.api.tmdb_read_access_token = resolve_secret(
             &self.api.tmdb_read_access_token,
             "api.tmdb_read_access_token",
             self.security.require_secret_provider,
             config_dir,
+            Some(dotenv_overlay),
         )?;
         self.api.tvdb_api_key = resolve_secret(
             &self.api.tvdb_api_key,
             "api.tvdb_api_key",
             self.security.require_secret_provider,
             config_dir,
+            Some(dotenv_overlay),
         )?;
         self.realdebrid.api_token = resolve_secret(
             &self.realdebrid.api_token,
             "realdebrid.api_token",
             self.security.require_secret_provider,
             config_dir,
+            Some(dotenv_overlay),
         )?;
         if let Some(token) = &self.decypharr.api_token {
             let resolved = resolve_secret(
@@ -1293,6 +1351,7 @@ impl Config {
                 "decypharr.api_token",
                 self.security.require_secret_provider,
                 config_dir,
+                Some(dotenv_overlay),
             )?;
             self.decypharr.api_token = Some(resolved);
         }
@@ -1301,54 +1360,77 @@ impl Config {
             "prowlarr.api_key",
             self.security.require_secret_provider,
             config_dir,
+            Some(dotenv_overlay),
         )?;
         self.bazarr.api_key = resolve_secret(
             &self.bazarr.api_key,
             "bazarr.api_key",
             self.security.require_secret_provider,
             config_dir,
+            Some(dotenv_overlay),
         )?;
         self.tautulli.api_key = resolve_secret(
             &self.tautulli.api_key,
             "tautulli.api_key",
             self.security.require_secret_provider,
             config_dir,
+            Some(dotenv_overlay),
         )?;
         self.plex.token = resolve_secret(
             &self.plex.token,
             "plex.token",
             self.security.require_secret_provider,
             config_dir,
+            Some(dotenv_overlay),
         )?;
         self.emby.api_key = resolve_secret(
             &self.emby.api_key,
             "emby.api_key",
             self.security.require_secret_provider,
             config_dir,
+            Some(dotenv_overlay),
         )?;
         self.jellyfin.api_key = resolve_secret(
             &self.jellyfin.api_key,
             "jellyfin.api_key",
             self.security.require_secret_provider,
             config_dir,
+            Some(dotenv_overlay),
+        )?;
+        self.web.password = resolve_secret(
+            &self.web.password,
+            "web.password",
+            self.security.require_secret_provider,
+            config_dir,
+            Some(dotenv_overlay),
+        )?;
+        self.web.api_key = resolve_secret(
+            &self.web.api_key,
+            "web.api_key",
+            self.security.require_secret_provider,
+            config_dir,
+            Some(dotenv_overlay),
         )?;
         self.radarr.api_key = resolve_secret(
             &self.radarr.api_key,
             "radarr.api_key",
             self.security.require_secret_provider,
             config_dir,
+            Some(dotenv_overlay),
         )?;
         self.sonarr.api_key = resolve_secret(
             &self.sonarr.api_key,
             "sonarr.api_key",
             self.security.require_secret_provider,
             config_dir,
+            Some(dotenv_overlay),
         )?;
         self.sonarr_anime.api_key = resolve_secret(
             &self.sonarr_anime.api_key,
             "sonarr_anime.api_key",
             self.security.require_secret_provider,
             config_dir,
+            Some(dotenv_overlay),
         )?;
 
         Ok(())
@@ -1420,16 +1502,17 @@ fn candidate_config_paths(path: Option<String>) -> Vec<PathBuf> {
     paths
 }
 
-fn load_dotenv_chain(config_path: &Path) -> Result<()> {
+fn load_dotenv_chain(config_path: &Path) -> Result<DotenvOverlay> {
+    let mut overlay = DotenvOverlay::new();
     for path in candidate_dotenv_paths(config_path) {
         if path.exists() {
-            let loaded = load_dotenv_file(&path)?;
+            let loaded = load_dotenv_file(&path, &mut overlay)?;
             if loaded > 0 {
                 tracing::info!("Loaded {} env var(s) from {:?}", loaded, path);
             }
         }
     }
-    Ok(())
+    Ok(overlay)
 }
 
 fn candidate_dotenv_paths(config_path: &Path) -> Vec<PathBuf> {
@@ -1450,7 +1533,7 @@ fn candidate_dotenv_paths(config_path: &Path) -> Vec<PathBuf> {
     paths
 }
 
-fn load_dotenv_file(path: &Path) -> Result<usize> {
+fn load_dotenv_file(path: &Path, overlay: &mut DotenvOverlay) -> Result<usize> {
     let content = std::fs::read_to_string(path)?;
     let mut loaded = 0usize;
 
@@ -1477,14 +1560,12 @@ fn load_dotenv_file(path: &Path) -> Result<usize> {
                 line_no + 1
             );
         }
-        if std::env::var_os(key).is_some() {
+        if std::env::var_os(key).is_some() || overlay.contains_key(key) {
             continue;
         }
 
         let value = parse_dotenv_value(value.trim());
-        // SAFETY: called once during single-threaded config init, before any
-        // async runtime or worker threads are spawned.
-        unsafe { std::env::set_var(key, value) };
+        overlay.insert(key.to_string(), value);
         loaded += 1;
     }
 
@@ -1581,7 +1662,7 @@ fn collect_secret_file_paths(root: &serde_yaml::Value, config_dir: Option<&Path>
     paths
 }
 
-fn secret_field_paths() -> [(&'static [&'static str], &'static str); 14] {
+fn secret_field_paths() -> [(&'static [&'static str], &'static str); 16] {
     [
         (&["api", "tmdb_api_key"], "api.tmdb_api_key"),
         (
@@ -1597,6 +1678,8 @@ fn secret_field_paths() -> [(&'static [&'static str], &'static str); 14] {
         (&["plex", "token"], "plex.token"),
         (&["emby", "api_key"], "emby.api_key"),
         (&["jellyfin", "api_key"], "jellyfin.api_key"),
+        (&["web", "password"], "web.password"),
+        (&["web", "api_key"], "web.api_key"),
         (&["radarr", "api_key"], "radarr.api_key"),
         (&["sonarr", "api_key"], "sonarr.api_key"),
         (&["sonarr_anime", "api_key"], "sonarr_anime.api_key"),
@@ -1633,6 +1716,7 @@ fn resolve_secret(
     field: &str,
     require_provider: bool,
     config_dir: Option<&Path>,
+    dotenv_overlay: Option<&DotenvOverlay>,
 ) -> Result<String> {
     if raw.is_empty() {
         return Ok(String::new());
@@ -1640,7 +1724,11 @@ fn resolve_secret(
 
     if let Some(var) = raw.strip_prefix("env:") {
         let value = std::env::var(var)
-            .map_err(|_| anyhow::anyhow!("Missing environment variable '{}' for {}", var, field))?;
+            .ok()
+            .or_else(|| dotenv_overlay.and_then(|overlay| overlay.get(var).cloned()))
+            .ok_or_else(|| {
+                anyhow::anyhow!("Missing environment variable '{}' for {}", var, field)
+            })?;
         return Ok(value.trim().to_string());
     }
 
@@ -1794,7 +1882,7 @@ mod tests {
     }
 
     #[test]
-    fn load_dotenv_file_sets_missing_vars_without_overwriting_existing_env() {
+    fn load_dotenv_file_collects_missing_vars_without_overwriting_existing_env() {
         let _guard = env_lock().lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let env_path = dir.path().join(".env");
@@ -1807,12 +1895,14 @@ mod tests {
         std::env::remove_var("SYMLINKARR_FROM_FILE");
         std::env::set_var("SYMLINKARR_QUOTED", "shell-value");
 
-        let loaded = load_dotenv_file(&env_path).unwrap();
+        let mut overlay = DotenvOverlay::new();
+        let loaded = load_dotenv_file(&env_path, &mut overlay).unwrap();
         assert_eq!(loaded, 1);
         assert_eq!(
-            std::env::var("SYMLINKARR_FROM_FILE").unwrap(),
-            "file-value".to_string()
+            overlay.get("SYMLINKARR_FROM_FILE").map(String::as_str),
+            Some("file-value")
         );
+        assert_eq!(overlay.get("SYMLINKARR_QUOTED"), None);
         assert_eq!(
             std::env::var("SYMLINKARR_QUOTED").unwrap(),
             "shell-value".to_string()
@@ -1833,6 +1923,7 @@ mod tests {
             "api.tmdb_api_key",
             true,
             None,
+            None,
         )
         .unwrap();
         assert_eq!(value, "secret-value");
@@ -1840,7 +1931,7 @@ mod tests {
 
     #[test]
     fn resolve_secret_rejects_plaintext_when_provider_is_required() {
-        let err = resolve_secret("plaintext", "api.tmdb_api_key", true, None).unwrap_err();
+        let err = resolve_secret("plaintext", "api.tmdb_api_key", true, None, None).unwrap_err();
         assert!(err.to_string().contains("Plaintext secret is not allowed"));
     }
 
@@ -1856,9 +1947,51 @@ mod tests {
             "api.tmdb_api_key",
             true,
             Some(&config_dir),
+            None,
         )
         .unwrap();
         assert_eq!(value, "tmdb-secret");
+    }
+
+    #[test]
+    fn resolve_secret_prefers_real_env_over_dotenv_overlay() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::set_var("SYMLINKARR_DOTENV_TEST", "real-env");
+        let overlay = DotenvOverlay::from([(
+            "SYMLINKARR_DOTENV_TEST".to_string(),
+            "dotenv-value".to_string(),
+        )]);
+
+        let value = resolve_secret(
+            "env:SYMLINKARR_DOTENV_TEST",
+            "realdebrid.api_token",
+            true,
+            None,
+            Some(&overlay),
+        )
+        .unwrap();
+        assert_eq!(value, "real-env");
+        std::env::remove_var("SYMLINKARR_DOTENV_TEST");
+    }
+
+    #[test]
+    fn resolve_secret_uses_dotenv_overlay_when_real_env_missing() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::remove_var("SYMLINKARR_DOTENV_TEST");
+        let overlay = DotenvOverlay::from([(
+            "SYMLINKARR_DOTENV_TEST".to_string(),
+            "dotenv-value".to_string(),
+        )]);
+
+        let value = resolve_secret(
+            "env:SYMLINKARR_DOTENV_TEST",
+            "realdebrid.api_token",
+            true,
+            None,
+            Some(&overlay),
+        )
+        .unwrap();
+        assert_eq!(value, "dotenv-value");
     }
 
     #[test]
@@ -2347,6 +2480,34 @@ web:
     }
 
     #[test]
+    fn validate_rejects_partial_basic_web_auth() {
+        let mut cfg = runtime_config_fixture();
+        cfg.web.enabled = true;
+        cfg.web.username = "admin".to_string();
+
+        let report = cfg.validate_runtime_settings();
+        assert!(report
+            .errors
+            .iter()
+            .any(|err| err.contains("web.username and web.password")));
+    }
+
+    #[test]
+    fn validate_warns_when_remote_web_has_only_api_key_auth() {
+        let mut cfg = runtime_config_fixture();
+        cfg.web.enabled = true;
+        cfg.web.bind_address = "0.0.0.0".to_string();
+        cfg.web.allow_remote = true;
+        cfg.web.api_key = "token".to_string();
+
+        let report = cfg.validate_runtime_settings();
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("HTML UI remains unauthenticated")));
+    }
+
+    #[test]
     fn raw_plaintext_secret_fields_detects_unwrapped_secrets() {
         let value: serde_yaml::Value = serde_yaml::from_str(
             r#"
@@ -2357,12 +2518,17 @@ realdebrid:
   api_token: "secretfile:rd.token"
 sonarr:
   api_key: "another-plaintext"
+web:
+  api_key: "web-plaintext"
 "#,
         )
         .unwrap();
 
         let fields = raw_plaintext_secret_fields(&value);
-        assert_eq!(fields, vec!["api.tmdb_api_key", "sonarr.api_key"]);
+        assert_eq!(
+            fields,
+            vec!["api.tmdb_api_key", "web.api_key", "sonarr.api_key"]
+        );
     }
 
     #[test]
@@ -2378,6 +2544,8 @@ prowlarr:
   api_key: "env:PROWLARR_API_KEY"
 tautulli:
   api_key: "secretfile:/tmp/tautulli.key"
+web:
+  password: "secretfile:web.pass"
 "#,
         )
         .unwrap();
@@ -2387,6 +2555,7 @@ tautulli:
             paths,
             vec![
                 config_dir.join("tmdb.key"),
+                config_dir.join("web.pass"),
                 PathBuf::from("/tmp/tautulli.key")
             ]
         );

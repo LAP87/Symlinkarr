@@ -926,12 +926,20 @@ impl<'a> CleanupAuditor<'a> {
             let db = self.db.clone();
 
             join_set.spawn(async move {
-                let _permit = sem
-                    .acquire_owned()
-                    .await
-                    .expect("cleanup metadata semaphore should stay alive");
+                let permit = match sem.acquire_owned().await {
+                    Ok(permit) => permit,
+                    Err(_) => {
+                        return (
+                            key,
+                            Err(anyhow::anyhow!(
+                                "cleanup metadata semaphore unexpectedly closed"
+                            )),
+                        );
+                    }
+                };
                 let result =
                     fetch_metadata_static(&tmdb, tvdb.as_ref(), metadata_mode, &item, &db).await;
+                drop(permit);
                 (key, result)
             });
         }
@@ -1262,6 +1270,7 @@ pub async fn run_prune(
                                     .await;
                                 skipped += 1;
                             } else {
+                                removed += 1;
                                 if let Err(e) = db.mark_removed_path(symlink_path).await {
                                     warn!(
                                         "Cleanup prune: removed {:?} but failed DB mark_removed: {}",
@@ -1269,26 +1278,24 @@ pub async fn run_prune(
                                     );
                                     let _ = db
                                         .record_link_event_fields(
-                                            "prune_skipped",
+                                            "prune_removed",
                                             symlink_path,
                                             None,
                                             None,
                                             Some("db_mark_removed_failed"),
                                         )
                                         .await;
-                                    skipped += 1;
-                                    continue;
+                                } else {
+                                    let _ = db
+                                        .record_link_event_fields(
+                                            "prune_removed",
+                                            symlink_path,
+                                            None,
+                                            None,
+                                            None,
+                                        )
+                                        .await;
                                 }
-                                let _ = db
-                                    .record_link_event_fields(
-                                        "prune_removed",
-                                        symlink_path,
-                                        None,
-                                        None,
-                                        None,
-                                    )
-                                    .await;
-                                removed += 1;
                             }
                         }
                         Some(PruneDisposition::Quarantine) => {
@@ -1419,22 +1426,44 @@ pub(crate) fn quarantine_symlink_for_cleanup(cfg: &Config, symlink_path: &Path) 
     if let Some(parent) = destination.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    create_symlink_like(&resolved_target, &destination)?;
-    if let Err(remove_err) = std::fs::remove_file(symlink_path) {
-        let rollback_result = std::fs::remove_file(&destination);
+
+    if let Err(err) = std::fs::rename(symlink_path, &destination) {
+        if err.raw_os_error() != Some(libc::EXDEV) {
+            return Err(err.into());
+        }
+    } else {
+        return Ok(destination);
+    }
+
+    let staging_path = quarantine_staging_path(symlink_path);
+    std::fs::rename(symlink_path, &staging_path)?;
+
+    if let Err(create_err) = create_symlink_like(&resolved_target, &destination) {
+        let rollback_result = std::fs::rename(&staging_path, symlink_path);
         return match rollback_result {
             Ok(()) => Err(anyhow::anyhow!(
-                "failed to remove original symlink after staging quarantine copy: {}",
-                remove_err
+                "failed to stage quarantined symlink at {}: {}",
+                destination.display(),
+                create_err
             )),
             Err(rollback_err) => Err(anyhow::anyhow!(
-                "failed to remove original symlink after staging quarantine copy: {}; rollback also failed for {}: {}",
-                remove_err,
+                "failed to stage quarantined symlink at {}: {}; rollback also failed for {}: {}",
                 destination.display(),
+                create_err,
+                symlink_path.display(),
                 rollback_err
             )),
         };
     }
+
+    if let Err(remove_err) = std::fs::remove_file(&staging_path) {
+        return Err(anyhow::anyhow!(
+            "quarantine staging cleanup failed for {}: {}",
+            staging_path.display(),
+            remove_err
+        ));
+    }
+
     Ok(destination)
 }
 
@@ -1494,6 +1523,27 @@ fn unique_quarantine_path(initial: PathBuf) -> PathBuf {
     }
 
     unreachable!("quarantine path search should always terminate")
+}
+
+fn quarantine_staging_path(original: &Path) -> PathBuf {
+    let parent = original
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let name = original
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("quarantine-staging");
+
+    for idx in 0.. {
+        let candidate = parent.join(format!(".{name}.symlinkarr-quarantine-{idx}.tmp"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+
+    unreachable!("staging path search should always terminate")
 }
 
 #[cfg(unix)]
@@ -3737,7 +3787,7 @@ cleanup:
 
     #[cfg(unix)]
     #[test]
-    fn test_quarantine_symlink_for_cleanup_rolls_back_when_original_remove_fails() {
+    fn test_quarantine_symlink_for_cleanup_leaves_original_when_destination_unwritable() {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::TempDir::new().unwrap();
@@ -3756,20 +3806,21 @@ cleanup:
         let mut cfg = test_config(&library_root, &source_root);
         cfg.cleanup.prune.quarantine_path = quarantine_root.clone();
 
-        let mut perms = std::fs::metadata(&library_root).unwrap().permissions();
+        let mut perms = std::fs::metadata(&quarantine_root).unwrap().permissions();
         perms.set_mode(0o555);
-        std::fs::set_permissions(&library_root, perms).unwrap();
+        std::fs::set_permissions(&quarantine_root, perms).unwrap();
 
         let result = quarantine_symlink_for_cleanup(&cfg, &symlink_path);
 
-        let mut restore = std::fs::metadata(&library_root).unwrap().permissions();
+        let mut restore = std::fs::metadata(&quarantine_root).unwrap().permissions();
         restore.set_mode(0o755);
-        std::fs::set_permissions(&library_root, restore).unwrap();
+        std::fs::set_permissions(&quarantine_root, restore).unwrap();
 
         let err = result.unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("failed to remove original symlink after staging quarantine copy"));
+        assert!(
+            err.to_string().contains("Permission denied")
+                || err.to_string().contains("permission denied")
+        );
         assert!(symlink_path.is_symlink());
         assert!(!quarantine_root.join("library/Show - S01E99.mkv").exists());
     }

@@ -134,3 +134,8 @@ web:
   bind_address: "0.0.0.0"
   allow_remote: true
   port: 8726
+  # Basic auth protects the HTML UI and API.
+  username: ""
+  password: ""
+  # Optional API auth for scripts/automation clients.
+  api_key: ""

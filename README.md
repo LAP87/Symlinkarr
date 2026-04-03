@@ -109,6 +109,12 @@ From a release binary:
 
 Web UI default: `http://127.0.0.1:8726`
 
+If you expose the web UI beyond loopback, configure auth:
+
+- `web.username` + `web.password` protect the HTML UI and API with HTTP Basic auth
+- `web.api_key` protects JSON API clients via `Authorization: Bearer ...` or `X-API-Key`
+- if you only configure `web.api_key`, the HTML UI is still readable unless you also add Basic auth or put it behind a trusted reverse proxy
+
 ## Common Commands
 
 ```bash

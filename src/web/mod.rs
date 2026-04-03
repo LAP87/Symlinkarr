@@ -12,7 +12,7 @@ use anyhow::Result;
 use axum::{
     extract::State,
     http::{
-        header::{COOKIE, HOST, ORIGIN, REFERER, SET_COOKIE},
+        header::{AUTHORIZATION, COOKIE, HOST, ORIGIN, REFERER, SET_COOKIE, WWW_AUTHENTICATE},
         HeaderMap, HeaderValue, Method, StatusCode, Uri,
     },
     middleware::{self, Next},
@@ -20,13 +20,16 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use futures_util::FutureExt;
 use serde_json::json;
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::io::Read;
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use subtle::ConstantTimeEq;
 use tokio::sync::Mutex;
 use tower_http::{services::ServeDir, trace::TraceLayer};
 use tracing::{error, info, warn};
@@ -690,6 +693,74 @@ pub(crate) fn latest_cleanup_report_path(backup_dir: &Path) -> Option<PathBuf> {
     reports.first().map(|entry| entry.path())
 }
 
+pub(crate) fn resolve_cleanup_report_path(
+    backup_dir: &Path,
+    report: &str,
+) -> anyhow::Result<PathBuf> {
+    let trimmed = report.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("Cleanup report path is required");
+    }
+
+    let requested = Path::new(trimmed);
+    let backup_root = backup_dir
+        .canonicalize()
+        .unwrap_or_else(|_| backup_dir.to_path_buf());
+
+    if requested.is_absolute() {
+        let canonical = requested
+            .canonicalize()
+            .map_err(|_| anyhow::anyhow!("Cleanup report not found: {}", requested.display()))?;
+        if !canonical.starts_with(&backup_root) {
+            anyhow::bail!("Cleanup report must be inside the configured backup directory");
+        }
+        return Ok(canonical);
+    }
+
+    if requested.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
+        anyhow::bail!("Cleanup report path must stay inside the configured backup directory");
+    }
+
+    let joined = backup_dir.join(requested);
+    let joined_parent = joined.parent().unwrap_or(backup_dir);
+    let canonical_parent = joined_parent.canonicalize().map_err(|_| {
+        anyhow::anyhow!(
+            "Cleanup report parent not found: {}",
+            joined_parent.display()
+        )
+    })?;
+    if !canonical_parent.starts_with(&backup_root) {
+        anyhow::bail!("Cleanup report must be inside the configured backup directory");
+    }
+
+    let canonical = if joined.exists() {
+        joined
+            .canonicalize()
+            .map_err(|_| anyhow::anyhow!("Cleanup report not found: {}", joined.display()))?
+    } else {
+        canonical_parent.join(
+            joined
+                .file_name()
+                .ok_or_else(|| anyhow::anyhow!("Cleanup report filename is missing"))?,
+        )
+    };
+
+    if !canonical.starts_with(&backup_root) {
+        anyhow::bail!("Cleanup report must be inside the configured backup directory");
+    }
+
+    Ok(canonical)
+}
+
+pub(crate) fn clamp_link_list_limit(limit: Option<i64>) -> i64 {
+    limit.unwrap_or(100).clamp(1, 10_000)
+}
+
 pub(crate) fn load_cleanup_report(path: &Path) -> Option<CleanupReport> {
     let json = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&json).ok()
@@ -873,6 +944,10 @@ fn create_router(state: WebState) -> Router {
         .nest("/api/v1", api_routes)
         .layer(middleware::from_fn_with_state(
             state.clone(),
+            guard_web_auth,
+        ))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
             guard_browser_mutations,
         ))
         .layer(TraceLayer::new_for_http())
@@ -959,6 +1034,86 @@ fn has_valid_browser_session(headers: &HeaderMap, state: &WebState) -> bool {
         == Some(state.browser_session_token())
 }
 
+fn constant_time_str_eq(left: &str, right: &str) -> bool {
+    let left = left.as_bytes();
+    let right = right.as_bytes();
+    if left.len() != right.len() {
+        return false;
+    }
+    left.ct_eq(right).into()
+}
+
+fn request_basic_credentials(headers: &HeaderMap) -> Option<(String, String)> {
+    let authorization = headers.get(AUTHORIZATION).and_then(header_value_str)?;
+    let encoded = authorization
+        .strip_prefix("Basic ")
+        .or_else(|| authorization.strip_prefix("basic "))?;
+    let decoded = BASE64_STANDARD.decode(encoded).ok()?;
+    let decoded = String::from_utf8(decoded).ok()?;
+    let (username, password) = decoded.split_once(':')?;
+    Some((username.to_string(), password.to_string()))
+}
+
+fn request_api_key(headers: &HeaderMap) -> Option<String> {
+    if let Some(api_key) = headers.get("x-api-key").and_then(header_value_str) {
+        return Some(api_key.to_string());
+    }
+
+    let authorization = headers.get(AUTHORIZATION).and_then(header_value_str)?;
+    authorization
+        .strip_prefix("Bearer ")
+        .or_else(|| authorization.strip_prefix("bearer "))
+        .map(|value| value.to_string())
+}
+
+fn has_valid_basic_auth(headers: &HeaderMap, state: &WebState) -> bool {
+    if !state.config.web.has_basic_auth() {
+        return false;
+    }
+
+    let Some((username, password)) = request_basic_credentials(headers) else {
+        return false;
+    };
+
+    constant_time_str_eq(&username, state.config.web.username.trim())
+        && constant_time_str_eq(&password, &state.config.web.password)
+}
+
+fn has_valid_api_key(headers: &HeaderMap, state: &WebState) -> bool {
+    if !state.config.web.has_api_key_auth() {
+        return false;
+    }
+
+    let Some(api_key) = request_api_key(headers) else {
+        return false;
+    };
+
+    constant_time_str_eq(&api_key, &state.config.web.api_key)
+}
+
+fn unauthorized_auth_response(path: &str, offer_basic: bool) -> axum::response::Response {
+    let mut response = if path.starts_with("/api/") {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": "authentication required"
+            })),
+        )
+            .into_response()
+    } else {
+        (StatusCode::UNAUTHORIZED, "Authentication required.").into_response()
+    };
+
+    if offer_basic {
+        response.headers_mut().insert(
+            WWW_AUTHENTICATE,
+            HeaderValue::from_static("Basic realm=\"Symlinkarr\""),
+        );
+    }
+
+    response
+}
+
 fn forbidden_origin_response(path: &str) -> axum::response::Response {
     if path.starts_with("/api/") {
         return (
@@ -1001,11 +1156,55 @@ fn generate_browser_session_token() -> String {
         return bytes.iter().map(|byte| format!("{byte:02x}")).collect();
     }
 
+    if std::fs::File::open("/dev/urandom")
+        .and_then(|mut file| file.read_exact(&mut bytes))
+        .is_ok()
+    {
+        return bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    }
+
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
     format!("{:016x}{:08x}", nanos, std::process::id())
+}
+
+async fn guard_web_auth(
+    State(state): State<WebState>,
+    request: axum::extract::Request,
+    next: Next,
+) -> axum::response::Response {
+    let path = request.uri().path().to_string();
+    let is_api = path.starts_with("/api/");
+    let require_basic = state.config.web.has_basic_auth();
+    let require_api_auth =
+        is_api && (state.config.web.has_basic_auth() || state.config.web.has_api_key_auth());
+
+    if !require_basic && !require_api_auth {
+        return next.run(request).await;
+    }
+
+    let basic_ok = has_valid_basic_auth(request.headers(), &state);
+    let api_key_ok = is_api && has_valid_api_key(request.headers(), &state);
+
+    let authorized = if is_api {
+        (!require_api_auth) || basic_ok || api_key_ok
+    } else {
+        !require_basic || basic_ok
+    };
+
+    if !authorized {
+        let offer_basic = state.config.web.has_basic_auth();
+        if is_api {
+            warn!(path, "blocked API request without configured auth");
+        } else {
+            warn!(path, "blocked web request without configured basic auth");
+        }
+        return unauthorized_auth_response(&path, offer_basic);
+    }
+
+    next.run(request).await
 }
 
 async fn guard_browser_mutations(
@@ -1122,6 +1321,11 @@ mod tests {
     };
     use crate::db::{AcquisitionJobSeed, AcquisitionRelinkKind, Database, ScanRunRecord};
     use crate::models::{LinkRecord, LinkStatus, MediaType};
+
+    fn basic_auth_header(username: &str, password: &str) -> String {
+        let credentials = format!("{username}:{password}");
+        format!("Basic {}", BASE64_STANDARD.encode(credentials))
+    }
 
     fn test_config(root: &std::path::Path) -> Config {
         let library_root = root.join("library");
@@ -1459,6 +1663,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn html_requests_require_basic_auth_when_configured() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        std::mem::forget(dir);
+        let mut cfg = test_config(&root);
+        cfg.web.username = "admin".to_string();
+        cfg.web.password = "secret".to_string();
+        let db = Database::new(&cfg.db_path).await.unwrap();
+        let router = create_router(WebState::new(cfg, db));
+
+        let (status, headers, _body) = get_html_with_headers(&router, "/", &[]).await;
+        assert_eq!(status, 401);
+        assert_eq!(
+            headers
+                .get(header::WWW_AUTHENTICATE)
+                .and_then(|value| value.to_str().ok()),
+            Some("Basic realm=\"Symlinkarr\"")
+        );
+
+        let auth = basic_auth_header("admin", "secret");
+        let (status, _headers, body) = get_html_with_headers(
+            &router,
+            "/",
+            &[(header::AUTHORIZATION.as_str(), auth.as_str())],
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert!(body.contains("Dashboard"));
+    }
+
+    #[tokio::test]
+    async fn api_requests_accept_bearer_api_key_when_configured() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        std::mem::forget(dir);
+        let mut cfg = test_config(&root);
+        cfg.web.api_key = "top-secret".to_string();
+        let db = Database::new(&cfg.db_path).await.unwrap();
+        let router = create_router(WebState::new(cfg, db));
+
+        let (status, body) = post_json_with_headers(
+            &router,
+            "/api/v1/cleanup/audit",
+            serde_json::json!({ "scope": "anime" }),
+            &[(header::AUTHORIZATION.as_str(), "Bearer top-secret")],
+        )
+        .await;
+
+        assert_eq!(status, 202);
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(json["success"], true);
+    }
+
+    #[tokio::test]
+    async fn api_requests_require_auth_when_api_key_is_configured() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        std::mem::forget(dir);
+        let mut cfg = test_config(&root);
+        cfg.web.api_key = "top-secret".to_string();
+        let db = Database::new(&cfg.db_path).await.unwrap();
+        let router = create_router(WebState::new(cfg, db));
+
+        let (status, body) = post_json_with_headers(
+            &router,
+            "/api/v1/cleanup/audit",
+            serde_json::json!({ "scope": "anime" }),
+            &[],
+        )
+        .await;
+
+        assert_eq!(status, 401);
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(json["error"], "authentication required");
+    }
+
+    #[tokio::test]
     async fn api_allows_same_origin_mutations() {
         let router = test_router().await;
         let (_, headers, _) = get_html_with_headers(&router, "/", &[]).await;
@@ -1566,6 +1847,13 @@ mod tests {
     fn panic_message_extracts_str_payload() {
         let payload: Box<dyn std::any::Any + Send> = Box::new("boom");
         assert_eq!(super::panic_message(payload), "boom");
+    }
+
+    #[test]
+    fn clamp_link_list_limit_stays_within_guardrails() {
+        assert_eq!(super::clamp_link_list_limit(None), 100);
+        assert_eq!(super::clamp_link_list_limit(Some(0)), 1);
+        assert_eq!(super::clamp_link_list_limit(Some(50_000)), 10_000);
     }
 
     #[test]

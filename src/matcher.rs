@@ -990,6 +990,16 @@ fn candidate_library_indices(
     indices
 }
 
+fn source_path_contains_media_id(source_path: &str, media_id: &str) -> bool {
+    source_path.match_indices(media_id).any(|(idx, _)| {
+        let before = source_path[..idx].chars().next_back();
+        let after = source_path[idx + media_id.len()..].chars().next();
+        let before_ok = before.is_none_or(|ch| !ch.is_ascii_alphanumeric());
+        let after_ok = after.is_none_or(|ch| !ch.is_ascii_alphanumeric());
+        before_ok && after_ok
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn match_source_slice(
     start_idx: usize,
@@ -1033,7 +1043,7 @@ fn match_source_slice(
         let source_path_str = source.path.to_string_lossy();
         if let Some(exact_idx) = candidate_library_indices.iter().copied().find(|&lib_idx| {
             let id_str = library_items[lib_idx].id.to_string();
-            source_path_str.contains(id_str.as_str())
+            source_path_contains_media_id(source_path_str.as_ref(), id_str.as_str())
         }) {
             let item = &library_items[exact_idx];
             let parser_kind = parser_kind_for_content(item.content_type);
@@ -1633,6 +1643,56 @@ mod tests {
 
         assert_eq!(chunk.best_per_source.len(), 1);
         assert_eq!(chunk.best_per_source[0].media_id, "tmdb-24428");
+    }
+
+    #[test]
+    fn test_source_path_contains_media_id_requires_boundaries() {
+        assert!(source_path_contains_media_id(
+            "/rd/tmdb-24428/Movie.mkv",
+            "tmdb-24428"
+        ));
+        assert!(source_path_contains_media_id(
+            "/rd/[tmdb-24428]/Movie.mkv",
+            "tmdb-24428"
+        ));
+        assert!(!source_path_contains_media_id(
+            "/rd/tmdb-244281/Movie.mkv",
+            "tmdb-24428"
+        ));
+        assert!(!source_path_contains_media_id(
+            "/rd/pretmdb-24428/Movie.mkv",
+            "tmdb-24428"
+        ));
+    }
+
+    #[test]
+    fn test_exact_id_path_does_not_match_prefix_of_longer_id() {
+        let library_items = vec![movie_item("Example", 60), movie_item("Example", 6043)];
+        let source_items = vec![parsed_standard_source("/rd/tmdb-6043/Example.2024.mkv")];
+
+        let mut alias_map = HashMap::new();
+        alias_map.insert(0usize, vec!["example".to_string()]);
+        alias_map.insert(1usize, vec!["example".to_string()]);
+        let mut metadata_map = HashMap::new();
+        metadata_map.insert(0usize, None);
+        metadata_map.insert(1usize, None);
+        let alias_token_index = build_alias_token_index(&alias_map);
+
+        let chunk = match_source_slice(
+            0,
+            &source_items,
+            &library_items,
+            &alias_map,
+            &metadata_map,
+            &alias_token_index,
+            MatchingMode::Strict,
+            true,
+            None,
+        );
+
+        assert_eq!(chunk.best_per_source.len(), 1);
+        assert_eq!(chunk.best_per_source[0].media_id, "tmdb-6043");
+        assert_eq!(chunk.exact_id_hits, 1);
     }
 
     #[tokio::test]

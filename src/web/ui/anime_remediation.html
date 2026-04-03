@@ -14,6 +14,7 @@
         {% match summary %}
         {% when Some with (data) %}
         <span class="badge badge-danger">{{ data.remediation_groups }} remediation groups</span>
+        <span class="badge badge-info">{{ data.visible_groups }} visible now</span>
         <span class="badge badge-success">{{ data.eligible_groups }} visible eligible</span>
         <span class="badge badge-warning">{{ data.blocked_groups }} visible blocked</span>
         <span class="badge badge-warning">{{ data.correlated_hama_split_groups }} correlated splits</span>
@@ -59,12 +60,89 @@
     </form>
 </section>
 
+<section class="card">
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Operator Filters</p>
+            <h2 class="section-title">Work the blocked backlog in slices</h2>
+            <p class="text-muted">Filter the ranked queue by eligibility, blocker class, or title fragment. The TSV export uses the same filters, so you can hand off exactly the subset you are reviewing.</p>
+        </div>
+    </div>
+    <div class="split-grid">
+        <form action="/cleanup/anime-remediation" method="get" class="stack-form">
+            <input type="hidden" name="plex_db" value="{{ data.plex_db_path }}">
+            {% if data.full %}
+            <input type="hidden" name="full" value="true">
+            {% endif %}
+            <div class="form-group">
+                <label class="form-label" for="anime-remediation-state">Visibility</label>
+                <select id="anime-remediation-state" name="state" class="form-control field-max-md">
+                    <option value="all" {% if data.state_filter == "all" %}selected{% endif %}>All groups</option>
+                    <option value="eligible" {% if data.state_filter == "eligible" %}selected{% endif %}>Eligible only</option>
+                    <option value="blocked" {% if data.state_filter == "blocked" %}selected{% endif %}>Blocked only</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="anime-remediation-reason">Blocked reason</label>
+                <select id="anime-remediation-reason" name="reason" class="form-control">
+                    <option value="">Any blocker</option>
+                    {% for item in data.available_blocked_reasons %}
+                    <option value="{{ item.code }}" {% if data.reason_filter == item.code %}selected{% endif %}>{{ item.label }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="anime-remediation-filter-title">Title contains</label>
+                <input id="anime-remediation-filter-title" name="title" type="text" class="form-control field-max-lg" value="{{ data.title_filter }}" placeholder="e.g. Gundam">
+            </div>
+            <div class="actions">
+                <button type="submit" class="btn btn-primary">Apply Filters</button>
+                <a href="/cleanup/anime-remediation{% if data.full %}?full=true{% endif %}" class="btn btn-secondary">Clear Filters</a>
+            </div>
+        </form>
+
+        <form action="/api/v1/report/anime-remediation" method="get" class="stack-form">
+            <input type="hidden" name="plex_db" value="{{ data.plex_db_path }}">
+            {% if data.full %}
+            <input type="hidden" name="full" value="true">
+            {% endif %}
+            <input type="hidden" name="state" value="{{ data.state_filter }}">
+            {% if !data.reason_filter.is_empty() %}
+            <input type="hidden" name="reason" value="{{ data.reason_filter }}">
+            {% endif %}
+            {% if !data.title_filter.is_empty() %}
+            <input type="hidden" name="title" value="{{ data.title_filter }}">
+            {% endif %}
+            <input type="hidden" name="format" value="tsv">
+            <div class="metric-grid metric-grid--compact">
+                <div class="metric-card">
+                    <span class="metric-label">Visible queue</span>
+                    <strong>{{ data.visible_groups }}</strong>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-label">Blocked in slice</span>
+                    <strong>{{ data.blocked_groups }}</strong>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-label">Eligible in slice</span>
+                    <strong>{{ data.eligible_groups }}</strong>
+                </div>
+            </div>
+            <div class="actions mt-2">
+                <button type="submit" class="btn btn-secondary">&#128190; Download Filtered TSV</button>
+            </div>
+        </form>
+    </div>
+</section>
+
 <div class="split-grid">
     <section class="card hero-card hero-card--accent">
         <p class="hero-label">Current backlog</p>
-        <div class="hero-value">{{ data.returned_groups }}</div>
+        <div class="hero-value">{{ data.visible_groups }}</div>
         <p class="hero-copy">These groups are the titles where legacy anime roots and Plex metadata splits overlap strongly enough to justify operator review.</p>
         <div class="hero-inline-stats">
+            <span>Visible now <strong>{{ data.visible_groups }}</strong></span>
+            <span>Loaded <strong>{{ data.returned_groups }}</strong></span>
             <span>Generated <strong>{{ data.generated_at }}</strong></span>
         </div>
     </section>
@@ -124,6 +202,9 @@
             <p class="section-kicker">Groups</p>
             <h2 class="section-title">Recommended remediation order</h2>
             <p class="text-muted">The queue is already ranked by legacy impact. Titles near the top usually have the largest pile of untracked symlinks or the most drift between Plex and the tagged root.</p>
+            {% if data.visible_groups != data.returned_groups %}
+            <p class="text-muted">Showing {{ data.visible_groups }} filtered groups from {{ data.returned_groups }} loaded backlog rows.</p>
+            {% endif %}
         </div>
         <div class="actions">
             {% if data.full %}

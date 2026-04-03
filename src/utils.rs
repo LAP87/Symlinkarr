@@ -7,7 +7,7 @@ use unicode_normalization::UnicodeNormalization;
 
 /// Known video file extensions
 pub const VIDEO_EXTENSIONS: &[&str] = &[
-    "mkv", "mp4", "avi", "wmv", "flv", "mov", "webm", "m4v", "ts", "mpg", "mpeg",
+    "mkv", "mp4", "avi", "wmv", "flv", "mov", "webm", "m4v", "ts", "m2ts", "mpg", "mpeg",
 ];
 
 pub fn path_under_roots(path: &Path, roots: &[PathBuf]) -> bool {
@@ -264,6 +264,11 @@ impl ProgressLine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn video_extensions_include_m2ts() {
+        assert!(VIDEO_EXTENSIONS.contains(&"m2ts"));
+    }
 
     // === path_under_roots ===
 
