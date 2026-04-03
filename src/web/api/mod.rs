@@ -879,7 +879,20 @@ fn scan_history_fetch_limit(query: &ApiScanHistoryQuery) -> i64 {
     (scan_history_query_limit(query) * 10).clamp(50, 1_000)
 }
 
+fn media_server_refresh_entries(
+    record: &ScanHistoryRecord,
+) -> Vec<LibraryInvalidationServerOutcome> {
+    record
+        .media_server_refresh_json
+        .as_deref()
+        .and_then(|json| serde_json::from_str::<Vec<LibraryInvalidationServerOutcome>>(json).ok())
+        .unwrap_or_default()
+}
+
 fn plex_refresh_summary_from_record(record: &ScanHistoryRecord) -> ApiPlexRefreshSummary {
+    let deferred_due_to_lock = media_server_refresh_entries(record)
+        .iter()
+        .any(|entry| entry.refresh.deferred_due_to_lock);
     ApiPlexRefreshSummary {
         runtime_ms: record.plex_refresh_ms,
         requested_paths: record.plex_refresh_requested_paths,
@@ -893,7 +906,7 @@ fn plex_refresh_summary_from_record(record: &ScanHistoryRecord) -> ApiPlexRefres
         unresolved_paths: record.plex_refresh_unresolved_paths,
         capped_batches: record.plex_refresh_capped_batches,
         aborted_due_to_cap: record.plex_refresh_aborted_due_to_cap,
-        deferred_due_to_lock: false,
+        deferred_due_to_lock,
         failed_batches: record.plex_refresh_failed_batches,
     }
 }
@@ -922,11 +935,7 @@ fn api_refresh_summary_from_telemetry(
 fn media_server_refresh_from_record(
     record: &ScanHistoryRecord,
 ) -> Vec<ApiMediaServerRefreshServer> {
-    record
-        .media_server_refresh_json
-        .as_deref()
-        .and_then(|json| serde_json::from_str::<Vec<LibraryInvalidationServerOutcome>>(json).ok())
-        .unwrap_or_default()
+    media_server_refresh_entries(record)
         .into_iter()
         .map(|entry| ApiMediaServerRefreshServer {
             server: entry.server.to_string(),
@@ -1820,7 +1829,7 @@ mod tests {
             plex_refresh_aborted_due_to_cap: true,
             plex_refresh_failed_batches: 0,
             media_server_refresh_json: Some(
-                r#"[{"server":"plex","requested_targets":5,"refresh":{"requested_paths":12,"unique_paths":10,"planned_batches":5,"coalesced_batches":2,"coalesced_paths":7,"refreshed_batches":4,"refreshed_paths_covered":12,"skipped_batches":1,"unresolved_paths":0,"capped_batches":1,"aborted_due_to_cap":true,"failed_batches":0}},{"server":"emby","requested_targets":12,"refresh":{"requested_paths":12,"unique_paths":12,"planned_batches":1,"coalesced_batches":0,"coalesced_paths":0,"refreshed_batches":1,"refreshed_paths_covered":12,"skipped_batches":0,"unresolved_paths":0,"capped_batches":0,"aborted_due_to_cap":false,"failed_batches":0}}]"#.to_string(),
+                r#"[{"server":"plex","requested_targets":5,"refresh":{"requested_paths":12,"unique_paths":10,"planned_batches":5,"coalesced_batches":2,"coalesced_paths":7,"refreshed_batches":4,"refreshed_paths_covered":12,"skipped_batches":1,"unresolved_paths":0,"capped_batches":1,"aborted_due_to_cap":true,"deferred_due_to_lock":false,"failed_batches":0}},{"server":"emby","requested_targets":12,"refresh":{"requested_paths":12,"unique_paths":12,"planned_batches":1,"coalesced_batches":0,"coalesced_paths":0,"refreshed_batches":1,"refreshed_paths_covered":12,"skipped_batches":0,"unresolved_paths":0,"capped_batches":0,"aborted_due_to_cap":false,"deferred_due_to_lock":true,"failed_batches":0}}]"#.to_string(),
             ),
             dead_link_sweep_ms: 700,
             cache_hit_ratio: Some(0.94),
@@ -1994,6 +2003,7 @@ mod tests {
         assert_eq!(json.plex_refresh.refreshed_batches, 4);
         assert_eq!(json.plex_refresh.capped_batches, 1);
         assert!(json.plex_refresh.aborted_due_to_cap);
+        assert!(json.plex_refresh.deferred_due_to_lock);
         assert_eq!(json.skip_reasons.len(), 3);
         assert_eq!(json.skip_reasons[0].reason, "already_correct");
         assert_eq!(json.skip_reasons[0].count, 6200);
@@ -2105,6 +2115,7 @@ mod tests {
         assert_eq!(run.plex_refresh.refreshed_batches, 4);
         assert_eq!(run.plex_refresh.capped_batches, 1);
         assert!(run.plex_refresh.aborted_due_to_cap);
+        assert!(run.plex_refresh.deferred_due_to_lock);
         assert_eq!(run.auto_acquire.requests, 10);
         assert_eq!(run.auto_acquire.successes, 4);
     }

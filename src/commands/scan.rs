@@ -21,7 +21,8 @@ use crate::linker::{LinkProcessSummary, Linker};
 use crate::matcher::{MatchRunOutput, MatchTelemetry, Matcher};
 use crate::media_servers::{
     configured_refresh_backends, display_server_list, has_configured_invalidation_server,
-    invalidate_after_mutation, LibraryInvalidationServerOutcome, LibraryRefreshTelemetry,
+    has_pending_deferred_refreshes, invalidate_after_mutation, refresh_library_paths_detailed,
+    LibraryInvalidationServerOutcome, LibraryRefreshTelemetry,
 };
 use crate::models::{LibraryItem, MatchResult, MediaId, MediaType, SourceItem};
 use crate::source_scanner::SourceScanner;
@@ -194,20 +195,30 @@ pub(crate) async fn run_scan(
         }
     }
 
-    if linked_total > 0 && !effective_dry_run && has_configured_invalidation_server(cfg) {
+    if !effective_dry_run
+        && has_configured_invalidation_server(cfg)
+        && (linked_total > 0 || has_pending_deferred_refreshes(cfg)?)
+    {
         let plex_refresh_started = Instant::now();
-        match invalidate_after_mutation(
-            cfg,
-            &selected_libraries,
-            &link_summary.refresh_paths,
-            output != OutputFormat::Json,
-        )
-        .await
-        {
+        let refresh_result = if linked_total > 0 {
+            invalidate_after_mutation(
+                cfg,
+                &selected_libraries,
+                &link_summary.refresh_paths,
+                output != OutputFormat::Json,
+            )
+            .await
+            .map(|outcome| (outcome.refresh.unwrap_or_default(), outcome.servers))
+        } else {
+            refresh_library_paths_detailed(cfg, &[], output != OutputFormat::Json)
+                .await
+                .map(|outcome| (outcome.aggregate, outcome.servers))
+        };
+        match refresh_result {
             Ok(outcome) => {
                 telemetry.plex_refresh = plex_refresh_started.elapsed();
-                telemetry.plex_refresh_stats = outcome.refresh.unwrap_or_default();
-                telemetry.media_server_refresh_servers = outcome.servers;
+                telemetry.plex_refresh_stats = outcome.0;
+                telemetry.media_server_refresh_servers = outcome.1;
             }
             Err(e) => {
                 telemetry.plex_refresh = plex_refresh_started.elapsed();
