@@ -19,6 +19,7 @@ use crate::config::Config;
 use crate::db::{AcquisitionJobCounts, ScanHistoryRecord};
 use crate::media_servers::{DeferredRefreshSummary, LibraryInvalidationServerOutcome};
 use crate::models::LinkRecord;
+use crate::cleanup_audit::{CleanupFinding, PrunePathAction};
 
 // ─── Dashboard ──────────────────────────────────────────────────────
 
@@ -566,7 +567,7 @@ pub struct CleanupResultTemplate {
 #[derive(Template)]
 #[template(path = "web/ui/prune_preview.html")]
 pub struct PrunePreviewTemplate {
-    pub findings: Vec<crate::cleanup_audit::CleanupFinding>,
+    pub findings: Vec<PruneFindingView>,
     pub total: usize,
     pub actionable_candidates: usize,
     pub critical: usize,
@@ -581,6 +582,40 @@ pub struct PrunePreviewTemplate {
     pub report_path: Option<PathBuf>,
     pub confirmation_token: Option<String>,
     pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PruneFindingView {
+    pub finding: CleanupFinding,
+    pub action_label: String,
+    pub action_badge_class: &'static str,
+    pub blocked_reason_label: Option<String>,
+    pub blocked_reason_recommended_action: Option<String>,
+}
+
+impl PruneFindingView {
+    pub fn from_finding(finding: CleanupFinding, action: PrunePathAction) -> Self {
+        let (action_label, action_badge_class, blocked_reason_label, blocked_reason_recommended_action) =
+            match action {
+                PrunePathAction::Delete => ("Delete", "badge-danger", None, None),
+                PrunePathAction::Quarantine => ("Quarantine", "badge-warning", None, None),
+                PrunePathAction::Blocked(code) => (
+                    "Blocked",
+                    "badge-secondary",
+                    Some(code.label().to_string()),
+                    Some(code.recommended_action().to_string()),
+                ),
+                PrunePathAction::ObserveOnly => ("Observe", "badge-info", None, None),
+            };
+
+        Self {
+            finding,
+            action_label: action_label.to_string(),
+            action_badge_class,
+            blocked_reason_label,
+            blocked_reason_recommended_action,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1135,7 +1170,7 @@ mod tests {
     #[test]
     fn prune_preview_template_renders_alternate_match_context() {
         let template = PrunePreviewTemplate {
-            findings: vec![CleanupFinding {
+            findings: vec![PruneFindingView::from_finding(CleanupFinding {
                 symlink_path: PathBuf::from("/plex/Chuck (2007)/Season 01/Chuck - S01E01.mkv"),
                 source_path: PathBuf::from("/rd/Chucky.S01E01.mkv"),
                 media_id: "tvdb-1".to_string(),
@@ -1159,7 +1194,7 @@ mod tests {
                 legacy_anime_root: None,
                 db_tracked: true,
                 ownership: CleanupOwnership::Managed,
-            }],
+            }, PrunePathAction::Delete)],
             total: 1,
             critical: 1,
             high: 0,
@@ -1191,7 +1226,7 @@ mod tests {
     #[test]
     fn prune_preview_template_renders_legacy_anime_root_context() {
         let template = PrunePreviewTemplate {
-            findings: vec![CleanupFinding {
+            findings: vec![PruneFindingView::from_finding(CleanupFinding {
                 symlink_path: PathBuf::from("/plex/Show/Season 01/Show - S01E01.mkv"),
                 source_path: PathBuf::from("/rd/Show.S01E01.mkv"),
                 media_id: String::new(),
@@ -1212,7 +1247,7 @@ mod tests {
                 }),
                 db_tracked: false,
                 ownership: CleanupOwnership::Foreign,
-            }],
+            }, PrunePathAction::Quarantine)],
             total: 1,
             critical: 0,
             high: 0,
@@ -1247,7 +1282,7 @@ mod tests {
     #[test]
     fn prune_preview_template_renders_blocked_reason_summary() {
         let template = PrunePreviewTemplate {
-            findings: vec![CleanupFinding {
+            findings: vec![PruneFindingView::from_finding(CleanupFinding {
                 symlink_path: PathBuf::from("/plex/Show/Season 01/Show - S01E01.mkv"),
                 source_path: PathBuf::from("/rd/Show.S01E01.mkv"),
                 media_id: "tvdb-1".to_string(),
@@ -1264,7 +1299,9 @@ mod tests {
                 legacy_anime_root: None,
                 db_tracked: false,
                 ownership: CleanupOwnership::Foreign,
-            }],
+            }, PrunePathAction::Blocked(
+                crate::cleanup_audit::PruneBlockedReasonCode::DuplicateSlotNeedsTrackedAnchor,
+            ))],
             total: 1,
             critical: 0,
             high: 0,

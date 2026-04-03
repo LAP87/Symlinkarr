@@ -1101,7 +1101,18 @@ pub async fn get_cleanup_prune(
         };
 
     let template = PrunePreviewTemplate {
-        findings: report.findings.clone(),
+        findings: report
+            .findings
+            .clone()
+            .into_iter()
+            .map(|finding| {
+                let action = prune_plan
+                    .as_ref()
+                    .map(|plan| plan.action_for_path(&finding.symlink_path))
+                    .unwrap_or(crate::cleanup_audit::PrunePathAction::ObserveOnly);
+                PruneFindingView::from_finding(finding, action)
+            })
+            .collect(),
         total: report.findings.len(),
         actionable_candidates: prune_plan
             .as_ref()

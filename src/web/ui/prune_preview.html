@@ -203,6 +203,7 @@
                 <th>Symlink Path</th>
                 <th>Source Path</th>
                 <th>Media ID</th>
+                <th>Planned action</th>
                 <th>Ownership</th>
                 <th>Season/Episode</th>
                 <th>Better Match</th>
@@ -213,7 +214,7 @@
             {% for finding in findings %}
             <tr>
                 <td>
-                    {% match finding.severity %}
+                    {% match finding.finding.severity %}
                     {% when crate::cleanup_audit::FindingSeverity::Critical %}
                     <span class="badge badge-danger">Critical</span>
                     {% when crate::cleanup_audit::FindingSeverity::High %}
@@ -222,11 +223,26 @@
                     <span class="badge badge-info">Warning</span>
                     {% endmatch %}
                 </td>
-                <td><code class="mono">{{ finding.symlink_path.display() }}</code></td>
-                <td><code class="mono">{{ finding.source_path.display() }}</code></td>
-                <td>{{ finding.media_id }}</td>
+                <td><code class="mono">{{ finding.finding.symlink_path.display() }}</code></td>
+                <td><code class="mono">{{ finding.finding.source_path.display() }}</code></td>
+                <td>{{ finding.finding.media_id }}</td>
                 <td>
-                    {% match finding.ownership %}
+                    <div class="badge-stack">
+                        <span class="badge {{ finding.action_badge_class }}">{{ finding.action_label }}</span>
+                        {% match finding.blocked_reason_label %}
+                        {% when Some with (label) %}
+                        <span class="text-muted">{{ label }}</span>
+                        {% when None %}
+                        {% endmatch %}
+                        {% match finding.blocked_reason_recommended_action %}
+                        {% when Some with (action) %}
+                        <span class="text-muted">{{ action }}</span>
+                        {% when None %}
+                        {% endmatch %}
+                    </div>
+                </td>
+                <td>
+                    {% match finding.finding.ownership %}
                     {% when crate::cleanup_audit::CleanupOwnership::Managed %}
                     <span class="badge badge-danger">Managed</span>
                     {% when crate::cleanup_audit::CleanupOwnership::Foreign %}
@@ -234,14 +250,14 @@
                     {% endmatch %}
                 </td>
                 <td>
-                    {% match finding.parsed.season %}
+                    {% match finding.finding.parsed.season %}
                     {% when Some with (s) %}
-                        {% match finding.parsed.episode %}
+                        {% match finding.finding.parsed.episode %}
                         {% when Some with (e) %}S{{ s }}E{{ e }}{% when None %}S{{ s }}{% endmatch %}
                     {% when None %}N/A{% endmatch %}
                 </td>
                 <td>
-                    {% match finding.alternate_match %}
+                    {% match finding.finding.alternate_match %}
                     {% when Some with (alt) %}
                     <div class="badge-stack">
                         <strong>{{ alt.title }}</strong>
@@ -249,7 +265,7 @@
                         <span class="badge badge-warning">score {{ "{:.2}"|format(alt.score) }}</span>
                     </div>
                     {% when None %}
-                        {% match finding.legacy_anime_root %}
+                        {% match finding.finding.legacy_anime_root %}
                         {% when Some with (legacy) %}
                         <div class="badge-stack">
                             <strong>{{ legacy.normalized_title }}</strong>
@@ -265,7 +281,7 @@
                 </td>
                 <td>
                     <span class="badge-stack">
-                        {% for reason in finding.reasons %}
+                        {% for reason in finding.finding.reasons %}
                         <span class="badge badge-info">{{ reason }}</span>
                         {% endfor %}
                     </span>

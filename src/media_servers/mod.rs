@@ -227,8 +227,13 @@ struct MediaRefreshGuard {
     _file: File,
 }
 
-fn media_refresh_lock_path(cfg: &Config) -> PathBuf {
-    let base = if cfg.backup.path.is_absolute() {
+#[derive(Debug)]
+struct DeferredRefreshQueueGuard {
+    _file: File,
+}
+
+fn media_refresh_lock_base(cfg: &Config) -> PathBuf {
+    if cfg.backup.path.is_absolute() {
         cfg.backup.path.clone()
     } else {
         Path::new(&cfg.db_path)
@@ -236,21 +241,19 @@ fn media_refresh_lock_path(cfg: &Config) -> PathBuf {
             .filter(|parent| !parent.as_os_str().is_empty())
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."))
-    };
-    base.join(".media-server-refresh.lock")
+    }
+}
+
+fn media_refresh_lock_path(cfg: &Config) -> PathBuf {
+    media_refresh_lock_base(cfg).join(".media-server-refresh.lock")
 }
 
 fn media_refresh_queue_path(cfg: &Config) -> PathBuf {
-    let base = if cfg.backup.path.is_absolute() {
-        cfg.backup.path.clone()
-    } else {
-        Path::new(&cfg.db_path)
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."))
-    };
-    base.join(".media-server-refresh.queue.json")
+    media_refresh_lock_base(cfg).join(".media-server-refresh.queue.json")
+}
+
+fn media_refresh_queue_lock_path(cfg: &Config) -> PathBuf {
+    media_refresh_lock_base(cfg).join(".media-server-refresh.queue.lock")
 }
 
 fn ensure_parent_dir_exists(path: &Path) -> Result<()> {
@@ -299,7 +302,44 @@ fn try_acquire_media_refresh_guard(cfg: &Config) -> Result<Option<MediaRefreshGu
 }
 
 #[cfg(unix)]
+fn acquire_deferred_refresh_queue_guard(cfg: &Config) -> Result<DeferredRefreshQueueGuard> {
+    let lock_path = media_refresh_queue_lock_path(cfg);
+    ensure_parent_dir_exists(&lock_path)?;
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)?;
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+    if rc == 0 {
+        return Ok(DeferredRefreshQueueGuard { _file: file });
+    }
+    Err(std::io::Error::last_os_error().into())
+}
+
+#[cfg(not(unix))]
+fn acquire_deferred_refresh_queue_guard(cfg: &Config) -> Result<DeferredRefreshQueueGuard> {
+    let lock_path = media_refresh_queue_lock_path(cfg);
+    ensure_parent_dir_exists(&lock_path)?;
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)?;
+    Ok(DeferredRefreshQueueGuard { _file: file })
+}
+
+#[cfg(unix)]
 impl Drop for MediaRefreshGuard {
+    fn drop(&mut self) {
+        let _ = unsafe { libc::flock(self._file.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
+
+#[cfg(unix)]
+impl Drop for DeferredRefreshQueueGuard {
     fn drop(&mut self) {
         let _ = unsafe { libc::flock(self._file.as_raw_fd(), libc::LOCK_UN) };
     }
@@ -407,6 +447,7 @@ fn queue_deferred_refresh_targets(
     cfg: &Config,
     entries: &[(MediaServerKind, Vec<PathBuf>)],
 ) -> Result<()> {
+    let _guard = acquire_deferred_refresh_queue_guard(cfg)?;
     let mut queue = load_deferred_refresh_queue(cfg)?;
     for (server, paths) in entries {
         let normalized = dedup_non_empty_paths(paths);
@@ -431,15 +472,6 @@ fn queue_deferred_refresh_targets(
         .servers
         .sort_by_key(|entry| entry.server.service_key());
     store_deferred_refresh_queue(cfg, &queue)
-}
-
-fn take_deferred_refresh_queue(cfg: &Config) -> Result<DeferredRefreshQueue> {
-    let queue = load_deferred_refresh_queue(cfg)?;
-    let queue_path = media_refresh_queue_path(cfg);
-    if queue_path.exists() {
-        std::fs::remove_file(queue_path)?;
-    }
-    Ok(queue)
 }
 
 fn pending_deferred_refresh_count(cfg: &Config) -> Result<usize> {
@@ -612,23 +644,32 @@ pub(crate) async fn refresh_library_paths_detailed(
                 .collect::<Vec<_>>();
             queue_deferred_refresh_targets(cfg, &deferred_entries)?;
         }
+        let deferred_summary = deferred_refresh_summary(cfg)?;
         emit_refresh_lock_contention(emit_text, &servers);
         let mut aggregate = LibraryRefreshTelemetry::default();
-        let requested_paths = if !refresh_paths.is_empty() {
-            refresh_paths.len()
-        } else {
-            pending_deferred_paths
-        };
         let server_outcomes = servers
             .into_iter()
-            .map(|server| {
+            .filter_map(|server| {
+                let requested_paths = if !refresh_paths.is_empty() {
+                    dedup_non_empty_paths(refresh_paths).len()
+                } else {
+                    deferred_summary
+                        .servers
+                        .iter()
+                        .find(|entry| entry.server == server)
+                        .map(|entry| entry.queued_targets)
+                        .unwrap_or(0)
+                };
+                if requested_paths == 0 {
+                    return None;
+                }
                 let refresh = deferred_refresh_telemetry(requested_paths);
                 merge_refresh_telemetry(&mut aggregate, &refresh);
-                LibraryInvalidationServerOutcome {
+                Some(LibraryInvalidationServerOutcome {
                     server,
                     requested_targets: requested_paths,
                     refresh,
-                }
+                })
             })
             .collect();
         return Ok(LibraryRefreshOutcome {
@@ -637,24 +678,35 @@ pub(crate) async fn refresh_library_paths_detailed(
         });
     };
 
-    let deferred_queue = take_deferred_refresh_queue(cfg)?;
+    let _queue_guard = acquire_deferred_refresh_queue_guard(cfg)?;
+    let deferred_queue = load_deferred_refresh_queue(cfg)?;
     let mut aggregate = LibraryRefreshTelemetry::default();
     let mut server_outcomes = Vec::new();
+    let mut remaining_queue = DeferredRefreshQueue {
+        servers: deferred_queue
+            .servers
+            .iter()
+            .filter(|entry| !servers.contains(&entry.server))
+            .cloned()
+            .collect(),
+    };
     for server in servers {
-        let mut server_targets = dedup_non_empty_paths(refresh_paths);
-        if let Some(deferred) = deferred_queue
+        let old_deferred_paths = deferred_queue
             .servers
             .iter()
             .find(|entry| entry.server == server)
-        {
-            if emit_text && !deferred.paths.is_empty() {
+            .map(|entry| entry.paths.clone())
+            .unwrap_or_default();
+        let mut server_targets = dedup_non_empty_paths(refresh_paths);
+        if !old_deferred_paths.is_empty() {
+            if emit_text {
                 crate::utils::user_println(format!(
                     "   📺 {}: draining {} deferred refresh target(s) from an earlier locked run",
                     server,
-                    deferred.paths.len()
+                    old_deferred_paths.len()
                 ));
             }
-            merge_dedup_paths(&mut server_targets, &deferred.paths);
+            merge_dedup_paths(&mut server_targets, &old_deferred_paths);
         }
 
         if server_targets.is_empty() {
@@ -671,6 +723,10 @@ pub(crate) async fn refresh_library_paths_detailed(
                 });
             }
             Err(err) => {
+                remaining_queue.servers.push(DeferredRefreshQueueServer {
+                    server,
+                    paths: server_targets.clone(),
+                });
                 if emit_text {
                     crate::utils::user_println(format!(
                         "   ⚠️  {} refresh failed: {}",
@@ -692,6 +748,10 @@ pub(crate) async fn refresh_library_paths_detailed(
             }
         }
     }
+    remaining_queue
+        .servers
+        .sort_by_key(|entry| entry.server.service_key());
+    store_deferred_refresh_queue(cfg, &remaining_queue)?;
 
     Ok(LibraryRefreshOutcome {
         aggregate,
@@ -796,26 +856,37 @@ pub(crate) async fn invalidate_after_mutation(
             });
         };
 
-        let deferred_queue = take_deferred_refresh_queue(cfg)?;
+        let _queue_guard = acquire_deferred_refresh_queue_guard(cfg)?;
+        let deferred_queue = load_deferred_refresh_queue(cfg)?;
         let mut aggregate = LibraryRefreshTelemetry::default();
         let mut server_outcomes = Vec::new();
+        let mut remaining_queue = DeferredRefreshQueue {
+            servers: deferred_queue
+                .servers
+                .iter()
+                .filter(|entry| !configured_servers.contains(&entry.server))
+                .cloned()
+                .collect(),
+        };
         for server in configured_servers.iter().copied() {
             let refresh_plan =
                 refresh_targets_for_server(cfg, server, &refresh_roots, affected_paths);
             let mut effective_targets = refresh_plan.targets;
-            if let Some(deferred) = deferred_queue
+            let old_deferred_paths = deferred_queue
                 .servers
                 .iter()
                 .find(|entry| entry.server == server)
-            {
-                if emit_text && !deferred.paths.is_empty() {
+                .map(|entry| entry.paths.clone())
+                .unwrap_or_default();
+            if !old_deferred_paths.is_empty() {
+                if emit_text {
                     crate::utils::user_println(format!(
                         "   📺 {}: draining {} deferred refresh target(s) from an earlier locked run",
                         server,
-                        deferred.paths.len()
+                        old_deferred_paths.len()
                     ));
                 }
-                merge_dedup_paths(&mut effective_targets, &deferred.paths);
+                merge_dedup_paths(&mut effective_targets, &old_deferred_paths);
             }
 
             if effective_targets.is_empty() {
@@ -844,6 +915,10 @@ pub(crate) async fn invalidate_after_mutation(
                     });
                 }
                 Err(err) => {
+                    remaining_queue.servers.push(DeferredRefreshQueueServer {
+                        server,
+                        paths: effective_targets.clone(),
+                    });
                     if emit_text {
                         crate::utils::user_println(format!(
                             "   ⚠️  {} refresh failed: {}",
@@ -867,6 +942,10 @@ pub(crate) async fn invalidate_after_mutation(
                 }
             }
         }
+        remaining_queue
+            .servers
+            .sort_by_key(|entry| entry.server.service_key());
+        store_deferred_refresh_queue(cfg, &remaining_queue)?;
 
         return Ok(LibraryInvalidationOutcome {
             server: configured_servers

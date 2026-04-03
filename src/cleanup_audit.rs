@@ -213,6 +213,30 @@ pub(crate) struct PrunePlan {
     pub blocked_reason_summary: Vec<PruneBlockedReasonSummary>,
     pub confirmation_token: String,
     dispositions: HashMap<PathBuf, PruneDisposition>,
+    blocked_by_path: HashMap<PathBuf, PruneBlockedReasonCode>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PrunePathAction {
+    Delete,
+    Quarantine,
+    Blocked(PruneBlockedReasonCode),
+    ObserveOnly,
+}
+
+impl PrunePlan {
+    pub(crate) fn action_for_path(&self, path: &Path) -> PrunePathAction {
+        match self.dispositions.get(path).copied() {
+            Some(PruneDisposition::Delete) => PrunePathAction::Delete,
+            Some(PruneDisposition::Quarantine) => PrunePathAction::Quarantine,
+            None => self
+                .blocked_by_path
+                .get(path)
+                .copied()
+                .map(PrunePathAction::Blocked)
+                .unwrap_or(PrunePathAction::ObserveOnly),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -235,7 +259,7 @@ pub enum PruneBlockedReasonCode {
 }
 
 impl PruneBlockedReasonCode {
-    fn label(&self) -> &'static str {
+    pub(crate) fn label(&self) -> &'static str {
         match self {
             Self::ForeignQuarantineDisabled => {
                 "foreign candidates are blocked because quarantine is disabled"
@@ -256,7 +280,7 @@ impl PruneBlockedReasonCode {
         }
     }
 
-    fn recommended_action(&self) -> &'static str {
+    pub(crate) fn recommended_action(&self) -> &'static str {
         match self {
             Self::ForeignQuarantineDisabled => {
                 "Enable cleanup.prune.quarantine_foreign or review the foreign symlinks manually before applying prune."
@@ -319,6 +343,7 @@ pub(crate) struct SafeDuplicatePrunePlan {
     pub prune_paths: Vec<PathBuf>,
     pub managed_paths: HashSet<PathBuf>,
     pub blocked_reason_counts: HashMap<PruneBlockedReasonCode, usize>,
+    pub blocked_by_path: HashMap<PathBuf, PruneBlockedReasonCode>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -2098,6 +2123,7 @@ pub(crate) fn collect_safe_duplicate_prune_plan(
     let mut managed_paths = HashSet::new();
     let mut by_slot: HashMap<(String, u32, u32), Vec<&CleanupFinding>> = HashMap::new();
     let mut blocked_reason_counts: HashMap<PruneBlockedReasonCode, usize> = HashMap::new();
+    let mut blocked_by_path: HashMap<PathBuf, PruneBlockedReasonCode> = HashMap::new();
 
     for finding in findings {
         let Some(slot_key) = finding_slot_key(finding) else {
@@ -2143,6 +2169,9 @@ pub(crate) fn collect_safe_duplicate_prune_plan(
         }
 
         if tainted_slots.contains(&slot_key) {
+            for path in &untracked_paths {
+                blocked_by_path.insert(path.clone(), PruneBlockedReasonCode::DuplicateSlotTainted);
+            }
             *blocked_reason_counts
                 .entry(PruneBlockedReasonCode::DuplicateSlotTainted)
                 .or_insert(0) += untracked_paths.len();
@@ -2154,6 +2183,12 @@ pub(crate) fn collect_safe_duplicate_prune_plan(
             .map(|finding| finding.source_path.clone())
             .collect();
         if unique_sources.len() > 1 {
+            for path in &untracked_paths {
+                blocked_by_path.insert(
+                    path.clone(),
+                    PruneBlockedReasonCode::DuplicateSlotSourceMismatch,
+                );
+            }
             *blocked_reason_counts
                 .entry(PruneBlockedReasonCode::DuplicateSlotSourceMismatch)
                 .or_insert(0) += untracked_paths.len();
@@ -2161,6 +2196,12 @@ pub(crate) fn collect_safe_duplicate_prune_plan(
         }
 
         if tracked_paths.is_empty() {
+            for path in &untracked_paths {
+                blocked_by_path.insert(
+                    path.clone(),
+                    PruneBlockedReasonCode::DuplicateSlotNeedsTrackedAnchor,
+                );
+            }
             *blocked_reason_counts
                 .entry(PruneBlockedReasonCode::DuplicateSlotNeedsTrackedAnchor)
                 .or_insert(0) += untracked_paths.len();
@@ -2168,6 +2209,12 @@ pub(crate) fn collect_safe_duplicate_prune_plan(
         }
 
         if tracked_paths.len() > 1 {
+            for path in &untracked_paths {
+                blocked_by_path.insert(
+                    path.clone(),
+                    PruneBlockedReasonCode::DuplicateSlotMultipleTrackedAnchors,
+                );
+            }
             *blocked_reason_counts
                 .entry(PruneBlockedReasonCode::DuplicateSlotMultipleTrackedAnchors)
                 .or_insert(0) += untracked_paths.len();
@@ -2184,6 +2231,7 @@ pub(crate) fn collect_safe_duplicate_prune_plan(
         prune_paths,
         managed_paths,
         blocked_reason_counts,
+        blocked_by_path,
     }
 }
 
@@ -2194,6 +2242,7 @@ pub(crate) fn build_prune_plan(
 ) -> PrunePlan {
     let safe_duplicate_plan = collect_safe_duplicate_prune_plan(&report.findings);
     let mut blocked_reason_counts = safe_duplicate_plan.blocked_reason_counts.clone();
+    let mut blocked_by_path = safe_duplicate_plan.blocked_by_path.clone();
     let legacy_anime_root_candidates: Vec<_> = report
         .findings
         .iter()
@@ -2229,6 +2278,18 @@ pub(crate) fn build_prune_plan(
             })
             .count();
         if blocked_legacy_count > 0 {
+            for finding in report.findings.iter().filter(|finding| !finding.db_tracked).filter(
+                |finding| {
+                    finding
+                        .reasons
+                        .contains(&FindingReason::LegacyAnimeRootDuplicate)
+                },
+            ) {
+                blocked_by_path.insert(
+                    finding.symlink_path.clone(),
+                    PruneBlockedReasonCode::LegacyAnimeRootsExcludedByDefault,
+                );
+            }
             *blocked_reason_counts
                 .entry(PruneBlockedReasonCode::LegacyAnimeRootsExcludedByDefault)
                 .or_insert(0) += blocked_legacy_count;
@@ -2272,6 +2333,7 @@ pub(crate) fn build_prune_plan(
                 Some(PruneDisposition::Quarantine)
             }
             CleanupOwnership::Foreign => {
+                blocked_by_path.insert(path.clone(), PruneBlockedReasonCode::ForeignQuarantineDisabled);
                 *blocked_reason_counts
                     .entry(PruneBlockedReasonCode::ForeignQuarantineDisabled)
                     .or_insert(0) += 1;
@@ -2364,6 +2426,7 @@ pub(crate) fn build_prune_plan(
         reason_counts,
         blocked_reason_summary,
         dispositions,
+        blocked_by_path,
     }
 }
 
