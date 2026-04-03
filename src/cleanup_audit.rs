@@ -1395,7 +1395,21 @@ pub(crate) fn quarantine_symlink_for_cleanup(cfg: &Config, symlink_path: &Path) 
         std::fs::create_dir_all(parent)?;
     }
     create_symlink_like(&resolved_target, &destination)?;
-    std::fs::remove_file(symlink_path)?;
+    if let Err(remove_err) = std::fs::remove_file(symlink_path) {
+        let rollback_result = std::fs::remove_file(&destination);
+        return match rollback_result {
+            Ok(()) => Err(anyhow::anyhow!(
+                "failed to remove original symlink after staging quarantine copy: {}",
+                remove_err
+            )),
+            Err(rollback_err) => Err(anyhow::anyhow!(
+                "failed to remove original symlink after staging quarantine copy: {}; rollback also failed for {}: {}",
+                remove_err,
+                destination.display(),
+                rollback_err
+            )),
+        };
+    }
     Ok(destination)
 }
 
@@ -3609,6 +3623,45 @@ cleanup:
         assert!(!symlink_path.exists());
         assert!(quarantined_path.is_symlink());
         assert_eq!(std::fs::read_link(&quarantined_path).unwrap(), source_file);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_quarantine_symlink_for_cleanup_rolls_back_when_original_remove_fails() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let library_root = dir.path().join("library");
+        let source_root = dir.path().join("rd");
+        let quarantine_root = dir.path().join("quarantine");
+        std::fs::create_dir_all(&library_root).unwrap();
+        std::fs::create_dir_all(&source_root).unwrap();
+        std::fs::create_dir_all(&quarantine_root).unwrap();
+
+        let source_file = source_root.join("source.mkv");
+        std::fs::write(&source_file, "video").unwrap();
+        let symlink_path = library_root.join("Show - S01E99.mkv");
+        std::os::unix::fs::symlink(&source_file, &symlink_path).unwrap();
+
+        let mut cfg = test_config(&library_root, &source_root);
+        cfg.cleanup.prune.quarantine_path = quarantine_root.clone();
+
+        let mut perms = std::fs::metadata(&library_root).unwrap().permissions();
+        perms.set_mode(0o555);
+        std::fs::set_permissions(&library_root, perms).unwrap();
+
+        let result = quarantine_symlink_for_cleanup(&cfg, &symlink_path);
+
+        let mut restore = std::fs::metadata(&library_root).unwrap().permissions();
+        restore.set_mode(0o755);
+        std::fs::set_permissions(&library_root, restore).unwrap();
+
+        let err = result.unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("failed to remove original symlink after staging quarantine copy"));
+        assert!(symlink_path.is_symlink());
+        assert!(!quarantine_root.join("library/Show - S01E99.mkv").exists());
     }
 
     #[tokio::test]

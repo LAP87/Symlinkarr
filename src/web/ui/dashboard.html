@@ -18,6 +18,11 @@
         <span class="badge {% if stats.dead_links > 0 %}badge-danger{% else %}badge-success{% endif %}">
             Dead {{ stats.dead_links }}
         </span>
+        {% if deferred_refresh.pending_targets > 0 %}
+        <span class="badge badge-warning">
+            Deferred refresh {{ deferred_refresh.pending_targets }}
+        </span>
+        {% endif %}
     </div>
 </div>
 
@@ -45,6 +50,21 @@
             <span>Queued <strong>{{ queue.queued }}</strong></span>
             <span>Downloading <strong>{{ queue.downloading }}</strong></span>
             <span>Blocked <strong>{{ queue.blocked }}</strong></span>
+        </div>
+    </section>
+
+    <section class="hero-card">
+        <p class="hero-label">Media Refresh Backlog</p>
+        <div class="hero-value">{{ deferred_refresh.pending_targets }}</div>
+        <p class="hero-copy">Refresh targets waiting for the media-server lock or a later mutation pass.</p>
+        <div class="hero-inline-stats">
+            {% if deferred_refresh.servers|length > 0 %}
+            {% for server in deferred_refresh.servers %}
+            <span>{{ server.server }} <strong>{{ server.queued_targets }}</strong></span>
+            {% endfor %}
+            {% else %}
+            <span>None queued</span>
+            {% endif %}
         </div>
     </section>
 </div>

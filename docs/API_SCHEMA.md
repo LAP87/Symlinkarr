@@ -69,13 +69,21 @@ Response:
   "plex": "configured",
   "emby": "configured",
   "jellyfin": "missing",
-  "refresh_backends": ["plex", "emby"]
+  "refresh_backends": ["plex", "emby"],
+  "deferred_refresh": {
+    "pending_targets": 3,
+    "servers": [
+      { "server": "plex", "queued_targets": 2 },
+      { "server": "emby", "queued_targets": 1 }
+    ]
+  }
 }
 ```
 
 Notes:
 
 - `refresh_backends` lists the refresh/invalidation backends that are both configured and enabled right now. A server may still show as `"configured"` in its individual field even if it is not currently active for refresh fan-out.
+- `deferred_refresh` reports queued refresh targets that were persisted because another Symlinkarr run held the media-refresh lock or because a later mutation pass still needs to drain them.
 
 ## `GET /api/v1/discover`
 

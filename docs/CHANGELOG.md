@@ -16,6 +16,8 @@
   - files: `src/web/templates.rs`, `src/web/ui/anime_remediation.html`, `src/web/ui/anime_remediation_result.html`
 - prune preview now surfaces blocked candidates and structured blocked-reason summaries, so broader cleanup trust gaps outside anime are visible instead of silently hidden behind smaller actionable counts.
   - files: `src/cleanup_audit.rs`, `src/web/templates.rs`, `src/web/ui/prune_preview.html`, `src/web/handlers.rs`, `docs/API_SCHEMA.md`
+- status, `/api/v1/health`, dashboard, and health page now surface deferred media-refresh backlog per backend, so queued invalidations are visible before the next mutation pass drains them.
+  - files: `src/media_servers/mod.rs`, `src/commands/status.rs`, `src/web/api/mod.rs`, `src/web/handlers.rs`, `src/web/templates.rs`, `src/web/ui/dashboard.html`, `src/web/ui/health.html`, `docs/API_SCHEMA.md`
 
 ### Validation
 

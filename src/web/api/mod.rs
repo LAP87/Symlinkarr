@@ -24,7 +24,8 @@ use crate::commands::selected_libraries;
 use crate::config::Config;
 use crate::db::{Database, ScanHistoryRecord};
 use crate::media_servers::{
-    configured_refresh_backends, LibraryInvalidationOutcome, LibraryInvalidationServerOutcome,
+    configured_refresh_backends, deferred_refresh_summary, LibraryInvalidationOutcome,
+    LibraryInvalidationServerOutcome,
 };
 
 use super::{
@@ -106,6 +107,19 @@ pub struct ApiHealth {
     pub emby: String,
     pub jellyfin: String,
     pub refresh_backends: Vec<String>,
+    pub deferred_refresh: ApiDeferredRefreshSummary,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct ApiDeferredRefreshSummary {
+    pub pending_targets: usize,
+    pub servers: Vec<ApiDeferredRefreshServerSummary>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApiDeferredRefreshServerSummary {
+    pub server: String,
+    pub queued_targets: usize,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -607,6 +621,19 @@ pub async fn api_get_health(State(state): State<WebState>) -> Json<ApiHealth> {
         .into_iter()
         .map(|server| server.service_key().to_string())
         .collect();
+    let deferred_refresh = deferred_refresh_summary(&state.config)
+        .map(|summary| ApiDeferredRefreshSummary {
+            pending_targets: summary.pending_targets,
+            servers: summary
+                .servers
+                .into_iter()
+                .map(|entry| ApiDeferredRefreshServerSummary {
+                    server: entry.server.service_key().to_string(),
+                    queued_targets: entry.queued_targets,
+                })
+                .collect(),
+        })
+        .unwrap_or_default();
     let db_status = if state.database.get_web_stats().await.is_ok() {
         "healthy"
     } else {
@@ -658,6 +685,7 @@ pub async fn api_get_health(State(state): State<WebState>) -> Json<ApiHealth> {
         emby: emby_status.to_string(),
         jellyfin: jellyfin_status.to_string(),
         refresh_backends,
+        deferred_refresh,
     })
 }
 
@@ -1984,6 +2012,8 @@ mod tests {
         assert_eq!(health.emby, "missing");
         assert_eq!(health.jellyfin, "missing");
         assert!(health.refresh_backends.is_empty());
+        assert_eq!(health.deferred_refresh.pending_targets, 0);
+        assert!(health.deferred_refresh.servers.is_empty());
     }
 
     #[tokio::test]
@@ -2001,6 +2031,16 @@ mod tests {
         cfg.jellyfin.url = "http://jellyfin.local".to_string();
         cfg.jellyfin.api_key = "key".to_string();
         cfg.jellyfin.refresh_enabled = false;
+        std::fs::write(
+            cfg.backup.path.join(".media-server-refresh.queue.json"),
+            r#"{
+              "servers": [
+                { "server": "plex", "paths": ["/library/anime", "/library/anime-2"] },
+                { "server": "emby", "paths": ["/library/anime"] }
+              ]
+            }"#,
+        )
+        .unwrap();
 
         let db = Database::new(&cfg.db_path).await.unwrap();
         let ctx = WebState::new(cfg, db);
@@ -2010,6 +2050,12 @@ mod tests {
         assert_eq!(health.emby, "configured");
         assert_eq!(health.jellyfin, "configured");
         assert_eq!(health.refresh_backends, vec!["plex", "emby"]);
+        assert_eq!(health.deferred_refresh.pending_targets, 3);
+        assert_eq!(health.deferred_refresh.servers.len(), 2);
+        assert_eq!(health.deferred_refresh.servers[0].server, "plex");
+        assert_eq!(health.deferred_refresh.servers[0].queued_targets, 2);
+        assert_eq!(health.deferred_refresh.servers[1].server, "emby");
+        assert_eq!(health.deferred_refresh.servers[1].queued_targets, 1);
     }
 
     #[tokio::test]

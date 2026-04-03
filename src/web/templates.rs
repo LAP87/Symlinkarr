@@ -17,7 +17,7 @@ use crate::commands::cleanup::{AnimeRemediationBlockedReasonSummary, AnimeRemedi
 use crate::commands::report::AnimeRemediationSample;
 use crate::config::Config;
 use crate::db::{AcquisitionJobCounts, ScanHistoryRecord};
-use crate::media_servers::LibraryInvalidationServerOutcome;
+use crate::media_servers::{DeferredRefreshSummary, LibraryInvalidationServerOutcome};
 use crate::models::LinkRecord;
 
 // ─── Dashboard ──────────────────────────────────────────────────────
@@ -53,6 +53,34 @@ impl From<AcquisitionJobCounts> for QueueOverview {
             no_result: value.no_result,
             failed: value.failed,
             completed_unlinked: value.completed_unlinked,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DeferredRefreshSummaryView {
+    pub pending_targets: usize,
+    pub servers: Vec<DeferredRefreshServerView>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DeferredRefreshServerView {
+    pub server: String,
+    pub queued_targets: usize,
+}
+
+impl From<DeferredRefreshSummary> for DeferredRefreshSummaryView {
+    fn from(value: DeferredRefreshSummary) -> Self {
+        Self {
+            pending_targets: value.pending_targets,
+            servers: value
+                .servers
+                .into_iter()
+                .map(|entry| DeferredRefreshServerView {
+                    server: entry.server.to_string(),
+                    queued_targets: entry.queued_targets,
+                })
+                .collect(),
         }
     }
 }
@@ -417,6 +445,7 @@ pub struct DashboardTemplate {
     pub latest_run: Option<ScanRunView>,
     pub recent_runs: Vec<ScanRunView>,
     pub queue: QueueOverview,
+    pub deferred_refresh: DeferredRefreshSummaryView,
 }
 
 // ─── Status ─────────────────────────────────────────────────────────
@@ -441,6 +470,7 @@ pub struct HealthCheck {
 #[template(path = "web/ui/health.html")]
 pub struct HealthTemplate {
     pub checks: std::collections::HashMap<String, HealthCheck>,
+    pub deferred_refresh: DeferredRefreshSummaryView,
 }
 
 // ─── Scan ───────────────────────────────────────────────────────────

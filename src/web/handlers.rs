@@ -25,6 +25,7 @@ use crate::commands::doctor::{collect_doctor_checks, DoctorCheckMode};
 use crate::commands::report::build_anime_remediation_report;
 use crate::commands::selected_libraries;
 use crate::db::{AcquisitionJobCounts, LinkEventHistoryRecord, ScanHistoryRecord};
+use crate::media_servers::deferred_refresh_summary;
 
 use super::templates::*;
 use super::{
@@ -313,12 +314,20 @@ pub async fn get_dashboard(State(state): State<WebState>) -> impl IntoResponse {
             QueueOverview::default()
         }
     };
+    let deferred_refresh = match deferred_refresh_summary(&state.config) {
+        Ok(summary) => DeferredRefreshSummaryView::from(summary),
+        Err(e) => {
+            error!("Failed to read deferred refresh queue: {}", e);
+            DeferredRefreshSummaryView::default()
+        }
+    };
 
     let template = DashboardTemplate {
         stats,
         latest_run,
         recent_runs,
         queue,
+        deferred_refresh,
     };
     Html(template.render().unwrap_or_else(|e| e.to_string()))
 }
@@ -421,6 +430,9 @@ pub async fn get_health(State(state): State<WebState>) -> impl IntoResponse {
 
     let template = HealthTemplate {
         checks: health_checks,
+        deferred_refresh: deferred_refresh_summary(&state.config)
+            .map(DeferredRefreshSummaryView::from)
+            .unwrap_or_default(),
     };
     Html(template.render().unwrap_or_else(|e| e.to_string()))
 }
@@ -2019,6 +2031,27 @@ mod tests {
         assert!(body.contains("Media refresh protections activated"));
         assert!(body.contains("Plex guard abort"));
         assert!(body.contains("Emby 1/1"));
+    }
+
+    #[tokio::test]
+    async fn dashboard_renders_deferred_refresh_backlog() {
+        let ctx = test_context().await;
+        std::fs::write(
+            ctx.state.config.backup.path.join(".media-server-refresh.queue.json"),
+            r#"{
+              "servers": [
+                { "server": "plex", "paths": ["/library/anime", "/library/anime-2"] },
+                { "server": "jellyfin", "paths": ["/library/anime"] }
+              ]
+            }"#,
+        )
+        .unwrap();
+
+        let body = render_body(get_dashboard(State(ctx.state.clone())).await).await;
+        assert!(body.contains("Deferred refresh 3"));
+        assert!(body.contains("Media Refresh Backlog"));
+        assert!(body.contains("Plex"));
+        assert!(body.contains("Jellyfin"));
     }
 
     #[tokio::test]

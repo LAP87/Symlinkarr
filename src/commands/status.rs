@@ -9,8 +9,8 @@ use crate::commands::{panel_border, panel_kv_row, panel_title, print_json};
 use crate::config::Config;
 use crate::db::Database;
 use crate::media_servers::{
-    configured_media_servers, configured_refresh_backends, display_server_list, probe_media_server,
-    MediaServerKind,
+    configured_media_servers, configured_refresh_backends, deferred_refresh_summary,
+    display_server_list, probe_media_server, MediaServerKind,
 };
 use crate::OutputFormat;
 
@@ -71,6 +71,7 @@ pub(crate) async fn run_status(
             .iter()
             .map(|server| server.service_key().to_string())
             .collect::<Vec<_>>();
+        let deferred_refresh = deferred_refresh_summary(cfg)?;
         let mut health_json = Vec::new();
         if emit_text {
             println!("\n🏥 Health Check:");
@@ -80,6 +81,20 @@ pub(crate) async fn run_status(
                 println!(
                     "   🔁 Active refresh backends: {}",
                     display_server_list(&refresh_backends)
+                );
+            }
+            if deferred_refresh.pending_targets == 0 {
+                println!("   💤 Deferred refresh backlog: none");
+            } else {
+                let per_server = deferred_refresh
+                    .servers
+                    .iter()
+                    .map(|entry| format!("{} {}", entry.server, entry.queued_targets))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                println!(
+                    "   💤 Deferred refresh backlog: {} target(s) queued ({})",
+                    deferred_refresh.pending_targets, per_server
                 );
             }
         }
@@ -157,6 +172,13 @@ pub(crate) async fn run_status(
                 "total": total,
                 "acquisition": acquisition_json,
                 "refresh_backends": refresh_backend_keys,
+                "deferred_refresh": {
+                    "pending_targets": deferred_refresh.pending_targets,
+                    "servers": deferred_refresh.servers.iter().map(|entry| serde_json::json!({
+                        "server": entry.server.service_key(),
+                        "queued_targets": entry.queued_targets,
+                    })).collect::<Vec<_>>(),
+                },
                 "health": health_json,
             }));
         }

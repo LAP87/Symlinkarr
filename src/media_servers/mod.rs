@@ -334,6 +334,19 @@ struct DeferredRefreshQueueServer {
     paths: Vec<PathBuf>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct DeferredRefreshSummary {
+    pub pending_targets: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub servers: Vec<DeferredRefreshServerSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct DeferredRefreshServerSummary {
+    pub server: MediaServerKind,
+    pub queued_targets: usize,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct RefreshTargetPlan {
     targets: Vec<PathBuf>,
@@ -439,6 +452,25 @@ fn pending_deferred_refresh_count(cfg: &Config) -> Result<usize> {
 
 pub(crate) fn has_pending_deferred_refreshes(cfg: &Config) -> Result<bool> {
     Ok(pending_deferred_refresh_count(cfg)? > 0)
+}
+
+pub(crate) fn deferred_refresh_summary(cfg: &Config) -> Result<DeferredRefreshSummary> {
+    let queue = load_deferred_refresh_queue(cfg)?;
+    let mut servers = queue
+        .servers
+        .into_iter()
+        .map(|entry| DeferredRefreshServerSummary {
+            server: entry.server,
+            queued_targets: entry.paths.len(),
+        })
+        .filter(|entry| entry.queued_targets > 0)
+        .collect::<Vec<_>>();
+    servers.sort_by_key(|entry| entry.server.service_key());
+    let pending_targets = servers.iter().map(|entry| entry.queued_targets).sum();
+    Ok(DeferredRefreshSummary {
+        pending_targets,
+        servers,
+    })
 }
 
 fn planned_media_browser_batches(cfg: &MediaBrowserConfig, paths: &[PathBuf]) -> usize {
