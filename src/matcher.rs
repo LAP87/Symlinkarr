@@ -166,7 +166,10 @@ impl Matcher {
                 let db = db.clone();
 
                 join_set.spawn(async move {
-                    let _permit = sem.acquire().await;
+                    let _permit = sem
+                        .acquire()
+                        .await
+                        .expect("metadata semaphore unexpectedly closed");
                     let result =
                         fetch_metadata_static(&tmdb, tvdb.as_ref(), metadata_mode, &item, &db)
                             .await;
@@ -377,24 +380,39 @@ impl Matcher {
         };
         let candidate_scan = candidate_started.elapsed();
 
-        // Step 3: Enforce one link per destination slot (media_id+episode or media_id movie)
+        // Step 3: Enforce one link per destination slot (media_id+episode or media_id movie).
+        // Multi-episode files (episode_end is set) are expanded into one candidate per
+        // episode in the range so that destination reduction correctly resolves conflicts
+        // between multi-ep and single-ep source files for the same episode slot.
         let destination_started = Instant::now();
         let mut by_destination: HashMap<DestinationKey, MatchCandidate> = HashMap::new();
 
         for candidate in best_per_source {
             let item = &library_items[candidate.library_idx];
-            let Some(key) = destination_key(item, &candidate.source_item) else {
-                continue;
-            };
+            let episode_slots = expand_episode_slots(&candidate.source_item);
 
-            match by_destination.get(&key) {
-                None => {
-                    by_destination.insert(key, candidate);
-                }
-                Some(existing) => {
-                    if should_replace_destination(existing, &candidate) {
-                        by_destination.insert(key, candidate);
-                    }
+            if episode_slots.is_empty() {
+                // Movie or source without episode info — use as-is.
+                let Some(key) = destination_key(item, &candidate.source_item) else {
+                    continue;
+                };
+                insert_or_replace(&mut by_destination, key, candidate);
+            } else {
+                // TV episode (possibly multi-episode) — insert one candidate per slot.
+                for ep in episode_slots {
+                    let mut slot_source = candidate.source_item.clone();
+                    slot_source.episode = Some(ep);
+
+                    let Some(key) = destination_key(item, &slot_source) else {
+                        continue;
+                    };
+
+                    let slot_candidate = MatchCandidate {
+                        source_item: slot_source,
+                        ..candidate.clone()
+                    };
+
+                    insert_or_replace(&mut by_destination, key, slot_candidate);
                 }
             }
         }
@@ -583,6 +601,7 @@ async fn fetch_cached_metadata_static(
                 "Metadata cache decode failed for key {} ({}); ignoring cache entry",
                 cache_key, err
             );
+            let _ = db.invalidate_cached(&cache_key).await;
             Ok(MetadataCacheState::Miss)
         }
     }
@@ -713,6 +732,13 @@ fn resolve_anime_scene_episode_mapping(
         if season_has_episode(season, parsed_episode) {
             return Some((parsed_season, parsed_episode));
         }
+
+        return None;
+    }
+
+    let max_regular_season = seasons.iter().map(|season| season.season_number).max()?;
+    if parsed_season <= max_regular_season {
+        return None;
     }
 
     anime_identity
@@ -797,6 +823,46 @@ fn resolve_cumulative_anime_episode(
     }
 
     None
+}
+
+fn insert_or_replace(
+    by_destination: &mut HashMap<DestinationKey, MatchCandidate>,
+    key: DestinationKey,
+    candidate: MatchCandidate,
+) {
+    match by_destination.get(&key) {
+        None => {
+            by_destination.insert(key, candidate);
+        }
+        Some(existing) => {
+            if should_replace_destination(existing, &candidate) {
+                by_destination.insert(key, candidate);
+            }
+        }
+    }
+}
+
+/// Expand a source item into its covered episode numbers.
+/// Single-episode files return `[episode]`; multi-episode files return `[start..=end]`.
+/// Returns an empty vec for movies or items without episode info.
+/// Capped at 24 episodes per file to prevent pathological expansion from parser bugs.
+fn expand_episode_slots(source: &SourceItem) -> Vec<u32> {
+    const MAX_MULTI_EPISODE_SPAN: u32 = 24;
+
+    match (source.episode, source.episode_end) {
+        (Some(start), Some(end)) if end > start && (end - start) < MAX_MULTI_EPISODE_SPAN => {
+            (start..=end).collect()
+        }
+        (Some(start), Some(end)) if end > start => {
+            warn!(
+                "Multi-episode span too large ({}-{}); capping at first episode only: {:?}",
+                start, end, source.path
+            );
+            vec![start]
+        }
+        (Some(ep), _) => vec![ep],
+        _ => vec![], // Movies or items without episode info
+    }
 }
 
 fn destination_key(item: &LibraryItem, source: &SourceItem) -> Option<DestinationKey> {
@@ -1059,6 +1125,9 @@ fn match_source_slice(
                     anime_identity,
                 );
                 if let Some(parsed) = parsed {
+                    if !source_shape_matches_media_type(item, &parsed) {
+                        continue;
+                    }
                     let media_id = item.id.to_string();
                     let aliases = alias_map
                         .get(&exact_idx)
@@ -1516,6 +1585,16 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_anime_scene_episode_mapping_does_not_treat_in_season_numbers_as_absolute() {
+        let metadata = metadata_with_seasons(&[(1, 12), (3, 12), (20, 130)]);
+        let item = anime_item("Example Anime", 456);
+        assert_eq!(
+            resolve_anime_scene_episode_mapping(&item, Some(&metadata), None, 3, 129),
+            None
+        );
+    }
+
+    #[test]
     fn test_resolve_source_for_library_item_uses_anime_identity_for_absolute_numbering() {
         let metadata = metadata_with_seasons(&[(1, 12), (2, 12)]);
         let item = anime_item("Example Anime", 22222);
@@ -1617,7 +1696,7 @@ mod tests {
     }
 
     #[test]
-    fn test_exact_id_path_still_overrides_movie_episode_shape_guard() {
+    fn test_exact_id_path_respects_movie_episode_shape_guard() {
         let library_items = vec![movie_item("The Avengers", 24428)];
         let source_items = vec![parsed_standard_source(
             "/rd/tmdb-24428/Avengers.Assemble.S01E01.mkv",
@@ -1641,8 +1720,8 @@ mod tests {
             None,
         );
 
-        assert_eq!(chunk.best_per_source.len(), 1);
-        assert_eq!(chunk.best_per_source[0].media_id, "tmdb-24428");
+        assert!(chunk.best_per_source.is_empty());
+        assert_eq!(chunk.exact_id_hits, 0);
     }
 
     #[test]
@@ -1774,5 +1853,66 @@ mod tests {
         let matcher = Matcher::new(None, None, MatchingMode::Strict, MetadataMode::Full, 1);
         let metadata = matcher.get_metadata(&item, &db).await.unwrap();
         assert!(metadata.is_none());
+    }
+
+    #[test]
+    fn test_expand_episode_slots_single() {
+        let source = SourceItem {
+            path: PathBuf::from("/rd/Show.S01E05.mkv"),
+            parsed_title: "show".to_string(),
+            season: Some(1),
+            episode: Some(5),
+            episode_end: None,
+            quality: None,
+            extension: "mkv".to_string(),
+            year: None,
+        };
+        assert_eq!(expand_episode_slots(&source), vec![5]);
+    }
+
+    #[test]
+    fn test_expand_episode_slots_multi() {
+        let source = SourceItem {
+            path: PathBuf::from("/rd/Show.S01E01E02E03.mkv"),
+            parsed_title: "show".to_string(),
+            season: Some(1),
+            episode: Some(1),
+            episode_end: Some(3),
+            quality: None,
+            extension: "mkv".to_string(),
+            year: None,
+        };
+        assert_eq!(expand_episode_slots(&source), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn test_expand_episode_slots_movie() {
+        let source = SourceItem {
+            path: PathBuf::from("/rd/Movie.2024.mkv"),
+            parsed_title: "movie".to_string(),
+            season: None,
+            episode: None,
+            episode_end: None,
+            quality: None,
+            extension: "mkv".to_string(),
+            year: Some(2024),
+        };
+        assert!(expand_episode_slots(&source).is_empty());
+    }
+
+    #[test]
+    fn test_expand_episode_slots_caps_pathological_range() {
+        let source = SourceItem {
+            path: PathBuf::from("/rd/Show.S01E01-E999.mkv"),
+            parsed_title: "show".to_string(),
+            season: Some(1),
+            episode: Some(1),
+            episode_end: Some(999),
+            quality: None,
+            extension: "mkv".to_string(),
+            year: None,
+        };
+        // Should fall back to first episode only due to cap
+        assert_eq!(expand_episode_slots(&source), vec![1]);
     }
 }

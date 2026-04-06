@@ -65,6 +65,7 @@
                 <td class="text-muted">{{ item.size }}</td>
                 <td>
                     <form action="/discover/add" method="post" style="display:inline;">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                         <input type="hidden" name="torrent_id" value="{{ item.rd_torrent_id }}">
                         <input type="hidden" name="library" value="{{ selected_library }}">
                         <button type="submit" class="btn btn-primary" style="padding:0.4rem 0.8rem;font-size:0.8rem;">

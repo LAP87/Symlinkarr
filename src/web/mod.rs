@@ -28,8 +28,6 @@ use std::collections::HashSet;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
-use subtle::ConstantTimeEq;
 use tokio::sync::Mutex;
 use tower_http::{services::ServeDir, trace::TraceLayer};
 use tracing::{error, info, warn};
@@ -37,6 +35,8 @@ use tracing::{error, info, warn};
 use crate::cleanup_audit::{CleanupAuditor, CleanupReport, CleanupScope};
 use crate::config::{Config, ContentType, LibraryConfig};
 use crate::db::Database;
+
+const CONTENT_SECURITY_POLICY_VALUE: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'";
 
 #[derive(Clone, Debug)]
 pub(crate) struct ActiveScanJob {
@@ -111,17 +111,26 @@ pub struct WebState {
 }
 
 impl WebState {
+    #[cfg(test)]
     pub fn new(config: Config, database: Database) -> Self {
-        Self {
+        Self::try_new(config, database).expect("failed to generate secure browser session token")
+    }
+
+    pub fn try_new(config: Config, database: Database) -> Result<Self> {
+        Ok(Self {
             config: Arc::new(config),
             database: Arc::new(database),
-            browser_session_token: Arc::new(generate_browser_session_token()),
+            browser_session_token: Arc::new(generate_browser_session_token()?),
             background_jobs: Arc::new(Mutex::new(BackgroundJobState::default())),
-        }
+        })
     }
 
     fn browser_session_token(&self) -> &str {
         self.browser_session_token.as_str()
+    }
+
+    fn browser_mutation_guard_enabled(&self) -> bool {
+        self.config.web.requires_remote_ack()
     }
 
     pub(crate) async fn active_scan(&self) -> Option<ActiveScanJob> {
@@ -562,19 +571,6 @@ impl WebState {
     ) {
         self.background_jobs.lock().await.last_cleanup_audit_outcome = outcome;
     }
-
-    #[cfg(test)]
-    pub(crate) async fn set_active_repair_for_test(&self, job: Option<ActiveRepairJob>) {
-        self.background_jobs.lock().await.active_repair = job;
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn set_last_repair_outcome_for_test(
-        &self,
-        outcome: Option<LastRepairOutcome>,
-    ) {
-        self.background_jobs.lock().await.last_repair_outcome = outcome;
-    }
 }
 
 fn panic_message(payload: Box<dyn std::any::Any + Send + 'static>) -> String {
@@ -877,16 +873,6 @@ fn cleanup_audit_output_path(
     }
 }
 
-/// Custom error type for web handlers
-#[derive(Debug)]
-pub struct WebError(pub String);
-
-impl IntoResponse for WebError {
-    fn into_response(self) -> axum::response::Response {
-        (StatusCode::INTERNAL_SERVER_ERROR, self.0).into_response()
-    }
-}
-
 /// Create the Axum router with all routes
 fn create_router(state: WebState) -> Router {
     // Main app routes
@@ -942,6 +928,7 @@ fn create_router(state: WebState) -> Router {
     Router::new()
         .merge(app_routes)
         .nest("/api/v1", api_routes)
+        .layer(middleware::from_fn(add_security_headers))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             guard_web_auth,
@@ -959,6 +946,12 @@ fn ensure_remote_bind_allowed(config: &Config) -> Result<()> {
     if config.web.requires_remote_ack() && !config.web.allow_remote {
         anyhow::bail!(
             "Refusing to start web UI on {} without web.allow_remote=true",
+            config.web.normalized_bind_address()
+        );
+    }
+    if config.web.requires_remote_ack() && config.web.allow_remote && !config.web.has_basic_auth() {
+        anyhow::bail!(
+            "Refusing to start web UI on {} with web.allow_remote=true unless web.username/web.password are configured",
             config.web.normalized_bind_address()
         );
     }
@@ -1030,17 +1023,30 @@ fn is_same_origin_browser_mutation(headers: &HeaderMap) -> bool {
 }
 
 fn has_valid_browser_session(headers: &HeaderMap, state: &WebState) -> bool {
-    request_cookie_value(headers, BROWSER_SESSION_COOKIE).as_deref()
-        == Some(state.browser_session_token())
+    request_cookie_value(headers, BROWSER_SESSION_COOKIE)
+        .as_deref()
+        .map(|token| constant_time_str_eq(token, state.browser_session_token()))
+        .unwrap_or(false)
+}
+
+fn has_valid_browser_csrf_token(token: &str, state: &WebState) -> bool {
+    constant_time_str_eq(token.trim(), state.browser_session_token())
 }
 
 fn constant_time_str_eq(left: &str, right: &str) -> bool {
     let left = left.as_bytes();
     let right = right.as_bytes();
-    if left.len() != right.len() {
-        return false;
+
+    let mut diff = left.len() ^ right.len();
+    let max_len = left.len().max(right.len());
+
+    for idx in 0..max_len {
+        let left_byte = left.get(idx).copied().unwrap_or_default();
+        let right_byte = right.get(idx).copied().unwrap_or_default();
+        diff |= usize::from(left_byte ^ right_byte);
     }
-    left.ct_eq(right).into()
+
+    diff == 0
 }
 
 fn request_basic_credentials(headers: &HeaderMap) -> Option<(String, String)> {
@@ -1150,24 +1156,64 @@ fn missing_browser_session_response(path: &str) -> axum::response::Response {
         .into_response()
 }
 
-fn generate_browser_session_token() -> String {
+fn invalid_browser_csrf_response(path: &str) -> axum::response::Response {
+    if path.starts_with("/api/") {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "browser mutation blocked; reload the Symlinkarr UI and retry with the issued CSRF token"
+            })),
+        )
+            .into_response();
+    }
+
+    (
+        StatusCode::FORBIDDEN,
+        "Browser mutation blocked; reload the Symlinkarr UI and retry with the issued CSRF token.",
+    )
+        .into_response()
+}
+
+async fn add_security_headers(
+    request: axum::extract::Request,
+    next: Next,
+) -> axum::response::Response {
+    let mut response = next.run(request).await;
+    response.headers_mut().insert(
+        "content-security-policy",
+        HeaderValue::from_static(CONTENT_SECURITY_POLICY_VALUE),
+    );
+    response.headers_mut().insert(
+        "x-content-type-options",
+        HeaderValue::from_static("nosniff"),
+    );
+    response
+        .headers_mut()
+        .insert("x-frame-options", HeaderValue::from_static("DENY"));
+    response
+        .headers_mut()
+        .insert("referrer-policy", HeaderValue::from_static("same-origin"));
+    response.headers_mut().insert(
+        "permissions-policy",
+        HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
+    );
+    response
+}
+
+fn generate_browser_session_token() -> Result<String> {
     let mut bytes = [0u8; 32];
     if getrandom::getrandom(&mut bytes).is_ok() {
-        return bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+        return Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect());
     }
 
     if std::fs::File::open("/dev/urandom")
         .and_then(|mut file| file.read_exact(&mut bytes))
         .is_ok()
     {
-        return bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+        return Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect());
     }
 
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    format!("{:016x}{:08x}", nanos, std::process::id())
+    anyhow::bail!("OS entropy unavailable for browser session token generation")
 }
 
 async fn guard_web_auth(
@@ -1214,15 +1260,19 @@ async fn guard_browser_mutations(
 ) -> axum::response::Response {
     let method = request.method().clone();
     let path = request.uri().path().to_string();
+    let is_api = path.starts_with("/api/");
     let origin = request.headers().get(ORIGIN).and_then(header_value_str);
     let referer = request.headers().get(REFERER).and_then(header_value_str);
     let host = request.headers().get(HOST).and_then(header_value_str);
     let has_browser_metadata = request_has_browser_metadata(request.headers());
     let has_valid_session = has_valid_browser_session(request.headers(), &state);
     let should_issue_session = method_receives_browser_session(&method) && !has_valid_session;
+    let enforce_browser_guard = state.browser_mutation_guard_enabled();
 
-    if method_requires_same_origin(&method) && has_browser_metadata {
-        if !is_same_origin_browser_mutation(request.headers()) {
+    if enforce_browser_guard && method_requires_same_origin(&method) {
+        let require_browser_session = !is_api || has_browser_metadata;
+
+        if has_browser_metadata && !is_same_origin_browser_mutation(request.headers()) {
             warn!(
                 method = %method,
                 path,
@@ -1234,7 +1284,7 @@ async fn guard_browser_mutations(
             return forbidden_origin_response(request.uri().path());
         }
 
-        if !has_valid_session {
+        if require_browser_session && !has_valid_session {
             warn!(
                 method = %method,
                 path,
@@ -1258,6 +1308,11 @@ async fn guard_browser_mutations(
     response
 }
 
+async fn shutdown_signal() {
+    let _ = tokio::signal::ctrl_c().await;
+    info!("Shutdown signal received; stopping web UI");
+}
+
 /// Start the web server
 ///
 /// Binds to the specified port and serves the web UI.
@@ -1265,7 +1320,7 @@ async fn guard_browser_mutations(
 pub async fn serve(config: Config, db: Database, port: u16) -> Result<()> {
     ensure_remote_bind_allowed(&config)?;
     let bind_address = config.web.normalized_bind_address();
-    let state = WebState::new(config, db);
+    let state = WebState::try_new(config, db)?;
     let addr = format!("{}:{}", bind_address, port);
 
     let router = create_router(state);
@@ -1281,14 +1336,17 @@ pub async fn serve(config: Config, db: Database, port: u16) -> Result<()> {
     }
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    axum::serve(listener, router).await?;
+    axum::serve(listener, router)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
 
     Ok(())
 }
 
 /// Resolve the static file directory. Checks (in order):
 /// 1. `src/web/static` (development)
-/// 2. Next to the executable at `<exe_dir>/static` (Docker / installed)
+/// 2. Next to the executable at `<exe_dir>/static` (legacy Docker / installed)
+/// 3. System data dir at `/usr/local/share/symlinkarr/static` (current Docker / installed)
 fn static_dir() -> std::path::PathBuf {
     let dev_path = std::path::PathBuf::from("src/web/static");
     if dev_path.is_dir() {
@@ -1299,6 +1357,10 @@ fn static_dir() -> std::path::PathBuf {
         if exe_sibling.is_dir() {
             return exe_sibling;
         }
+    }
+    let shared_path = std::path::PathBuf::from("/usr/local/share/symlinkarr/static");
+    if shared_path.is_dir() {
+        return shared_path;
     }
     // Fallback — will 404 but won't panic
     dev_path
@@ -1325,6 +1387,13 @@ mod tests {
     fn basic_auth_header(username: &str, password: &str) -> String {
         let credentials = format!("{username}:{password}");
         format!("Basic {}", BASE64_STANDARD.encode(credentials))
+    }
+
+    #[test]
+    fn constant_time_str_eq_handles_equal_and_unequal_lengths() {
+        assert!(constant_time_str_eq("abcd", "abcd"));
+        assert!(!constant_time_str_eq("abcd", "abc"));
+        assert!(!constant_time_str_eq("abcd", "abce"));
     }
 
     fn test_config(root: &std::path::Path) -> Config {
@@ -1475,6 +1544,19 @@ mod tests {
         create_router(WebState::new(cfg, db))
     }
 
+    async fn remote_guarded_router() -> Router {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        std::mem::forget(dir);
+        let mut cfg = test_config(&root);
+        cfg.web.bind_address = "0.0.0.0".to_string();
+        cfg.web.allow_remote = true;
+        cfg.web.username = "admin".to_string();
+        cfg.web.password = "secret".to_string();
+        let db = Database::new(&cfg.db_path).await.unwrap();
+        create_router(WebState::new(cfg, db))
+    }
+
     async fn get_html(router: &Router, path: &str) -> (u16, String) {
         let response = router
             .clone()
@@ -1520,6 +1602,13 @@ mod tests {
                     .map(|cookie| cookie.split(';').next().unwrap_or(cookie).to_string())
             })
             .expect("expected symlinkarr browser session cookie")
+    }
+
+    fn browser_session_token(cookie: &str) -> String {
+        cookie
+            .split_once('=')
+            .map(|(_, value)| value.to_string())
+            .expect("expected cookie name=value format")
     }
 
     async fn post_json(
@@ -1642,12 +1731,14 @@ mod tests {
 
     #[tokio::test]
     async fn api_blocks_cross_origin_mutations() {
-        let router = test_router().await;
+        let router = remote_guarded_router().await;
+        let auth = basic_auth_header("admin", "secret");
         let (status, body) = post_json_with_headers(
             &router,
             "/api/v1/cleanup/audit",
             serde_json::json!({ "scope": "anime" }),
             &[
+                (header::AUTHORIZATION.as_str(), auth.as_str()),
                 (header::HOST.as_str(), "127.0.0.1:8726"),
                 (header::ORIGIN.as_str(), "http://evil.example"),
             ],
@@ -1741,14 +1832,21 @@ mod tests {
 
     #[tokio::test]
     async fn api_allows_same_origin_mutations() {
-        let router = test_router().await;
-        let (_, headers, _) = get_html_with_headers(&router, "/", &[]).await;
+        let router = remote_guarded_router().await;
+        let auth = basic_auth_header("admin", "secret");
+        let (_, headers, _) = get_html_with_headers(
+            &router,
+            "/",
+            &[(header::AUTHORIZATION.as_str(), auth.as_str())],
+        )
+        .await;
         let cookie = browser_session_cookie(&headers);
         let (status, body) = post_json_with_headers(
             &router,
             "/api/v1/cleanup/audit",
             serde_json::json!({ "scope": "anime" }),
             &[
+                (header::AUTHORIZATION.as_str(), auth.as_str()),
                 (header::HOST.as_str(), "127.0.0.1:8726"),
                 (header::ORIGIN.as_str(), "http://127.0.0.1:8726"),
                 (header::COOKIE.as_str(), &cookie),
@@ -1763,13 +1861,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ui_blocks_cross_origin_form_posts() {
+    async fn local_only_ui_mutations_are_open_without_session_or_csrf() {
         let router = test_router().await;
+        let (status, body) = post_form_with_headers(&router, "/config/validate", "", &[]).await;
+
+        assert_eq!(status, 200);
+        assert!(body.contains("Configuration"));
+    }
+
+    #[tokio::test]
+    async fn ui_blocks_cross_origin_form_posts_when_remote_exposed() {
+        let router = remote_guarded_router().await;
+        let auth = basic_auth_header("admin", "secret");
         let (status, body) = post_form_with_headers(
             &router,
             "/config/validate",
             "",
             &[
+                (header::AUTHORIZATION.as_str(), auth.as_str()),
                 (header::HOST.as_str(), "127.0.0.1:8726"),
                 (header::REFERER.as_str(), "http://evil.example/form"),
             ],
@@ -1781,13 +1890,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn browser_same_origin_mutations_require_issued_session_cookie() {
-        let router = test_router().await;
+    async fn browser_same_origin_mutations_require_issued_session_cookie_when_remote_exposed() {
+        let router = remote_guarded_router().await;
+        let auth = basic_auth_header("admin", "secret");
         let (status, body) = post_json_with_headers(
             &router,
             "/api/v1/cleanup/audit",
             serde_json::json!({ "scope": "anime" }),
             &[
+                (header::AUTHORIZATION.as_str(), auth.as_str()),
                 (header::HOST.as_str(), "127.0.0.1:8726"),
                 (header::ORIGIN.as_str(), "http://127.0.0.1:8726"),
             ],
@@ -1800,6 +1911,79 @@ mod tests {
             json["error"],
             "browser mutation blocked; refresh the Symlinkarr UI from the same origin and retry with the issued browser session"
         );
+    }
+
+    #[tokio::test]
+    async fn ui_mutations_require_issued_session_cookie_even_without_browser_metadata_when_remote_exposed(
+    ) {
+        let router = remote_guarded_router().await;
+        let auth = basic_auth_header("admin", "secret");
+        let (status, body) = post_form_with_headers(
+            &router,
+            "/config/validate",
+            "",
+            &[(header::AUTHORIZATION.as_str(), auth.as_str())],
+        )
+        .await;
+
+        assert_eq!(status, 403);
+        assert!(body.contains("Browser mutation blocked"));
+    }
+
+    #[tokio::test]
+    async fn ui_mutations_require_valid_csrf_token_after_session_is_issued_when_remote_exposed() {
+        let router = remote_guarded_router().await;
+        let auth = basic_auth_header("admin", "secret");
+        let (_, headers, _) = get_html_with_headers(
+            &router,
+            "/config",
+            &[(header::AUTHORIZATION.as_str(), auth.as_str())],
+        )
+        .await;
+        let cookie = browser_session_cookie(&headers);
+
+        let (status, body) = post_form_with_headers(
+            &router,
+            "/config/validate",
+            "",
+            &[
+                (header::AUTHORIZATION.as_str(), auth.as_str()),
+                (header::COOKIE.as_str(), &cookie),
+            ],
+        )
+        .await;
+
+        assert_eq!(status, 403);
+        assert!(body.contains("CSRF token"));
+    }
+
+    #[tokio::test]
+    async fn ui_mutations_accept_valid_csrf_token_with_issued_session_when_remote_exposed() {
+        let router = remote_guarded_router().await;
+        let auth = basic_auth_header("admin", "secret");
+        let (_, headers, _) = get_html_with_headers(
+            &router,
+            "/config",
+            &[(header::AUTHORIZATION.as_str(), auth.as_str())],
+        )
+        .await;
+        let cookie = browser_session_cookie(&headers);
+        let csrf_token = browser_session_token(&cookie);
+        let form = format!("csrf_token={csrf_token}");
+
+        let (status, body) = post_form_with_headers(
+            &router,
+            "/config/validate",
+            &form,
+            &[
+                (header::AUTHORIZATION.as_str(), auth.as_str()),
+                (header::COOKIE.as_str(), &cookie),
+            ],
+        )
+        .await;
+
+        assert_eq!(status, 200);
+        assert!(body.contains("Configuration"));
     }
 
     #[tokio::test]
@@ -1821,6 +2005,26 @@ mod tests {
         assert!(set_cookie.contains("Path=/"));
     }
 
+    #[tokio::test]
+    async fn dashboard_get_emits_security_headers() {
+        let router = test_router().await;
+        let (status, headers, _) = get_html_with_headers(&router, "/", &[]).await;
+
+        assert_eq!(status, 200);
+        assert_eq!(
+            headers
+                .get("content-security-policy")
+                .and_then(|value| value.to_str().ok()),
+            Some(CONTENT_SECURITY_POLICY_VALUE)
+        );
+        assert_eq!(
+            headers
+                .get("x-content-type-options")
+                .and_then(|value| value.to_str().ok()),
+            Some("nosniff")
+        );
+    }
+
     #[test]
     fn remote_bind_requires_explicit_opt_in() {
         let dir = tempfile::tempdir().unwrap();
@@ -1833,14 +2037,29 @@ mod tests {
     }
 
     #[test]
-    fn remote_bind_is_allowed_when_acknowledged() {
+    fn remote_bind_is_allowed_when_basic_auth_is_configured() {
         let dir = tempfile::tempdir().unwrap();
         let mut cfg = test_config(dir.path());
         cfg.web.enabled = true;
         cfg.web.bind_address = "0.0.0.0".to_string();
         cfg.web.allow_remote = true;
+        cfg.web.username = "admin".to_string();
+        cfg.web.password = "secret".to_string();
 
         assert!(ensure_remote_bind_allowed(&cfg).is_ok());
+    }
+
+    #[test]
+    fn remote_bind_requires_basic_auth_when_exposed() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = test_config(dir.path());
+        cfg.web.enabled = true;
+        cfg.web.bind_address = "0.0.0.0".to_string();
+        cfg.web.allow_remote = true;
+        cfg.web.api_key = "token".to_string();
+
+        let err = ensure_remote_bind_allowed(&cfg).unwrap_err();
+        assert!(err.to_string().contains("web.username/web.password"));
     }
 
     #[test]

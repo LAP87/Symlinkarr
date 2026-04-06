@@ -12,6 +12,8 @@ use crate::utils::user_println;
 
 use super::LibraryRefreshTelemetry;
 
+const CONSECUTIVE_FAILURES_BEFORE_ABORT: usize = 2;
+
 #[derive(Debug, Serialize)]
 struct MediaUpdateInfo {
     #[serde(rename = "Updates")]
@@ -191,10 +193,12 @@ pub(crate) async fn refresh_library_paths(
     let client = build_client();
     let delay = Duration::from_millis(cfg.jellyfin.refresh_delay_ms);
     let batch_count = batches.len();
+    let mut consecutive_failures = 0usize;
 
     for (idx, batch) in batches.into_iter().enumerate() {
         match post_media_updates(&client, &cfg.jellyfin, &batch).await {
             Ok(()) => {
+                consecutive_failures = 0;
                 telemetry.refreshed_batches += 1;
                 telemetry.refreshed_paths_covered += batch.len();
             }
@@ -207,8 +211,24 @@ pub(crate) async fn refresh_library_paths(
                         err
                     ),
                 );
+                consecutive_failures += 1;
                 telemetry.failed_batches += 1;
                 telemetry.skipped_batches += 1;
+
+                if consecutive_failures >= CONSECUTIVE_FAILURES_BEFORE_ABORT
+                    && idx + 1 < batch_count
+                {
+                    let remaining = batch_count - idx - 1;
+                    telemetry.skipped_batches += remaining;
+                    emit_refresh_line(
+                        emit_text,
+                        format!(
+                            "   ⚠️  Jellyfin: stopping remaining invalidation after {} consecutive batch failures; {} request(s) left unqueued",
+                            consecutive_failures, remaining
+                        ),
+                    );
+                    break;
+                }
             }
         }
 

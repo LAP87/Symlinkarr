@@ -155,13 +155,21 @@ impl Discovery {
 
 /// Check if two normalized titles match (exact or containment)
 fn titles_match(lib_title: &str, rd_title: &str) -> bool {
-    if lib_title == rd_title {
-        return true;
-    }
-    // Empty strings should not match anything
+    const MIN_CONTAINMENT_MATCH_LEN: usize = 4;
+
+    // Empty strings should not match anything.
     if lib_title.is_empty() || rd_title.is_empty() {
         return false;
     }
+
+    if lib_title == rd_title {
+        return true;
+    }
+
+    if lib_title.len() < MIN_CONTAINMENT_MATCH_LEN || rd_title.len() < MIN_CONTAINMENT_MATCH_LEN {
+        return false;
+    }
+
     // Check if one contains the other (for partial matches like "Breaking Bad" vs "Breaking Bad S01")
     lib_title.contains(rd_title) || rd_title.contains(lib_title)
 }
@@ -227,9 +235,15 @@ mod tests {
 
     #[test]
     fn test_titles_match_empty() {
-        assert!(titles_match("", ""));
+        assert!(!titles_match("", ""));
         assert!(!titles_match("", "something"));
         assert!(!titles_match("something", ""));
+    }
+
+    #[test]
+    fn test_titles_match_rejects_short_containment_noise() {
+        assert!(!titles_match("up", "upgrade"));
+        assert!(!titles_match("ed", "edgerunners"));
     }
 
     #[test]

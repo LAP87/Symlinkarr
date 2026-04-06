@@ -40,7 +40,6 @@ pub struct QueueOverview {
     pub blocked: i64,
     pub no_result: i64,
     pub failed: i64,
-    pub completed_unlinked: i64,
 }
 
 impl From<AcquisitionJobCounts> for QueueOverview {
@@ -53,7 +52,6 @@ impl From<AcquisitionJobCounts> for QueueOverview {
             blocked: value.blocked,
             no_result: value.no_result,
             failed: value.failed,
-            completed_unlinked: value.completed_unlinked,
         }
     }
 }
@@ -194,26 +192,16 @@ impl From<LastCleanupAuditOutcome> for BackgroundCleanupAuditOutcomeView {
 #[derive(Debug, Clone)]
 pub struct BackgroundRepairOutcomeView {
     pub finished_at: String,
-    pub scope_label: String,
     pub success: bool,
     pub message: String,
-    pub repaired: usize,
-    pub failed: usize,
-    pub skipped: usize,
-    pub stale: usize,
 }
 
 impl From<LastRepairOutcome> for BackgroundRepairOutcomeView {
     fn from(value: LastRepairOutcome) -> Self {
         Self {
             finished_at: value.finished_at,
-            scope_label: value.scope_label,
             success: value.success,
             message: value.message,
-            repaired: value.repaired,
-            failed: value.failed,
-            skipped: value.skipped,
-            stale: value.stale,
         }
     }
 }
@@ -488,6 +476,7 @@ pub struct ScanTemplate {
     pub history: Vec<ScanRunView>,
     pub queue: QueueOverview,
     pub filters: ScanHistoryFilters,
+    pub csrf_token: String,
 }
 
 #[derive(Template)]
@@ -526,6 +515,7 @@ pub struct CleanupTemplate {
     pub last_cleanup_audit_outcome: Option<BackgroundCleanupAuditOutcomeView>,
     pub last_report: Option<CleanupReportSummaryView>,
     pub last_report_path: Option<PathBuf>,
+    pub csrf_token: String,
 }
 
 #[derive(Debug, Clone)]
@@ -582,6 +572,7 @@ pub struct PrunePreviewTemplate {
     pub report_path: Option<PathBuf>,
     pub confirmation_token: Option<String>,
     pub error_message: Option<String>,
+    pub csrf_token: String,
 }
 
 #[derive(Debug, Clone)]
@@ -665,7 +656,6 @@ pub struct AnimeRemediationGroupView {
     pub plex_live_rows: usize,
     pub plex_deleted_rows: usize,
     pub plex_guid_kinds: Vec<String>,
-    pub plex_guids: Vec<String>,
     pub eligible: bool,
     pub block_reasons: Vec<String>,
     pub recommended_action: Option<String>,
@@ -708,7 +698,6 @@ impl From<AnimeRemediationSample> for AnimeRemediationGroupView {
             plex_live_rows: value.plex_live_rows,
             plex_deleted_rows: value.plex_deleted_rows,
             plex_guid_kinds: value.plex_guid_kinds,
-            plex_guids: value.plex_guids,
             eligible: false,
             block_reasons: Vec::new(),
             recommended_action: None,
@@ -757,7 +746,6 @@ impl AnimeRemediationGroupView {
             plex_live_rows: value.plex_live_rows,
             plex_deleted_rows: value.plex_deleted_rows,
             plex_guid_kinds: value.plex_guid_kinds,
-            plex_guids: value.plex_guids,
             eligible: value.eligible,
             block_reasons: value
                 .block_reasons
@@ -789,6 +777,7 @@ pub struct AnimeRemediationTemplate {
     pub summary: Option<AnimeRemediationSummaryView>,
     pub groups: Vec<AnimeRemediationGroupView>,
     pub error_message: Option<String>,
+    pub csrf_token: String,
 }
 
 #[derive(Debug, Clone)]
@@ -826,6 +815,7 @@ pub struct AnimeRemediationResultTemplate {
     pub message: String,
     pub preview: Option<AnimeRemediationPreviewResultView>,
     pub apply: Option<AnimeRemediationApplyResultView>,
+    pub csrf_token: String,
 }
 
 // ─── Links ──────────────────────────────────────────────────────────
@@ -843,6 +833,7 @@ pub struct DeadLinksTemplate {
     pub links: Vec<LinkRecord>,
     pub active_repair: Option<ActiveRepairView>,
     pub last_repair_outcome: Option<BackgroundRepairOutcomeView>,
+    pub csrf_token: String,
 }
 
 #[derive(Template)]
@@ -869,6 +860,7 @@ pub struct ValidationResult {
 pub struct ConfigTemplate {
     pub config: Config,
     pub validation_result: Option<ValidationResult>,
+    pub csrf_token: String,
 }
 
 // ─── Doctor ─────────────────────────────────────────────────────────
@@ -898,6 +890,7 @@ pub struct DiscoverTemplate {
     pub refresh_cache: bool,
     pub discovered_items: Vec<DiscoveredItem>,
     pub status_message: Option<String>,
+    pub csrf_token: String,
 }
 
 #[derive(Template)]
@@ -920,6 +913,7 @@ pub struct BackupInfo {
 pub struct BackupTemplate {
     pub backups: Vec<BackupInfo>,
     pub backup_dir: PathBuf,
+    pub csrf_token: String,
 }
 
 #[derive(Template)]
@@ -928,6 +922,7 @@ pub struct BackupResultTemplate {
     pub success: bool,
     pub message: String,
     pub backup_path: Option<PathBuf>,
+    pub database_snapshot_path: Option<PathBuf>,
 }
 
 #[cfg(test)]
@@ -938,7 +933,6 @@ mod tests {
         AlternateMatchContext, CleanupFinding, CleanupOwnership, FindingReason, FindingSeverity,
         ParsedContext, PruneReasonCount,
     };
-    use crate::commands::report::{AnimeRemediationSample, AnimeRootUsageSample};
     use crate::models::{LinkStatus, MediaType};
 
     fn sample_scan_run_view() -> ScanRunView {
@@ -1050,6 +1044,7 @@ mod tests {
                 scope_label: "All Libraries".to_string(),
             }),
             last_repair_outcome: None,
+            csrf_token: "csrf-test-token".to_string(),
         };
 
         let html = template.render().unwrap();
@@ -1228,6 +1223,7 @@ mod tests {
             report_path: Some(PathBuf::from("/tmp/cleanup-audit-all.json")),
             confirmation_token: Some("abcdef1234567890".to_string()),
             error_message: None,
+            csrf_token: "csrf-test-token".to_string(),
         };
 
         let html = template.render().unwrap();
@@ -1288,6 +1284,7 @@ mod tests {
             report_path: Some(PathBuf::from("/tmp/cleanup-audit-anime.json")),
             confirmation_token: Some("abcdef1234567890".to_string()),
             error_message: None,
+            csrf_token: "csrf-test-token".to_string(),
         };
 
         let html = template.render().unwrap();
@@ -1340,6 +1337,7 @@ mod tests {
             report_path: Some(PathBuf::from("/tmp/cleanup-audit-all.json")),
             confirmation_token: Some("abcdef1234567890".to_string()),
             error_message: None,
+            csrf_token: "csrf-test-token".to_string(),
         };
 
         let html = template.render().unwrap();
@@ -1400,10 +1398,6 @@ mod tests {
                 plex_live_rows: 2,
                 plex_deleted_rows: 0,
                 plex_guid_kinds: vec!["hama-anidb".to_string(), "hama-tvdb".to_string()],
-                plex_guids: vec![
-                    "com.plexapp.agents.hama://anidb-1".to_string(),
-                    "com.plexapp.agents.hama://tvdb-2".to_string(),
-                ],
                 eligible: false,
                 block_reasons: vec!["legacy roots still contain 3 tracked DB links".to_string()],
                 recommended_action: Some(
@@ -1421,6 +1415,7 @@ mod tests {
                 )],
             }],
             error_message: None,
+            csrf_token: "csrf-test-token".to_string(),
         };
 
         let html = template.render().unwrap();
@@ -1468,7 +1463,6 @@ mod tests {
                     plex_live_rows: 2,
                     plex_deleted_rows: 0,
                     plex_guid_kinds: vec!["hama-tvdb".to_string()],
-                    plex_guids: vec!["com.plexapp.agents.hama://tvdb-123".to_string()],
                     eligible: false,
                     block_reasons: vec!["legacy roots contain 13 non-symlink media files".into()],
                     recommended_action: Some(
@@ -1487,6 +1481,7 @@ mod tests {
                 }],
             }),
             apply: None,
+            csrf_token: "csrf-test-token".to_string(),
         };
 
         let html = template.render().unwrap();

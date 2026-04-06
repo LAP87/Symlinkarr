@@ -23,12 +23,14 @@ libraries:
 sources:
   - name: "RealDebrid"
     path: "/mnt/decypharr/realdebrid/__all__"
-    media_type: "auto"
+    media_type: "auto"   # one of: auto, anime, tv, movie
 
 db_path: "/app/data/symlinkarr.db"
 
 daemon:
   interval_minutes: 60
+  vacuum_enabled: false
+  vacuum_hour_local: 4      # run once per day at or after this local hour when daemon is active
 
 symlink:
   naming_template: "{Show} - S{season:02}E{episode:02} - {Title}.{ext}"
@@ -41,7 +43,9 @@ matching:
 api:
   tmdb_api_key: "secretfile:/app/secrets/tmdb_api_key"
   tvdb_api_key: "secretfile:/app/secrets/tvdb_api_key"
-  cache_ttl_hours: 24
+  # Metadata cache is intentionally sticky. Prefer targeted refresh/invalidation
+  # when a specific title looks stale instead of forcing broad TTL churn.
+  cache_ttl_hours: 87600
 
 realdebrid:
   api_token: "secretfile:/app/secrets/realdebrid_api_token"
@@ -51,6 +55,8 @@ realdebrid:
 
 dmm:
   url: "https://debridmediamanager.com"
+  # Optional advanced override if DMM changes its auth salt in the future.
+  # auth_salt: "secretfile:/app/secrets/dmm_auth_salt"
   only_trusted: true
   max_search_results: 3
   max_torrent_results: 10
@@ -131,11 +137,14 @@ backup:
 # Web UI (optional, for dashboard access)
 web:
   enabled: false
+  # Docker usually implies remote operator mode.
+  # Keep Basic auth configured whenever you publish the port outside the host.
   bind_address: "0.0.0.0"
   allow_remote: true
   port: 8726
   # Basic auth protects the HTML UI and API.
   username: ""
   password: ""
-  # Optional API auth for scripts/automation clients.
+  # Optional API key for scripts/automation clients.
+  # This complements Basic auth; it is not a replacement for remote UI access.
   api_key: ""

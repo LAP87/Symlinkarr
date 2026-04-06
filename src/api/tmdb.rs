@@ -1,8 +1,6 @@
-#![allow(dead_code)] // Serde fields + future-use methods (get_tvdb_id)
-
 use anyhow::Result;
 use reqwest::Client;
-use serde::Deserialize;
+use serde::{de::DeserializeOwned, Deserialize};
 use tracing::{debug, warn};
 
 use crate::api::http;
@@ -39,6 +37,7 @@ struct TmdbMovieDetails {
 #[derive(Debug, Deserialize)]
 struct TmdbSeason {
     season_number: u32,
+    #[allow(dead_code)]
     episode_count: Option<u32>,
 }
 
@@ -63,6 +62,7 @@ struct TmdbAlternativeTitles {
 #[derive(Debug, Deserialize)]
 struct TmdbAlternativeTitle {
     title: Option<String>,
+    #[allow(dead_code)]
     #[serde(alias = "iso_3166_1")]
     country: Option<String>,
 }
@@ -108,14 +108,19 @@ impl TmdbClient {
                 debug!("Cache hit for TMDB TV {}", tmdb_id);
                 return Ok(metadata.into());
             }
+            warn!(
+                "TMDB TV metadata cache decode failed for {}; invalidating stale entry",
+                tmdb_id
+            );
+            let _ = db.invalidate_cached(&cache_key).await;
         }
 
         // Fetch details
-        let details: TmdbTvDetails =
-            http::send_with_retry(self.authenticated_get(&format!("tv/{}", tmdb_id)))
-                .await?
-                .json()
-                .await?;
+        let details: TmdbTvDetails = decode_tmdb_response(
+            http::send_with_retry(self.authenticated_get(&format!("tv/{}", tmdb_id))).await?,
+            &format!("tv metadata lookup for {}", tmdb_id),
+        )
+        .await?;
 
         let title = details.name.unwrap_or_default();
         let year = details.first_air_date.as_deref().and_then(|d| {
@@ -182,13 +187,18 @@ impl TmdbClient {
                 debug!("Cache hit for TMDB Movie {}", tmdb_id);
                 return Ok(metadata.into());
             }
+            warn!(
+                "TMDB movie metadata cache decode failed for {}; invalidating stale entry",
+                tmdb_id
+            );
+            let _ = db.invalidate_cached(&cache_key).await;
         }
 
-        let details: TmdbMovieDetails =
-            http::send_with_retry(self.authenticated_get(&format!("movie/{}", tmdb_id)))
-                .await?
-                .json()
-                .await?;
+        let details: TmdbMovieDetails = decode_tmdb_response(
+            http::send_with_retry(self.authenticated_get(&format!("movie/{}", tmdb_id))).await?,
+            &format!("movie metadata lookup for {}", tmdb_id),
+        )
+        .await?;
 
         let title = details.title.unwrap_or_default();
         let year = details.release_date.as_deref().and_then(|d| {
@@ -217,6 +227,7 @@ impl TmdbClient {
     }
 
     /// Fetch the TVDB ID for a TMDB TV show (cross-reference).
+    #[allow(dead_code)]
     pub async fn get_tvdb_id(&self, tmdb_id: u64, db: &Database) -> Result<Option<u64>> {
         Ok(self.get_external_ids("tv", tmdb_id, db).await?.tvdb_id)
     }
@@ -243,13 +254,20 @@ impl TmdbClient {
                 debug!("Cache hit for TMDB {} external ids {}", media_kind, tmdb_id);
                 return Ok(ids);
             }
+            warn!(
+                "TMDB {} external-id cache decode failed for {}; invalidating stale entry",
+                media_kind, tmdb_id
+            );
+            let _ = db.invalidate_cached(&cache_key).await;
         }
 
-        let ids: TmdbExternalIds = http::send_with_retry(
-            self.authenticated_get(&format!("{}/{}/external_ids", media_kind, tmdb_id)),
+        let ids: TmdbExternalIds = decode_tmdb_response(
+            http::send_with_retry(
+                self.authenticated_get(&format!("{}/{}/external_ids", media_kind, tmdb_id)),
+            )
+            .await?,
+            &format!("{} external id lookup for {}", media_kind, tmdb_id),
         )
-        .await?
-        .json()
         .await?;
 
         if let Ok(json) = serde_json::to_string(&ids) {
@@ -260,31 +278,37 @@ impl TmdbClient {
     }
 
     async fn get_tv_aliases(&self, tmdb_id: u64) -> Result<Vec<String>> {
-        let resp: TmdbAlternativeTitles = http::send_with_retry(
-            self.authenticated_get(&format!("tv/{}/alternative_titles", tmdb_id)),
+        let resp: TmdbAlternativeTitles = decode_tmdb_response(
+            http::send_with_retry(
+                self.authenticated_get(&format!("tv/{}/alternative_titles", tmdb_id)),
+            )
+            .await?,
+            &format!("tv alias lookup for {}", tmdb_id),
         )
-        .await?
-        .json()
         .await?;
         Ok(resp.results.into_iter().filter_map(|t| t.title).collect())
     }
 
     async fn get_movie_aliases(&self, tmdb_id: u64) -> Result<Vec<String>> {
-        let resp: TmdbAlternativeTitles = http::send_with_retry(
-            self.authenticated_get(&format!("movie/{}/alternative_titles", tmdb_id)),
+        let resp: TmdbAlternativeTitles = decode_tmdb_response(
+            http::send_with_retry(
+                self.authenticated_get(&format!("movie/{}/alternative_titles", tmdb_id)),
+            )
+            .await?,
+            &format!("movie alias lookup for {}", tmdb_id),
         )
-        .await?
-        .json()
         .await?;
         Ok(resp.results.into_iter().filter_map(|t| t.title).collect())
     }
 
     async fn get_season_details(&self, tmdb_id: u64, season_number: u32) -> Result<SeasonInfo> {
-        let details: TmdbSeasonDetails = http::send_with_retry(
-            self.authenticated_get(&format!("tv/{}/season/{}", tmdb_id, season_number)),
+        let details: TmdbSeasonDetails = decode_tmdb_response(
+            http::send_with_retry(
+                self.authenticated_get(&format!("tv/{}/season/{}", tmdb_id, season_number)),
+            )
+            .await?,
+            &format!("season {} lookup for {}", season_number, tmdb_id),
         )
-        .await?
-        .json()
         .await?;
 
         Ok(SeasonInfo {
@@ -299,6 +323,24 @@ impl TmdbClient {
                 .collect(),
         })
     }
+}
+
+async fn decode_tmdb_response<T: DeserializeOwned>(
+    resp: reqwest::Response,
+    operation: &str,
+) -> Result<T> {
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!(
+            "TMDB request failed during {} (HTTP {}): {}",
+            operation,
+            status,
+            body
+        );
+    }
+
+    Ok(resp.json::<T>().await?)
 }
 
 // --- Serializable cache wrapper ---

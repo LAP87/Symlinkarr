@@ -28,6 +28,14 @@
 {% when None %}
 {% endmatch %}
 
+{% match database_snapshot_path %}
+{% when Some with (path) %}
+<div class="card">
+    <strong>SQLite snapshot:</strong> <code class="mono">{{ path.display() }}</code>
+</div>
+{% when None %}
+{% endmatch %}
+
 <div class="actions mt-2">
     <a href="/backup" class="btn btn-secondary">&#8592; Back to Backup</a>
     <a href="/" class="btn">&#127968; Dashboard</a>

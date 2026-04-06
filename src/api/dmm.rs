@@ -1,4 +1,5 @@
 use std::process;
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
@@ -9,7 +10,8 @@ use tracing::debug;
 use crate::api::http;
 use crate::config::DmmConfig;
 
-const DMM_SALT: &str = "debridmediamanager.com%%fe7#td00rA3vHz%VmI";
+const DEFAULT_DMM_AUTH_SALT: &str = "debridmediamanager.com%%fe7#td00rA3vHz%VmI";
+const DMM_AUTH_PAIR_TTL_SECS: u64 = 30;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DmmMediaKind {
@@ -90,20 +92,35 @@ struct DmmTorrentWire {
 pub struct DmmClient {
     client: Client,
     base_url: String,
+    auth_salt: String,
     only_trusted: bool,
+    auth_pair_cache: Mutex<Option<CachedAuthPair>>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedAuthPair {
+    token: String,
+    solution: String,
+    valid_until_epoch_secs: u64,
 }
 
 impl DmmClient {
-    pub fn new(base_url: &str, only_trusted: bool) -> Self {
+    pub fn new(base_url: &str, auth_salt: &str, only_trusted: bool) -> Self {
         Self {
             client: http::build_client(),
             base_url: base_url.trim_end_matches('/').to_string(),
+            auth_salt: auth_salt.to_string(),
             only_trusted,
+            auth_pair_cache: Mutex::new(None),
         }
     }
 
     pub fn from_config(cfg: &DmmConfig) -> Self {
-        Self::new(&cfg.url, cfg.only_trusted)
+        Self::new(
+            &cfg.url,
+            cfg.auth_salt.as_deref().unwrap_or(DEFAULT_DMM_AUTH_SALT),
+            cfg.only_trusted,
+        )
     }
 
     pub async fn search_title(
@@ -161,7 +178,7 @@ impl DmmClient {
         path: &str,
         params: &[(&str, String)],
     ) -> Result<DmmTorrentLookup> {
-        let (token, solution) = generate_dmm_auth_pair()?;
+        let (token, solution) = self.cached_auth_pair()?;
         let url = format!("{}/api/torrents/{}", self.base_url, path);
         let mut req = self.client.get(&url).query(&[
             ("dmmProblemKey", token.as_str()),
@@ -212,6 +229,15 @@ impl DmmClient {
             Ok(DmmTorrentLookup::Results(results))
         }
     }
+
+    fn cached_auth_pair(&self) -> Result<(String, String)> {
+        let now_secs = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+        let mut cache = self
+            .auth_pair_cache
+            .lock()
+            .expect("DMM auth cache mutex poisoned");
+        cached_or_generate_auth_pair(&mut cache, &self.auth_salt, now_secs)
+    }
 }
 
 fn parse_media_kind(value: &str) -> Option<DmmMediaKind> {
@@ -247,15 +273,35 @@ where
     }
 }
 
-fn generate_dmm_auth_pair() -> Result<(String, String)> {
+fn generate_dmm_auth_pair(auth_salt: &str) -> Result<(String, String)> {
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     let token = format!("{:x}{:x}", process::id(), nanos);
     let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
     let token_with_timestamp = format!("{}-{}", token, timestamp);
     let token_timestamp_hash = js_hash_hex(&token_with_timestamp);
-    let token_salt_hash = js_hash_hex(&format!("{}-{}", DMM_SALT, token));
+    let token_salt_hash = js_hash_hex(&format!("{}-{}", auth_salt, token));
     let solution = combine_hashes(&token_timestamp_hash, &token_salt_hash);
     Ok((token_with_timestamp, solution))
+}
+
+fn cached_or_generate_auth_pair(
+    cache: &mut Option<CachedAuthPair>,
+    auth_salt: &str,
+    now_secs: u64,
+) -> Result<(String, String)> {
+    if let Some(cached) = cache.as_ref() {
+        if cached.valid_until_epoch_secs > now_secs {
+            return Ok((cached.token.clone(), cached.solution.clone()));
+        }
+    }
+
+    let (token, solution) = generate_dmm_auth_pair(auth_salt)?;
+    *cache = Some(CachedAuthPair {
+        token: token.clone(),
+        solution: solution.clone(),
+        valid_until_epoch_secs: now_secs.saturating_add(DMM_AUTH_PAIR_TTL_SECS),
+    });
+    Ok((token, solution))
 }
 
 fn js_hash_hex(input: &str) -> String {
@@ -312,9 +358,21 @@ mod tests {
 
     #[test]
     fn generate_dmm_auth_pair_produces_expected_shapes() {
-        let (token, solution) = generate_dmm_auth_pair().unwrap();
+        let (token, solution) = generate_dmm_auth_pair(DEFAULT_DMM_AUTH_SALT).unwrap();
         assert!(token.contains('-'));
         assert!(!solution.is_empty());
+    }
+
+    #[test]
+    fn cached_auth_pair_reuses_token_until_expiry() {
+        let mut cache = None;
+
+        let first = cached_or_generate_auth_pair(&mut cache, DEFAULT_DMM_AUTH_SALT, 100).unwrap();
+        let second = cached_or_generate_auth_pair(&mut cache, DEFAULT_DMM_AUTH_SALT, 120).unwrap();
+        let third = cached_or_generate_auth_pair(&mut cache, DEFAULT_DMM_AUTH_SALT, 131).unwrap();
+
+        assert_eq!(first, second);
+        assert_ne!(second, third);
     }
 
     #[test]

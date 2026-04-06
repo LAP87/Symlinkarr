@@ -13,6 +13,7 @@
     <h2 class="section-title">Create New Backup</h2>
     <p class="text-muted mb-2">Backup directory: <code class="mono">{{ backup_dir.display() }}</code></p>
     <form action="/backup/create" method="post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <div class="form-group">
             <label class="form-label" for="label">Label (optional):</label>
             <input type="text" id="label" name="label" class="form-control" style="max-width:350px;" placeholder="e.g. before-cleanup">
@@ -44,6 +45,7 @@
                 </td>
                 <td>
                     <form action="/backup/restore" method="post" style="display:inline;" onsubmit="return confirm('Restore backup {{ backup.filename }}? This will overwrite current links.');">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                         <input type="hidden" name="backup_file" value="{{ backup.filename }}">
                         <button type="submit" class="btn btn-secondary" style="padding:0.4rem 0.8rem;font-size:0.8rem;">
                             &#9850; Restore

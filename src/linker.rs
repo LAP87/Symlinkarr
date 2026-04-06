@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tracing::{debug, info, warn};
 
 use crate::db::Database;
@@ -520,8 +520,14 @@ impl Linker {
 
         match m.library_item.media_type {
             MediaType::Tv => {
-                let season = m.source_item.season.unwrap_or(1);
-                let episode = m.source_item.episode.unwrap_or(1);
+                let season = m
+                    .source_item
+                    .season
+                    .context("TV match missing season while building target path")?;
+                let episode = m
+                    .source_item
+                    .episode
+                    .context("TV match missing episode while building target path")?;
 
                 let episode_title = m.episode_title.clone().unwrap_or_default();
 
@@ -1087,6 +1093,37 @@ mod tests {
         }
     }
 
+    fn sample_tv_match(
+        lib_path: &std::path::Path,
+        source_path: &std::path::Path,
+        season: Option<u32>,
+        episode: Option<u32>,
+    ) -> MatchResult {
+        MatchResult {
+            library_item: LibraryItem {
+                id: MediaId::Tvdb(81189),
+                path: lib_path.to_path_buf(),
+                title: "Sample Show".to_string(),
+                library_name: "Series".to_string(),
+                media_type: MediaType::Tv,
+                content_type: ContentType::Tv,
+            },
+            source_item: SourceItem {
+                path: source_path.to_path_buf(),
+                parsed_title: "Sample Show".to_string(),
+                season,
+                episode,
+                episode_end: None,
+                quality: None,
+                extension: "mkv".to_string(),
+                year: None,
+            },
+            confidence: 1.0,
+            matched_alias: "sample show".to_string(),
+            episode_title: Some("Pilot".to_string()),
+        }
+    }
+
     #[tokio::test]
     async fn test_strict_mode_skips_regular_file_overwrite() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -1179,6 +1216,22 @@ mod tests {
         let target = lib_path.join("Sample Movie.mkv");
         assert!(db.get_link_by_target_path(&target).await.unwrap().is_none());
         assert!(!target.exists());
+    }
+
+    #[test]
+    fn test_build_target_path_errors_when_tv_match_lacks_season_or_episode() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let lib_path = dir.path().join("Sample Show {tvdb-81189}");
+        let source_path = dir.path().join("rd").join("sample_show.mkv");
+        let linker = Linker::new(false, true, "");
+
+        let missing_season = sample_tv_match(&lib_path, &source_path, None, Some(1));
+        let err = linker.build_target_path(&missing_season).unwrap_err();
+        assert!(err.to_string().contains("missing season"));
+
+        let missing_episode = sample_tv_match(&lib_path, &source_path, Some(1), None);
+        let err = linker.build_target_path(&missing_episode).unwrap_err();
+        assert!(err.to_string().contains("missing episode"));
     }
 
     #[cfg(unix)]

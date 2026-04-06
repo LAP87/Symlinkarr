@@ -1973,7 +1973,7 @@ fn has_conflicting_explicit_season(
     normalized_title: &str,
     desired_season: u32,
 ) -> bool {
-    (1..=10).any(|season| {
+    (1..=100).any(|season| {
         season != desired_season && season_token_matches(tokens, normalized_title, season)
     })
 }
@@ -1986,14 +1986,20 @@ fn minimum_pack_title_matches(context: &AnimeRequestContext) -> i64 {
 fn season_token_matches(tokens: &HashSet<&str>, normalized_title: &str, season: u32) -> bool {
     let compact = format!("s{}", season);
     let padded = format!("s{:02}", season);
-    let ordinal_numeric = format!("{} {}", ordinal_number(season), "season");
+    let title_tokens: Vec<&str> = normalized_title.split_whitespace().collect();
     tokens.contains(compact.as_str())
         || tokens.contains(padded.as_str())
-        || normalized_title.contains(&format!("season {}", season))
-        || normalized_title.contains(&ordinal_numeric)
+        || has_token_phrase(&title_tokens, "season", &season.to_string())
+        || has_token_phrase(&title_tokens, &ordinal_number(season), "season")
         || ordinal_word(season)
-            .map(|word| normalized_title.contains(&format!("{} season", word)))
+            .map(|word| has_token_phrase(&title_tokens, word, "season"))
             .unwrap_or(false)
+}
+
+fn has_token_phrase(tokens: &[&str], first: &str, second: &str) -> bool {
+    tokens
+        .windows(2)
+        .any(|window| window[0] == first && window[1] == second)
 }
 
 fn ordinal_number(value: u32) -> String {
@@ -2095,7 +2101,10 @@ fn parse_season_token(token: &str) -> Option<u32> {
 }
 
 fn is_episode_number_token(token: &str) -> bool {
-    !is_year_token(token) && token.len() <= 4 && token.chars().all(|ch| ch.is_ascii_digit())
+    !is_year_token(token)
+        && token.len() <= 4
+        && token.chars().all(|ch| ch.is_ascii_digit())
+        && token.parse::<u32>().map(|value| value > 0).unwrap_or(false)
 }
 
 async fn resolve_arr_name(decypharr: &DecypharrClient, requested: &str) -> Result<String> {
@@ -2754,6 +2763,15 @@ mod tests {
     }
 
     #[test]
+    fn conflicting_explicit_season_checks_beyond_tenth_season() {
+        let normalized = "naruto season 15 complete";
+        let tokens: HashSet<_> = normalized.split_whitespace().collect();
+
+        assert!(has_conflicting_explicit_season(&tokens, normalized, 3));
+        assert!(!has_conflicting_explicit_season(&tokens, normalized, 15));
+    }
+
+    #[test]
     fn anime_batch_fallbacks_reduce_episode_queries() {
         assert_eq!(
             anime_batch_fallbacks("Frieren S01E15"),
@@ -3047,6 +3065,16 @@ mod tests {
         assert!(
             fallbacks.is_empty(),
             "standalone year is not a batch marker: {:?}",
+            fallbacks
+        );
+    }
+
+    #[test]
+    fn anime_batch_fallbacks_preserve_titles_that_end_in_zero() {
+        let fallbacks = anime_batch_fallbacks("Steins Gate 0");
+        assert!(
+            fallbacks.is_empty(),
+            "zero-ending title should not be treated as an episode token: {:?}",
             fallbacks
         );
     }

@@ -973,24 +973,30 @@ impl Repairer {
             return Ok(());
         }
 
-        // SAFETY: Only remove symlinks, never directories or real files
+        // SAFETY: Only ever replace symlinks, never directories or regular files.
         if symlink_path.exists() || std::fs::symlink_metadata(symlink_path).is_ok() {
             assert_symlink_only(symlink_path)?;
-            std::fs::remove_file(symlink_path)?;
         }
 
-        // SAFETY: Ensure we're creating a symlink, not overwriting a directory
-        if let Ok(meta) = std::fs::symlink_metadata(symlink_path) {
-            if meta.file_type().is_dir() {
-                anyhow::bail!(
-                    "SAFETY GUARD: Cannot create symlink, {:?} is a directory.",
-                    symlink_path
-                );
-            }
+        if let Some(parent) = symlink_path.parent() {
+            std::fs::create_dir_all(parent)?;
         }
 
-        // Create new symlink
-        std::os::unix::fs::symlink(new_source, symlink_path)?;
+        // Mirror linker semantics: create a temp symlink first, then rename it
+        // over the broken link so readers never observe a missing path.
+        let temp_path = symlink_path.with_extension("grt");
+        let _ = std::fs::remove_file(&temp_path);
+        std::os::unix::fs::symlink(new_source, &temp_path)?;
+        std::fs::rename(&temp_path, symlink_path)?;
+        let repaired_target = std::fs::read_link(symlink_path)?;
+        if repaired_target != *new_source {
+            anyhow::bail!(
+                "repair verification failed: {:?} points to {:?} instead of {:?}",
+                symlink_path,
+                repaired_target,
+                new_source
+            );
+        }
 
         info!(
             "Repaired: '{}' → {:?} (score: {:.2})",
@@ -1004,15 +1010,8 @@ impl Repairer {
         &self,
         dead_link: &DeadLink,
         replacement: &ReplacementCandidate,
-    ) -> Result<()> {
+    ) -> Result<&'static str> {
         let symlink_path = &dead_link.symlink_path;
-
-        if !dead_link.original_source.exists() {
-            anyhow::bail!(
-                "rollback refused: original source {:?} is still missing",
-                dead_link.original_source
-            );
-        }
 
         if let Ok(meta) = std::fs::symlink_metadata(symlink_path) {
             if !meta.file_type().is_symlink() {
@@ -1034,8 +1033,12 @@ impl Repairer {
             std::fs::remove_file(symlink_path)?;
         }
 
-        std::os::unix::fs::symlink(&dead_link.original_source, symlink_path)?;
-        Ok(())
+        if dead_link.original_source.exists() {
+            std::os::unix::fs::symlink(&dead_link.original_source, symlink_path)?;
+            Ok("filesystem rolled back to original symlink target")
+        } else {
+            Ok("filesystem rolled back by removing repaired symlink because the original source is still missing")
+        }
     }
 
     /// Full repair pipeline: find dead links, search replacements, repair.
@@ -1197,56 +1200,51 @@ impl Repairer {
             };
 
             if let Some(best) = candidates.first() {
-                if let Err(e) = self.repair_link(&dead_link, best, dry_run) {
-                    warn!("Could not repair {:?}: {}", dead_link.symlink_path, e);
-                    let reason = e.to_string();
-                    results.push(RepairResult::Unrepairable {
-                        dead_link,
-                        reason: reason.clone(),
-                    });
-                    if let Some(RepairResult::Unrepairable { dead_link, reason }) = results.last() {
-                        let _ = db
-                            .record_link_event_fields(
-                                "repair_failed",
-                                &dead_link.symlink_path,
-                                Some(&dead_link.original_source),
-                                Some(dead_link.media_id.as_str()),
-                                Some(reason.as_str()),
-                            )
-                            .await;
+                if dry_run {
+                    if let Err(e) = self.repair_link(&dead_link, best, true) {
+                        warn!("Could not repair {:?}: {}", dead_link.symlink_path, e);
+                        let reason = e.to_string();
+                        results.push(RepairResult::Unrepairable {
+                            dead_link,
+                            reason: reason.clone(),
+                        });
+                        if let Some(RepairResult::Unrepairable { dead_link, reason }) =
+                            results.last()
+                        {
+                            let _ = db
+                                .record_link_event_fields(
+                                    "repair_failed",
+                                    &dead_link.symlink_path,
+                                    Some(&dead_link.original_source),
+                                    Some(dead_link.media_id.as_str()),
+                                    Some(reason.as_str()),
+                                )
+                                .await;
+                        }
+                        continue;
                     }
                 } else {
-                    // Update DB status back to Active
-                    if !dry_run {
-                        let record = LinkRecord {
-                            id: None,
-                            source_path: best.path.clone(),
-                            target_path: dead_link.symlink_path.clone(),
-                            media_id: dead_link.media_id.clone(),
-                            media_type: dead_link.media_type,
-                            status: LinkStatus::Active,
-                            created_at: None,
-                            updated_at: None,
-                        };
-                        if let Err(e) = db.insert_link(&record).await {
-                            let rollback_note = match self.rollback_repair_link(&dead_link, best) {
-                                Ok(_) => {
-                                    "filesystem rolled back to original dead symlink".to_string()
-                                }
-                                Err(rollback_err) => {
-                                    format!("filesystem rollback failed: {}", rollback_err)
-                                }
-                            };
+                    let record = LinkRecord {
+                        id: None,
+                        source_path: best.path.clone(),
+                        target_path: dead_link.symlink_path.clone(),
+                        media_id: dead_link.media_id.clone(),
+                        media_type: dead_link.media_type,
+                        status: LinkStatus::Active,
+                        created_at: None,
+                        updated_at: None,
+                    };
+                    let mut tx = match db.begin().await {
+                        Ok(tx) => tx,
+                        Err(e) => {
                             warn!(
-                                "Repair partially failed for {:?}: DB update failed: {} ({})",
-                                dead_link.symlink_path, e, rollback_note
+                                "Could not begin repair DB transaction for {:?}: {}",
+                                dead_link.symlink_path, e
                             );
+                            let reason = format!("Could not begin DB transaction: {}", e);
                             results.push(RepairResult::Unrepairable {
                                 dead_link,
-                                reason: format!(
-                                    "DB update failed after repair: {} ({})",
-                                    e, rollback_note
-                                ),
+                                reason: reason.clone(),
                             });
                             if let Some(RepairResult::Unrepairable { dead_link, reason }) =
                                 results.last()
@@ -1263,30 +1261,111 @@ impl Repairer {
                             }
                             continue;
                         }
+                    };
+                    if let Err(e) = db.insert_link_in_tx(&record, &mut tx).await {
+                        warn!(
+                            "Could not stage repaired DB record for {:?}: {}",
+                            dead_link.symlink_path, e
+                        );
+                        let reason = format!("Could not stage DB update: {}", e);
+                        results.push(RepairResult::Unrepairable {
+                            dead_link,
+                            reason: reason.clone(),
+                        });
+                        if let Some(RepairResult::Unrepairable { dead_link, reason }) =
+                            results.last()
+                        {
+                            let _ = db
+                                .record_link_event_fields(
+                                    "repair_failed",
+                                    &dead_link.symlink_path,
+                                    Some(&dead_link.original_source),
+                                    Some(dead_link.media_id.as_str()),
+                                    Some(reason.as_str()),
+                                )
+                                .await;
+                        }
+                        continue;
                     }
-                    results.push(RepairResult::Repaired {
-                        replacement: best.path.clone(),
-                        dead_link,
-                    });
-                    if let Some(RepairResult::Repaired {
-                        dead_link,
-                        replacement,
-                    }) = results.last()
-                    {
-                        let _ = db
-                            .record_link_event_fields(
-                                if dry_run {
-                                    "repair_preview"
-                                } else {
-                                    "repair_applied"
-                                },
-                                &dead_link.symlink_path,
-                                Some(replacement),
-                                Some(dead_link.media_id.as_str()),
-                                None,
-                            )
-                            .await;
+                    if let Err(e) = self.repair_link(&dead_link, best, false) {
+                        warn!("Could not repair {:?}: {}", dead_link.symlink_path, e);
+                        let reason = e.to_string();
+                        results.push(RepairResult::Unrepairable {
+                            dead_link,
+                            reason: reason.clone(),
+                        });
+                        if let Some(RepairResult::Unrepairable { dead_link, reason }) =
+                            results.last()
+                        {
+                            let _ = db
+                                .record_link_event_fields(
+                                    "repair_failed",
+                                    &dead_link.symlink_path,
+                                    Some(&dead_link.original_source),
+                                    Some(dead_link.media_id.as_str()),
+                                    Some(reason.as_str()),
+                                )
+                                .await;
+                        }
+                        continue;
                     }
+                    if let Err(e) = tx.commit().await {
+                        let rollback_note = match self.rollback_repair_link(&dead_link, best) {
+                            Ok(note) => note.to_string(),
+                            Err(rollback_err) => {
+                                format!("filesystem rollback failed: {}", rollback_err)
+                            }
+                        };
+                        warn!(
+                            "Repair partially failed for {:?}: DB commit failed: {} ({})",
+                            dead_link.symlink_path, e, rollback_note
+                        );
+                        results.push(RepairResult::Unrepairable {
+                            dead_link,
+                            reason: format!(
+                                "DB commit failed after repair: {} ({})",
+                                e, rollback_note
+                            ),
+                        });
+                        if let Some(RepairResult::Unrepairable { dead_link, reason }) =
+                            results.last()
+                        {
+                            let _ = db
+                                .record_link_event_fields(
+                                    "repair_failed",
+                                    &dead_link.symlink_path,
+                                    Some(&dead_link.original_source),
+                                    Some(dead_link.media_id.as_str()),
+                                    Some(reason.as_str()),
+                                )
+                                .await;
+                        }
+                        continue;
+                    }
+                }
+
+                results.push(RepairResult::Repaired {
+                    replacement: best.path.clone(),
+                    dead_link,
+                });
+                if let Some(RepairResult::Repaired {
+                    dead_link,
+                    replacement,
+                }) = results.last()
+                {
+                    let _ = db
+                        .record_link_event_fields(
+                            if dry_run {
+                                "repair_preview"
+                            } else {
+                                "repair_applied"
+                            },
+                            &dead_link.symlink_path,
+                            Some(replacement),
+                            Some(dead_link.media_id.as_str()),
+                            None,
+                        )
+                        .await;
                 }
             } else {
                 let reason = format!(
@@ -1882,7 +1961,48 @@ mod tests {
     }
 
     #[test]
-    fn test_rollback_repair_refuses_to_restore_missing_original_symlink() {
+    fn test_repair_link_replaces_symlink_via_temp_swap() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let repairer = Repairer::new();
+        let symlink_path = tmp.path().join("Show - S01E01.mkv");
+        let original_source = tmp.path().join("old-source.mkv");
+        let replacement_source = tmp.path().join("new-source.mkv");
+        std::fs::write(&original_source, "old").unwrap();
+        std::fs::write(&replacement_source, "new").unwrap();
+        std::os::unix::fs::symlink(&original_source, &symlink_path).unwrap();
+
+        let dead_link = DeadLink {
+            symlink_path: symlink_path.clone(),
+            original_source: original_source.clone(),
+            media_id: "tvdb-123".to_string(),
+            media_type: MediaType::Tv,
+            content_type: ContentType::Tv,
+            meta: parse_trash_filename("Show - S01E01.mkv"),
+            original_size: None,
+        };
+        let replacement = ReplacementCandidate {
+            path: replacement_source.clone(),
+            parsed_title: "show".to_string(),
+            season: Some(1),
+            episode: Some(1),
+            quality: None,
+            file_size: 0,
+            score: 1.0,
+        };
+
+        repairer
+            .repair_link(&dead_link, &replacement, false)
+            .unwrap();
+
+        assert_eq!(
+            std::fs::read_link(&symlink_path).unwrap(),
+            replacement_source
+        );
+        assert!(!symlink_path.with_extension("grt").exists());
+    }
+
+    #[test]
+    fn test_rollback_repair_removes_repaired_symlink_when_original_source_is_missing() {
         let tmp = tempfile::TempDir::new().unwrap();
         let repairer = Repairer::new();
         let symlink_path = tmp.path().join("Show - S01E01.mkv");
@@ -1911,15 +2031,13 @@ mod tests {
             score: 1.0,
         };
 
-        let err = repairer
+        let note = repairer
             .rollback_repair_link(&dead_link, &replacement)
-            .unwrap_err();
+            .unwrap();
 
-        assert!(err.to_string().contains("original source"));
-        assert_eq!(
-            std::fs::read_link(&symlink_path).unwrap(),
-            replacement_source
-        );
+        assert!(note.contains("removing repaired symlink"));
+        assert!(!symlink_path.exists());
+        assert!(std::fs::symlink_metadata(&symlink_path).is_err());
     }
 
     #[tokio::test]

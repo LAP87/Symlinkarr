@@ -46,7 +46,7 @@ class ThemeManager {
         }
 
         this.currentTheme = themeName;
-        this.themeLink.href = `/src/web/static/themes/${this.themes[themeName]}`;
+        this.themeLink.href = `/static/themes/${this.themes[themeName]}`;
 
         // Save preference
         this.saveTheme(themeName);
@@ -95,6 +95,10 @@ class ThemeManager {
 // Initialize theme manager when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
     window.themeManager = new ThemeManager();
+    const cycleButton = document.getElementById('theme-cycle-button');
+    if (cycleButton) {
+        cycleButton.addEventListener('click', () => window.themeManager.cycleTheme());
+    }
 
     // Add theme switcher to UI if desired
     // This would typically be added to the header or settings panel

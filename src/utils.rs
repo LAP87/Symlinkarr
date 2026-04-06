@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::io::{self, IsTerminal, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use unicode_normalization::UnicodeNormalization;
@@ -11,7 +11,30 @@ pub const VIDEO_EXTENSIONS: &[&str] = &[
 ];
 
 pub fn path_under_roots(path: &Path, roots: &[PathBuf]) -> bool {
-    roots.iter().any(|root| path.starts_with(root))
+    let normalized_path = normalize_prefix_check_path(path);
+    roots
+        .iter()
+        .map(|root| normalize_prefix_check_path(root))
+        .any(|root| normalized_path.starts_with(&root))
+}
+
+fn normalize_prefix_check_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Normal(segment) => normalized.push(segment),
+            Component::RootDir | Component::Prefix(_) => {
+                normalized.push(component.as_os_str());
+            }
+        }
+    }
+
+    normalized
 }
 
 pub fn cached_source_exists(
@@ -306,6 +329,24 @@ mod tests {
             &roots
         ));
         assert!(!path_under_roots(Path::new("/mnt/storage/other"), &roots));
+    }
+
+    #[test]
+    fn path_under_roots_rejects_parent_dir_escape() {
+        let roots = [PathBuf::from("/mnt/storage/film")];
+        assert!(!path_under_roots(
+            Path::new("/mnt/storage/film/../../etc/passwd"),
+            &roots
+        ));
+    }
+
+    #[test]
+    fn path_under_roots_normalizes_curdir_segments() {
+        let roots = [PathBuf::from("/mnt/storage/film")];
+        assert!(path_under_roots(
+            Path::new("/mnt/storage/film/./Movie {tmdb-1}"),
+            &roots
+        ));
     }
 
     // === normalize ===

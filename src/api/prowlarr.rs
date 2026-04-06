@@ -1,5 +1,3 @@
-#![allow(dead_code)] // Serde fields + scaffolded search API
-
 use anyhow::Result;
 use reqwest::Client;
 use serde::Deserialize;
@@ -24,29 +22,37 @@ pub mod categories {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProwlarrResult {
+    #[allow(dead_code)]
     pub guid: String,
     pub title: String,
+    #[allow(dead_code)]
     pub indexer_id: i32,
+    #[allow(dead_code)]
     #[serde(default)]
     pub indexer: String,
     pub size: i64,
     #[serde(default)]
     pub seeders: Option<i32>,
+    #[allow(dead_code)]
     #[serde(default)]
     pub leechers: Option<i32>,
     #[serde(default)]
     pub download_url: Option<String>,
     #[serde(default)]
     pub magnet_url: Option<String>,
+    #[allow(dead_code)]
     #[serde(default)]
     pub categories: Vec<ProwlarrCategory>,
+    #[allow(dead_code)]
     #[serde(default)]
     pub protocol: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProwlarrCategory {
+    #[allow(dead_code)]
     pub id: i32,
+    #[allow(dead_code)]
     #[serde(default)]
     pub name: String,
 }
@@ -113,6 +119,7 @@ impl ProwlarrClient {
     }
 
     /// Grab/download a release through Prowlarr (sends to configured download client).
+    #[allow(dead_code)]
     pub async fn grab(&self, guid: &str, indexer_id: i32) -> Result<()> {
         let url = format!("{}/api/v1/search", self.base_url);
         debug!(
@@ -129,6 +136,13 @@ impl ProwlarrClient {
             .client
             .post(&url)
             .header("X-Api-Key", &self.api_key)
+            .header(
+                "Idempotency-Key",
+                crate::api::http::stable_idempotency_key(
+                    "prowlarr-grab",
+                    &format!("{}:{}", guid, indexer_id),
+                ),
+            )
             .json(&body);
         let resp = http::send_with_retry(req).await?;
 
@@ -176,6 +190,7 @@ impl ProwlarrClient {
     }
 
     /// Search + pick best result (most seeders, with downloadable URL + title verification).
+    #[allow(dead_code)]
     pub async fn search_best(
         &self,
         query: &str,

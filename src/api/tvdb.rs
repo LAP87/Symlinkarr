@@ -1,8 +1,6 @@
-#![allow(dead_code)] // Module scaffolded for future TVDB integration
-
 use anyhow::{Context, Result};
 use reqwest::Client;
-use serde::Deserialize;
+use serde::{de::DeserializeOwned, Deserialize};
 use tracing::{debug, info, warn};
 
 use crate::api::http;
@@ -52,6 +50,7 @@ struct TvdbSeries {
 #[derive(Debug, Deserialize)]
 struct TvdbAlias {
     name: Option<String>,
+    #[allow(dead_code)]
     language: Option<String>,
 }
 
@@ -66,6 +65,7 @@ struct TvdbSeason {
 #[derive(Debug, Deserialize)]
 struct TvdbSeasonType {
     id: Option<u32>,
+    #[allow(dead_code)]
     name: Option<String>,
 }
 
@@ -114,7 +114,8 @@ impl TvdbClient {
             .json(&serde_json::json!({
                 "apikey": self.api_key
             }));
-        let resp: TvdbAuthResponse = http::send_with_retry(req).await?.json().await?;
+        let resp: TvdbAuthResponse =
+            decode_tvdb_response(http::send_with_retry(req).await?, "authentication").await?;
 
         if let Some(data) = resp.data {
             self.token = Some(data.token);
@@ -155,6 +156,11 @@ impl TvdbClient {
                     debug!("Cache hit for TVDB {}", tvdb_id);
                     return Ok(metadata);
                 }
+                warn!(
+                    "TVDB metadata cache decode failed for {}; invalidating stale entry",
+                    tvdb_id
+                );
+                let _ = db.invalidate_cached(&cache_key).await;
             }
 
             // Ensure we have a valid token
@@ -275,10 +281,29 @@ impl TvdbClient {
             .ok_or_else(|| anyhow::anyhow!("Not authenticated"))?;
 
         let req = self.client.get(url).bearer_auth(token);
-        let resp: TvdbEpisodesResponse = http::send_with_retry(req).await?.json().await?;
+        let resp: TvdbEpisodesResponse =
+            decode_tvdb_response(http::send_with_retry(req).await?, "episode lookup").await?;
 
         Ok(resp.data.map(|d| d.episodes).unwrap_or_default())
     }
+}
+
+async fn decode_tvdb_response<T: DeserializeOwned>(
+    resp: reqwest::Response,
+    operation: &str,
+) -> Result<T> {
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!(
+            "TVDB request failed during {} (HTTP {}): {}",
+            operation,
+            status,
+            body
+        );
+    }
+
+    Ok(resp.json::<T>().await?)
 }
 
 async fn cache_negative_metadata(db: &Database, cache_key: &str, ttl_hours: u64) {

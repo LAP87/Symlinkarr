@@ -12,17 +12,33 @@ The API is local-first and intended to back the bundled web UI.
 
 By default, the web server binds to `127.0.0.1`. Set `web.bind_address: "0.0.0.0"` only when you intentionally want external reachability, such as a container with explicit port publishing, and pair it with `web.allow_remote: true`. Cross-origin access is not enabled by default.
 
-Symlinkarr now has two optional auth layers:
+Security modes:
+
+- `local-only`: loopback bind, no remote exposure
+- `remote operator`: remote bind plus HTTP Basic auth for the built-in UI
+- `scripted operator`: optional API key for automation clients in addition to the operator login
+
+Symlinkarr has two auth layers:
 
 - `web.username` + `web.password` enable HTTP Basic auth for the bundled HTML UI and JSON API
 - `web.api_key` enables API auth for non-browser clients via `Authorization: Bearer ...` or `X-API-Key`
 
-If only `web.api_key` is configured, the JSON API is protected but the HTML UI is not. For mutating browser requests, Symlinkarr also enforces:
+Remote exposure is intended to use Basic auth. API key alone is for automation clients, not for making the built-in HTML UI remotely reachable.
+
+`local-only` is treated as a trusted mode. For remote/operator browser requests, Symlinkarr also enforces:
 
 - same-origin `Origin`/`Referer` validation for browser-style `POST` requests
 - an issued host-only browser session cookie (`SameSite=Strict`) that is set by same-origin `GET` responses and required on later browser mutations
+- a synchronizer-style CSRF token rendered into HTML forms and validated on UI mutation routes
 
 Non-browser local clients that do not send `Origin` or `Referer` headers are still allowed to call mutating endpoints without that browser session cookie, but they must satisfy any configured API auth.
+
+Current CLI-only operations:
+
+- `symlinkarr discover add <TORRENT_ID>`
+- `symlinkarr queue list`
+- `symlinkarr queue retry`
+- `symlinkarr repair trigger --arr <INSTANCE>`
 
 ## Conventions
 
@@ -126,6 +142,7 @@ Notes:
 
 - Browser/UI discover defaults to cached-only mode for lower latency and fewer inline surprises.
 - Set `refresh_cache=true` only when you explicitly want a live RD cache sync before gap detection.
+- Adding RD torrents from discover is still CLI-only today. Use `symlinkarr discover add <TORRENT_ID>` for that write path.
 
 ## `POST /api/v1/scan`
 
@@ -167,6 +184,65 @@ Notes:
 
 - Web/API scan now returns immediately instead of holding the request open for the full run.
 - Poll `GET /api/v1/scan/jobs` for the active background scan and `GET /api/v1/scan/history` / `GET /api/v1/scan/:id` for completed runs.
+
+## `POST /api/v1/cache/invalidate`
+
+Invalidates one targeted metadata cache entry or short-form media ID fan-out.
+
+Status codes:
+
+- `200 OK` on success
+- `500 Internal Server Error` if invalidation fails
+
+Request body:
+
+```json
+{
+  "key": "tmdb:12345"
+}
+```
+
+Response:
+
+```json
+{
+  "invalidated": 4,
+  "key": "tmdb:12345"
+}
+```
+
+Supported key styles:
+
+- exact keys such as `tmdb:tv:12345`, `tmdb:movie:12345`, `tvdb:series:67890`
+- short-form IDs such as `tmdb:12345` and `tvdb:67890`
+- `anime-lists` for the anime identity XML cache
+
+Notes:
+
+- this endpoint is intended for targeted metadata refresh, not the RD torrent cache
+- `tmdb:12345` fans out to TV/movie metadata plus external-ID cache entries when present
+
+## `DELETE /api/v1/cache`
+
+Clears all cached TMDB/TVDB/anime-lists metadata entries.
+
+Status codes:
+
+- `200 OK` on success
+- `500 Internal Server Error` if cache clearing fails
+
+Response:
+
+```json
+{
+  "cleared": 42
+}
+```
+
+Notes:
+
+- this does not rebuild or wipe the Real-Debrid torrent cache
+- use it when you want the next metadata lookups to repopulate from upstream APIs
 
 ## `GET /api/v1/scan/status`
 
@@ -749,6 +825,7 @@ Notes:
 
 - this route now returns immediately instead of holding the request open for the full repair pass
 - the background worker still runs the same core repair flow as CLI `repair auto`, without the CLI-only self-heal prompt/output layer
+- `repair trigger` remains CLI-only today.
 
 ## `GET /api/v1/repair/status`
 

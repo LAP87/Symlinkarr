@@ -10,8 +10,9 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
-use crate::backup::BackupManager;
-use crate::cleanup_audit::{self, CleanupReport, CleanupScope};
+use crate::cleanup_audit::CleanupScope;
+#[cfg(test)]
+use crate::cleanup_audit::{self, CleanupReport};
 use crate::commands::cleanup::{
     anime_remediation_block_reason_catalog, apply_anime_remediation_plan_with_refresh,
     apply_cleanup_prune_with_refresh, assess_anime_remediation_groups,
@@ -24,8 +25,7 @@ use crate::commands::discover::load_discovery_snapshot;
 use crate::commands::doctor::{collect_doctor_checks, DoctorCheckMode};
 use crate::commands::report::build_anime_remediation_report;
 use crate::commands::selected_libraries;
-use crate::config::Config;
-use crate::db::{Database, ScanHistoryRecord};
+use crate::db::ScanHistoryRecord;
 use crate::media_servers::{
     configured_refresh_backends, deferred_refresh_summary, LibraryInvalidationOutcome,
     LibraryInvalidationServerOutcome,
@@ -65,6 +65,8 @@ pub fn create_router(state: WebState) -> Router<WebState> {
         .route("/links", get(api_get_links))
         .route("/config/validate", get(api_get_config_validate))
         .route("/doctor", get(api_get_doctor))
+        .route("/cache/invalidate", post(api_post_cache_invalidate))
+        .route("/cache", axum::routing::delete(api_delete_cache))
         .with_state(state)
 }
 
@@ -1102,16 +1104,36 @@ fn default_plex_db_candidates() -> [&'static str; 3] {
     ]
 }
 
+fn canonical_plex_db_path(path: std::path::PathBuf) -> Option<std::path::PathBuf> {
+    if path
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return None;
+    }
+
+    let canonical = path.canonicalize().ok()?;
+    if !canonical.is_file() {
+        return None;
+    }
+
+    canonical
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .filter(|ext| ext.eq_ignore_ascii_case("db"))?;
+
+    Some(canonical)
+}
+
 fn resolve_plex_db_path(query_path: Option<&str>) -> Option<std::path::PathBuf> {
     if let Some(requested) = query_path.map(str::trim).filter(|value| !value.is_empty()) {
-        let path = std::path::PathBuf::from(requested);
-        return path.exists().then_some(path);
+        return canonical_plex_db_path(std::path::PathBuf::from(requested));
     }
 
     default_plex_db_candidates()
         .into_iter()
         .map(std::path::PathBuf::from)
-        .find(|path| path.exists())
+        .find_map(canonical_plex_db_path)
 }
 
 /// GET /api/v1/scan/history
@@ -1802,19 +1824,57 @@ pub async fn api_get_doctor(State(state): State<WebState>) -> Json<ApiDoctorResp
     Json(ApiDoctorResponse { all_passed, checks })
 }
 
+// ─── Cache management ──────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct CacheInvalidateRequest {
+    /// Cache key or short-form media ID (e.g., "tmdb:12345", "tvdb:67890", "anime-lists")
+    key: String,
+}
+
+#[derive(Serialize)]
+struct CacheInvalidateResponse {
+    invalidated: u64,
+    key: String,
+}
+
+#[derive(Serialize)]
+struct CacheClearResponse {
+    cleared: u64,
+}
+
+async fn api_post_cache_invalidate(
+    State(state): State<WebState>,
+    Json(body): Json<CacheInvalidateRequest>,
+) -> Response {
+    match crate::commands::cache::invalidate_metadata_cache(&state.database, &body.key).await {
+        Ok(deleted) => Json(CacheInvalidateResponse {
+            invalidated: deleted,
+            key: body.key,
+        })
+        .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+async fn api_delete_cache(State(state): State<WebState>) -> Response {
+    match crate::commands::cache::clear_metadata_cache(&state.database).await {
+        Ok(deleted) => Json(CacheClearResponse { cleared: deleted }).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::{to_bytes, Body};
-    use axum::http::Request;
-    use axum::response::IntoResponse;
-    use serde_json::Value;
-    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-    use sqlx::Executor;
-    use std::path::{Path, PathBuf};
-    use std::str::FromStr;
-    use tempfile::TempDir;
-
     use crate::config::{
         ApiConfig, BackupConfig, BazarrConfig, CleanupPolicyConfig, Config, ContentType,
         DaemonConfig, DecypharrConfig, DmmConfig, FeaturesConfig, LibraryConfig, MatchingConfig,
@@ -1826,6 +1886,13 @@ mod tests {
     use crate::web::{
         ActiveCleanupAuditJob, ActiveScanJob, LastCleanupAuditOutcome, LastScanOutcome,
     };
+    use axum::body::to_bytes;
+    use axum::response::IntoResponse;
+    use serde_json::Value;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use sqlx::Executor;
+    use std::path::{Path, PathBuf};
+    use std::str::FromStr;
 
     fn test_config(root: &Path) -> Config {
         let library_root = root.join("library");

@@ -37,6 +37,14 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@cargo-audit
+      - run: cargo audit --locked
+
   release-smoke:
     runs-on: ubuntu-latest
     steps:

@@ -44,6 +44,7 @@
         </div>
     </div>
     <form action="/cleanup/anime-remediation/preview" method="post" class="stack-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <div class="form-group">
             <label class="form-label" for="anime-remediation-plex-db">Plex DB Path</label>
             <input id="anime-remediation-plex-db" name="plex_db" type="text" class="form-control mono" value="{{ data.plex_db_path }}">

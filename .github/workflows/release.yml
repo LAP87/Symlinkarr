@@ -12,7 +12,22 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --all-targets --locked
+      - run: cargo clippy --all-targets --all-features --locked -- -D warnings
+      - run: cargo fmt --all -- --check
+      - uses: taiki-e/install-action@cargo-audit
+      - run: cargo audit --locked
+
   build:
+    needs: verify
     strategy:
       matrix:
         include:
@@ -60,7 +75,7 @@ jobs:
 
   docker:
     runs-on: ubuntu-latest
-    needs: build
+    needs: [verify, build]
     steps:
       - uses: actions/checkout@v4
 
@@ -95,7 +110,7 @@ jobs:
 
   release:
     runs-on: ubuntu-latest
-    needs: [build, docker]
+    needs: [verify, build, docker]
     steps:
       - uses: actions/download-artifact@v4
         with:

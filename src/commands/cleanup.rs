@@ -1,5 +1,5 @@
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -1253,16 +1253,36 @@ fn default_plex_db_candidates() -> [&'static str; 3] {
     ]
 }
 
+fn canonical_plex_db_path(path: PathBuf) -> Option<PathBuf> {
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return None;
+    }
+
+    let canonical = path.canonicalize().ok()?;
+    if !canonical.is_file() {
+        return None;
+    }
+
+    canonical
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .filter(|ext| ext.eq_ignore_ascii_case("db"))?;
+
+    Some(canonical)
+}
+
 fn resolve_plex_db_path(query_path: Option<&str>) -> Option<PathBuf> {
     if let Some(requested) = query_path.map(str::trim).filter(|value| !value.is_empty()) {
-        let path = PathBuf::from(requested);
-        return path.exists().then_some(path);
+        return canonical_plex_db_path(PathBuf::from(requested));
     }
 
     default_plex_db_candidates()
         .into_iter()
         .map(PathBuf::from)
-        .find(|path| path.exists())
+        .find_map(canonical_plex_db_path)
 }
 
 fn default_anime_remediation_report_path(cfg: &Config) -> PathBuf {

@@ -295,6 +295,7 @@
 <div class="card">
     {% if actionable_candidates > 0 %}
     <form action="/cleanup/prune" method="post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input type="hidden" name="report" value="{{ path.display() }}">
         <div class="form-group">
             <label class="form-label" for="token">Confirmation Token:</label>

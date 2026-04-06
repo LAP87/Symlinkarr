@@ -1,9 +1,13 @@
 .git
 .github
+.codex
 target
 data
 backups
 secrets
+.secrets
+docs
+references
 .env
 .env.*
 config.yaml

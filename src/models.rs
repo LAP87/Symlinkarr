@@ -86,7 +86,6 @@ pub struct SourceItem {
     /// Episode number (for TV)
     pub episode: Option<u32>,
     /// Last episode number for multi-episode files (e.g., S01E01-E03 → episode=1, episode_end=Some(3))
-    #[allow(dead_code)] // Populated by parser; linker filename range support is a follow-up
     pub episode_end: Option<u32>,
     /// Video quality (e.g., "1080p", "2160p")
     #[allow(dead_code)] // Populated by parser, not used in matching yet

@@ -109,11 +109,48 @@ From a release binary:
 
 Web UI default: `http://127.0.0.1:8726`
 
-If you expose the web UI beyond loopback, configure auth:
+## Security Modes
 
+Symlinkarr follows a local-first security model similar to how many people already run *arr apps:
+
+- `local-only`: bind to `127.0.0.1`, keep `allow_remote: false`, and use the UI/API from the same host or through your own tunnel/reverse proxy.
+- `remote operator`: bind beyond loopback, set `allow_remote: true`, and configure `web.username` + `web.password`.
+- `scripted operator`: optionally add `web.api_key` for non-browser automation clients that should use `Authorization: Bearer ...` or `X-API-Key`.
+
+Practical rules:
+
+- `local-only` is a trusted mode: no built-in auth is required, and browser mutation guards stay off by default
 - `web.username` + `web.password` protect the HTML UI and API with HTTP Basic auth
 - `web.api_key` protects JSON API clients via `Authorization: Bearer ...` or `X-API-Key`
-- if you only configure `web.api_key`, the HTML UI is still readable unless you also add Basic auth or put it behind a trusted reverse proxy
+- when the UI is remotely exposed, browser form mutations use an issued same-origin session cookie plus a server-rendered CSRF token
+- remote exposure now requires `web.username` + `web.password`; API key alone is not enough for the built-in HTML UI
+
+Recommended default:
+
+- keep the built-in UI loopback-only unless you have a specific reason to expose it
+
+## Metadata Cache Policy
+
+Symlinkarr keeps TMDB/TVDB metadata cached for a long time on purpose.
+
+- metadata is mostly stable, while API timeouts and rate limits are expensive
+- the right fix for stale metadata is targeted refresh/invalidation when a specific title looks wrong
+- short global TTLs mainly create avoidable cache churn
+
+Useful commands:
+
+- `symlinkarr cache invalidate tmdb:12345`
+- `symlinkarr cache invalidate anime-lists`
+- `symlinkarr cache clear`
+
+## Backup Policy
+
+Symlinkarr backups preserve two layers on purpose:
+
+- a JSON manifest of active symlinks for normal restore flows
+- a sibling SQLite snapshot from `backup create`, so operators also have a real database recovery artifact
+
+Current-format manifests are integrity-checked during `backup list` and `backup restore`, so corrupted or tampered backups fail loudly instead of half-restoring.
 
 ## Common Commands
 
@@ -128,6 +165,7 @@ symlinkarr cleanup remediate-anime --plex-db "<PLEX_DB_PATH>"
 symlinkarr repair auto --dry-run
 symlinkarr discover list
 symlinkarr cache status
+symlinkarr cache invalidate tmdb:12345
 symlinkarr web
 ```
 
@@ -140,9 +178,15 @@ If you are running from a source checkout, prepend `cargo run --` to the same co
 - detect and repair bad symlinks before Plex, Emby, or Jellyfin drift too far
 - clean up legacy GemLink or early-Symlinkarr mistakes with preview-first workflows
 
+## Known RC Limits
+
+- anime specials without usable anime-lists numbering hints may still need manual search terms, because many indexers are weak at `S00Exx`-style anime queries
+
 ## Docs
 
 - [GitHub Wiki](https://github.com/LAP87/Symlinkarr/wiki)
+- [Wiki source: feature guide](docs/GITHUB_WIKI_FEATURES.md)
+- [Product scope](docs/PRODUCT_SCOPE.md)
 - [CLI manual](docs/CLI_MANUAL.md)
 - [API schema](docs/API_SCHEMA.md)
 - [RC roadmap](docs/RC_ROADMAP.md)

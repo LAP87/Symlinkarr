@@ -21,7 +21,6 @@ mod models;
 mod repair;
 mod source_scanner;
 mod utils;
-#[allow(dead_code, unused_imports, unused_variables)]
 mod web;
 
 use anyhow::Result;
@@ -30,12 +29,38 @@ use clap::{Parser, Subcommand, ValueEnum};
 use crate::commands::print_final_summary;
 use crate::db::AcquisitionJobStatus;
 
+const ROOT_AFTER_HELP: &str = r#"Feature guide:
+  scan      = look at your library and source mount, then create/update symlinks
+  repair    = find dead symlinks and relink them to the best replacement
+  cleanup   = inspect dead/legacy links first, then prune only when confirmed
+  discover  = show RD cache content that is not linked into the library yet
+  queue     = inspect or retry persistent auto-acquire jobs
+  backup    = snapshot and restore Symlinkarr state safely
+  cache     = build the RD torrent cache or invalidate/clear sticky metadata entries
+  doctor    = run preflight checks before a real scan or daemon run
+  report    = export structured operator reports, including anime remediation inputs
+  daemon    = run scheduled scans continuously
+  web       = run the built-in operator UI and JSON API
+
+Security modes:
+  local-only       = trusted loopback mode, open by default
+  remote operator  = remote bind plus Basic auth for the built-in UI
+  scripted operator= optional API key for automation clients
+
+Docs:
+  docs/CLI_MANUAL.md
+  docs/API_SCHEMA.md
+  docs/PRODUCT_SCOPE.md
+  docs/GITHUB_WIKI_FEATURES.md
+"#;
+
 // ─── CLI definitions ───────────────────────────────────────────────
 
 #[derive(Parser)]
 #[command(
     name = "symlinkarr",
-    about = "Symlinkarr — Intelligent symlink manager for Real-Debrid ↔ Plex",
+    about = "Symlinkarr — local-first symlink manager for Real-Debrid-backed Plex, Emby, and Jellyfin libraries",
+    after_help = ROOT_AFTER_HELP,
     version
 )]
 struct Cli {
@@ -99,10 +124,13 @@ pub(crate) enum QueueRetryScope {
 enum Commands {
     /// Run a full scan → match → link cycle
     Scan {
+        /// Show what would change without touching symlinks or the DB
         #[arg(long)]
         dry_run: bool,
+        /// Also build missing-content acquisition requests during the scan
         #[arg(long)]
         search_missing: bool,
+        /// Restrict the run to one configured library name
         #[arg(long)]
         library: Option<String>,
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
@@ -136,6 +164,7 @@ enum Commands {
     Daemon,
     /// Run only the web UI
     Web {
+        /// Override the configured web port for this run
         #[arg(long)]
         port: Option<u16>,
     },
@@ -171,7 +200,7 @@ enum Commands {
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         output: OutputFormat,
     },
-    /// Manage the Real-Debrid torrent cache
+    /// Manage RD torrent cache and sticky metadata cache entries
     Cache {
         #[command(subcommand)]
         action: CacheAction,
@@ -217,6 +246,13 @@ pub(crate) enum CacheAction {
     Build,
     /// Show cache statistics
     Status,
+    /// Invalidate cached metadata for a specific media ID or cache key
+    Invalidate {
+        /// Cache key prefix or exact key (e.g., "tmdb:tv:12345", "tmdb:12345", "tvdb:67890", "anime-lists")
+        key: String,
+    },
+    /// Clear all cached API metadata
+    Clear,
 }
 
 #[derive(Subcommand)]
@@ -346,12 +382,15 @@ pub(crate) enum CleanupAction {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .init();
-
     let cli = Cli::parse();
     let cfg = config::Config::load(cli.config)?;
+    let log_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .or_else(|_| tracing_subscriber::EnvFilter::try_new(cfg.log_level.clone()))
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    tracing_subscriber::fmt()
+        .with_env_filter(log_filter)
+        .with_writer(std::io::stderr)
+        .init();
     let db = db::Database::new(&cfg.db_path).await?;
 
     match cli.command {

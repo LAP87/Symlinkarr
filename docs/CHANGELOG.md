@@ -2,9 +2,39 @@
 
 ## Release Target
 
-- package version for this push: `0.3.0-beta.1`
+- package version for this push: `0.3.0-beta.2`
 - posture: `rc-prep with downloadable binary artifacts`
 - intended use: local-first host or Docker installs, with Windows 11 users running through WSL2 or a Linux container
+
+## 2026-04-06 - RC Closeout Hardening Pass
+
+### Code Changes
+
+- expanded multi-episode source files into per-episode destination slots during matching, so bundled files like `S01E01E02E03` no longer leave later episodes falsely missing.
+  - files: `src/matcher.rs`, `src/models.rs`
+- added operator-facing metadata cache invalidation and full cache clear paths in CLI and API, aligning the long-lived metadata-cache policy with targeted refresh controls instead of short TTL churn.
+  - files: `src/main.rs`, `src/commands/cache.rs`, `src/db.rs`, `src/web/api/mod.rs`, `docs/API_SCHEMA.md`, `docs/CLI_MANUAL.md`, `README.md`
+- tightened sticky-cache self-healing so corrupt TMDB/TVDB/anime-lists entries are invalidated and refetched instead of poisoning future matches.
+  - files: `src/anime_identity.rs`, `src/api/tmdb.rs`, `src/api/tvdb.rs`, `src/matcher.rs`, `src/db.rs`, `src/commands/daemon.rs`
+- moved scheduled SQLite `VACUUM` onto a dedicated maintenance connection, reducing the chance that the normal writer pool gets monopolized during a maintenance window.
+  - files: `src/db.rs`, `src/commands/daemon.rs`, `src/config.rs`, `docs/CLI_MANUAL.md`, `docs/RC_ROADMAP.md`
+- version-gated backup manifests during list/restore, so future backup-format changes now fail loudly instead of restoring with silent serde defaults.
+  - files: `src/backup.rs`
+- `backup create` now emits a sibling SQLite snapshot and current-format backup manifests carry an integrity hash, so operators have both a DB recovery artifact and loud detection of corrupted or tampered backups.
+  - files: `src/backup.rs`, `src/db.rs`, `src/commands/backup.rs`, `README.md`, `docs/CLI_MANUAL.md`
+- added scan correlation logging at `info` level via `run_token`, so one scan can be followed across operator-visible logs without timestamp guessing.
+  - files: `src/commands/scan.rs`
+- hardened the peripheral adapter edges: configurable DMM auth salt, stable idempotency keys on POST mutations, a shorter health-check timeout, and a consecutive-failure breaker for Emby/Jellyfin invalidation bursts.
+  - files: `src/config.rs`, `src/api/dmm.rs`, `src/api/http.rs`, `src/api/realdebrid.rs`, `src/api/prowlarr.rs`, `src/media_servers/emby.rs`, `src/media_servers/jellyfin.rs`
+- polished operator docs/help by renaming the wiki-style feature guide to `docs/GITHUB_WIKI_FEATURES.md` and keeping CLI/help text aligned with the current public explanation level.
+  - files: `src/main.rs`, `README.md`, `docs/CLI_MANUAL.md`, `docs/GITHUB_WIKI_FEATURES.md`, `docs/RC_ROADMAP.md`
+
+### Validation
+
+- `cargo test -q --target-dir /tmp/symlinkarr-cargo-test`
+  - result: `618 passed; 0 failed; 1 ignored`
+- `cargo clippy --all-targets --all-features --target-dir /tmp/symlinkarr-cargo-clippy -- -D warnings`
+  - result: passed locally
 
 ## 2026-04-03 - Runtime Hardening Pass
 

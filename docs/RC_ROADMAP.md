@@ -1,136 +1,118 @@
 # Symlinkarr RC Roadmap
 
-This is the current high-signal list of what still remains before Symlinkarr should be called a real `1.0 RC`.
+This is the current, scope-correct roadmap for reaching a believable `v1.0 RC`.
+
+It intentionally reflects Symlinkarr as a local-first symlink daemon and operator tool, not as a general media-ops platform.
+
+## Product Line
+
+See [Product Scope](./PRODUCT_SCOPE.md).
+
+Short version:
+
+- Symlinkarr is a deterministic scan/link/repair/cleanup tool
+- the web UI is an operator surface
+- media-server integrations are supporting adapters
+- acquisition and remediation helpers are optional, not the definition of the product
 
 ## Current Position
 
-Symlinkarr is now past “rough beta” territory and into “power-user beta / RC-prep”.
+The project is now in `RC-hardening`, not feature-discovery.
 
-Already working in real use:
+Already solid:
 
-- scan, match, link, repair, cleanup, and cache flows
-- web UI and JSON API
-- guarded cleanup and guarded anime remediation preview/apply
-- guarded anime remediation is now reachable from the web UI, not only CLI/API
-- Plex, Emby, and Jellyfin invalidation adapters
-- multi-backend refresh fan-out
-- persisted scan telemetry and per-backend refresh history
-- media-server-free usage when no Plex/Emby/Jellyfin backend is configured
+- scan, match, link, repair, cleanup audit/prune, backup/restore
+- local-first CLI workflow
+- operator web UI and JSON API
+- Plex / Emby / Jellyfin refresh integration
+- persisted telemetry and status/history screens
+- repair and cleanup flows with stronger runtime safety guards
 
-Still true in live data:
+Recently tightened:
 
-- anime legacy cleanup is the messiest remaining operational area
-- Plex overload and refresh pressure still need continued hardening
-- some of the most important operator questions are finally visible in UI/API, but remediation still needs to become safer and easier to trust at larger scale
+- remote web exposure now requires explicit auth for the HTML UI
+- mutation guards in the web layer are stricter
+- repair DB/filesystem behavior is safer under failure
+- repair now uses atomic temp-swap semantics instead of remove-then-create
+- DB path handling no longer silently truncates invalid path text
+- HTTP health checks and client construction fail louder
+- matcher/discovery/API edge cases from the latest RC audit were burned down
+- media refresh lock/defer/drain behavior has now been exercised under real concurrent load against configured Plex / Emby / Jellyfin backends
+- local config now validates `SourceConfig.media_type` against explicit allowed values instead of silently accepting typos
+- feature-guide docs now exist as wiki-ready source and are surfaced from `symlinkarr --help`
+- release/Docker basics are less fragile
+- metadata cache policy is back to long-lived by default; freshness is now treated as a targeted invalidation problem, not a short-TTL problem
+- operators can now invalidate or clear sticky metadata cache entries from CLI/API instead of waiting for broad cache expiry
+- multi-episode source files now expand into per-episode destination slots instead of leaving later episodes missing
+- scheduled `VACUUM` now runs on a separate maintenance connection instead of monopolizing the normal SQLite pool
+- backup restore now version-gates backup manifests so future schema changes fail loudly instead of restoring with silent defaults
+- full backups now also capture a sibling SQLite snapshot, and current-format manifests validate integrity before list/restore trust them
+- the wiki-style feature guide is now part of the normal docs/help surface under `docs/GITHUB_WIKI_FEATURES.md`
 
-## What Must Be Finished Before `1.0 RC`
+## Must Finish Before `v1.0 RC`
 
-### 1. Remediation Trust
+### 1. Final Runtime Validation
 
-This is the biggest remaining category.
-
-Must finish:
-
-- increase safe eligibility where possible without lowering cleanup safety
-- keep every remediation path quarantine-first for foreign/legacy material
-- keep the new web preview/apply remediation flow as safe and informative as the CLI path
-
-Why:
-
-- users need to trust that Symlinkarr will not silently make legacy-folder situations worse
-- right now only a small fraction of correlated anime groups are auto-eligible
-
-### 2. Scan and Link Observability
-
-The next trust problem is “why did this not link?”
+The remaining RC work is mostly proving and packaging, not broad new implementation.
 
 Must finish:
 
-- persist and surface meaningful skip reasons for scan/link outcomes
-- make “ambiguous”, “source missing before link”, and similar cases visible in UI/API
-- keep overview screens useful without forcing the operator into log files
-- continue improving per-backend refresh visibility
+- validate scheduled `VACUUM` behavior in a real daemon maintenance window
+- do one final operator-style pass over scan, repair, prune, restore, and remediation on realistic data
+- keep rollback semantics and skip reasons visible in the operator surfaces
 
-Why:
+### 2. Release Surface Hygiene
 
-- a stable product cannot feel random when it skips something
-
-### 3. Media-Server Hardening
-
-The adapter layer is real now, but it still needs more operational polish.
+The code surface is close to RC; the release surface needs to match.
 
 Must finish:
 
-- continue tuning refresh pacing, cap guards, and abort behavior against real library load
-- keep partial-failure semantics honest across scan, cleanup, repair, and remediation
-- validate the new Emby/Jellyfin library-root fallback and refresh-lock semantics under real concurrent load
-- avoid media-server overload during cleanup/remediation runs
+- cut the RC version and changelog intentionally
+- verify release artifacts and Docker image paths one more time
+- make sure docs describe current defaults, current cache policy, and current security modes
 
-Why:
+### 3. Known-Limit Documentation
 
-- a working invalidation layer is not enough if it can still destabilize the media server
-
-### 4. Runtime Safety Parity
-
-Safety rules need to stay uniform across every mutation surface.
+What remains in the code is mostly narrow behavior worth documenting rather than blocking the RC outright.
 
 Must finish:
 
-- ensure every destructive or semi-destructive path respects mount/runtime health gates
-- keep CLI, web UI, and API behavior aligned
-- keep blocking behavior explicit instead of success-shaped no-ops
+- keep the anime-specials limitations explicit where automatic acquisition still depends on upstream naming/mapping quality
+- keep stale audit docs marked as snapshots rather than live blocker lists
+- keep feature-guide/help wording aligned with the intended public-facing explanation level
 
-Why:
+## Important, But Not RC-Blocking
 
-- RD mount failures are common enough that this cannot be inconsistent
+- broader anime remediation eligibility work
+- deeper Emby/Jellyfin compare logic
+- more acquisition automation
+- richer dashboards and cosmetic UI polish
+- coverage gates in CI
+- supply-chain/signing polish beyond the current baseline
 
-### 5. Docs and Operator Onboarding
+## Explicitly Not Required For `v1.0`
 
-The project has grown past “the README is enough”.
-
-Must finish:
-
-- keep README slim and useful
-- keep wiki, CLI manual, and API schema aligned with reality
-- maintain a clear “what is stable vs what is still RC work” story
-- keep the roadmap current when work lands
-
-Why:
-
-- broader users will judge stability partly from how predictable the docs and behavior are
-
-## Important, But Not Required For `1.0 RC`
-
-These are good next steps, but they should not block RC if the trust/safety work above is done.
-
-- Emby/Jellyfin DB compare adapters
-- Emby/Jellyfin duplicate-correlation or remediation helpers
-- item-ID-based refresh/invalidation for Emby or Jellyfin
-- more aggressive missing-search acquisition strategies
-- broader non-anime duplicate remediation
-- richer dashboards and cosmetic UI work
-
-## Explicitly Not Ready To Ship
-
-Do not ship these as “safe defaults” yet:
-
-- blind permanent deletion of duplicate groups
-- automatic remediation of the whole correlated anime backlog
-- broad non-anime cleanup based on anime heuristics
-- large matcher rewrites without tight regression coverage
-- event-driven/watchdog mode as a default runtime model
+- turning Symlinkarr into a downloader/orchestrator
+- automatic whole-library remediation by default
+- watcher-first or event-driven runtime as the primary model
+- broad feature expansion for edge media-server workflows
 
 ## Immediate Next Slices
 
 If work resumes right now, the best next slices are:
 
-1. real concurrent-load validation for Plex/Emby/Jellyfin refresh, especially around the new refresh-lock and Emby/Jellyfin root-fallback guard
-2. raise safe anime remediation eligibility without weakening quarantine-first guarantees
-3. extend the same remediation trust model into broader legacy/foreign cleanup cases outside anime
+1. validate scheduled `VACUUM` and one final daemon maintenance pass on realistic data
+2. cut the RC version, changelog, and artifact/release surface intentionally
+3. review remaining known limitations and mark them clearly for operators instead of letting old audits imply hidden blockers
+
+## Known Limits To Acknowledge In `v1.0 RC`
+
+- anime specials without good anime-lists hints may still need manual search terms, because many indexers are weak at `S00Exx`-style anime queries
 
 ## Supporting Docs
 
 - [README.md](../README.md)
+- [Product Scope](./PRODUCT_SCOPE.md)
 - [CLI manual](CLI_MANUAL.md)
 - [API schema](API_SCHEMA.md)
-- [Media-server adapter plan](MEDIA_SERVER_ADAPTER_PLAN.md)
+- [Changelog](CHANGELOG.md)

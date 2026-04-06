@@ -78,6 +78,7 @@
 
         <div class="actions">
             <form action="/links/repair" method="post">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                 <button type="submit" class="btn btn-primary">&#128296; Auto-Repair All</button>
             </form>
             <a href="/cleanup" class="btn btn-secondary">&#129529; Cleanup</a>

@@ -1,5 +1,3 @@
-#![allow(dead_code)] // Serde fields + future-use methods
-
 use anyhow::Result;
 use reqwest::{Client, Response, StatusCode};
 use serde::Deserialize;
@@ -18,6 +16,7 @@ pub struct TautulliResponse<T> {
 
 #[derive(Debug, Deserialize)]
 pub struct TautulliResponseInner<T> {
+    #[allow(dead_code)]
     pub result: String,
     pub data: T,
 }
@@ -42,8 +41,10 @@ pub struct TautulliSession {
     pub title: String,
     #[serde(default)]
     pub grandparent_title: String,
+    #[allow(dead_code)]
     #[serde(default)]
     pub parent_title: String,
+    #[allow(dead_code)]
     #[serde(default)]
     pub year: String,
     #[serde(default)]
@@ -54,6 +55,7 @@ pub struct TautulliSession {
     pub file: String,
     #[serde(default)]
     pub state: String,
+    #[allow(dead_code)]
     #[serde(default)]
     pub progress_percent: String,
 }
@@ -85,14 +87,17 @@ impl std::fmt::Display for TautulliSession {
 pub struct HistoryData {
     #[serde(default)]
     pub data: Vec<TautulliHistoryEntry>,
+    #[allow(dead_code)]
     #[serde(default, rename = "recordsFiltered")]
     pub records_filtered: i64,
+    #[allow(dead_code)]
     #[serde(default, rename = "recordsTotal")]
     pub records_total: i64,
 }
 
 /// A historical playback entry
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct TautulliHistoryEntry {
     #[serde(default)]
     pub title: String,

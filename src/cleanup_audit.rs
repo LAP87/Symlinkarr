@@ -3429,7 +3429,7 @@ cleanup:
             source_root.display(),
             quarantine_root.display()
         );
-        serde_yaml::from_str(&yaml).unwrap()
+        serde_yml::from_str(&yaml).unwrap()
     }
 
     fn test_config_multi_scope(
@@ -3473,7 +3473,7 @@ cleanup:
             source_root.display(),
             quarantine_root.display()
         );
-        serde_yaml::from_str(&yaml).unwrap()
+        serde_yml::from_str(&yaml).unwrap()
     }
 
     fn high_finding(path: &Path, source: &Path) -> CleanupFinding {

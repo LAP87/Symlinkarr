@@ -1,5 +1,3 @@
-#![allow(dead_code)] // New cleanup audit helpers are phased in incrementally
-
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use reqwest::{Client, StatusCode};
@@ -38,19 +36,25 @@ pub struct SonarrAlternateTitle {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SonarrEpisode {
+    #[allow(dead_code)]
     pub id: i64,
+    #[allow(dead_code)]
     #[serde(default, rename = "seriesId")]
     pub series_id: i64,
     #[serde(default, rename = "seasonNumber")]
     pub season_number: u32,
     #[serde(default, rename = "episodeNumber")]
     pub episode_number: u32,
+    #[allow(dead_code)]
     #[serde(default, rename = "absoluteEpisodeNumber")]
     pub absolute_episode_number: Option<u32>,
+    #[allow(dead_code)]
     #[serde(default, rename = "sceneSeasonNumber")]
     pub scene_season_number: Option<u32>,
+    #[allow(dead_code)]
     #[serde(default, rename = "sceneEpisodeNumber")]
     pub scene_episode_number: Option<u32>,
+    #[allow(dead_code)]
     #[serde(default, rename = "sceneAbsoluteEpisodeNumber")]
     pub scene_absolute_episode_number: Option<u32>,
     #[serde(default, rename = "episodeFileId")]
@@ -61,8 +65,10 @@ pub struct SonarrEpisode {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SonarrWantedMissingPage {
+    #[allow(dead_code)]
     #[serde(default)]
     pub page: u32,
+    #[allow(dead_code)]
     #[serde(default, rename = "pageSize")]
     pub page_size: u32,
     #[serde(default, rename = "totalRecords")]
@@ -75,6 +81,7 @@ pub struct SonarrWantedMissingPage {
 pub struct SonarrWantedMissingRecord {
     #[serde(default, rename = "seriesId")]
     pub series_id: i64,
+    #[allow(dead_code)]
     #[serde(default, rename = "tvdbId")]
     pub tvdb_id: i64,
     #[serde(default, rename = "seasonNumber")]
@@ -89,10 +96,12 @@ pub struct SonarrWantedMissingRecord {
     pub scene_episode_number: Option<u32>,
     #[serde(default, rename = "sceneAbsoluteEpisodeNumber")]
     pub scene_absolute_episode_number: Option<u32>,
+    #[allow(dead_code)]
     #[serde(default)]
     pub title: String,
     #[serde(default, rename = "hasFile")]
     pub has_file: bool,
+    #[allow(dead_code)]
     #[serde(default, rename = "episodeFileId")]
     pub episode_file_id: Option<i64>,
     #[serde(default, rename = "airDateUtc")]
@@ -101,6 +110,7 @@ pub struct SonarrWantedMissingRecord {
     pub monitored: bool,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct SonarrEpisodeFile {
     pub id: i64,
@@ -138,7 +148,7 @@ impl SonarrClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("Sonarr get_series error {}: {}", status, body);
+            anyhow::bail!("Sonarr series lookup failed (HTTP {}): {}", status, body);
         }
 
         Ok(resp.json::<Vec<SonarrSeries>>().await?)
@@ -162,6 +172,7 @@ impl SonarrClient {
         Ok(resp.json::<Vec<SonarrEpisode>>().await?)
     }
 
+    #[allow(dead_code)]
     pub async fn get_episode_file(&self, file_id: i64) -> Result<Option<SonarrEpisodeFile>> {
         if file_id <= 0 {
             return Ok(None);

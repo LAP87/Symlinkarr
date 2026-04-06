@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
+use sqlx::{Connection, QueryBuilder, Row, Sqlite, SqliteConnection, SqlitePool};
 use tracing::info;
 
 use crate::models::{LinkRecord, LinkStatus, MediaType};
@@ -17,6 +17,7 @@ pub struct HousekeepingStats {
     pub scan_runs_deleted: u64,
     pub link_events_deleted: u64,
     pub old_jobs_deleted: u64,
+    pub expired_api_cache_deleted: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -122,7 +123,10 @@ impl AcquisitionRelinkKind {
             "media_id" => Ok(Self::MediaId),
             "media_episode" => Ok(Self::MediaEpisode),
             "symlink_path" => Ok(Self::SymlinkPath),
-            _ => anyhow::bail!("Unknown acquisition relink kind '{}'", value),
+            _ => anyhow::bail!(
+                "Unsupported acquisition relink kind '{}' in the database. Expected one of: media_id, media_episode, symlink_path",
+                value
+            ),
         }
     }
 }
@@ -163,7 +167,10 @@ impl AcquisitionJobStatus {
             "completed_linked" => Ok(Self::CompletedLinked),
             "completed_unlinked" => Ok(Self::CompletedUnlinked),
             "failed" => Ok(Self::Failed),
-            _ => anyhow::bail!("Unknown acquisition job status '{}'", value),
+            _ => anyhow::bail!(
+                "Unsupported acquisition job status '{}' in the database. Expected one of: queued, downloading, relinking, no_result, blocked, completed_linked, completed_unlinked, failed",
+                value
+            ),
         }
     }
 }
@@ -250,15 +257,6 @@ pub struct MediaTypeStats {
     pub broken: i64,
 }
 
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct LibraryStats {
-    pub name: String,
-    pub library_items: i64,
-    pub linked: i64,
-    pub broken: i64,
-}
-
 /// Summary statistics for the web dashboard.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
@@ -330,6 +328,7 @@ pub struct ScanHistoryRecord {
 /// Uses SQLite via sqlx for async persistence.
 pub struct Database {
     pool: SqlitePool,
+    db_path: PathBuf,
 }
 
 const LATEST_SCHEMA_VERSION: i64 = 14;
@@ -339,6 +338,7 @@ impl Clone for Database {
     fn clone(&self) -> Self {
         Self {
             pool: self.pool.clone(),
+            db_path: self.db_path.clone(),
         }
     }
 }
@@ -364,8 +364,10 @@ impl Database {
             .connect_with(options)
             .await?;
 
-        // WAL mode for better concurrency; busy_timeout avoids instant SQLITE_BUSY
-        // errors when daemon and CLI run simultaneously.
+        // Enable relational safeguards, then tune SQLite for concurrent CLI/daemon/web access.
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&pool)
+            .await?;
         sqlx::query("PRAGMA journal_mode = WAL")
             .execute(&pool)
             .await?;
@@ -373,7 +375,10 @@ impl Database {
             .execute(&pool)
             .await?;
 
-        let db = Self { pool };
+        let db = Self {
+            pool,
+            db_path: path.clone(),
+        };
         db.run_migrations().await?;
         #[cfg(unix)]
         {
@@ -384,6 +389,33 @@ impl Database {
 
         info!("Database initialized: {}", db_path);
         Ok(db)
+    }
+
+    /// Export a consistent SQLite snapshot to a standalone file.
+    pub async fn export_snapshot(&self, snapshot_path: &Path) -> Result<()> {
+        if let Some(parent) = snapshot_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+
+        if snapshot_path.exists() {
+            std::fs::remove_file(snapshot_path)?;
+        }
+
+        let escaped = snapshot_path.to_string_lossy().replace('\'', "''");
+        sqlx::query(&format!("VACUUM INTO '{escaped}'"))
+            .execute(&self.pool)
+            .await?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perm = std::fs::Permissions::from_mode(0o600);
+            let _ = std::fs::set_permissions(snapshot_path, perm);
+        }
+
+        Ok(())
     }
 
     /// Run database migrations to create/update schema.
@@ -519,7 +551,10 @@ impl Database {
             12 => self.migration_v12_tx(tx).await,
             13 => self.migration_v13_tx(tx).await,
             14 => self.migration_v14_tx(tx).await,
-            _ => anyhow::bail!("Unknown migration version {}", version),
+            _ => anyhow::bail!(
+                "Unsupported schema migration version {}. This build only knows migrations 1 through 14",
+                version
+            ),
         }
     }
 
@@ -1537,33 +1572,6 @@ impl Database {
             .collect())
     }
 
-    /// Get statistics about links grouped by library (folder name).
-    #[allow(dead_code)]
-    pub async fn get_stats_by_library(&self) -> Result<Vec<LibraryStats>> {
-        let rows = sqlx::query(
-            "SELECT
-                library_name,
-                COUNT(*) as library_items,
-                COALESCE(SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END), 0) as linked,
-                COALESCE(SUM(CASE WHEN status = 'dead' THEN 1 ELSE 0 END), 0) as broken
-             FROM links
-             GROUP BY library_name
-             ORDER BY library_items DESC",
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        Ok(rows
-            .into_iter()
-            .map(|row| LibraryStats {
-                name: row.get("library_name"),
-                library_items: row.get("library_items"),
-                linked: row.get("linked"),
-                broken: row.get("broken"),
-            })
-            .collect())
-    }
-
     // --- Acquisition queue ---
 
     pub async fn enqueue_acquisition_jobs(&self, seeds: &[AcquisitionJobSeed]) -> Result<()> {
@@ -1909,6 +1917,25 @@ impl Database {
         Ok(())
     }
 
+    /// Remove one cached API response so the next lookup refetches it.
+    pub async fn invalidate_cached(&self, cache_key: &str) -> Result<bool> {
+        let deleted = sqlx::query("DELETE FROM api_cache WHERE cache_key = ?")
+            .bind(cache_key)
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
+        Ok(deleted > 0)
+    }
+
+    /// Remove all entries from the API metadata cache. Returns the number of deleted rows.
+    pub async fn clear_api_cache(&self) -> Result<u64> {
+        let deleted = sqlx::query("DELETE FROM api_cache")
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
+        Ok(deleted)
+    }
+
     // --- Scan history ---
 
     /// Record a scan result.
@@ -2222,8 +2249,8 @@ impl Database {
         record: &LinkRecord,
         tx: &mut sqlx::Transaction<'_, Sqlite>,
     ) -> Result<i64> {
-        let source_path = record.source_path.to_str().unwrap_or_default();
-        let target_path = record.target_path.to_str().unwrap_or_default();
+        let source_path = path_to_db_text(&record.source_path)?;
+        let target_path = path_to_db_text(&record.target_path)?;
         let media_type = match record.media_type {
             MediaType::Movie => "movie",
             MediaType::Tv => "tv",
@@ -2250,9 +2277,11 @@ impl Database {
 
     // --- Data retention / housekeeping (H-09) ---
 
-    /// Delete old records that accumulate unboundedly.
-    /// Safe to call at daemon startup and periodically during long runs.
-    pub async fn housekeeping(&self) -> Result<HousekeepingStats> {
+    /// Delete old records and optionally reclaim free pages.
+    ///
+    /// Full `VACUUM` can block writers for noticeable time on larger databases,
+    /// so it is intentionally opt-in for scheduled maintenance windows.
+    pub async fn housekeeping_with_vacuum(&self, run_vacuum: bool) -> Result<HousekeepingStats> {
         let scan_runs_deleted =
             sqlx::query("DELETE FROM scan_runs WHERE run_at < datetime('now', '-90 days')")
                 .execute(&self.pool)
@@ -2274,16 +2303,41 @@ impl Database {
         .await?
         .rows_affected();
 
+        let expired_api_cache_deleted = sqlx::query(
+            "DELETE FROM api_cache
+             WHERE datetime(fetched_at, '+' || ttl_hours || ' hours') <= datetime('now')",
+        )
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+
         // Encourage SQLite to update query planner statistics.
         sqlx::query("PRAGMA optimize").execute(&self.pool).await?;
-        // Reclaim free pages from deleted rows to prevent unbounded file growth.
-        sqlx::query("VACUUM").execute(&self.pool).await?;
+        if run_vacuum {
+            // Reclaim free pages during a deliberate maintenance window without tying up the
+            // main pool's writer slot for the full duration.
+            self.run_maintenance_vacuum().await?;
+        }
 
         Ok(HousekeepingStats {
             scan_runs_deleted,
             link_events_deleted,
             old_jobs_deleted,
+            expired_api_cache_deleted,
         })
+    }
+
+    async fn run_maintenance_vacuum(&self) -> Result<()> {
+        let options = SqliteConnectOptions::new()
+            .filename(&self.db_path)
+            .create_if_missing(false);
+        let mut conn = SqliteConnection::connect_with(&options).await?;
+        sqlx::query("PRAGMA busy_timeout = 5000")
+            .execute(&mut conn)
+            .await?;
+        sqlx::query("VACUUM").execute(&mut conn).await?;
+        conn.close().await?;
+        Ok(())
     }
 
     // --- C-06: Stale Downloading job recovery ---
@@ -2866,6 +2920,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_cache_invalidation_removes_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        db.set_cached("tmdb:invalidate-me", r#"{"title":"Test"}"#, 168)
+            .await
+            .unwrap();
+        assert!(db.invalidate_cached("tmdb:invalidate-me").await.unwrap());
+        assert!(db.get_cached("tmdb:invalidate-me").await.unwrap().is_none());
+        assert!(!db.invalidate_cached("tmdb:invalidate-me").await.unwrap());
+    }
+
+    #[tokio::test]
     async fn test_record_scan() {
         let dir = tempfile::tempdir().unwrap();
         let db = Database::new(dir.path().join("test.db").to_str().unwrap())
@@ -3332,11 +3401,15 @@ mod tests {
         .await
         .unwrap();
 
-        let stats = db.housekeeping().await.unwrap();
+        let stats = db.housekeeping_with_vacuum(false).await.unwrap();
 
         assert_eq!(stats.scan_runs_deleted, 1, "only old scan_run deleted");
         assert_eq!(stats.link_events_deleted, 1, "only old link_event deleted");
         assert_eq!(stats.old_jobs_deleted, 1, "only old completed job deleted");
+        assert_eq!(
+            stats.expired_api_cache_deleted, 0,
+            "no expired API cache rows in this fixture"
+        );
 
         // Verify recent scan_run survives
         let remaining_runs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM scan_runs")
@@ -3358,6 +3431,26 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(remaining_jobs, 2, "active + recent completed both survive");
+    }
+
+    #[tokio::test]
+    async fn test_housekeeping_with_vacuum_uses_maintenance_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("vacuum.db");
+        let db = Database::new(db_path.to_str().unwrap()).await.unwrap();
+
+        db.set_cached("tmdb:tv:expired", "{\"title\":\"expired\"}", 0)
+            .await
+            .unwrap();
+
+        let stats = db.housekeeping_with_vacuum(true).await.unwrap();
+
+        assert_eq!(stats.expired_api_cache_deleted, 1);
+        assert!(db.get_cached("tmdb:tv:expired").await.unwrap().is_none());
+        assert!(
+            db_path.exists(),
+            "database file should still exist after VACUUM"
+        );
     }
 
     // ── Test 2: recover_stale_downloading_jobs ─────────────────────────────────
@@ -4132,10 +4225,11 @@ mod tests {
         assert_eq!(counts.completed_unlinked, 0);
         assert_eq!(counts.active_total(), 0);
 
-        let stats = db.housekeeping().await.unwrap();
+        let stats = db.housekeeping_with_vacuum(false).await.unwrap();
         assert_eq!(stats.scan_runs_deleted, 0);
         assert_eq!(stats.link_events_deleted, 0);
         assert_eq!(stats.old_jobs_deleted, 0);
+        assert_eq!(stats.expired_api_cache_deleted, 0);
     }
 
     #[tokio::test]
@@ -4280,5 +4374,20 @@ mod tests {
         assert_eq!(run.library_filter.as_deref(), Some("Movies"));
         assert_eq!(run.matches_found, 15);
         assert_eq!(run.links_created, 3);
+    }
+
+    #[tokio::test]
+    async fn database_enables_foreign_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        let enabled: i64 = sqlx::query("PRAGMA foreign_keys")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(enabled, 1);
     }
 }

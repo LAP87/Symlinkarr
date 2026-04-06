@@ -4,7 +4,7 @@ use askama::Template;
 use axum::{
     extract::{Form, Path, Query, State},
     http::StatusCode,
-    response::{Html, IntoResponse},
+    response::{Html, IntoResponse, Response},
 };
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -106,16 +106,36 @@ fn default_plex_db_candidates() -> [&'static str; 3] {
     ]
 }
 
+fn canonical_plex_db_path(path: PathBuf) -> Option<PathBuf> {
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return None;
+    }
+
+    let canonical = path.canonicalize().ok()?;
+    if !canonical.is_file() {
+        return None;
+    }
+
+    canonical
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .filter(|ext| ext.eq_ignore_ascii_case("db"))?;
+
+    Some(canonical)
+}
+
 fn resolve_plex_db_path(query_path: Option<&str>) -> Option<PathBuf> {
     if let Some(requested) = query_path.map(str::trim).filter(|value| !value.is_empty()) {
-        let path = PathBuf::from(requested);
-        return path.exists().then_some(path);
+        return canonical_plex_db_path(PathBuf::from(requested));
     }
 
     default_plex_db_candidates()
         .into_iter()
         .map(PathBuf::from)
-        .find(|path| path.exists())
+        .find_map(canonical_plex_db_path)
 }
 
 async fn visible_last_scan_outcome(state: &WebState) -> Option<BackgroundScanOutcomeView> {
@@ -251,6 +271,23 @@ fn skip_event_views(events: Vec<LinkEventHistoryRecord>) -> Vec<SkipEventView> {
         .collect()
 }
 
+fn browser_csrf_token(state: &WebState) -> String {
+    state.browser_session_token().to_string()
+}
+
+fn require_browser_csrf_token(
+    state: &WebState,
+    submitted_token: &str,
+    path: &str,
+) -> Option<Response> {
+    if !state.browser_mutation_guard_enabled() {
+        return None;
+    }
+
+    (!super::has_valid_browser_csrf_token(submitted_token, state))
+        .then(|| super::invalid_browser_csrf_response(path))
+}
+
 /// GET / - Dashboard page
 pub async fn get_dashboard(State(state): State<WebState>) -> impl IntoResponse {
     info!("Serving dashboard");
@@ -294,7 +331,7 @@ pub async fn get_dashboard(State(state): State<WebState>) -> impl IntoResponse {
         queue,
         deferred_refresh,
     };
-    Html(template.render().unwrap_or_else(|e| e.to_string()))
+    Html(template.render().unwrap_or_else(|e| e.to_string())).into_response()
 }
 
 /// GET /status - Detailed status page
@@ -331,7 +368,7 @@ pub async fn get_status(State(state): State<WebState>) -> impl IntoResponse {
         recent_links,
         queue,
     };
-    Html(template.render().unwrap_or_else(|e| e.to_string()))
+    Html(template.render().unwrap_or_else(|e| e.to_string())).into_response()
 }
 
 /// GET /health - Health check page
@@ -399,7 +436,7 @@ pub async fn get_health(State(state): State<WebState>) -> impl IntoResponse {
             .map(DeferredRefreshSummaryView::from)
             .unwrap_or_default(),
     };
-    Html(template.render().unwrap_or_else(|e| e.to_string()))
+    Html(template.render().unwrap_or_else(|e| e.to_string())).into_response()
 }
 
 /// GET /scan - Scan page
@@ -437,8 +474,9 @@ pub async fn get_scan(
         history,
         queue,
         filters,
+        csrf_token: browser_csrf_token(&state),
     };
-    Html(template.render().unwrap_or_else(|e| e.to_string()))
+    Html(template.render().unwrap_or_else(|e| e.to_string())).into_response()
 }
 
 /// POST /scan/trigger - Trigger a scan
@@ -446,6 +484,10 @@ pub async fn post_scan_trigger(
     State(state): State<WebState>,
     Form(form): Form<ScanTriggerForm>,
 ) -> impl IntoResponse {
+    if let Some(response) = require_browser_csrf_token(&state, &form.csrf_token, "/scan/trigger") {
+        return response;
+    }
+
     info!(
         "Triggering scan (dry_run={}, search_missing={})",
         form.dry_run, form.search_missing
@@ -576,6 +618,7 @@ pub async fn get_cleanup(State(state): State<WebState>) -> impl IntoResponse {
         last_cleanup_audit_outcome,
         last_report: last_report_summary,
         last_report_path: last_report,
+        csrf_token: browser_csrf_token(&state),
     };
 
     Html(template.render().unwrap_or_else(|e| e.to_string()))
@@ -598,6 +641,7 @@ pub async fn get_cleanup_anime_remediation(
                     summary: None,
                     groups: vec![],
                     error_message: Some(format!("Invalid anime remediation filters: {}", err)),
+                    csrf_token: browser_csrf_token(&state),
                 }
                 .render()
                 .unwrap_or_else(|e| e.to_string()),
@@ -613,6 +657,7 @@ pub async fn get_cleanup_anime_remediation(
                 error_message: Some(
                     "Plex DB path is required or must exist at a standard local path".to_string(),
                 ),
+                csrf_token: browser_csrf_token(&state),
             }
             .render()
             .unwrap_or_else(|e| e.to_string()),
@@ -673,6 +718,7 @@ pub async fn get_cleanup_anime_remediation(
                                 .map(AnimeRemediationGroupView::from_plan_group)
                                 .collect(),
                             error_message: None,
+                            csrf_token: browser_csrf_token(&state),
                         }
                         .render()
                         .unwrap_or_else(|e| e.to_string()),
@@ -688,6 +734,7 @@ pub async fn get_cleanup_anime_remediation(
                                 "Failed to assess anime remediation backlog: {}",
                                 err
                             )),
+                            csrf_token: browser_csrf_token(&state),
                         }
                         .render()
                         .unwrap_or_else(|e| e.to_string()),
@@ -702,6 +749,7 @@ pub async fn get_cleanup_anime_remediation(
                 error_message: Some(
                     "No anime libraries are configured for remediation reporting".to_string(),
                 ),
+                csrf_token: browser_csrf_token(&state),
             }
             .render()
             .unwrap_or_else(|e| e.to_string()),
@@ -716,6 +764,7 @@ pub async fn get_cleanup_anime_remediation(
                         "Failed to build anime remediation report: {}",
                         err
                     )),
+                    csrf_token: browser_csrf_token(&state),
                 }
                 .render()
                 .unwrap_or_else(|e| e.to_string()),
@@ -729,6 +778,14 @@ pub async fn post_cleanup_anime_remediation_preview(
     State(state): State<WebState>,
     Form(form): Form<AnimeRemediationPreviewForm>,
 ) -> impl IntoResponse {
+    if let Some(response) = require_browser_csrf_token(
+        &state,
+        &form.csrf_token,
+        "/cleanup/anime-remediation/preview",
+    ) {
+        return response;
+    }
+
     let Some(plex_db_path) = resolve_plex_db_path(form.plex_db.as_deref()) else {
         return Html(
             AnimeRemediationResultTemplate {
@@ -736,10 +793,12 @@ pub async fn post_cleanup_anime_remediation_preview(
                 message: "Anime remediation preview failed: Plex DB path is required or must exist at a standard local path".to_string(),
                 preview: None,
                 apply: None,
+                csrf_token: browser_csrf_token(&state),
             }
             .render()
             .unwrap_or_else(|e| e.to_string()),
-        );
+        )
+        .into_response();
     };
 
     match preview_anime_remediation_plan(
@@ -780,20 +839,24 @@ pub async fn post_cleanup_anime_remediation_preview(
                         .collect(),
                 }),
                 apply: None,
+                csrf_token: browser_csrf_token(&state),
             }
             .render()
             .unwrap_or_else(|e| e.to_string()),
-        ),
+        )
+        .into_response(),
         Err(err) => Html(
             AnimeRemediationResultTemplate {
                 success: false,
                 message: format!("Anime remediation preview failed: {}", err),
                 preview: None,
                 apply: None,
+                csrf_token: browser_csrf_token(&state),
             }
             .render()
             .unwrap_or_else(|e| e.to_string()),
-        ),
+        )
+        .into_response(),
     }
 }
 
@@ -802,6 +865,12 @@ pub async fn post_cleanup_anime_remediation_apply(
     State(state): State<WebState>,
     Form(form): Form<AnimeRemediationApplyForm>,
 ) -> impl IntoResponse {
+    if let Some(response) =
+        require_browser_csrf_token(&state, &form.csrf_token, "/cleanup/anime-remediation/apply")
+    {
+        return response;
+    }
+
     let report_path = match resolve_cleanup_report_path(&state.config.backup.path, &form.report) {
         Ok(path) => path,
         Err(err) => {
@@ -811,10 +880,12 @@ pub async fn post_cleanup_anime_remediation_apply(
                     message: format!("Anime remediation apply failed: {}", err),
                     preview: None,
                     apply: None,
+                    csrf_token: browser_csrf_token(&state),
                 }
                 .render()
                 .unwrap_or_else(|e| e.to_string()),
-            );
+            )
+            .into_response();
         }
     };
 
@@ -846,20 +917,24 @@ pub async fn post_cleanup_anime_remediation_apply(
                     safety_snapshot,
                     media_server_invalidation_summary: invalidation.summary_suffix(),
                 }),
+                csrf_token: browser_csrf_token(&state),
             }
             .render()
             .unwrap_or_else(|e| e.to_string()),
-        ),
+        )
+        .into_response(),
         Err(err) => Html(
             AnimeRemediationResultTemplate {
                 success: false,
                 message: format!("Anime remediation apply failed: {}", err),
                 preview: None,
                 apply: None,
+                csrf_token: browser_csrf_token(&state),
             }
             .render()
             .unwrap_or_else(|e| e.to_string()),
-        ),
+        )
+        .into_response(),
     }
 }
 
@@ -868,6 +943,10 @@ pub async fn post_cleanup_audit(
     State(state): State<WebState>,
     Form(form): Form<CleanupAuditForm>,
 ) -> impl IntoResponse {
+    if let Some(response) = require_browser_csrf_token(&state, &form.csrf_token, "/cleanup/audit") {
+        return response;
+    }
+
     let selected_libraries = form.selected_libraries();
     info!(
         "Running cleanup audit (scope={}, libraries={:?})",
@@ -964,6 +1043,7 @@ pub async fn get_cleanup_prune(
                 report_path: None,
                 confirmation_token: None,
                 error_message: None,
+                csrf_token: browser_csrf_token(&state),
             }
             .render()
             .unwrap_or_else(|e| e.to_string()),
@@ -990,6 +1070,7 @@ pub async fn get_cleanup_prune(
                     report_path: None,
                     confirmation_token: None,
                     error_message: Some(err.to_string()),
+                    csrf_token: browser_csrf_token(&state),
                 }
                 .render()
                 .unwrap_or_else(|e| e.to_string()),
@@ -1018,6 +1099,7 @@ pub async fn get_cleanup_prune(
                     "Cleanup report not found: {}",
                     report_path.display()
                 )),
+                csrf_token: browser_csrf_token(&state),
             }
             .render()
             .unwrap_or_else(|e| e.to_string()),
@@ -1046,6 +1128,7 @@ pub async fn get_cleanup_prune(
                     report_path: None,
                     confirmation_token: None,
                     error_message: Some(format!("Failed to read report: {}", e)),
+                    csrf_token: browser_csrf_token(&state),
                 }
                 .render()
                 .unwrap_or_else(|e| e.to_string()),
@@ -1074,6 +1157,7 @@ pub async fn get_cleanup_prune(
                     report_path: None,
                     confirmation_token: None,
                     error_message: Some(format!("Failed to parse report: {}", e)),
+                    csrf_token: browser_csrf_token(&state),
                 }
                 .render()
                 .unwrap_or_else(|e| e.to_string()),
@@ -1142,6 +1226,7 @@ pub async fn get_cleanup_prune(
         report_path: Some(report_path.to_path_buf()),
         confirmation_token: prune_plan.map(|plan| plan.confirmation_token),
         error_message: None,
+        csrf_token: browser_csrf_token(&state),
     };
 
     Html(template.render().unwrap_or_else(|e| e.to_string()))
@@ -1152,6 +1237,10 @@ pub async fn post_cleanup_prune(
     State(state): State<WebState>,
     Form(form): Form<CleanupPruneForm>,
 ) -> impl IntoResponse {
+    if let Some(response) = require_browser_csrf_token(&state, &form.csrf_token, "/cleanup/prune") {
+        return response;
+    }
+
     let redacted_token = if form.token.len() <= 8 {
         "<redacted>".to_string()
     } else {
@@ -1176,7 +1265,8 @@ pub async fn post_cleanup_prune(
             }
             .render()
             .unwrap_or_else(|e| e.to_string()),
-        );
+        )
+        .into_response();
     }
 
     if form.token.is_empty() {
@@ -1191,7 +1281,8 @@ pub async fn post_cleanup_prune(
             }
             .render()
             .unwrap_or_else(|e| e.to_string()),
-        );
+        )
+        .into_response();
     }
 
     // Read the report
@@ -1209,7 +1300,8 @@ pub async fn post_cleanup_prune(
                 }
                 .render()
                 .unwrap_or_else(|e| e.to_string()),
-            );
+            )
+            .into_response();
         }
     };
     if !report_path.exists() {
@@ -1224,7 +1316,8 @@ pub async fn post_cleanup_prune(
             }
             .render()
             .unwrap_or_else(|e| e.to_string()),
-        );
+        )
+        .into_response();
     }
 
     let json = match std::fs::read_to_string(&report_path) {
@@ -1242,11 +1335,12 @@ pub async fn post_cleanup_prune(
                 }
                 .render()
                 .unwrap_or_else(|e| e.to_string()),
-            );
+            )
+            .into_response();
         }
     };
 
-    let report: cleanup_audit::CleanupReport = match serde_json::from_str(&json) {
+    let _report: cleanup_audit::CleanupReport = match serde_json::from_str(&json) {
         Ok(r) => r,
         Err(e) => {
             error!("Failed to parse cleanup report: {}", e);
@@ -1261,7 +1355,8 @@ pub async fn post_cleanup_prune(
                 }
                 .render()
                 .unwrap_or_else(|e| e.to_string()),
-            );
+            )
+            .into_response();
         }
     };
 
@@ -1279,7 +1374,8 @@ pub async fn post_cleanup_prune(
                 }
                 .render()
                 .unwrap_or_else(|e| e.to_string()),
-            );
+            )
+            .into_response();
         }
     };
 
@@ -1311,7 +1407,8 @@ pub async fn post_cleanup_prune(
                 }
                 .render()
                 .unwrap_or_else(|e| e.to_string()),
-            );
+            )
+            .into_response();
         }
     };
 
@@ -1336,7 +1433,7 @@ pub async fn post_cleanup_prune(
         report_path: Some(report_path.to_path_buf()),
     };
 
-    Html(template.render().unwrap_or_else(|e| e.to_string()))
+    Html(template.render().unwrap_or_else(|e| e.to_string())).into_response()
 }
 
 /// GET /links - Links list
@@ -1369,7 +1466,7 @@ pub async fn get_links(
         links,
         filter: filter.unwrap_or("active").to_string(),
     };
-    Html(template.render().unwrap_or_else(|e| e.to_string()))
+    Html(template.render().unwrap_or_else(|e| e.to_string())).into_response()
 }
 
 /// GET /links/dead - Dead links
@@ -1393,12 +1490,20 @@ pub async fn get_dead_links(State(state): State<WebState>) -> impl IntoResponse 
         links,
         active_repair,
         last_repair_outcome,
+        csrf_token: browser_csrf_token(&state),
     };
-    Html(template.render().unwrap_or_else(|e| e.to_string()))
+    Html(template.render().unwrap_or_else(|e| e.to_string())).into_response()
 }
 
 /// POST /links/repair - Repair dead links
-pub async fn post_repair(State(state): State<WebState>) -> impl IntoResponse {
+pub async fn post_repair(
+    State(state): State<WebState>,
+    Form(form): Form<BrowserMutationForm>,
+) -> impl IntoResponse {
+    if let Some(response) = require_browser_csrf_token(&state, &form.csrf_token, "/links/repair") {
+        return response;
+    }
+
     info!("Starting background auto repair");
 
     match state.start_repair().await {
@@ -1419,7 +1524,8 @@ pub async fn post_repair(State(state): State<WebState>) -> impl IntoResponse {
                 .render()
                 .unwrap_or_else(|e| e.to_string()),
             ),
-        ),
+        )
+            .into_response(),
         Err(err) => {
             let message = err.to_string();
             let active_repair = state.active_repair().await.map(Into::into);
@@ -1438,6 +1544,7 @@ pub async fn post_repair(State(state): State<WebState>) -> impl IntoResponse {
                     .unwrap_or_else(|e| e.to_string()),
                 ),
             )
+                .into_response()
         }
     }
 }
@@ -1447,12 +1554,21 @@ pub async fn get_config(State(state): State<WebState>) -> impl IntoResponse {
     let template = ConfigTemplate {
         config: (*state.config).clone(),
         validation_result: None,
+        csrf_token: browser_csrf_token(&state),
     };
-    Html(template.render().unwrap_or_else(|e| e.to_string()))
+    Html(template.render().unwrap_or_else(|e| e.to_string())).into_response()
 }
 
 /// POST /config/validate - Validate config
-pub async fn post_config_validate(State(state): State<WebState>) -> impl IntoResponse {
+pub async fn post_config_validate(
+    State(state): State<WebState>,
+    Form(form): Form<BrowserMutationForm>,
+) -> impl IntoResponse {
+    if let Some(response) = require_browser_csrf_token(&state, &form.csrf_token, "/config/validate")
+    {
+        return response;
+    }
+
     let report = validate_config_report(&state.config).await;
     let result = Some(ValidationResult {
         valid: report.errors.is_empty(),
@@ -1463,8 +1579,9 @@ pub async fn post_config_validate(State(state): State<WebState>) -> impl IntoRes
     let template = ConfigTemplate {
         config: (*state.config).clone(),
         validation_result: result,
+        csrf_token: browser_csrf_token(&state),
     };
-    Html(template.render().unwrap_or_else(|e| e.to_string()))
+    Html(template.render().unwrap_or_else(|e| e.to_string())).into_response()
 }
 
 /// GET /doctor - Doctor page
@@ -1511,6 +1628,7 @@ pub async fn get_discover(
                             .to_string()
                     })
                 }),
+                csrf_token: browser_csrf_token(&state),
             };
             (
                 StatusCode::OK,
@@ -1529,6 +1647,7 @@ pub async fn get_discover(
                 } else {
                     format!("Discover failed: {}", message)
                 }),
+                csrf_token: browser_csrf_token(&state),
             };
             (
                 if message.contains("Unknown library filter") {
@@ -1544,9 +1663,13 @@ pub async fn get_discover(
 
 /// POST /discover/add - Add torrent to library
 pub async fn post_discover_add(
-    State(_state): State<WebState>,
+    State(state): State<WebState>,
     Form(form): Form<DiscoverAddForm>,
 ) -> impl IntoResponse {
+    if let Some(response) = require_browser_csrf_token(&state, &form.csrf_token, "/discover/add") {
+        return response;
+    }
+
     info!(
         "Rejecting web discover-add for torrent {} (library='{}') until safe Arr selection is wired",
         form.torrent_id, form.library
@@ -1561,12 +1684,11 @@ pub async fn post_discover_add(
         StatusCode::NOT_IMPLEMENTED,
         Html(template.render().unwrap_or_else(|e| e.to_string())),
     )
+        .into_response()
 }
 
 /// GET /backup - Backup page
 pub async fn get_backup(State(state): State<WebState>) -> impl IntoResponse {
-    let backup_manager = BackupManager::new(&state.config.backup);
-
     // List existing backups
     let mut backups = vec![];
     if let Ok(entries) = std::fs::read_dir(&state.config.backup.path) {
@@ -1594,8 +1716,9 @@ pub async fn get_backup(State(state): State<WebState>) -> impl IntoResponse {
     let template = BackupTemplate {
         backups,
         backup_dir: state.config.backup.path.clone(),
+        csrf_token: browser_csrf_token(&state),
     };
-    Html(template.render().unwrap_or_else(|e| e.to_string()))
+    Html(template.render().unwrap_or_else(|e| e.to_string())).into_response()
 }
 
 /// POST /backup/create - Create backup
@@ -1603,6 +1726,10 @@ pub async fn post_backup_create(
     State(state): State<WebState>,
     Form(form): Form<BackupCreateForm>,
 ) -> impl IntoResponse {
+    if let Some(response) = require_browser_csrf_token(&state, &form.csrf_token, "/backup/create") {
+        return response;
+    }
+
     info!("Creating backup (label={})", form.label);
 
     let backup_manager = BackupManager::new(&state.config.backup);
@@ -1618,6 +1745,7 @@ pub async fn post_backup_create(
         }
     };
 
+    let database_snapshot_path = result.as_ref().map(|path| path.with_extension("sqlite3"));
     let template = BackupResultTemplate {
         success: result.is_some(),
         message: if result.is_some() {
@@ -1626,9 +1754,10 @@ pub async fn post_backup_create(
             "Backup failed".to_string()
         },
         backup_path: result,
+        database_snapshot_path,
     };
 
-    Html(template.render().unwrap_or_else(|e| e.to_string()))
+    Html(template.render().unwrap_or_else(|e| e.to_string())).into_response()
 }
 
 /// POST /backup/restore - Restore backup
@@ -1636,6 +1765,11 @@ pub async fn post_backup_restore(
     State(state): State<WebState>,
     Form(form): Form<BackupRestoreForm>,
 ) -> impl IntoResponse {
+    if let Some(response) = require_browser_csrf_token(&state, &form.csrf_token, "/backup/restore")
+    {
+        return response;
+    }
+
     info!("Restoring backup: {}", form.backup_file);
 
     let backup_manager = BackupManager::new(&state.config.backup);
@@ -1647,12 +1781,14 @@ pub async fn post_backup_restore(
                     success: false,
                     message: format!("Restore failed: {}", e),
                     backup_path: None,
+                    database_snapshot_path: None,
                 };
                 return Html(
                     template
                         .render()
                         .unwrap_or_else(|render_err| render_err.to_string()),
-                );
+                )
+                .into_response();
             }
         };
 
@@ -1661,12 +1797,14 @@ pub async fn post_backup_restore(
             success: false,
             message: format!("Restore failed: {}", e),
             backup_path: Some(backup_path),
+            database_snapshot_path: None,
         };
         return Html(
             template
                 .render()
                 .unwrap_or_else(|render_err| render_err.to_string()),
-        );
+        )
+        .into_response();
     }
 
     let allowed_roots: Vec<PathBuf> = state
@@ -1702,12 +1840,19 @@ pub async fn post_backup_restore(
         success,
         message,
         backup_path: Some(backup_path),
+        database_snapshot_path: None,
     };
 
-    Html(template.render().unwrap_or_else(|e| e.to_string()))
+    Html(template.render().unwrap_or_else(|e| e.to_string())).into_response()
 }
 
 // ─── Form structs ───────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct BrowserMutationForm {
+    #[serde(default)]
+    pub csrf_token: String,
+}
 
 #[derive(Debug, Deserialize)]
 pub struct ScanTriggerForm {
@@ -1716,6 +1861,8 @@ pub struct ScanTriggerForm {
     #[serde(default)]
     pub search_missing: bool,
     pub library: Option<String>,
+    #[serde(default)]
+    pub csrf_token: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1724,6 +1871,8 @@ pub struct CleanupAuditForm {
     pub library: Option<String>,
     #[serde(default)]
     pub libraries: Vec<String>,
+    #[serde(default)]
+    pub csrf_token: String,
 }
 
 impl CleanupAuditForm {
@@ -1750,6 +1899,8 @@ impl CleanupAuditForm {
 pub struct CleanupPruneForm {
     pub report: String,
     pub token: String,
+    #[serde(default)]
+    pub csrf_token: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1757,6 +1908,8 @@ pub struct AnimeRemediationPreviewForm {
     pub plex_db: Option<String>,
     pub title: Option<String>,
     pub library: Option<String>,
+    #[serde(default)]
+    pub csrf_token: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1765,22 +1918,30 @@ pub struct AnimeRemediationApplyForm {
     pub token: String,
     pub max_delete: Option<usize>,
     pub library: Option<String>,
+    #[serde(default)]
+    pub csrf_token: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct DiscoverAddForm {
     pub torrent_id: String,
     pub library: String,
+    #[serde(default)]
+    pub csrf_token: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct BackupCreateForm {
     pub label: String,
+    #[serde(default)]
+    pub csrf_token: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct BackupRestoreForm {
     pub backup_file: String,
+    #[serde(default)]
+    pub csrf_token: String,
 }
 
 #[cfg(test)]
@@ -2381,6 +2542,7 @@ mod tests {
         .unwrap();
 
         let state = WebState::new(cfg, db);
+        let csrf_token = state.browser_session_token().to_string();
         let body = render_body(
             post_cleanup_anime_remediation_preview(
                 State(state),
@@ -2388,6 +2550,7 @@ mod tests {
                     plex_db: Some(plex_db_path.to_string_lossy().to_string()),
                     title: None,
                     library: Some("Anime".to_string()),
+                    csrf_token,
                 }),
             )
             .await,
@@ -2481,6 +2644,7 @@ mod tests {
                     token: plan.confirmation_token,
                     max_delete: None,
                     library: Some("Anime".to_string()),
+                    csrf_token: state.browser_session_token().to_string(),
                 }),
             )
             .await,
@@ -2708,7 +2872,14 @@ mod tests {
         .unwrap();
 
         let state = WebState::new(cfg, db);
-        let response = post_repair(State(state.clone())).await.into_response();
+        let response = post_repair(
+            State(state.clone()),
+            Form(BrowserMutationForm {
+                csrf_token: state.browser_session_token().to_string(),
+            }),
+        )
+        .await
+        .into_response();
         assert_eq!(response.status(), StatusCode::ACCEPTED);
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let body = String::from_utf8(bytes.to_vec()).unwrap();
@@ -2745,11 +2916,13 @@ mod tests {
     #[tokio::test]
     async fn post_discover_add_returns_not_implemented_failure() {
         let ctx = test_context().await;
+        let csrf_token = ctx.state.browser_session_token().to_string();
         let response = post_discover_add(
             State(ctx.state),
             Form(DiscoverAddForm {
                 torrent_id: "rd-123".to_string(),
                 library: "Anime".to_string(),
+                csrf_token,
             }),
         )
         .await
@@ -2799,6 +2972,7 @@ mod tests {
             scope: "anime".to_string(),
             library: Some("Anime".to_string()),
             libraries: vec!["Anime".to_string(), "Anime 2".to_string()],
+            csrf_token: String::new(),
         };
 
         assert_eq!(
@@ -2813,6 +2987,7 @@ mod tests {
             scope: "anime".to_string(),
             library: Some("Anime".to_string()),
             libraries: vec![],
+            csrf_token: String::new(),
         };
 
         assert_eq!(form.selected_libraries(), vec!["Anime".to_string()]);
@@ -2824,6 +2999,7 @@ mod tests {
             scope: "anime".to_string(),
             library: Some("".to_string()),
             libraries: vec!["Anime".to_string()],
+            csrf_token: String::new(),
         };
 
         assert_eq!(form.selected_libraries(), vec!["Anime".to_string()]);
@@ -2836,6 +3012,7 @@ mod tests {
             scope: "anime".to_string(),
             library: Some("  Anime  ".to_string()),
             libraries: vec!["  Anime 2  ".to_string()],
+            csrf_token: String::new(),
         };
 
         let result = form.selected_libraries();
@@ -2888,6 +3065,7 @@ mod tests {
     #[tokio::test]
     async fn post_backup_restore_rejects_unhealthy_runtime_roots() {
         let ctx = test_context().await;
+        let csrf_token = ctx.state.browser_session_token().to_string();
         let backup_file = "backup-20260330.json";
         let backup_path = ctx.state.config.backup.path.join(backup_file);
         std::fs::write(&backup_path, "{}").unwrap();
@@ -2897,6 +3075,7 @@ mod tests {
             State(ctx.state),
             Form(BackupRestoreForm {
                 backup_file: backup_file.to_string(),
+                csrf_token,
             }),
         )
         .await

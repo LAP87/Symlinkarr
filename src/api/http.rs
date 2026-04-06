@@ -1,4 +1,5 @@
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use reqwest::{Client, RequestBuilder, Response, StatusCode};
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -8,6 +9,7 @@ use tracing::warn;
 
 const CONNECT_TIMEOUT_SECS: u64 = 5;
 const REQUEST_TIMEOUT_SECS: u64 = 20;
+const HEALTHCHECK_TIMEOUT_SECS: u64 = 10;
 const MAX_ATTEMPTS: usize = 6;
 const BASE_BACKOFF_MS: u64 = 250;
 const RATE_LIMIT_BASE_BACKOFF_SECS: u64 = 2;
@@ -103,13 +105,29 @@ pub fn build_client() -> Client {
         .pool_max_idle_per_host(32)
         .tcp_keepalive(Duration::from_secs(60))
         .build()
-        .unwrap_or_else(|_| Client::new())
+        .expect("failed to build configured HTTP client")
+}
+
+pub fn stable_idempotency_key(namespace: &str, value: &str) -> String {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in namespace
+        .as_bytes()
+        .iter()
+        .chain([b':'].iter())
+        .chain(value.as_bytes().iter())
+    {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+
+    format!("symlinkarr-{}-{:016x}-{}", namespace, hash, value.len())
 }
 
 pub async fn send_with_retry(request: RequestBuilder) -> Result<Response> {
     // Some request bodies (e.g. multipart streams) cannot be cloned safely.
     // In those cases, run a single attempt with timeout policy only.
     if request.try_clone().is_none() {
+        apply_rate_limit(&request).await;
         return Ok(request.send().await?);
     }
 
@@ -133,7 +151,7 @@ pub async fn send_with_retry(request: RequestBuilder) -> Result<Response> {
             Ok(resp) => {
                 let status = resp.status();
                 if is_retryable_status(status) && attempt < MAX_ATTEMPTS {
-                    let wait = retry_wait(status, resp.headers(), attempt);
+                    let wait = jittered_wait(retry_wait(status, resp.headers(), attempt));
                     warn!(
                         "HTTP retry on status {} for {} (attempt {}/{}), waiting {:?}",
                         status, host, attempt, MAX_ATTEMPTS, wait
@@ -145,7 +163,7 @@ pub async fn send_with_retry(request: RequestBuilder) -> Result<Response> {
             }
             Err(err) => {
                 if is_retryable_error(&err) && attempt < MAX_ATTEMPTS {
-                    let wait = backoff(attempt);
+                    let wait = jittered_wait(backoff(attempt));
                     warn!(
                         "HTTP retry on transport error '{}' (attempt {}/{}), waiting {:?}",
                         err, attempt, MAX_ATTEMPTS, wait
@@ -172,13 +190,25 @@ pub async fn check_system_status(
     service_name: &str,
 ) -> anyhow::Result<()> {
     let url = format!("{}/api/{}/system/status", base_url, api_version);
-    let req = client.get(&url).header("X-Api-Key", api_key);
+    let req = client
+        .get(&url)
+        .timeout(Duration::from_secs(HEALTHCHECK_TIMEOUT_SECS))
+        .header("X-Api-Key", api_key);
     let resp = send_with_retry(req).await?;
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
         anyhow::bail!("{} error {}: {}", service_name, status, body);
     }
+    serde_json::from_str::<serde_json::Value>(&body).map_err(|err| {
+        anyhow::anyhow!(
+            "{} returned non-JSON system status payload despite HTTP {}: {} ({})",
+            service_name,
+            status,
+            body,
+            err
+        )
+    })?;
     Ok(())
 }
 
@@ -215,8 +245,40 @@ fn retry_wait(
 fn retry_after_wait(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
     let value = headers.get(reqwest::header::RETRY_AFTER)?;
     let value = value.to_str().ok()?.trim();
-    let seconds: u64 = value.parse().ok()?;
-    Some(Duration::from_secs(seconds))
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+
+    let retry_at = DateTime::parse_from_rfc2822(value).ok()?;
+    let retry_at = retry_at.with_timezone(&Utc);
+    let wait = retry_at.signed_duration_since(Utc::now());
+    Some(Duration::from_secs(wait.num_seconds().max(0) as u64))
+}
+
+fn jittered_wait(wait: Duration) -> Duration {
+    let jitter_cap_ms = wait.as_millis().min(250) as u64;
+    if jitter_cap_ms == 0 {
+        return wait;
+    }
+
+    wait + Duration::from_millis(best_effort_jitter_ms(jitter_cap_ms + 1))
+}
+
+fn best_effort_jitter_ms(max_exclusive: u64) -> u64 {
+    if max_exclusive <= 1 {
+        return 0;
+    }
+
+    let mut bytes = [0u8; 8];
+    if getrandom::getrandom(&mut bytes).is_ok() {
+        return u64::from_le_bytes(bytes) % max_exclusive;
+    }
+
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos() as u64
+        % max_exclusive
 }
 
 #[cfg(test)]
@@ -268,5 +330,29 @@ mod tests {
     fn retry_after_wait_returns_none_for_missing_header() {
         let headers = reqwest::header::HeaderMap::new();
         assert_eq!(retry_after_wait(&headers), None);
+    }
+
+    #[test]
+    fn retry_after_wait_parses_http_date() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        let retry_at: reqwest::header::HeaderValue = (Utc::now() + chrono::Duration::seconds(90))
+            .to_rfc2822()
+            .parse()
+            .unwrap();
+        headers.insert(reqwest::header::RETRY_AFTER, retry_at);
+
+        let wait = retry_after_wait(&headers).unwrap();
+        assert!(wait >= Duration::from_secs(89));
+        assert!(wait <= Duration::from_secs(90));
+    }
+
+    #[test]
+    fn stable_idempotency_key_is_deterministic() {
+        let first = stable_idempotency_key("rd-add-magnet", "magnet:?xt=urn:btih:abc");
+        let second = stable_idempotency_key("rd-add-magnet", "magnet:?xt=urn:btih:abc");
+        let different = stable_idempotency_key("rd-add-magnet", "magnet:?xt=urn:btih:def");
+
+        assert_eq!(first, second);
+        assert_ne!(first, different);
     }
 }

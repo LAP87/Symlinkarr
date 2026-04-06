@@ -80,8 +80,17 @@ pub(crate) async fn run_scan(
     let mut auto_acquire_missing_requests = 0usize;
     let mut auto_acquire_cutoff_requests = 0usize;
     let run_token = generate_scan_run_token();
+    let effective_dry_run = dry_run || cfg.symlink.dry_run;
 
     let selected_libraries = selected_libraries(cfg, library_filter)?;
+    info!(
+        run_token = %run_token,
+        dry_run = effective_dry_run,
+        search_missing,
+        library_filter = library_filter.unwrap_or("*"),
+        selected_libraries = selected_libraries.len(),
+        "Starting scan"
+    );
 
     let runtime_checks_started = Instant::now();
     ensure_runtime_directories_healthy(&selected_libraries, &cfg.sources, "scan startup").await?;
@@ -161,7 +170,6 @@ pub(crate) async fn run_scan(
         fmt_duration(telemetry.match_total)
     );
 
-    let effective_dry_run = dry_run || cfg.symlink.dry_run;
     let linker = Linker::new_with_options(
         effective_dry_run,
         cfg.matching.mode.is_strict(),
@@ -435,7 +443,7 @@ pub(crate) async fn run_scan(
     db.record_scan_run(&crate::db::ScanRunRecord {
         dry_run: effective_dry_run,
         library_filter: library_filter.map(str::to_string),
-        run_token: Some(run_token),
+        run_token: Some(run_token.clone()),
         search_missing,
         library_items_found: library_items.len() as i64,
         source_items_found: source_items.len() as i64,
@@ -488,6 +496,18 @@ pub(crate) async fn run_scan(
     })
     .await?;
 
+    info!(
+        run_token = %run_token,
+        dry_run = effective_dry_run,
+        search_missing,
+        links_created = link_summary.created,
+        links_updated = link_summary.updated,
+        dead_removed = dead.removed,
+        auto_acquire_submitted = auto_acquire_summary.submitted,
+        auto_acquire_blocked = auto_acquire_summary.blocked,
+        auto_acquire_failed = auto_acquire_summary.failed,
+        "Scan complete"
+    );
     info!("=== Scan Complete ===");
     Ok((linked_total as i64, dead.removed as i64))
 }
@@ -544,7 +564,7 @@ async fn collect_source_items(
 
         match cache.sync().await {
             Ok(_) => info!("Real-Debrid cache synced successfully"),
-            Err(e) => tracing::error!(
+            Err(e) => tracing::warn!(
                 "Failed to sync Real-Debrid cache: {}. Using existing cache if available.",
                 e
             ),
@@ -601,7 +621,7 @@ async fn collect_source_items(
                         all_items.extend(items);
                     }
                     Err(e) => {
-                        tracing::error!(
+                        tracing::warn!(
                             "Failed to read cache for source {}: {}. Falling back to filesystem scan.",
                             source.name,
                             e

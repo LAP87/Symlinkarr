@@ -1,8 +1,10 @@
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 
 use crate::config::BackupConfig;
@@ -11,6 +13,8 @@ use crate::models::{LinkRecord, LinkStatus, MediaType};
 use crate::utils::{cached_source_health, PathHealth};
 
 // ─── Backup data structures ─────────────────────────────────────────
+
+const BACKUP_MANIFEST_VERSION: u32 = 2;
 
 /// A single symlink entry in a backup
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,6 +40,13 @@ pub enum BackupType {
     Safety { operation: String },
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BackupDatabaseSnapshot {
+    pub filename: String,
+    pub sha256: String,
+    pub size_bytes: u64,
+}
+
 /// Complete backup manifest
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackupManifest {
@@ -51,6 +62,88 @@ pub struct BackupManifest {
     pub symlinks: Vec<BackupEntry>,
     /// Total count (redundant but convenient for quick inspection)
     pub total_count: usize,
+    /// Optional SQLite snapshot captured alongside the manifest.
+    #[serde(default)]
+    pub database_snapshot: Option<BackupDatabaseSnapshot>,
+    /// Integrity hash for the manifest content, excluding this field.
+    #[serde(default)]
+    pub content_sha256: Option<String>,
+}
+
+fn parse_backup_manifest(json: &str, source: &Path) -> Result<BackupManifest> {
+    let manifest: BackupManifest = serde_json::from_str(json)
+        .with_context(|| format!("Failed to parse backup manifest {:?}", source))?;
+    validate_backup_manifest(&manifest, source)?;
+    Ok(manifest)
+}
+
+#[derive(Serialize)]
+struct BackupManifestChecksumPayload<'a> {
+    version: u32,
+    timestamp: DateTime<Utc>,
+    backup_type: &'a BackupType,
+    label: &'a str,
+    symlinks: &'a [BackupEntry],
+    total_count: usize,
+    database_snapshot: &'a Option<BackupDatabaseSnapshot>,
+}
+
+fn validate_backup_manifest(manifest: &BackupManifest, source: &Path) -> Result<()> {
+    match manifest.version {
+        1 => return Ok(()),
+        BACKUP_MANIFEST_VERSION => {}
+        other => {
+            anyhow::bail!(
+                "Unsupported backup manifest version {} in {:?}. Supported versions: 1-{}",
+                other,
+                source,
+                BACKUP_MANIFEST_VERSION
+            );
+        }
+    }
+
+    let Some(expected) = manifest.content_sha256.as_deref() else {
+        anyhow::bail!(
+            "Backup manifest {:?} is missing content_sha256 for version {}",
+            source,
+            manifest.version
+        );
+    };
+    let actual = compute_manifest_checksum(manifest)?;
+    if actual != expected {
+        anyhow::bail!("Backup manifest integrity check failed for {:?}", source);
+    }
+    Ok(())
+}
+
+fn compute_manifest_checksum(manifest: &BackupManifest) -> Result<String> {
+    let payload = BackupManifestChecksumPayload {
+        version: manifest.version,
+        timestamp: manifest.timestamp,
+        backup_type: &manifest.backup_type,
+        label: &manifest.label,
+        symlinks: &manifest.symlinks,
+        total_count: manifest.total_count,
+        database_snapshot: &manifest.database_snapshot,
+    };
+    let json = serde_json::to_vec(&payload)?;
+    let mut hasher = Sha256::new();
+    hasher.update(&json);
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn sha256_file(path: &Path) -> Result<String> {
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        let read = file.read(&mut buf)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buf[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 // ─── BackupManager ──────────────────────────────────────────────────
@@ -127,22 +220,40 @@ impl BackupManager {
             .collect();
 
         let total_count = entries.len();
-        let manifest = BackupManifest {
-            version: 1,
-            timestamp: Utc::now(),
+        let timestamp = Utc::now();
+        let base_name = format!("backup-{}", timestamp.format("%Y%m%d-%H%M%S"));
+        let snapshot_filename = format!("{base_name}.sqlite3");
+        let snapshot_path = self.backup_dir.join(&snapshot_filename);
+        db.export_snapshot(&snapshot_path)
+            .await
+            .context("Failed to capture SQLite snapshot for backup")?;
+
+        let mut manifest = BackupManifest {
+            version: BACKUP_MANIFEST_VERSION,
+            timestamp,
             backup_type: BackupType::Scheduled,
             label: label.to_string(),
             symlinks: entries,
             total_count,
+            database_snapshot: Some(BackupDatabaseSnapshot {
+                filename: snapshot_filename,
+                sha256: sha256_file(&snapshot_path)?,
+                size_bytes: std::fs::metadata(&snapshot_path)?.len(),
+            }),
+            content_sha256: None,
         };
+        manifest.content_sha256 = Some(compute_manifest_checksum(&manifest)?);
 
-        let filename = format!("backup-{}.json", manifest.timestamp.format("%Y%m%d-%H%M%S"));
+        let filename = format!("{base_name}.json");
         let path = self.backup_dir.join(&filename);
 
         let json = serde_json::to_string_pretty(&manifest)?;
         self.write_secure_json(&path, &json)?;
 
-        info!("Backup created: {:?} ({} symlinks)", path, total_count);
+        info!(
+            "Backup created: {:?} ({} symlinks, database snapshot included)",
+            path, total_count
+        );
 
         // Auto-rotate old scheduled backups
         self.rotate()?;
@@ -218,8 +329,8 @@ impl BackupManager {
 
         let total_count = entries.len();
         let now = Utc::now();
-        let manifest = BackupManifest {
-            version: 1,
+        let mut manifest = BackupManifest {
+            version: BACKUP_MANIFEST_VERSION,
             timestamp: now,
             backup_type: BackupType::Safety {
                 operation: operation.to_string(),
@@ -227,7 +338,10 @@ impl BackupManager {
             label: format!("Safety snapshot before {}", operation),
             symlinks: entries,
             total_count,
+            database_snapshot: None,
+            content_sha256: None,
         };
+        manifest.content_sha256 = Some(compute_manifest_checksum(&manifest)?);
 
         let filename = format!("safety-{}-{}.json", operation, now.format("%Y%m%d-%H%M%S"));
         let path = self.backup_dir.join(&filename);
@@ -259,9 +373,14 @@ impl BackupManager {
         enforce_roots: bool,
     ) -> Result<(usize, usize, usize)> {
         let json = std::fs::read_to_string(backup_path)?;
-        let manifest: BackupManifest = serde_json::from_str(&json)?;
+        let manifest = parse_backup_manifest(&json, backup_path)?;
         let mut source_health_cache = std::collections::HashMap::new();
         let mut parent_health_cache = std::collections::HashMap::new();
+        let mut restore_tx = if dry_run {
+            None
+        } else {
+            Some(db.begin().await?)
+        };
 
         info!(
             "Restoring from backup: {} ({} symlinks, {})",
@@ -299,7 +418,15 @@ impl BackupManager {
                 &resolved_target_path,
                 &mut source_health_cache,
                 &mut parent_health_cache,
-            )?;
+            )
+            .with_context(|| {
+                format!(
+                    "Backup restore from {} aborted while validating {:?} -> {:?}",
+                    backup_path.display(),
+                    entry.symlink_path,
+                    resolved_target_path
+                )
+            })?;
             if !target_available {
                 warn!(
                     "Skipping restore for {:?}: source target missing: {:?}",
@@ -334,7 +461,9 @@ impl BackupManager {
                 match std::fs::read_link(&entry.symlink_path) {
                     Ok(current_target) if current_target == entry.target_path => {
                         if entry.db_tracked && should_restore_db_record(db, entry).await? {
-                            upsert_restored_link(db, entry).await?;
+                            if let Some(tx) = restore_tx.as_mut() {
+                                upsert_restored_link_in_tx(db, tx, entry).await?;
+                            }
                             restored += 1;
                         } else {
                             skipped += 1;
@@ -378,18 +507,33 @@ impl BackupManager {
             match std::os::unix::fs::symlink(&entry.target_path, &entry.symlink_path) {
                 Ok(()) => {
                     if entry.db_tracked {
-                        match upsert_restored_link(db, entry).await {
-                            Ok(()) => {
-                                restored += 1;
-                            }
-                            Err(e) => {
-                                let _ = std::fs::remove_file(&entry.symlink_path);
-                                warn!(
-                                    "Failed to restore database state for {:?}: {}",
-                                    entry.symlink_path, e
-                                );
-                                errors += 1;
-                            }
+                        match restore_tx.as_mut() {
+                            Some(tx) => match upsert_restored_link_in_tx(db, tx, entry).await {
+                                Ok(()) => {
+                                    restored += 1;
+                                }
+                                Err(e) => {
+                                    let _ = std::fs::remove_file(&entry.symlink_path);
+                                    warn!(
+                                        "Failed to restore database state for {:?}: {}",
+                                        entry.symlink_path, e
+                                    );
+                                    errors += 1;
+                                }
+                            },
+                            None => match upsert_restored_link(db, entry).await {
+                                Ok(()) => {
+                                    restored += 1;
+                                }
+                                Err(e) => {
+                                    let _ = std::fs::remove_file(&entry.symlink_path);
+                                    warn!(
+                                        "Failed to restore database state for {:?}: {}",
+                                        entry.symlink_path, e
+                                    );
+                                    errors += 1;
+                                }
+                            },
                         }
                     } else {
                         restored += 1;
@@ -408,6 +552,14 @@ impl BackupManager {
                 restored, skipped
             );
         } else {
+            if let Some(tx) = restore_tx.take() {
+                tx.commit().await.with_context(|| {
+                    format!(
+                        "Backup restore from {} finished filesystem work but failed to commit database updates",
+                        backup_path.display()
+                    )
+                })?;
+            }
             info!(
                 "Restore complete: {} restored, {} skipped, {} errors",
                 restored, skipped, errors
@@ -482,7 +634,7 @@ impl BackupManager {
             }
 
             match std::fs::read_to_string(&path) {
-                Ok(json) => match serde_json::from_str::<BackupManifest>(&json) {
+                Ok(json) => match parse_backup_manifest(&json, &path) {
                     Ok(manifest) => {
                         let file_size = entry.metadata().map(|m| m.len()).unwrap_or(0);
                         summaries.push(BackupSummary {
@@ -610,6 +762,25 @@ async fn upsert_restored_link(db: &Database, entry: &BackupEntry) -> Result<()> 
     Ok(())
 }
 
+async fn upsert_restored_link_in_tx(
+    db: &Database,
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    entry: &BackupEntry,
+) -> Result<()> {
+    let record = LinkRecord {
+        id: None,
+        source_path: resolve_restore_target_path(entry),
+        target_path: entry.symlink_path.clone(),
+        media_id: entry.media_id.clone(),
+        media_type: entry.media_type,
+        status: LinkStatus::Active,
+        created_at: None,
+        updated_at: None,
+    };
+    db.insert_link_in_tx(&record, tx).await?;
+    Ok(())
+}
+
 fn resolve_restore_target_path(entry: &BackupEntry) -> PathBuf {
     if entry.target_path.is_absolute() {
         entry.target_path.clone()
@@ -706,6 +877,8 @@ mod tests {
                 },
             ],
             total_count: 2,
+            database_snapshot: None,
+            content_sha256: None,
         };
 
         // Write backup
@@ -749,6 +922,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_create_backup_writes_database_snapshot_and_checksum() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let manager = BackupManager::new(&test_config(dir.path()));
+        let db_path = dir.path().join("symlinkarr.db");
+        let db = Database::new(db_path.to_str().unwrap()).await.unwrap();
+
+        let source_root = dir.path().join("rd");
+        let library_root = dir.path().join("library");
+        std::fs::create_dir_all(&source_root).unwrap();
+        std::fs::create_dir_all(&library_root).unwrap();
+        let source_file = source_root.join("ep1.mkv");
+        let symlink_file = library_root.join("ep1.mkv");
+        std::fs::write(&source_file, "video").unwrap();
+
+        db.insert_link(&LinkRecord {
+            id: None,
+            source_path: source_file,
+            target_path: symlink_file,
+            media_id: "tvdb-1".to_string(),
+            media_type: MediaType::Tv,
+            status: LinkStatus::Active,
+            created_at: None,
+            updated_at: None,
+        })
+        .await
+        .unwrap();
+
+        let backup_path = manager.create_backup(&db, "Manual backup").await.unwrap();
+        let manifest = parse_backup_manifest(
+            &std::fs::read_to_string(&backup_path).unwrap(),
+            &backup_path,
+        )
+        .unwrap();
+
+        let snapshot = manifest.database_snapshot.as_ref().unwrap();
+        let snapshot_path = dir.path().join(&snapshot.filename);
+        assert!(snapshot_path.exists());
+        assert_eq!(snapshot.sha256, sha256_file(&snapshot_path).unwrap());
+        assert!(manifest.content_sha256.is_some());
+    }
+
+    #[tokio::test]
     async fn test_restore_backfills_database_for_existing_symlink() {
         let dir = tempfile::TempDir::new().unwrap();
         let manager = BackupManager::new(&test_config(dir.path()));
@@ -775,6 +990,8 @@ mod tests {
                 db_tracked: true,
             }],
             total_count: 1,
+            database_snapshot: None,
+            content_sha256: None,
         };
         let backup_path = dir.path().join("existing-symlink.json");
         std::fs::write(
@@ -862,6 +1079,8 @@ mod tests {
                 db_tracked: false,
             }],
             total_count: 1,
+            database_snapshot: None,
+            content_sha256: None,
         };
         let backup_path = dir.path().join("disk-only-backup.json");
         std::fs::write(
@@ -917,6 +1136,8 @@ mod tests {
                 db_tracked: false,
             }],
             total_count: 1,
+            database_snapshot: None,
+            content_sha256: None,
         };
         let backup_path = dir.path().join("disk-only-relative-backup.json");
         std::fs::write(
@@ -962,6 +1183,8 @@ mod tests {
                 label: format!("test {}", i),
                 symlinks: vec![],
                 total_count: 0,
+                database_snapshot: None,
+                content_sha256: None,
             };
             let json = serde_json::to_string_pretty(&manifest).unwrap();
             std::fs::write(dir.path().join(filename), json).unwrap();
@@ -977,6 +1200,8 @@ mod tests {
             label: "safety test".to_string(),
             symlinks: vec![],
             total_count: 0,
+            database_snapshot: None,
+            content_sha256: None,
         };
         let json = serde_json::to_string_pretty(&safety_manifest).unwrap();
         std::fs::write(dir.path().join("safety-repair-20260101-120000.json"), json).unwrap();
@@ -1023,6 +1248,8 @@ mod tests {
                 db_tracked: true,
             }],
             total_count: 1,
+            database_snapshot: None,
+            content_sha256: None,
         };
         let json = serde_json::to_string_pretty(&manifest).unwrap();
         std::fs::write(dir.path().join("backup-20260212-120000.json"), json).unwrap();
@@ -1136,6 +1363,8 @@ mod tests {
                 db_tracked: true,
             }],
             total_count: 1,
+            database_snapshot: None,
+            content_sha256: None,
         };
 
         std::fs::write(source_root.join("video.mkv"), "video").unwrap();
@@ -1190,6 +1419,8 @@ mod tests {
                 db_tracked: true,
             }],
             total_count: 1,
+            database_snapshot: None,
+            content_sha256: None,
         };
 
         let backup_path = dir.path().join("missing-target.json");
@@ -1215,5 +1446,100 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn test_list_skips_unsupported_backup_manifest_version() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let manager = BackupManager::new(&test_config(dir.path()));
+
+        let manifest = BackupManifest {
+            version: BACKUP_MANIFEST_VERSION + 1,
+            timestamp: Utc::now(),
+            backup_type: BackupType::Scheduled,
+            label: "future backup".to_string(),
+            symlinks: vec![],
+            total_count: 0,
+            database_snapshot: None,
+            content_sha256: None,
+        };
+        std::fs::write(
+            dir.path().join("backup-future.json"),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let list = manager.list().unwrap();
+        assert!(list.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_restore_rejects_unsupported_backup_manifest_version() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let manager = BackupManager::new(&test_config(dir.path()));
+        let db = Database::new(dir.path().join("symlinkarr.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        let backup_path = dir.path().join("future-backup.json");
+        let manifest = BackupManifest {
+            version: BACKUP_MANIFEST_VERSION + 1,
+            timestamp: Utc::now(),
+            backup_type: BackupType::Scheduled,
+            label: "future backup".to_string(),
+            symlinks: vec![],
+            total_count: 0,
+            database_snapshot: None,
+            content_sha256: None,
+        };
+        std::fs::write(
+            &backup_path,
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let err = manager
+            .restore(&db, &backup_path, false, &[], &[], false)
+            .await
+            .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("Unsupported backup manifest version"));
+    }
+
+    #[tokio::test]
+    async fn test_restore_rejects_manifest_checksum_mismatch() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let manager = BackupManager::new(&test_config(dir.path()));
+        let db = Database::new(dir.path().join("symlinkarr.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        let backup_path = dir.path().join("tampered-backup.json");
+        let mut manifest = BackupManifest {
+            version: BACKUP_MANIFEST_VERSION,
+            timestamp: Utc::now(),
+            backup_type: BackupType::Scheduled,
+            label: "tampered backup".to_string(),
+            symlinks: vec![],
+            total_count: 0,
+            database_snapshot: None,
+            content_sha256: None,
+        };
+        manifest.content_sha256 = Some(compute_manifest_checksum(&manifest).unwrap());
+        manifest.label = "tampered after checksum".to_string();
+        std::fs::write(
+            &backup_path,
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let err = manager
+            .restore(&db, &backup_path, false, &[], &[], false)
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("integrity check failed"));
     }
 }

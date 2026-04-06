@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use anyhow::Result;
 use quick_xml::de::from_str;
 use serde::Deserialize;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::api::http;
 use crate::api::sonarr::SonarrWantedMissingRecord;
@@ -110,16 +110,23 @@ impl AnimeIdentityGraph {
     }
 
     async fn load_inner(db: &Database, ttl_hours: u64) -> Result<Self> {
-        let xml = if let Some(cached) = db.get_cached(ANIME_LISTS_CACHE_KEY).await? {
-            cached
-        } else {
-            let fetched = fetch_anime_lists_xml().await?;
-            db.set_cached(ANIME_LISTS_CACHE_KEY, &fetched, ttl_hours)
-                .await?;
-            fetched
-        };
+        if let Some(cached) = db.get_cached(ANIME_LISTS_CACHE_KEY).await? {
+            match Self::from_xml(&cached) {
+                Ok(graph) => return Ok(graph),
+                Err(err) => {
+                    warn!(
+                        "Cached anime-lists XML could not be parsed; invalidating and refetching: {}",
+                        err
+                    );
+                    let _ = db.invalidate_cached(ANIME_LISTS_CACHE_KEY).await;
+                }
+            }
+        }
 
-        Self::from_xml(&xml)
+        let fetched = fetch_anime_lists_xml().await?;
+        db.set_cached(ANIME_LISTS_CACHE_KEY, &fetched, ttl_hours)
+            .await?;
+        Self::from_xml(&fetched)
     }
 
     pub(crate) fn from_xml(xml: &str) -> Result<Self> {
@@ -187,11 +194,30 @@ impl AnimeIdentityGraph {
             return explicit_resolutions.into_iter().next();
         }
         if explicit_resolutions.len() > 1 {
+            debug!(
+                title = %item.title,
+                absolute_episode,
+                resolutions = ?explicit_resolutions,
+                "ambiguous anime absolute-episode resolution via explicit mappings"
+            );
             return None;
         }
 
-        if entries.len() == 1 {
-            return entries[0].resolve_anidb_episode_default(absolute_episode);
+        let default_resolutions = collect_unique_resolutions(
+            entries
+                .iter()
+                .filter_map(|entry| entry.resolve_anidb_episode_default(absolute_episode)),
+        );
+        if default_resolutions.len() == 1 {
+            return default_resolutions.into_iter().next();
+        }
+        if default_resolutions.len() > 1 {
+            debug!(
+                title = %item.title,
+                absolute_episode,
+                resolutions = ?default_resolutions,
+                "ambiguous anime absolute-episode resolution via default season mapping"
+            );
         }
 
         None
@@ -227,11 +253,30 @@ impl AnimeIdentityGraph {
             return explicit_resolutions.into_iter().next();
         }
         if explicit_resolutions.len() > 1 {
+            debug!(
+                title = %item.title,
+                anidb_season,
+                episode,
+                resolutions = ?explicit_resolutions,
+                "ambiguous anime scene-episode resolution via explicit mappings"
+            );
             return None;
         }
 
-        if entries.len() == 1 {
-            return entries[0].resolve_anidb_episode_default_for_season(anidb_season, episode);
+        let default_resolutions = collect_unique_resolutions(entries.iter().filter_map(|entry| {
+            entry.resolve_anidb_episode_default_for_season(anidb_season, episode)
+        }));
+        if default_resolutions.len() == 1 {
+            return default_resolutions.into_iter().next();
+        }
+        if default_resolutions.len() > 1 {
+            debug!(
+                title = %item.title,
+                anidb_season,
+                episode,
+                resolutions = ?default_resolutions,
+                "ambiguous anime scene-episode resolution via default season mapping"
+            );
         }
 
         None
@@ -536,6 +581,18 @@ fn push_hint(hints: &mut Vec<String>, candidate: String) {
     hints.push(trimmed.to_string());
 }
 
+fn collect_unique_resolutions(
+    resolutions: impl IntoIterator<Item = (u32, u32)>,
+) -> Vec<(u32, u32)> {
+    let mut unique = Vec::new();
+    for resolution in resolutions {
+        if !unique.contains(&resolution) {
+            unique.push(resolution);
+        }
+    }
+    unique
+}
+
 fn parse_u64(value: &str) -> Option<u64> {
     value.trim().parse().ok().filter(|value| *value > 0)
 }
@@ -580,6 +637,15 @@ mod tests {
     <mapping-list>
       <mapping anidbseason="1" tvdbseason="2">;1-1;2-2;3-3;4-4;</mapping>
     </mapping-list>
+  </anime>
+  <anime anidbid="102" tvdbid="33333" defaulttvdbseason="1" episodeoffset="-1">
+    <name>Example Negative Offset Show</name>
+  </anime>
+  <anime anidbid="103" tvdbid="44444" defaulttvdbseason="1">
+    <name>Example Shared TVDB Main</name>
+  </anime>
+  <anime anidbid="104" tvdbid="44444" defaulttvdbseason="0" episodeoffset="-5">
+    <name>Example Shared TVDB Specials</name>
   </anime>
 </anime-list>
 "#;
@@ -644,5 +710,48 @@ mod tests {
         assert!(hints.contains(&"Seikai no Senki II S00E01".to_string()));
         assert!(hints.contains(&"Seikai no Senki II S00E04".to_string()));
         assert!(!hints.contains(&"Seikai no Senki II 4".to_string()));
+    }
+
+    #[test]
+    fn positive_episode_offset_round_trips_between_anidb_and_tvdb_slots() {
+        let graph = AnimeIdentityGraph::from_xml(SAMPLE_XML).unwrap();
+
+        let item = anime_item(MediaId::Tvdb(11111));
+
+        assert_eq!(graph.resolve_absolute_episode(&item, 3), Some((1, 15)));
+        assert_eq!(graph.resolve_scene_episode(&item, 1, 3), Some((1, 15)));
+    }
+
+    #[test]
+    fn negative_episode_offset_round_trips_between_anidb_and_tvdb_slots() {
+        let graph = AnimeIdentityGraph::from_xml(SAMPLE_XML).unwrap();
+
+        let item = anime_item(MediaId::Tvdb(33333));
+
+        assert_eq!(graph.resolve_absolute_episode(&item, 2), Some((1, 1)));
+        assert_eq!(graph.resolve_scene_episode(&item, 1, 2), Some((1, 1)));
+
+        let hints = graph.build_query_hints(&item, &record(1, 1));
+        assert!(hints.contains(&"Example Negative Offset Show 2".to_string()));
+        assert!(hints.contains(&"Example Negative Offset Show S01E02".to_string()));
+        assert!(hints.contains(&"Example Negative Offset Show S01E01".to_string()));
+    }
+
+    #[test]
+    fn multi_entry_tvdb_ids_can_still_resolve_unique_default_absolute_episode() {
+        let graph = AnimeIdentityGraph::from_xml(SAMPLE_XML).unwrap();
+
+        let item = anime_item(MediaId::Tvdb(44444));
+
+        assert_eq!(graph.resolve_absolute_episode(&item, 3), Some((1, 3)));
+    }
+
+    #[test]
+    fn multi_entry_tvdb_ids_can_still_resolve_unique_default_scene_episode() {
+        let graph = AnimeIdentityGraph::from_xml(SAMPLE_XML).unwrap();
+
+        let item = anime_item(MediaId::Tvdb(44444));
+
+        assert_eq!(graph.resolve_scene_episode(&item, 0, 6), Some((0, 1)));
     }
 }

@@ -42,3 +42,9 @@ impl<T> Len for [T] {
 pub fn length<C: Len + ?Sized>(val: &C) -> Result<usize> {
     Ok(val.askama_len())
 }
+
+/// Returns the current application version from Cargo metadata.
+/// Used in templates as `{{ ""|app_version }}`.
+pub fn app_version<T: ?Sized>(_: &T) -> Result<&'static str> {
+    Ok(env!("CARGO_PKG_VERSION"))
+}

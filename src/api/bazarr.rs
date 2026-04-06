@@ -3,8 +3,6 @@
 // reverse engineering and may break with future Bazarr updates.
 // See: https://github.com/morpheus65535/bazarr/issues/741
 
-#![allow(dead_code)] // Response types and webhook methods kept for future use
-
 use anyhow::Result;
 use reqwest::{Client, RequestBuilder, Response, StatusCode};
 use serde::Deserialize;
@@ -42,8 +40,10 @@ pub struct BazarrMovie {
 /// Language entry from Bazarr
 #[derive(Debug, Clone, Deserialize)]
 pub struct BazarrLanguage {
+    #[allow(dead_code)]
     #[serde(default)]
     pub code2: String,
+    #[allow(dead_code)]
     #[serde(default)]
     pub name: String,
 }
@@ -98,6 +98,7 @@ impl BazarrClient {
 
     /// Trigger a subtitle search for a series episode via the Sonarr webhook.
     /// This mimics Sonarr's "Download" event to make Bazarr re-scan for subtitles.
+    #[allow(dead_code)]
     pub async fn notify_episode_changed(
         &self,
         sonarr_series_id: i64,
@@ -138,6 +139,7 @@ impl BazarrClient {
     }
 
     /// Trigger a subtitle search for a movie via the Radarr webhook.
+    #[allow(dead_code)]
     pub async fn notify_movie_changed(
         &self,
         radarr_movie_id: i64,

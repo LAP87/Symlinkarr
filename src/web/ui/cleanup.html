@@ -41,6 +41,7 @@
         </div>
     </div>
     <form action="/cleanup/audit" method="post" class="stack-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <div class="form-group">
             <p class="text-muted mb-1">Checked libraries define where the audit runs. Leave everything checked for a full pass, or narrow it down when you are chasing a specific folder or legacy cleanup problem.</p>
             {% for lib in libraries %}

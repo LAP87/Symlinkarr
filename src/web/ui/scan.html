@@ -48,6 +48,7 @@
         </div>
 
         <form action="/scan/trigger" method="post" class="stack-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <div class="form-group">
                 <label class="form-label" for="library">Library scope</label>
                 <select id="library" name="library" class="form-control field-max-sm">

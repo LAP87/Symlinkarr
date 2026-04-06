@@ -193,21 +193,17 @@ impl WebConfig {
     }
 
     pub fn has_basic_auth(&self) -> bool {
-        !self.username.trim().is_empty() && !self.password.is_empty()
+        !self.username.trim().is_empty() && !self.password.trim().is_empty()
     }
 
     pub fn has_partial_basic_auth(&self) -> bool {
         let has_username = !self.username.trim().is_empty();
-        let has_password = !self.password.is_empty();
+        let has_password = !self.password.trim().is_empty();
         has_username ^ has_password
     }
 
     pub fn has_api_key_auth(&self) -> bool {
         !self.api_key.is_empty()
-    }
-
-    pub fn auth_enabled(&self) -> bool {
-        self.has_basic_auth() || self.has_api_key_auth()
     }
 }
 
@@ -327,7 +323,7 @@ pub struct SourceConfig {
     pub name: String,
     /// Absolute path to the arrow mount root
     pub path: PathBuf,
-    /// Media type filter: tv, movie, or auto (scan both)
+    /// Media type filter: auto, anime, tv, or movie
     #[serde(default = "default_source_media_type")]
     pub media_type: String,
 }
@@ -360,6 +356,10 @@ impl Default for ApiConfig {
     }
 }
 
+fn is_valid_source_media_type(value: &str) -> bool {
+    matches!(value.trim(), "auto" | "anime" | "tv" | "movie")
+}
+
 /// Daemon/scheduler configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonConfig {
@@ -372,6 +372,12 @@ pub struct DaemonConfig {
     /// Allow the daemon to search and acquire missing items
     #[serde(default)]
     pub search_missing: bool,
+    /// Run SQLite VACUUM as a scheduled once-per-day maintenance task
+    #[serde(default)]
+    pub vacuum_enabled: bool,
+    /// Local hour (0-23) when daemon-triggered VACUUM may run
+    #[serde(default = "default_vacuum_hour_local")]
+    pub vacuum_hour_local: u8,
 }
 
 impl Default for DaemonConfig {
@@ -380,6 +386,8 @@ impl Default for DaemonConfig {
             enabled: false,
             interval_minutes: default_interval(),
             search_missing: false,
+            vacuum_enabled: false,
+            vacuum_hour_local: default_vacuum_hour_local(),
         }
     }
 }
@@ -494,6 +502,9 @@ pub struct DmmConfig {
     /// Public or self-hosted DMM URL (e.g. "https://debridmediamanager.com")
     #[serde(default)]
     pub url: String,
+    /// Optional override for DMM's current auth salt if upstream changes its auth scheme
+    #[serde(default)]
+    pub auth_salt: Option<String>,
     /// Restrict torrent results to DMM's trusted cache set
     #[serde(default = "default_dmm_only_trusted")]
     pub only_trusted: bool,
@@ -509,6 +520,7 @@ impl Default for DmmConfig {
     fn default() -> Self {
         Self {
             url: String::new(),
+            auth_salt: None,
             only_trusted: default_dmm_only_trusted(),
             max_search_results: default_dmm_max_search_results(),
             max_torrent_results: default_dmm_max_torrent_results(),
@@ -870,11 +882,15 @@ fn default_depth() -> usize {
 }
 
 fn default_cache_ttl() -> u64 {
-    87600 // 10 years — metadata rarely changes; users can clear manually
+    87600 // ~10 years — metadata is intentionally sticky; freshness should come from targeted refresh signals
 }
 
 fn default_interval() -> u64 {
     30
+}
+
+fn default_vacuum_hour_local() -> u8 {
+    4
 }
 
 fn default_realdebrid_torrents_page_limit() -> u32 {
@@ -956,11 +972,11 @@ impl Config {
             if path.exists() {
                 let dotenv_overlay = load_dotenv_chain(path)?;
                 let config_str = std::fs::read_to_string(path)?;
-                let mut value: serde_yaml::Value = serde_yaml::from_str(&config_str)?;
+                let mut value: serde_yml::Value = serde_yml::from_str(&config_str)?;
                 apply_legacy_aliases(&mut value);
                 warn_for_plaintext_secrets(&value);
                 let secret_files = collect_secret_file_paths(&value, path.parent());
-                let mut config: Config = serde_yaml::from_value(value)?;
+                let mut config: Config = serde_yml::from_value(value)?;
                 config.resolve_secret_fields(path.parent(), &dotenv_overlay)?;
                 config.loaded_from = Some(path.to_path_buf());
                 config.secret_files = secret_files;
@@ -1055,6 +1071,28 @@ impl Config {
                 .push("api.cache_ttl_hours must be greater than 0".to_string());
         }
 
+        if self.daemon.interval_minutes == 0 {
+            report
+                .errors
+                .push("daemon.interval_minutes must be greater than 0".to_string());
+        }
+
+        if self.daemon.vacuum_hour_local > 23 {
+            report
+                .errors
+                .push("daemon.vacuum_hour_local must be between 0 and 23".to_string());
+        }
+
+        for source in &self.sources {
+            let media_type = source.media_type.trim();
+            if !is_valid_source_media_type(media_type) {
+                report.errors.push(format!(
+                    "Source '{}' media_type must be one of: auto, anime, tv, movie (got '{}')",
+                    source.name, source.media_type
+                ));
+            }
+        }
+
         if self.web.enabled {
             let bind_address = self.web.bind_address.trim();
             if bind_address.is_empty() {
@@ -1083,9 +1121,9 @@ impl Config {
             }
 
             if self.web.requires_remote_ack() && self.web.allow_remote {
-                if !self.web.auth_enabled() {
-                    report.warnings.push(
-                        "web.allow_remote=true without web auth leaves the built-in web UI unauthenticated; prefer web.username/web.password or a trusted reverse proxy"
+                if !self.web.has_basic_auth() {
+                    report.errors.push(
+                        "web.allow_remote=true requires web.username/web.password so the built-in HTML UI is not exposed unauthenticated"
                             .to_string(),
                     );
                 } else if self.web.has_api_key_auth() && !self.web.has_basic_auth() {
@@ -1167,6 +1205,15 @@ impl Config {
 
     fn validate_paths(&self, report: &mut ValidationReport) {
         for lib in &self.libraries {
+            if !lib.path.is_absolute() {
+                report.errors.push(format!(
+                    "Library '{}' path must be absolute: {}",
+                    lib.name,
+                    lib.path.display()
+                ));
+                continue;
+            }
+
             match fast_path_health(&lib.path) {
                 PathHealth::Healthy => {}
                 PathHealth::Missing => report.errors.push(format!(
@@ -1194,6 +1241,15 @@ impl Config {
         }
 
         for source in &self.sources {
+            if !source.path.is_absolute() {
+                report.errors.push(format!(
+                    "Source '{}' path must be absolute: {}",
+                    source.name,
+                    source.path.display()
+                ));
+                continue;
+            }
+
             match fast_path_health(&source.path) {
                 PathHealth::Healthy => {}
                 PathHealth::Missing => report.errors.push(format!(
@@ -1354,6 +1410,16 @@ impl Config {
                 Some(dotenv_overlay),
             )?;
             self.decypharr.api_token = Some(resolved);
+        }
+        if let Some(auth_salt) = &self.dmm.auth_salt {
+            let resolved = resolve_secret(
+                auth_salt,
+                "dmm.auth_salt",
+                false,
+                config_dir,
+                Some(dotenv_overlay),
+            )?;
+            self.dmm.auth_salt = Some(resolved);
         }
         self.prowlarr.api_key = resolve_secret(
             &self.prowlarr.api_key,
@@ -1585,7 +1651,7 @@ fn parse_dotenv_value(raw: &str) -> String {
     raw.to_string()
 }
 
-fn warn_for_plaintext_secrets(root: &serde_yaml::Value) {
+fn warn_for_plaintext_secrets(root: &serde_yml::Value) {
     let plaintext_fields = raw_plaintext_secret_fields(root);
     if plaintext_fields.is_empty() {
         return;
@@ -1603,7 +1669,7 @@ fn warn_for_plaintext_secrets(root: &serde_yaml::Value) {
     );
 }
 
-fn raw_plaintext_secret_fields(root: &serde_yaml::Value) -> Vec<&'static str> {
+fn raw_plaintext_secret_fields(root: &serde_yml::Value) -> Vec<&'static str> {
     let mut fields = Vec::new();
     for (path, field_name) in secret_field_paths() {
         if let Some(value) = yaml_str_at(root, path) {
@@ -1615,24 +1681,24 @@ fn raw_plaintext_secret_fields(root: &serde_yaml::Value) -> Vec<&'static str> {
     fields
 }
 
-fn yaml_value_at<'a>(root: &'a serde_yaml::Value, path: &[&str]) -> Option<&'a serde_yaml::Value> {
+fn yaml_value_at<'a>(root: &'a serde_yml::Value, path: &[&str]) -> Option<&'a serde_yml::Value> {
     let mut current = root;
     for segment in path {
         let mapping = current.as_mapping()?;
-        current = mapping.get(serde_yaml::Value::from(*segment))?;
+        current = mapping.get(serde_yml::Value::from(*segment))?;
     }
     Some(current)
 }
 
-fn yaml_str_at<'a>(root: &'a serde_yaml::Value, path: &[&str]) -> Option<&'a str> {
+fn yaml_str_at<'a>(root: &'a serde_yml::Value, path: &[&str]) -> Option<&'a str> {
     yaml_value_at(root, path)?.as_str()
 }
 
-fn yaml_bool_at(root: &serde_yaml::Value, path: &[&str]) -> Option<bool> {
+fn yaml_bool_at(root: &serde_yml::Value, path: &[&str]) -> Option<bool> {
     yaml_value_at(root, path)?.as_bool()
 }
 
-fn collect_secret_file_paths(root: &serde_yaml::Value, config_dir: Option<&Path>) -> Vec<PathBuf> {
+fn collect_secret_file_paths(root: &serde_yml::Value, config_dir: Option<&Path>) -> Vec<PathBuf> {
     let mut paths = Vec::new();
 
     for (path, _) in secret_field_paths() {
@@ -1686,12 +1752,12 @@ fn secret_field_paths() -> [(&'static [&'static str], &'static str); 16] {
     ]
 }
 
-fn apply_legacy_aliases(root: &mut serde_yaml::Value) {
+fn apply_legacy_aliases(root: &mut serde_yml::Value) {
     let Some(mapping) = root.as_mapping_mut() else {
         return;
     };
 
-    let backup_key = serde_yaml::Value::from("backup");
+    let backup_key = serde_yml::Value::from("backup");
     let Some(backup_value) = mapping.get_mut(&backup_key) else {
         return;
     };
@@ -1699,8 +1765,8 @@ fn apply_legacy_aliases(root: &mut serde_yaml::Value) {
         return;
     };
 
-    let path_key = serde_yaml::Value::from("path");
-    let dir_key = serde_yaml::Value::from("dir");
+    let path_key = serde_yml::Value::from("path");
+    let dir_key = serde_yml::Value::from("dir");
     if !backup_map.contains_key(&path_key) {
         if let Some(dir_value) = backup_map.get(&dir_key).cloned() {
             backup_map.insert(path_key, dir_value);
@@ -1846,6 +1912,48 @@ mod tests {
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn test_config() -> Config {
+        Config {
+            libraries: vec![LibraryConfig {
+                name: "Movies".to_string(),
+                path: PathBuf::from("/tmp/library"),
+                media_type: MediaType::Movie,
+                content_type: Some(ContentType::Movie),
+                depth: 1,
+            }],
+            sources: vec![SourceConfig {
+                name: "RD".to_string(),
+                path: PathBuf::from("/tmp/source"),
+                media_type: "auto".to_string(),
+            }],
+            api: ApiConfig::default(),
+            realdebrid: RealDebridConfig::default(),
+            decypharr: DecypharrConfig::default(),
+            dmm: DmmConfig::default(),
+            backup: BackupConfig::default(),
+            db_path: default_db_path(),
+            log_level: default_log_level(),
+            daemon: DaemonConfig::default(),
+            symlink: SymlinkConfig::default(),
+            matching: MatchingConfig::default(),
+            prowlarr: ProwlarrConfig::default(),
+            bazarr: BazarrConfig::default(),
+            tautulli: TautulliConfig::default(),
+            plex: PlexConfig::default(),
+            emby: MediaBrowserConfig::default(),
+            jellyfin: MediaBrowserConfig::default(),
+            radarr: RadarrConfig::default(),
+            sonarr: SonarrConfig::default(),
+            sonarr_anime: SonarrConfig::default(),
+            features: FeaturesConfig::default(),
+            security: SecurityConfig::default(),
+            cleanup: CleanupPolicyConfig::default(),
+            web: WebConfig::default(),
+            loaded_from: None,
+            secret_files: Vec::new(),
+        }
     }
 
     #[test]
@@ -2024,6 +2132,68 @@ realdebrid:
         assert_eq!(cfg.realdebrid.api_token, "rd-from-dotenv");
 
         std::env::remove_var("SYMLINKARR_RD_TOKEN");
+    }
+
+    #[test]
+    fn validate_rejects_zero_daemon_interval() {
+        let mut cfg = test_config();
+        cfg.daemon.interval_minutes = 0;
+
+        let report = cfg.validate_runtime_settings();
+        assert!(report
+            .errors
+            .contains(&"daemon.interval_minutes must be greater than 0".to_string()));
+    }
+
+    #[test]
+    fn validate_rejects_unknown_source_media_type() {
+        let mut cfg = test_config();
+        cfg.sources[0].media_type = "tvv".to_string();
+
+        let report = cfg.validate_runtime_settings();
+        assert!(report.errors.iter().any(|error| {
+            error.contains("Source 'RD' media_type must be one of: auto, anime, tv, movie")
+        }));
+    }
+
+    #[test]
+    fn validate_rejects_invalid_vacuum_hour() {
+        let mut cfg = test_config();
+        cfg.daemon.vacuum_hour_local = 24;
+
+        let report = cfg.validate_runtime_settings();
+        assert!(report
+            .errors
+            .contains(&"daemon.vacuum_hour_local must be between 0 and 23".to_string()));
+    }
+
+    #[test]
+    fn validate_rejects_relative_library_and_source_paths() {
+        let mut cfg = test_config();
+        cfg.libraries = vec![LibraryConfig {
+            name: "Relative Library".to_string(),
+            path: PathBuf::from("relative/library"),
+            media_type: MediaType::Tv,
+            content_type: Some(ContentType::Tv),
+            depth: 1,
+        }];
+        cfg.sources = vec![SourceConfig {
+            name: "Relative Source".to_string(),
+            path: PathBuf::from("relative/source"),
+            media_type: "auto".to_string(),
+        }];
+
+        let report = cfg.validate();
+        assert!(report.errors.iter().any(
+            |error: &String| error.contains("Library 'Relative Library' path must be absolute")
+        ));
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error: &String| error
+                    .contains("Source 'Relative Source' path must be absolute"))
+        );
     }
 
     #[test]
@@ -2322,7 +2492,7 @@ realdebrid:
     #[test]
     fn validate_accepts_high_api_cache_ttl() {
         let mut cfg = runtime_config_fixture();
-        cfg.api.cache_ttl_hours = 87600; // 10 years — default
+        cfg.api.cache_ttl_hours = 87600; // high-but-valid override
 
         let report = cfg.validate_runtime_settings();
         assert!(
@@ -2466,17 +2636,23 @@ web:
     }
 
     #[test]
-    fn validate_warns_when_remote_web_bind_is_explicitly_allowed() {
+    fn validate_allows_remote_web_bind_with_basic_auth() {
         let mut cfg = runtime_config_fixture();
         cfg.web.enabled = true;
         cfg.web.bind_address = "0.0.0.0".to_string();
         cfg.web.allow_remote = true;
+        cfg.web.username = "admin".to_string();
+        cfg.web.password = "secret".to_string();
 
         let report = cfg.validate_runtime_settings();
-        assert!(report
-            .warnings
+        assert!(!report
+            .errors
             .iter()
-            .any(|warning| warning.contains("web.allow_remote=true")));
+            .any(|err| err.contains("web.username/web.password")));
+        assert!(!report
+            .errors
+            .iter()
+            .any(|err| err.contains("built-in HTML UI")));
     }
 
     #[test]
@@ -2493,7 +2669,7 @@ web:
     }
 
     #[test]
-    fn validate_warns_when_remote_web_has_only_api_key_auth() {
+    fn validate_rejects_remote_web_with_only_api_key_auth() {
         let mut cfg = runtime_config_fixture();
         cfg.web.enabled = true;
         cfg.web.bind_address = "0.0.0.0".to_string();
@@ -2502,14 +2678,28 @@ web:
 
         let report = cfg.validate_runtime_settings();
         assert!(report
-            .warnings
+            .errors
             .iter()
-            .any(|warning| warning.contains("HTML UI remains unauthenticated")));
+            .any(|err| err.contains("web.username/web.password")));
+    }
+
+    #[test]
+    fn validate_rejects_whitespace_only_web_password() {
+        let mut cfg = runtime_config_fixture();
+        cfg.web.enabled = true;
+        cfg.web.username = "admin".to_string();
+        cfg.web.password = "   ".to_string();
+
+        let report = cfg.validate_runtime_settings();
+        assert!(report
+            .errors
+            .iter()
+            .any(|err| err.contains("web.username and web.password")));
     }
 
     #[test]
     fn raw_plaintext_secret_fields_detects_unwrapped_secrets() {
-        let value: serde_yaml::Value = serde_yaml::from_str(
+        let value: serde_yml::Value = serde_yml::from_str(
             r#"
 api:
   tmdb_api_key: "plaintext"
@@ -2536,7 +2726,7 @@ web:
         let dir = tempfile::tempdir().unwrap();
         let config_dir = dir.path().join("cfg");
         std::fs::create_dir_all(&config_dir).unwrap();
-        let value: serde_yaml::Value = serde_yaml::from_str(
+        let value: serde_yml::Value = serde_yml::from_str(
             r#"
 api:
   tmdb_api_key: "secretfile:tmdb.key"

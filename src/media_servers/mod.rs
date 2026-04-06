@@ -475,6 +475,71 @@ fn queue_deferred_refresh_targets(
     store_deferred_refresh_queue(cfg, &queue)
 }
 
+fn take_deferred_refresh_targets(
+    cfg: &Config,
+    servers: &[MediaServerKind],
+) -> Result<Vec<DeferredRefreshQueueServer>> {
+    if servers.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let _guard = acquire_deferred_refresh_queue_guard(cfg)?;
+    let queue = load_deferred_refresh_queue(cfg)?;
+    let mut retained = DeferredRefreshQueue::default();
+    let mut taken = Vec::new();
+
+    for entry in queue.servers {
+        if servers.contains(&entry.server) {
+            taken.push(entry);
+        } else {
+            retained.servers.push(entry);
+        }
+    }
+
+    retained
+        .servers
+        .sort_by_key(|entry| entry.server.service_key());
+    taken.sort_by_key(|entry| entry.server.service_key());
+    store_deferred_refresh_queue(cfg, &retained)?;
+    Ok(taken)
+}
+
+fn merge_deferred_refresh_entries(
+    cfg: &Config,
+    entries: Vec<DeferredRefreshQueueServer>,
+) -> Result<()> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+
+    let _guard = acquire_deferred_refresh_queue_guard(cfg)?;
+    let mut queue = load_deferred_refresh_queue(cfg)?;
+    for entry in entries {
+        let normalized = dedup_non_empty_paths(&entry.paths);
+        if normalized.is_empty() {
+            continue;
+        }
+
+        if let Some(existing) = queue
+            .servers
+            .iter_mut()
+            .find(|existing| existing.server == entry.server)
+        {
+            merge_dedup_paths(&mut existing.paths, &normalized);
+        } else {
+            queue.servers.push(DeferredRefreshQueueServer {
+                server: entry.server,
+                paths: normalized,
+            });
+        }
+    }
+
+    queue
+        .servers
+        .sort_by_key(|entry| entry.server.service_key());
+    store_deferred_refresh_queue(cfg, &queue)
+}
+
 fn pending_deferred_refresh_count(cfg: &Config) -> Result<usize> {
     Ok(load_deferred_refresh_queue(cfg)?
         .servers
@@ -758,20 +823,10 @@ pub(crate) async fn refresh_library_paths_detailed(
         });
     };
 
-    let _queue_guard = acquire_deferred_refresh_queue_guard(cfg)?;
-    let deferred_queue = load_deferred_refresh_queue(cfg)?;
-    let mut remaining_queue = DeferredRefreshQueue {
-        servers: deferred_queue
-            .servers
-            .iter()
-            .filter(|entry| !servers.contains(&entry.server))
-            .cloned()
-            .collect(),
-    };
+    let deferred_queue = take_deferred_refresh_targets(cfg, &servers)?;
     let mut planned_refreshes = Vec::new();
     for server in servers {
         let old_deferred_paths = deferred_queue
-            .servers
             .iter()
             .find(|entry| entry.server == server)
             .map(|entry| entry.paths.clone())
@@ -802,11 +857,7 @@ pub(crate) async fn refresh_library_paths_detailed(
     }
     let (aggregate, server_outcomes, failed_entries) =
         execute_planned_server_refreshes(cfg, planned_refreshes, emit_text).await;
-    remaining_queue.servers.extend(failed_entries);
-    remaining_queue
-        .servers
-        .sort_by_key(|entry| entry.server.service_key());
-    store_deferred_refresh_queue(cfg, &remaining_queue)?;
+    merge_deferred_refresh_entries(cfg, failed_entries)?;
 
     Ok(LibraryRefreshOutcome {
         aggregate,
@@ -911,23 +962,13 @@ pub(crate) async fn invalidate_after_mutation(
             });
         };
 
-        let _queue_guard = acquire_deferred_refresh_queue_guard(cfg)?;
-        let deferred_queue = load_deferred_refresh_queue(cfg)?;
-        let mut remaining_queue = DeferredRefreshQueue {
-            servers: deferred_queue
-                .servers
-                .iter()
-                .filter(|entry| !configured_servers.contains(&entry.server))
-                .cloned()
-                .collect(),
-        };
+        let deferred_queue = take_deferred_refresh_targets(cfg, &configured_servers)?;
         let mut planned_refreshes = Vec::new();
         for server in configured_servers.iter().copied() {
             let refresh_plan =
                 refresh_targets_for_server(cfg, server, &refresh_roots, affected_paths);
             let mut effective_targets = refresh_plan.targets;
             let old_deferred_paths = deferred_queue
-                .servers
                 .iter()
                 .find(|entry| entry.server == server)
                 .map(|entry| entry.paths.clone())
@@ -967,11 +1008,7 @@ pub(crate) async fn invalidate_after_mutation(
         }
         let (aggregate, server_outcomes, failed_entries) =
             execute_planned_server_refreshes(cfg, planned_refreshes, emit_text).await;
-        remaining_queue.servers.extend(failed_entries);
-        remaining_queue
-            .servers
-            .sort_by_key(|entry| entry.server.service_key());
-        store_deferred_refresh_queue(cfg, &remaining_queue)?;
+        merge_deferred_refresh_entries(cfg, failed_entries)?;
 
         return Ok(LibraryInvalidationOutcome {
             server: configured_servers
@@ -1075,6 +1112,14 @@ mod tests {
         SecurityConfig, SonarrConfig, SourceConfig, SymlinkConfig, TautulliConfig, WebConfig,
     };
     use crate::models::MediaType;
+    use axum::{extract::State, routing::get, Router};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::net::TcpListener;
+    use tokio::time::{sleep, timeout, Duration};
 
     fn test_config() -> Config {
         Config {
@@ -1116,6 +1161,46 @@ mod tests {
             loaded_from: None,
             secret_files: Vec::new(),
         }
+    }
+
+    #[derive(Clone)]
+    struct MockPlexServerState {
+        refresh_delay: Duration,
+        refresh_calls: Arc<AtomicUsize>,
+    }
+
+    async fn mock_plex_sections() -> &'static str {
+        r#"
+<MediaContainer size="1">
+  <Directory key="7" title="Anime">
+    <Location id="11" path="/mnt/storage/plex/anime" />
+  </Directory>
+</MediaContainer>
+"#
+    }
+
+    async fn mock_plex_refresh(State(state): State<MockPlexServerState>) -> &'static str {
+        state.refresh_calls.fetch_add(1, Ordering::SeqCst);
+        sleep(state.refresh_delay).await;
+        ""
+    }
+
+    async fn spawn_mock_plex_server(refresh_delay: Duration) -> (String, Arc<AtomicUsize>) {
+        let refresh_calls = Arc::new(AtomicUsize::new(0));
+        let state = MockPlexServerState {
+            refresh_delay,
+            refresh_calls: Arc::clone(&refresh_calls),
+        };
+        let app = Router::new()
+            .route("/library/sections", get(mock_plex_sections))
+            .route("/library/sections/:key/refresh", get(mock_plex_refresh))
+            .with_state(state);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (format!("http://{addr}"), refresh_calls)
     }
 
     #[test]
@@ -1541,5 +1626,164 @@ mod tests {
         let mut queued_paths = queue.servers[0].paths.clone();
         queued_paths.sort();
         assert_eq!(queued_paths, vec![new_target, deferred]);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn concurrent_refresh_locking_defers_without_blocking_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = test_config();
+        let (plex_url, refresh_calls) = spawn_mock_plex_server(Duration::from_millis(150)).await;
+        cfg.plex.url = plex_url;
+        cfg.plex.token = "plex-token".to_string();
+        cfg.backup.path = dir.path().join("backups");
+        std::fs::create_dir_all(&cfg.backup.path).unwrap();
+
+        let refresh_targets = vec![PathBuf::from(
+            "/mnt/storage/plex/anime/Show/Season 01/E01.mkv",
+        )];
+
+        let (left, right) = timeout(Duration::from_secs(2), async {
+            tokio::join!(
+                refresh_library_paths_detailed(&cfg, &refresh_targets, false),
+                refresh_library_paths_detailed(&cfg, &refresh_targets, false)
+            )
+        })
+        .await
+        .expect("concurrent refresh probe should not deadlock");
+
+        let outcomes = [left.unwrap(), right.unwrap()];
+        assert_eq!(outcomes.len(), 2);
+        assert!(
+            outcomes
+                .iter()
+                .any(|outcome| outcome.aggregate.deferred_due_to_lock),
+            "expected one concurrent caller to defer while another refreshed"
+        );
+        assert!(
+            outcomes
+                .iter()
+                .any(|outcome| !outcome.aggregate.deferred_due_to_lock),
+            "expected one concurrent caller to acquire the refresh lock"
+        );
+
+        let queued_before_drain = deferred_refresh_summary(&cfg).unwrap();
+        assert_eq!(queued_before_drain.pending_targets, 1);
+
+        let drain = timeout(
+            Duration::from_secs(2),
+            refresh_library_paths_detailed(&cfg, &[], false),
+        )
+        .await
+        .expect("deferred refresh drain should not deadlock")
+        .unwrap();
+        assert!(!drain.aggregate.deferred_due_to_lock);
+
+        let queued_after_drain = deferred_refresh_summary(&cfg).unwrap();
+        assert_eq!(queued_after_drain.pending_targets, 0);
+        assert_eq!(refresh_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    #[ignore = "hits real configured media servers and writes a temporary probe directory under a library root"]
+    async fn live_refresh_lock_probe_against_real_backends() {
+        let mut cfg = Config::load(Some("config.yaml".to_string()))
+            .expect("expected local config.yaml with real media server credentials");
+        assert!(
+            !configured_refresh_backends(&cfg).is_empty(),
+            "expected at least one configured refresh backend in config.yaml"
+        );
+
+        let backup_dir = tempfile::tempdir().unwrap();
+        cfg.backup.path = backup_dir.path().join("backups");
+        std::fs::create_dir_all(&cfg.backup.path).unwrap();
+
+        let library_root = cfg
+            .libraries
+            .iter()
+            .find(|library| library.path.exists())
+            .map(|library| library.path.clone())
+            .expect("expected at least one existing library root in config.yaml");
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let probe_root = library_root.join(format!("__symlinkarr_rc_refresh_probe_{nonce}"));
+
+        let probe_paths = vec![
+            probe_root.join("batch-a"),
+            probe_root.join("batch-b"),
+            probe_root.join("batch-c"),
+        ];
+        for path in &probe_paths {
+            std::fs::create_dir_all(path).unwrap();
+        }
+
+        cfg.plex.refresh_delay_ms = cfg.plex.refresh_delay_ms.max(300);
+        cfg.emby.refresh_delay_ms = cfg.emby.refresh_delay_ms.max(300);
+        cfg.jellyfin.refresh_delay_ms = cfg.jellyfin.refresh_delay_ms.max(300);
+        cfg.emby.refresh_batch_size = 1;
+        cfg.jellyfin.refresh_batch_size = 1;
+        cfg.emby.max_refresh_batches_per_run =
+            cfg.emby.max_refresh_batches_per_run.max(probe_paths.len());
+        cfg.jellyfin.max_refresh_batches_per_run = cfg
+            .jellyfin
+            .max_refresh_batches_per_run
+            .max(probe_paths.len());
+        cfg.plex.max_refresh_batches_per_run =
+            cfg.plex.max_refresh_batches_per_run.max(probe_paths.len());
+
+        let worker_count = 3usize;
+        let mut join_set = tokio::task::JoinSet::new();
+        for _ in 0..worker_count {
+            let cfg = cfg.clone();
+            let probe_paths = probe_paths.clone();
+            join_set.spawn(async move {
+                refresh_library_paths_detailed(&cfg, &probe_paths, true)
+                    .await
+                    .expect("live refresh probe should complete")
+            });
+        }
+
+        let mut outcomes = Vec::new();
+        while let Some(result) = join_set.join_next().await {
+            outcomes.push(result.expect("live refresh worker panicked"));
+        }
+
+        assert_eq!(outcomes.len(), worker_count);
+        assert!(
+            outcomes
+                .iter()
+                .any(|outcome| outcome.aggregate.deferred_due_to_lock),
+            "expected at least one worker to defer while another held the refresh lock"
+        );
+        assert!(
+            outcomes
+                .iter()
+                .any(|outcome| !outcome.aggregate.deferred_due_to_lock),
+            "expected at least one worker to acquire the refresh lock"
+        );
+
+        let queued_before_drain = deferred_refresh_summary(&cfg).unwrap();
+        assert!(
+            queued_before_drain.pending_targets > 0,
+            "expected deferred refresh targets to remain queued after lock contention"
+        );
+
+        let drain = refresh_library_paths_detailed(&cfg, &[], true)
+            .await
+            .expect("deferred refresh drain should complete");
+        assert!(
+            !drain.aggregate.deferred_due_to_lock,
+            "expected deferred refresh drain to acquire the lock"
+        );
+
+        let queued_after_drain = deferred_refresh_summary(&cfg).unwrap();
+        assert_eq!(
+            queued_after_drain.pending_targets, 0,
+            "expected deferred refresh queue to drain completely"
+        );
+
+        std::fs::remove_dir_all(&probe_root).unwrap();
     }
 }

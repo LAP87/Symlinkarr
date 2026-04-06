@@ -44,6 +44,7 @@
 
 <div class="card" style="margin-bottom:1rem;">
     <form action="/config/validate" method="post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <button type="submit" class="btn btn-primary">&#9989; Validate Config</button>
     </form>
 </div>

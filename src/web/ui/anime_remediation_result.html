@@ -147,6 +147,7 @@
         </div>
     </div>
     <form action="/cleanup/anime-remediation/apply" method="post" class="stack-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input type="hidden" name="report" value="{{ data.report_path.display() }}">
         <div class="form-group">
             <label class="form-label" for="anime-remediation-token">Confirmation Token</label>

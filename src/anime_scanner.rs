@@ -334,6 +334,7 @@ fn anime_query_title_score(
         .filter(|token| token.chars().any(|c| c.is_ascii_alphabetic()) && token.len() >= 4)
         .count() as i64;
     let ascii_alpha = title.chars().any(|ch| ch.is_ascii_alphabetic());
+    let has_meaningful_title = strong_words > 0 || normalized.len() >= 4;
 
     let mut score = strong_words * 100;
     score -= tokens.len() as i64 * 6;
@@ -341,16 +342,20 @@ fn anime_query_title_score(
     if ascii_alpha {
         score += 15;
     }
+    if !has_meaningful_title {
+        score -= 420;
+    }
     if use_scene_numbering {
         score += 10;
     }
     if let Some(scene_season) = alternate_scene_season {
-        if use_scene_numbering && scene_season == -1 {
+        if use_scene_numbering && scene_season == -1 && has_meaningful_title {
             score += 320;
         }
         if use_scene_numbering
             && scene_season >= 0
             && wanted_scene_season == Some(scene_season as u32)
+            && has_meaningful_title
         {
             score += 220;
         }
@@ -524,5 +529,13 @@ mod tests {
 
         assert!(wanted_episode_has_supported_numbering(&special));
         assert!(!wanted_episode_has_supported_numbering(&invalid));
+    }
+
+    #[test]
+    fn anime_query_title_score_rejects_too_short_scene_aliases() {
+        let short = anime_query_title_score("X", true, Some(1), Some(-1));
+        let normal = anime_query_title_score("Gundam Wing", true, Some(1), Some(-1));
+
+        assert!(normal > short);
     }
 }

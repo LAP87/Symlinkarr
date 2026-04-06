@@ -10,6 +10,8 @@ symlinkarr <command> --help
 symlinkarr <command> <subcommand> --help
 ```
 
+For a wiki-style feature guide, see [GITHUB_WIKI_FEATURES.md](GITHUB_WIKI_FEATURES.md).
+
 ## Global Usage
 
 ```bash
@@ -27,6 +29,20 @@ If `--config` is omitted, Symlinkarr searches:
 1. `SYMLINKARR_CONFIG`
 2. `./config.yaml`
 3. `/app/config/config.yaml`
+
+Quick sanity check:
+
+```bash
+symlinkarr --version
+```
+
+## Metadata Cache Policy
+
+Symlinkarr treats TMDB/TVDB metadata as intentionally sticky cache, not short-lived session data.
+
+- the default cache lifetime is long on purpose
+- if a specific title looks stale, prefer targeted refresh/invalidation over lowering the global TTL
+- short TTLs mostly trade correctness-neutral API churn for slower scans and more rate-limit exposure
 
 ## Command Reference
 
@@ -102,6 +118,8 @@ Run continuous scan cycles. If `web.enabled: true` is set in config, the web UI 
 symlinkarr daemon
 ```
 
+If `daemon.vacuum_enabled: true` is configured, the daemon may run one full SQLite `VACUUM` per day at or after `daemon.vacuum_hour_local`. Keep that window outside normal usage hours. Symlinkarr runs that vacuum through a dedicated maintenance connection so the normal async pool is not pinned for the whole operation.
+
 ### `web`
 
 Run only the web UI, without starting the daemon loop.
@@ -136,9 +154,15 @@ Notes:
 
 - Loopback is the safe default for host installs.
 - For Docker or another explicitly exposed setup, set `bind_address: "0.0.0.0"` and `allow_remote: true`.
+- Think in three modes:
+  `local-only` = loopback bind and no remote exposure.
+  `remote operator` = remote bind plus Basic auth for the built-in UI.
+  `scripted operator` = optional API key in addition to Basic auth for automation clients.
+- `local-only` is intentionally trusted: no built-in auth is required there, and browser mutation guards stay off by default.
 - `web.username` + `web.password` enable HTTP Basic auth for the bundled HTML UI and JSON API.
 - `web.api_key` enables API auth for `Authorization: Bearer ...` or `X-API-Key` clients.
-- `web.api_key` alone does not protect the HTML UI; pair it with Basic auth or a trusted reverse proxy if the web UI is remotely reachable.
+- `web.api_key` alone is not a valid remote-exposure mode for the built-in UI.
+- HTML form mutations require the issued browser session plus a server-rendered CSRF token when the built-in UI is remotely exposed.
 - Native Windows is not supported; use WSL2 or a Linux container on Windows 11.
 - Plex refresh pacing is configured in `config.yaml` under `plex.refresh_delay_ms`, `plex.refresh_coalesce_threshold`, and `plex.max_refresh_batches_per_run`.
 - `plex.abort_refresh_when_capped` is the RC-safe default: if the refresh plan exceeds the per-run cap, Symlinkarr aborts the whole Plex refresh phase instead of queueing only the first batches.
@@ -248,14 +272,22 @@ symlinkarr backup restore backups/backup-20260321-010203.json --dry-run
 Notes:
 
 - `backup restore` now uses the same runtime safety gate as scan/repair/cleanup apply: if configured library roots or source mounts are unhealthy, the restore is refused before any symlink or DB mutation happens.
+- restore failures now include the backup file path in the top-level error context so operators can tell which snapshot aborted.
+- `backup create` now writes both `backup-...json` and a sibling `backup-....sqlite3` snapshot. The JSON manifest drives restore; the SQLite snapshot is the full-database recovery artifact.
+- `backup list` and `backup restore` validate manifest integrity for current-format backups before trusting them.
 
 ### `cache`
 
-Manage the Real-Debrid cache layer.
+Manage both cache layers:
+
+- the Real-Debrid torrent/file-info cache used for discovery and faster scans
+- the sticky TMDB/TVDB/anime-lists metadata cache used for matching and anime resolution
 
 ```bash
 symlinkarr cache build
 symlinkarr cache status
+symlinkarr cache invalidate <KEY>
+symlinkarr cache clear
 ```
 
 Examples:
@@ -263,7 +295,22 @@ Examples:
 ```bash
 symlinkarr cache status
 symlinkarr cache build
+symlinkarr cache invalidate tmdb:12345
+symlinkarr cache invalidate anime-lists
+symlinkarr cache clear
 ```
+
+Notes:
+
+- `cache build` and `cache status` are about the Real-Debrid torrent cache.
+- `cache invalidate` is for targeted metadata refresh when a specific title or anime mapping looks stale.
+- `cache clear` removes all cached TMDB/TVDB/anime-lists metadata and forces fresh fetches on later lookups.
+- `cache invalidate tmdb:12345` expands to both TMDB TV/movie metadata plus external-id cache entries for that ID.
+- the metadata cache is intentionally sticky by default; prefer `cache invalidate` over lowering the global metadata TTL.
+
+Known anime limit:
+
+- anime specials without usable anime-lists numbering hints may still need manual search terms, because many indexers are weak at `S00Exx`-style anime queries.
 
 ### `config`
 

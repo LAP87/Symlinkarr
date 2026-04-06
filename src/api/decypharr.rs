@@ -1,5 +1,3 @@
-#![allow(dead_code)] // Client exposes queue/browse fields used selectively by commands/tests.
-
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use reqwest::Client;
@@ -10,6 +8,7 @@ use crate::api::http;
 use crate::config::DecypharrConfig;
 
 /// A torrent/content entry from Decypharr's browse API
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct DecypharrEntry {
     /// Entry name (torrent/folder name)
@@ -23,6 +22,7 @@ pub struct DecypharrEntry {
 }
 
 /// Repair job status from Decypharr
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct RepairJob {
     pub id: String,
@@ -46,6 +46,7 @@ struct RepairRequest {
 #[derive(Debug, Clone, Deserialize)]
 pub struct DecypharrArr {
     pub name: String,
+    #[allow(dead_code)]
     #[serde(default)]
     pub host: String,
 }
@@ -78,16 +79,20 @@ pub struct DecypharrTorrent {
     pub bad: bool,
     #[serde(default)]
     pub category: String,
+    #[allow(dead_code)]
     #[serde(default)]
     pub mount_path: String,
+    #[allow(dead_code)]
     #[serde(default)]
     pub save_path: String,
+    #[allow(dead_code)]
     #[serde(default)]
     pub content_path: String,
     #[serde(default)]
     pub last_error: String,
     #[serde(default)]
     pub added_on: Option<DateTime<Utc>>,
+    #[allow(dead_code)]
     #[serde(default)]
     pub completed_at: Option<DateTime<Utc>>,
 }
@@ -133,6 +138,7 @@ pub struct DecypharrClient {
 }
 
 impl DecypharrClient {
+    #[allow(dead_code)]
     pub fn new(base_url: &str, api_token: Option<String>) -> Self {
         Self::with_queue_page_size(base_url, api_token, 100)
     }
@@ -164,6 +170,7 @@ impl DecypharrClient {
 
     /// Browse a content group on the Decypharr mount.
     /// Groups: "__all__", "__bad__", category names, etc.
+    #[allow(dead_code)]
     pub async fn browse_group(&self, group: &str) -> Result<Vec<DecypharrEntry>> {
         let url = format!("{}/api/browse/{}", self.base_url, group);
         debug!("Decypharr: GET /api/browse/{}", group);
@@ -228,6 +235,7 @@ impl DecypharrClient {
     }
 
     /// Get all repair jobs from Decypharr.
+    #[allow(dead_code)]
     pub async fn get_repair_jobs(&self) -> Result<Vec<RepairJob>> {
         let url = format!("{}/api/repair/jobs", self.base_url);
         debug!("Decypharr: GET /api/repair/jobs");

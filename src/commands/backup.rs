@@ -27,13 +27,16 @@ pub(crate) async fn run_backup(
         crate::BackupAction::Create => {
             info!("=== Symlinkarr Backup ===");
             let path = bm.create_backup(db, "Manual backup").await?;
+            let database_snapshot = path.with_extension("sqlite3");
             if output == OutputFormat::Json {
                 print_json(&serde_json::json!({
                     "created": true,
                     "file": path,
+                    "database_snapshot": database_snapshot,
                 }));
             } else {
                 println!("✅ Backup created: {}", path.display());
+                println!("🗄️  SQLite snapshot: {}", database_snapshot.display());
             }
         }
         crate::BackupAction::List => {

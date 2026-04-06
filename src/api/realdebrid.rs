@@ -1,5 +1,3 @@
-#![allow(dead_code)] // Structs/methods scaffolded for future RD integration
-
 use anyhow::Result;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -65,6 +63,7 @@ pub struct RealDebridClient {
 }
 
 impl RealDebridClient {
+    #[allow(dead_code)]
     pub fn new(api_token: &str) -> Self {
         Self::with_settings(api_token, 5000, 200, 5000)
     }
@@ -178,6 +177,7 @@ impl RealDebridClient {
     }
 
     /// Add a magnet link to Real-Debrid.
+    #[allow(dead_code)]
     pub async fn add_magnet(&self, magnet: &str) -> Result<String> {
         let url = format!("{}/torrents/addMagnet", RD_BASE_URL);
         debug!("RD API: POST /torrents/addMagnet");
@@ -186,6 +186,10 @@ impl RealDebridClient {
             .client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_token))
+            .header(
+                "Idempotency-Key",
+                http::stable_idempotency_key("rd-add-magnet", magnet),
+            )
             .form(&[("magnet", magnet)]);
         let resp = http::send_with_retry(req).await?;
 
