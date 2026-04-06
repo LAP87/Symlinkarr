@@ -1389,6 +1389,17 @@ mod tests {
         format!("Basic {}", BASE64_STANDARD.encode(credentials))
     }
 
+    fn test_basic_auth_credentials() -> (String, String) {
+        (
+            "operator".to_string(),
+            generate_browser_session_token().expect("test browser session token"),
+        )
+    }
+
+    fn test_api_key() -> String {
+        generate_browser_session_token().expect("test api key")
+    }
+
     #[test]
     fn constant_time_str_eq_handles_equal_and_unequal_lengths() {
         assert!(constant_time_str_eq("abcd", "abcd"));
@@ -1544,17 +1555,18 @@ mod tests {
         create_router(WebState::new(cfg, db))
     }
 
-    async fn remote_guarded_router() -> Router {
+    async fn remote_guarded_router() -> (Router, String, String) {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_path_buf();
         std::mem::forget(dir);
         let mut cfg = test_config(&root);
+        let (username, password) = test_basic_auth_credentials();
         cfg.web.bind_address = "0.0.0.0".to_string();
         cfg.web.allow_remote = true;
-        cfg.web.username = "admin".to_string();
-        cfg.web.password = "secret".to_string();
+        cfg.web.username = username.clone();
+        cfg.web.password = password.clone();
         let db = Database::new(&cfg.db_path).await.unwrap();
-        create_router(WebState::new(cfg, db))
+        (create_router(WebState::new(cfg, db)), username, password)
     }
 
     async fn get_html(router: &Router, path: &str) -> (u16, String) {
@@ -1731,8 +1743,8 @@ mod tests {
 
     #[tokio::test]
     async fn api_blocks_cross_origin_mutations() {
-        let router = remote_guarded_router().await;
-        let auth = basic_auth_header("admin", "secret");
+        let (router, username, password) = remote_guarded_router().await;
+        let auth = basic_auth_header(&username, &password);
         let (status, body) = post_json_with_headers(
             &router,
             "/api/v1/cleanup/audit",
@@ -1759,8 +1771,9 @@ mod tests {
         let root = dir.path().to_path_buf();
         std::mem::forget(dir);
         let mut cfg = test_config(&root);
-        cfg.web.username = "admin".to_string();
-        cfg.web.password = "secret".to_string();
+        let (username, password) = test_basic_auth_credentials();
+        cfg.web.username = username.clone();
+        cfg.web.password = password.clone();
         let db = Database::new(&cfg.db_path).await.unwrap();
         let router = create_router(WebState::new(cfg, db));
 
@@ -1773,7 +1786,7 @@ mod tests {
             Some("Basic realm=\"Symlinkarr\"")
         );
 
-        let auth = basic_auth_header("admin", "secret");
+        let auth = basic_auth_header(&username, &password);
         let (status, _headers, body) = get_html_with_headers(
             &router,
             "/",
@@ -1790,7 +1803,9 @@ mod tests {
         let root = dir.path().to_path_buf();
         std::mem::forget(dir);
         let mut cfg = test_config(&root);
-        cfg.web.api_key = "top-secret".to_string();
+        let api_key = test_api_key();
+        let bearer = format!("Bearer {api_key}");
+        cfg.web.api_key = api_key.clone();
         let db = Database::new(&cfg.db_path).await.unwrap();
         let router = create_router(WebState::new(cfg, db));
 
@@ -1798,7 +1813,7 @@ mod tests {
             &router,
             "/api/v1/cleanup/audit",
             serde_json::json!({ "scope": "anime" }),
-            &[(header::AUTHORIZATION.as_str(), "Bearer top-secret")],
+            &[(header::AUTHORIZATION.as_str(), bearer.as_str())],
         )
         .await;
 
@@ -1813,7 +1828,7 @@ mod tests {
         let root = dir.path().to_path_buf();
         std::mem::forget(dir);
         let mut cfg = test_config(&root);
-        cfg.web.api_key = "top-secret".to_string();
+        cfg.web.api_key = test_api_key();
         let db = Database::new(&cfg.db_path).await.unwrap();
         let router = create_router(WebState::new(cfg, db));
 
@@ -1832,8 +1847,8 @@ mod tests {
 
     #[tokio::test]
     async fn api_allows_same_origin_mutations() {
-        let router = remote_guarded_router().await;
-        let auth = basic_auth_header("admin", "secret");
+        let (router, username, password) = remote_guarded_router().await;
+        let auth = basic_auth_header(&username, &password);
         let (_, headers, _) = get_html_with_headers(
             &router,
             "/",
@@ -1871,8 +1886,8 @@ mod tests {
 
     #[tokio::test]
     async fn ui_blocks_cross_origin_form_posts_when_remote_exposed() {
-        let router = remote_guarded_router().await;
-        let auth = basic_auth_header("admin", "secret");
+        let (router, username, password) = remote_guarded_router().await;
+        let auth = basic_auth_header(&username, &password);
         let (status, body) = post_form_with_headers(
             &router,
             "/config/validate",
@@ -1891,8 +1906,8 @@ mod tests {
 
     #[tokio::test]
     async fn browser_same_origin_mutations_require_issued_session_cookie_when_remote_exposed() {
-        let router = remote_guarded_router().await;
-        let auth = basic_auth_header("admin", "secret");
+        let (router, username, password) = remote_guarded_router().await;
+        let auth = basic_auth_header(&username, &password);
         let (status, body) = post_json_with_headers(
             &router,
             "/api/v1/cleanup/audit",
@@ -1916,8 +1931,8 @@ mod tests {
     #[tokio::test]
     async fn ui_mutations_require_issued_session_cookie_even_without_browser_metadata_when_remote_exposed(
     ) {
-        let router = remote_guarded_router().await;
-        let auth = basic_auth_header("admin", "secret");
+        let (router, username, password) = remote_guarded_router().await;
+        let auth = basic_auth_header(&username, &password);
         let (status, body) = post_form_with_headers(
             &router,
             "/config/validate",
@@ -1932,8 +1947,8 @@ mod tests {
 
     #[tokio::test]
     async fn ui_mutations_require_valid_csrf_token_after_session_is_issued_when_remote_exposed() {
-        let router = remote_guarded_router().await;
-        let auth = basic_auth_header("admin", "secret");
+        let (router, username, password) = remote_guarded_router().await;
+        let auth = basic_auth_header(&username, &password);
         let (_, headers, _) = get_html_with_headers(
             &router,
             "/config",
@@ -1959,8 +1974,8 @@ mod tests {
 
     #[tokio::test]
     async fn ui_mutations_accept_valid_csrf_token_with_issued_session_when_remote_exposed() {
-        let router = remote_guarded_router().await;
-        let auth = basic_auth_header("admin", "secret");
+        let (router, username, password) = remote_guarded_router().await;
+        let auth = basic_auth_header(&username, &password);
         let (_, headers, _) = get_html_with_headers(
             &router,
             "/config",
@@ -2043,8 +2058,9 @@ mod tests {
         cfg.web.enabled = true;
         cfg.web.bind_address = "0.0.0.0".to_string();
         cfg.web.allow_remote = true;
-        cfg.web.username = "admin".to_string();
-        cfg.web.password = "secret".to_string();
+        let (username, password) = test_basic_auth_credentials();
+        cfg.web.username = username;
+        cfg.web.password = password;
 
         assert!(ensure_remote_bind_allowed(&cfg).is_ok());
     }
@@ -2056,7 +2072,7 @@ mod tests {
         cfg.web.enabled = true;
         cfg.web.bind_address = "0.0.0.0".to_string();
         cfg.web.allow_remote = true;
-        cfg.web.api_key = "token".to_string();
+        cfg.web.api_key = test_api_key();
 
         let err = ensure_remote_bind_allowed(&cfg).unwrap_err();
         assert!(err.to_string().contains("web.username/web.password"));

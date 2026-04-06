@@ -272,6 +272,7 @@ symlinkarr backup restore backups/backup-20260321-010203.json --dry-run
 Notes:
 
 - `backup restore` now uses the same runtime safety gate as scan/repair/cleanup apply: if configured library roots or source mounts are unhealthy, the restore is refused before any symlink or DB mutation happens.
+- `backup restore` only accepts manifests that resolve inside the configured `backup.path`; symlink escapes and arbitrary absolute paths are rejected in both CLI and web flows.
 - restore failures now include the backup file path in the top-level error context so operators can tell which snapshot aborted.
 - `backup create` now writes both `backup-...json` and a sibling `backup-....sqlite3` snapshot. The JSON manifest drives restore; the SQLite snapshot is the full-database recovery artifact.
 - `backup list` and `backup restore` validate manifest integrity for current-format backups before trusting them.

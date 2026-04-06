@@ -73,10 +73,7 @@ pub(crate) async fn run_backup(
         }
         crate::BackupAction::Restore { file, dry_run } => {
             info!("=== Symlinkarr Restore ===");
-            let path = std::path::Path::new(&file);
-            if !path.exists() {
-                anyhow::bail!("Backup file not found: {}", file);
-            }
+            let path = bm.resolve_restore_path(std::path::Path::new(&file))?;
             ensure_backup_restore_runtime_healthy(cfg, "backup restore").await?;
 
             let library_roots: Vec<_> = cfg.libraries.iter().map(|l| l.path.clone()).collect();
@@ -84,7 +81,7 @@ pub(crate) async fn run_backup(
             let (restored, skipped, errors) = bm
                 .restore(
                     db,
-                    path,
+                    &path,
                     dry_run,
                     &library_roots,
                     &source_roots,

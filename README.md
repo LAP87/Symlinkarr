@@ -151,6 +151,7 @@ Symlinkarr backups preserve two layers on purpose:
 - a sibling SQLite snapshot from `backup create`, so operators also have a real database recovery artifact
 
 Current-format manifests are integrity-checked during `backup list` and `backup restore`, so corrupted or tampered backups fail loudly instead of half-restoring.
+Restore also stays confined to the configured `backup.path`, so a mistyped absolute path or symlink escape cannot make the restore flow read arbitrary files outside the backup directory.
 
 ## Common Commands
 

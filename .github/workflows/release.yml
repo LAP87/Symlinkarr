@@ -24,7 +24,7 @@ jobs:
       - run: cargo clippy --all-targets --all-features --locked -- -D warnings
       - run: cargo fmt --all -- --check
       - uses: taiki-e/install-action@cargo-audit
-      - run: cargo audit --locked
+      - run: cargo audit
 
   build:
     needs: verify

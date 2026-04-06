@@ -174,45 +174,6 @@ async fn visible_last_repair_outcome(state: &WebState) -> Option<BackgroundRepai
     state.last_repair_outcome().await.map(Into::into)
 }
 
-fn resolve_backup_restore_path(backup_dir: &StdPath, backup_file: &str) -> anyhow::Result<PathBuf> {
-    let trimmed = backup_file.trim();
-    if trimmed.is_empty() {
-        anyhow::bail!("Backup file must not be empty");
-    }
-
-    let requested = StdPath::new(trimmed);
-    if requested.is_absolute() {
-        anyhow::bail!("Backup restore only accepts files inside the configured backup directory");
-    }
-
-    if requested.components().any(|component| {
-        matches!(
-            component,
-            Component::ParentDir | Component::RootDir | Component::Prefix(_)
-        )
-    }) {
-        anyhow::bail!("Backup restore path escapes the configured backup directory");
-    }
-
-    let backup_root = backup_dir.canonicalize().map_err(|_| {
-        anyhow::anyhow!(
-            "Configured backup directory not found: {}",
-            backup_dir.display()
-        )
-    })?;
-    let canonical = backup_dir.join(requested).canonicalize().map_err(|_| {
-        anyhow::anyhow!(
-            "Backup restore file not found: {}",
-            backup_dir.join(requested).display()
-        )
-    })?;
-    if !canonical.starts_with(&backup_root) {
-        anyhow::bail!("Backup restore path escapes the configured backup directory");
-    }
-
-    Ok(canonical)
-}
-
 async fn filtered_scan_history(
     state: &WebState,
     query: &ScanHistoryQuery,
@@ -1773,24 +1734,23 @@ pub async fn post_backup_restore(
     info!("Restoring backup: {}", form.backup_file);
 
     let backup_manager = BackupManager::new(&state.config.backup);
-    let backup_path =
-        match resolve_backup_restore_path(&state.config.backup.path, &form.backup_file) {
-            Ok(path) => path,
-            Err(e) => {
-                let template = BackupResultTemplate {
-                    success: false,
-                    message: format!("Restore failed: {}", e),
-                    backup_path: None,
-                    database_snapshot_path: None,
-                };
-                return Html(
-                    template
-                        .render()
-                        .unwrap_or_else(|render_err| render_err.to_string()),
-                )
-                .into_response();
-            }
-        };
+    let backup_path = match backup_manager.resolve_restore_path(StdPath::new(&form.backup_file)) {
+        Ok(path) => path,
+        Err(e) => {
+            let template = BackupResultTemplate {
+                success: false,
+                message: format!("Restore failed: {}", e),
+                backup_path: None,
+                database_snapshot_path: None,
+            };
+            return Html(
+                template
+                    .render()
+                    .unwrap_or_else(|render_err| render_err.to_string()),
+            )
+            .into_response();
+        }
+    };
 
     if let Err(e) = ensure_backup_restore_runtime_healthy(&state.config, "backup restore").await {
         let template = BackupResultTemplate {
@@ -3023,15 +2983,37 @@ mod tests {
 
     #[test]
     fn resolve_backup_restore_path_rejects_absolute_input() {
-        let backup_dir = PathBuf::from("/srv/symlinkarr/backups");
-        let err = resolve_backup_restore_path(&backup_dir, "/tmp/evil.json").unwrap_err();
+        let dir = tempfile::tempdir().unwrap();
+        let backup_dir = dir.path().join("backups");
+        std::fs::create_dir_all(&backup_dir).unwrap();
+        let manager = BackupManager::new(&crate::config::BackupConfig {
+            enabled: true,
+            path: backup_dir,
+            interval_hours: 24,
+            max_backups: 5,
+            max_safety_backups: 0,
+        });
+        let err = manager
+            .resolve_restore_path(StdPath::new("/tmp/evil.json"))
+            .unwrap_err();
         assert!(err.to_string().contains("configured backup directory"));
     }
 
     #[test]
     fn resolve_backup_restore_path_rejects_parent_escape() {
-        let backup_dir = PathBuf::from("/srv/symlinkarr/backups");
-        let err = resolve_backup_restore_path(&backup_dir, "../outside.json").unwrap_err();
+        let dir = tempfile::tempdir().unwrap();
+        let backup_dir = dir.path().join("backups");
+        std::fs::create_dir_all(&backup_dir).unwrap();
+        let manager = BackupManager::new(&crate::config::BackupConfig {
+            enabled: true,
+            path: backup_dir,
+            interval_hours: 24,
+            max_backups: 5,
+            max_safety_backups: 0,
+        });
+        let err = manager
+            .resolve_restore_path(StdPath::new("../outside.json"))
+            .unwrap_err();
         assert!(err.to_string().contains("escapes"));
     }
 
@@ -3043,7 +3025,16 @@ mod tests {
         let backup_file = backup_dir.join("backup-20260329.json");
         std::fs::write(&backup_file, "{}").unwrap();
 
-        let path = resolve_backup_restore_path(&backup_dir, "backup-20260329.json").unwrap();
+        let manager = BackupManager::new(&crate::config::BackupConfig {
+            enabled: true,
+            path: backup_dir.clone(),
+            interval_hours: 24,
+            max_backups: 5,
+            max_safety_backups: 0,
+        });
+        let path = manager
+            .resolve_restore_path(StdPath::new("backup-20260329.json"))
+            .unwrap();
         assert_eq!(path, backup_file.canonicalize().unwrap());
     }
 
@@ -3058,7 +3049,16 @@ mod tests {
         std::fs::write(outside_dir.join("backup.json"), "{}").unwrap();
         std::os::unix::fs::symlink(&outside_dir, backup_dir.join("linked")).unwrap();
 
-        let err = resolve_backup_restore_path(&backup_dir, "linked/backup.json").unwrap_err();
+        let manager = BackupManager::new(&crate::config::BackupConfig {
+            enabled: true,
+            path: backup_dir.clone(),
+            interval_hours: 24,
+            max_backups: 5,
+            max_safety_backups: 0,
+        });
+        let err = manager
+            .resolve_restore_path(StdPath::new("linked/backup.json"))
+            .unwrap_err();
         assert!(err.to_string().contains("escapes"));
     }
 

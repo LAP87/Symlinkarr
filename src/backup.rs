@@ -146,6 +146,45 @@ fn sha256_file(path: &Path) -> Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+fn validate_managed_backup_file_name(file_name: &str) -> Result<()> {
+    if file_name.trim().is_empty() {
+        anyhow::bail!("Backup filename must not be empty");
+    }
+
+    let path = Path::new(file_name);
+    if path.is_absolute() {
+        anyhow::bail!("Backup filename must be relative to the configured backup directory");
+    }
+
+    if path
+        .components()
+        .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        anyhow::bail!("Backup filename must stay inside the configured backup directory");
+    }
+
+    Ok(())
+}
+
+fn backup_path_candidates(backup_path: &Path, backup_root: &Path) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if backup_path.is_absolute() {
+        candidates.push(backup_path.to_path_buf());
+        return candidates;
+    }
+
+    candidates.push(backup_root.join(backup_path));
+    if let Ok(cwd) = std::env::current_dir() {
+        let cwd_candidate = cwd.join(backup_path);
+        if cwd_candidate != candidates[0] {
+            candidates.push(cwd_candidate);
+        }
+    }
+
+    candidates
+}
+
 // ─── BackupManager ──────────────────────────────────────────────────
 
 /// Manages symlink backup creation, rotation and restoration.
@@ -174,6 +213,56 @@ impl BackupManager {
         }
         self.enforce_directory_permissions()?;
         Ok(())
+    }
+
+    fn canonical_backup_root(&self) -> Result<PathBuf> {
+        self.ensure_dir()?;
+        self.backup_dir.canonicalize().with_context(|| {
+            format!(
+                "Configured backup directory not found: {}",
+                self.backup_dir.display()
+            )
+        })
+    }
+
+    fn resolve_managed_output_path(&self, file_name: &str) -> Result<PathBuf> {
+        validate_managed_backup_file_name(file_name)?;
+        Ok(self.canonical_backup_root()?.join(file_name))
+    }
+
+    pub fn resolve_restore_path(&self, backup_path: &Path) -> Result<PathBuf> {
+        let backup_root = self.canonical_backup_root()?;
+
+        for candidate in backup_path_candidates(backup_path, &backup_root) {
+            let Ok(canonical) = candidate.canonicalize() else {
+                continue;
+            };
+
+            if canonical.starts_with(&backup_root) {
+                return Ok(canonical);
+            }
+            anyhow::bail!("Backup restore path escapes the configured backup directory");
+        }
+
+        if backup_path.is_absolute() {
+            anyhow::bail!(
+                "Backup restore only accepts files inside the configured backup directory"
+            );
+        }
+
+        if backup_path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        }) {
+            anyhow::bail!("Backup restore path escapes the configured backup directory");
+        }
+
+        anyhow::bail!(
+            "Backup restore file not found: {}",
+            backup_root.join(backup_path).display()
+        );
     }
 
     fn enforce_directory_permissions(&self) -> Result<()> {
@@ -223,7 +312,7 @@ impl BackupManager {
         let timestamp = Utc::now();
         let base_name = format!("backup-{}", timestamp.format("%Y%m%d-%H%M%S"));
         let snapshot_filename = format!("{base_name}.sqlite3");
-        let snapshot_path = self.backup_dir.join(&snapshot_filename);
+        let snapshot_path = self.resolve_managed_output_path(&snapshot_filename)?;
         db.export_snapshot(&snapshot_path)
             .await
             .context("Failed to capture SQLite snapshot for backup")?;
@@ -245,7 +334,7 @@ impl BackupManager {
         manifest.content_sha256 = Some(compute_manifest_checksum(&manifest)?);
 
         let filename = format!("{base_name}.json");
-        let path = self.backup_dir.join(&filename);
+        let path = self.resolve_managed_output_path(&filename)?;
 
         let json = serde_json::to_string_pretty(&manifest)?;
         self.write_secure_json(&path, &json)?;
@@ -344,7 +433,7 @@ impl BackupManager {
         manifest.content_sha256 = Some(compute_manifest_checksum(&manifest)?);
 
         let filename = format!("safety-{}-{}.json", operation, now.format("%Y%m%d-%H%M%S"));
-        let path = self.backup_dir.join(&filename);
+        let path = self.resolve_managed_output_path(&filename)?;
 
         let json = serde_json::to_string_pretty(&manifest)?;
         self.write_secure_json(&path, &json)?;
@@ -372,8 +461,9 @@ impl BackupManager {
         allowed_target_roots: &[PathBuf],
         enforce_roots: bool,
     ) -> Result<(usize, usize, usize)> {
-        let json = std::fs::read_to_string(backup_path)?;
-        let manifest = parse_backup_manifest(&json, backup_path)?;
+        let backup_path = self.resolve_restore_path(backup_path)?;
+        let json = std::fs::read_to_string(&backup_path)?;
+        let manifest = parse_backup_manifest(&json, &backup_path)?;
         let mut source_health_cache = std::collections::HashMap::new();
         let mut parent_health_cache = std::collections::HashMap::new();
         let mut restore_tx = if dry_run {
