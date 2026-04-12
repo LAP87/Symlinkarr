@@ -235,6 +235,7 @@ impl WebState {
             let finished_at = Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string();
             let outcome = match result {
                 Ok(Ok((added, removed))) => {
+                    let dead_link_suffix = tracked_dead_link_suffix(database.as_ref()).await;
                     info!(
                         "Background scan completed (scope={}, dry_run={}, search_missing={}): added_or_updated={}, removed={}",
                         background_job.scope_label,
@@ -250,8 +251,8 @@ impl WebState {
                         search_missing: background_job.search_missing,
                         success: true,
                         message: format!(
-                            "Completed: {} added or updated, {} removed.",
-                            added, removed
+                            "Completed: {} added or updated, {} removed.{}",
+                            added, removed, dead_link_suffix
                         ),
                     }
                 }
@@ -473,14 +474,18 @@ impl WebState {
             let finished_at = Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string();
             let outcome = match result {
                 Ok(Ok(results)) => {
+                    let dead_link_suffix = tracked_dead_link_suffix(database.as_ref()).await;
                     let (repaired, failed, skipped, stale) =
                         crate::commands::repair::summarize_repair_results(&results);
                     let message = if repaired == 0 && failed == 0 && skipped == 0 && stale == 0 {
-                        "Repair completed. No dead links required action.".to_string()
+                        format!(
+                            "Repair completed. No dead links required action.{}",
+                            dead_link_suffix
+                        )
                     } else {
                         format!(
-                            "Repair completed: {} repaired, {} unrepairable, {} skipped, {} stale record(s).",
-                            repaired, failed, skipped, stale
+                            "Repair completed: {} repaired, {} unrepairable, {} skipped, {} stale record(s).{}",
+                            repaired, failed, skipped, stale, dead_link_suffix
                         )
                     };
 
@@ -570,6 +575,16 @@ impl WebState {
         outcome: Option<LastCleanupAuditOutcome>,
     ) {
         self.background_jobs.lock().await.last_cleanup_audit_outcome = outcome;
+    }
+}
+
+async fn tracked_dead_link_suffix(database: &Database) -> String {
+    match database.get_stats().await {
+        Ok((_, dead_links, _)) if dead_links > 0 => format!(
+            " {} dead link(s) remain tracked and will continue to surface until repaired or pruned.",
+            dead_links
+        ),
+        _ => String::new(),
     }
 }
 
@@ -779,6 +794,34 @@ fn effective_content_type(library: &LibraryConfig) -> ContentType {
         .unwrap_or(ContentType::from_media_type(library.media_type))
 }
 
+/// Infer the cleanup scope from the content types of the selected libraries.
+/// If all selected libraries share a single content type, use that as the scope.
+/// Otherwise (mixed types or no selection) use `All`.
+pub(crate) fn infer_cleanup_scope(cfg: &Config, selected_libraries: &[String]) -> CleanupScope {
+    use std::collections::HashSet;
+    let types: HashSet<ContentType> = cfg
+        .libraries
+        .iter()
+        .filter(|lib| {
+            selected_libraries.is_empty()
+                || selected_libraries
+                    .iter()
+                    .any(|name| name.eq_ignore_ascii_case(&lib.name))
+        })
+        .map(|lib| effective_content_type(lib))
+        .collect();
+
+    if types.len() == 1 {
+        match types.into_iter().next().unwrap() {
+            ContentType::Anime => CleanupScope::Anime,
+            ContentType::Tv => CleanupScope::Tv,
+            ContentType::Movie => CleanupScope::Movie,
+        }
+    } else {
+        CleanupScope::All
+    }
+}
+
 fn library_matches_cleanup_scope(library: &LibraryConfig, scope: CleanupScope) -> bool {
     match scope {
         CleanupScope::Anime => effective_content_type(library) == ContentType::Anime,
@@ -915,7 +958,6 @@ fn create_router(state: WebState) -> Router {
         .route("/doctor", get(handlers::get_doctor))
         // Discover
         .route("/discover", get(handlers::get_discover))
-        .route("/discover/add", post(handlers::post_discover_add))
         // Backup
         .route("/backup", get(handlers::get_backup))
         .route("/backup/create", post(handlers::post_backup_create))
@@ -1710,18 +1752,33 @@ mod tests {
         let (status, status_page) = get_html(&router, "/status").await;
         assert_eq!(status, 200);
         assert!(status_page.contains("Queue pressure"));
+        assert!(status_page.contains("Service connectivity"));
         assert!(status_page.contains("Recent Links"));
         assert!(status_page.contains("Active Links"));
 
         let (status, scan_page) = get_html(&router, "/scan").await;
         assert_eq!(status, 200);
-        assert!(scan_page.contains("Start Real Scan"));
+        assert!(scan_page.contains("Start Scan"));
         assert!(scan_page.contains("Search Missing"));
         assert!(scan_page.contains("Latest Run"));
 
         let (status, cleanup_page) = get_html(&router, "/cleanup").await;
         assert_eq!(status, 200);
-        assert!(cleanup_page.contains("Anime Remediation Backlog"));
+        assert!(cleanup_page.contains("How Cleanup Works"));
+    }
+
+    #[tokio::test]
+    async fn health_alias_redirects_to_status() {
+        let router = test_router().await;
+        let (status, headers, _body) = get_html_with_headers(&router, "/health", &[]).await;
+
+        assert_eq!(status, 308);
+        assert_eq!(
+            headers
+                .get(header::LOCATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("/status")
+        );
     }
 
     #[tokio::test]
@@ -2151,5 +2208,48 @@ mod tests {
         .unwrap();
 
         assert_eq!(selected, vec!["Movies, Archive".to_string()]);
+    }
+
+    #[test]
+    fn infer_cleanup_scope_single_content_type() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = test_config(dir.path());
+        // test_config has one Anime library
+        assert_eq!(
+            super::infer_cleanup_scope(&cfg, &["Anime".to_string()]),
+            CleanupScope::Anime
+        );
+    }
+
+    #[test]
+    fn infer_cleanup_scope_mixed_returns_all() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = test_config(dir.path());
+        cfg.libraries.push(LibraryConfig {
+            name: "Movies".to_string(),
+            path: dir.path().join("movies"),
+            media_type: MediaType::Movie,
+            content_type: Some(ContentType::Movie),
+            depth: 1,
+        });
+        assert_eq!(
+            super::infer_cleanup_scope(&cfg, &["Anime".to_string(), "Movies".to_string()]),
+            CleanupScope::All
+        );
+    }
+
+    #[test]
+    fn infer_cleanup_scope_empty_selection_uses_all_libraries() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = test_config(dir.path());
+        cfg.libraries.push(LibraryConfig {
+            name: "Movies".to_string(),
+            path: dir.path().join("movies"),
+            media_type: MediaType::Movie,
+            content_type: Some(ContentType::Movie),
+            depth: 1,
+        });
+        // Empty selection → looks at all configured libraries → mixed → All
+        assert_eq!(super::infer_cleanup_scope(&cfg, &[]), CleanupScope::All);
     }
 }

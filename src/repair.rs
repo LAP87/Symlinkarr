@@ -12,7 +12,7 @@ use walkdir::WalkDir;
 
 use crate::cache::TorrentCache;
 use crate::commands::ensure_runtime_source_paths_healthy;
-use crate::config::ContentType;
+use crate::config::{ContentType, LibraryConfig};
 use crate::db::Database;
 use crate::models::{LinkRecord, LinkStatus, MediaType};
 use crate::source_scanner::SourceScanner;
@@ -22,8 +22,8 @@ use crate::utils::{
 
 /// Minimum score threshold for TV replacements (title + season + episode required)
 const TV_THRESHOLD: f64 = 0.75;
-/// Minimum score threshold for movie replacements (title + year is enough)
-const MOVIE_THRESHOLD: f64 = 0.55;
+/// Minimum score threshold for movie replacements (exact title + year is enough)
+const MOVIE_THRESHOLD: f64 = 0.50;
 /// Max allowed file size difference ratio (±40%)
 const SIZE_TOLERANCE: f64 = 0.40;
 const PARALLEL_DRIFT_MIN_LINKS: usize = 1000;
@@ -231,6 +231,25 @@ pub fn parse_trash_filename(filename: &str) -> TrashMeta {
         quality,
         imdb_id,
     }
+}
+
+fn tagged_media_id_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\{(tvdb|tmdb)-([0-9]+)\}").unwrap())
+}
+
+fn extract_media_id_from_tagged_ancestors(path: &Path, library_root: &Path) -> Option<String> {
+    for ancestor in path.ancestors() {
+        if ancestor == library_root {
+            break;
+        }
+
+        let folder_name = ancestor.file_name()?.to_str()?;
+        let captures = tagged_media_id_regex().captures(folder_name)?;
+        return Some(format!("{}-{}", &captures[1], &captures[2]));
+    }
+
+    None
 }
 
 // ─── Core types ──────────────────────────────────────────────────────
@@ -682,6 +701,69 @@ impl Repairer {
         dead
     }
 
+    fn find_orphan_dead_links(
+        &self,
+        libraries: &[LibraryConfig],
+        known_targets: &HashSet<PathBuf>,
+    ) -> Vec<DeadLink> {
+        let library_paths: Vec<_> = libraries.iter().map(|lib| lib.path.clone()).collect();
+        let scanned_dead = self.scan_for_dead_symlinks(&library_paths);
+        let mut orphaned = Vec::new();
+
+        for mut dead_link in scanned_dead {
+            if known_targets.contains(&dead_link.symlink_path) {
+                continue;
+            }
+
+            let Some(library) = libraries
+                .iter()
+                .find(|lib| dead_link.symlink_path.starts_with(&lib.path))
+            else {
+                continue;
+            };
+
+            dead_link.media_type = library.media_type;
+            dead_link.content_type = library
+                .content_type
+                .unwrap_or(ContentType::from_media_type(library.media_type));
+            dead_link.media_id =
+                extract_media_id_from_tagged_ancestors(&dead_link.symlink_path, &library.path)
+                    .unwrap_or_default();
+
+            orphaned.push(dead_link);
+        }
+
+        info!(
+            "Found {} orphan dead symlink(s) on disk outside DB tracking",
+            orphaned.len()
+        );
+        orphaned
+    }
+
+    async fn persist_orphan_dead_link(&self, db: &Database, dead_link: &DeadLink) -> Result<()> {
+        let record = LinkRecord {
+            id: None,
+            source_path: dead_link.original_source.clone(),
+            target_path: dead_link.symlink_path.clone(),
+            media_id: dead_link.media_id.clone(),
+            media_type: dead_link.media_type,
+            status: LinkStatus::Dead,
+            created_at: None,
+            updated_at: None,
+        };
+        db.insert_link(&record).await?;
+        let _ = db
+            .record_link_event_fields(
+                "repair_dead_detected",
+                &dead_link.symlink_path,
+                Some(&dead_link.original_source),
+                Some(dead_link.media_id.as_str()),
+                Some("orphan_filesystem_dead_symlink"),
+            )
+            .await;
+        Ok(())
+    }
+
     /// Search for replacement candidates in the given source directories.
     #[allow(dead_code)] // Kept for compatibility with direct/manual repair tooling
     pub fn find_replacements(
@@ -1052,6 +1134,7 @@ impl Repairer {
         dry_run: bool,
         skip_paths: &[String],
         allowed_symlink_roots: Option<&[PathBuf]>,
+        libraries: Option<&[LibraryConfig]>,
         cache: Option<&TorrentCache<'_>>,
     ) -> Result<Vec<RepairResult>> {
         ensure_runtime_source_paths_healthy(source_paths, "repair auto").await?;
@@ -1068,6 +1151,47 @@ impl Repairer {
             if !existing_dead_targets.contains(&dead_link.symlink_path) {
                 dead_links.push(dead_link);
             }
+        }
+        let mut known_dead_targets: HashSet<PathBuf> = dead_links
+            .iter()
+            .map(|link| link.symlink_path.clone())
+            .collect();
+        let mut orphan_persisted = 0usize;
+        let mut orphan_persist_failures = 0usize;
+        if let Some(libraries) = libraries {
+            println!(
+                "   🔎 Scanning library roots for orphaned dead symlinks not tracked in DB..."
+            );
+            let orphan_dead_links = self.find_orphan_dead_links(libraries, &known_dead_targets);
+            for dead_link in orphan_dead_links {
+                if known_dead_targets.insert(dead_link.symlink_path.clone()) {
+                    if !dry_run {
+                        match self.persist_orphan_dead_link(db, &dead_link).await {
+                            Ok(_) => orphan_persisted += 1,
+                            Err(err) => {
+                                orphan_persist_failures += 1;
+                                warn!(
+                                    "Could not persist orphan dead link {:?} in DB: {}",
+                                    dead_link.symlink_path, err
+                                );
+                            }
+                        }
+                    }
+                    dead_links.push(dead_link);
+                }
+            }
+        }
+        if orphan_persisted > 0 {
+            println!(
+                "   🗂️ Recorded {} orphan dead symlink(s) in DB so scan/status keep surfacing them until repaired or pruned.",
+                orphan_persisted
+            );
+        }
+        if orphan_persist_failures > 0 {
+            println!(
+                "   ⚠️  Failed to persist {} orphan dead symlink(s) in DB; this repair pass can still act on them right now.",
+                orphan_persist_failures
+            );
         }
         let dead_count = dead_links.len();
         println!("   🧹 Reconciling dead-link records against filesystem before matching...");
@@ -1837,6 +1961,27 @@ mod tests {
     }
 
     #[test]
+    fn test_score_movie_exact_title_and_year_meets_threshold_without_quality_bonus() {
+        let score = calculate_match_score(MatchScoreInput {
+            search_title: "send help",
+            candidate_title: "send help",
+            search_season: None,
+            search_episode: None,
+            candidate_season: None,
+            candidate_episode: None,
+            search_quality: &Some("2160p".to_string()),
+            candidate_quality: &Some("1080p".to_string()),
+            search_size: None,
+            candidate_size: None,
+            media_type: MediaType::Movie,
+            search_year: Some(2026),
+            candidate_year: Some(2026),
+        });
+        assert_eq!(score, 0.50);
+        assert!(score >= MOVIE_THRESHOLD);
+    }
+
+    #[test]
     fn test_score_no_title_match() {
         let score = calculate_match_score(MatchScoreInput {
             search_title: "breaking bad",
@@ -2066,7 +2211,115 @@ mod tests {
 
         let repairer = Repairer::new();
         let results = repairer
-            .repair_all(&db, &[], false, &[], Some(&[library_root]), None)
+            .repair_all(&db, &[], false, &[], Some(&[library_root]), None, None)
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert!(matches!(results[0], RepairResult::Unrepairable { .. }));
+
+        let dead_after = db.get_links_by_status(LinkStatus::Dead).await.unwrap();
+        assert_eq!(dead_after.len(), 1);
+        assert_eq!(dead_after[0].target_path, target);
+    }
+
+    #[tokio::test]
+    async fn test_repair_all_detects_orphan_dead_symlink_not_tracked_in_db() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("test.db");
+        let db = Database::new(db_path.to_str().unwrap()).await.unwrap();
+
+        let library_root = tmp.path().join("library");
+        let tagged_dir = library_root.join("Movie Title (2024) {tmdb-42}");
+        let target = tagged_dir.join("Movie Title (2024) {tmdb-42} [WEBDL-1080p].mkv");
+        let missing_source = tmp.path().join("rd/missing-source.mkv");
+        let source_root = tmp.path().join("rd");
+        let replacement = source_root.join("Movie.Title.2024.1080p.WEB-DL.x265-GROUP.mkv");
+
+        std::fs::create_dir_all(&tagged_dir).unwrap();
+        std::fs::create_dir_all(&source_root).unwrap();
+        std::fs::write(&replacement, b"replacement").unwrap();
+        std::os::unix::fs::symlink(&missing_source, &target).unwrap();
+
+        let repairer = Repairer::new();
+        let selected = vec![LibraryConfig {
+            name: "Movies".to_string(),
+            path: library_root.clone(),
+            media_type: MediaType::Movie,
+            content_type: Some(ContentType::Movie),
+            depth: 2,
+        }];
+
+        let results = repairer
+            .repair_all(
+                &db,
+                &[source_root],
+                true,
+                &[],
+                Some(&[library_root]),
+                Some(&selected),
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            RepairResult::Repaired {
+                dead_link,
+                replacement,
+            } => {
+                assert_eq!(dead_link.media_id, "tmdb-42");
+                assert_eq!(dead_link.media_type, MediaType::Movie);
+                assert_eq!(dead_link.content_type, ContentType::Movie);
+                assert_eq!(
+                    replacement,
+                    &PathBuf::from(
+                        tmp.path()
+                            .join("rd/Movie.Title.2024.1080p.WEB-DL.x265-GROUP.mkv")
+                    )
+                );
+            }
+            other => panic!("expected repaired orphan dead symlink, got {:?}", other),
+        }
+
+        let dead_after = db.get_links_by_status(LinkStatus::Dead).await.unwrap();
+        assert!(dead_after.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_repair_all_persists_orphan_dead_symlink_when_unrepairable() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("test.db");
+        let db = Database::new(db_path.to_str().unwrap()).await.unwrap();
+
+        let library_root = tmp.path().join("library");
+        let tagged_dir = library_root.join("Movie Title (2024) {tmdb-42}");
+        let target = tagged_dir.join("Movie Title (2024) {tmdb-42} [WEBDL-1080p].mkv");
+        let missing_source = tmp.path().join("rd/missing-source.mkv");
+
+        std::fs::create_dir_all(&tagged_dir).unwrap();
+        std::os::unix::fs::symlink(&missing_source, &target).unwrap();
+
+        let repairer = Repairer::new();
+        let selected = vec![LibraryConfig {
+            name: "Movies".to_string(),
+            path: library_root.clone(),
+            media_type: MediaType::Movie,
+            content_type: Some(ContentType::Movie),
+            depth: 2,
+        }];
+
+        let results = repairer
+            .repair_all(
+                &db,
+                &[],
+                false,
+                &[],
+                Some(&[library_root]),
+                Some(&selected),
+                None,
+            )
             .await
             .unwrap();
 
@@ -2104,7 +2357,7 @@ mod tests {
         let repairer = Repairer::new();
         let library_root = tmp.path().join("library");
         let results = repairer
-            .repair_all(&db, &[], true, &[], Some(&[library_root]), None)
+            .repair_all(&db, &[], true, &[], Some(&[library_root]), None, None)
             .await
             .unwrap();
 
@@ -2140,7 +2393,7 @@ mod tests {
         let repairer = Repairer::new();
         let library_root = tmp.path().join("library");
         let results = repairer
-            .repair_all(&db, &[], false, &[], Some(&[library_root]), None)
+            .repair_all(&db, &[], false, &[], Some(&[library_root]), None, None)
             .await
             .unwrap();
 
@@ -2160,7 +2413,7 @@ mod tests {
         let repairer = Repairer::new();
         let missing_source_root = tmp.path().join("missing-rd");
         let err = repairer
-            .repair_all(&db, &[missing_source_root], false, &[], None, None)
+            .repair_all(&db, &[missing_source_root], false, &[], None, None, None)
             .await
             .unwrap_err();
 

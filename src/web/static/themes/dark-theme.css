@@ -1,26 +1,29 @@
-/* Symlinkarr Web UI - Dark Theme (Default) */
-/* Based on *arr-inspired dark theme */
+/* Symlinkarr - Dark Theme (Sonarr/Radarr *arr family) */
+/* This is the default theme. Colors match the base stylesheet. */
 
 :root {
-  --bg-primary: #1a1a2e;
-  --bg-secondary: #16213e;
-  --accent-primary: #0f346a;
-  --accent-secondary: #e94560;
-  --text-primary: #f5f5f5;
-  --text-secondary: #a0a0a0;
-  --success: #4caf50;
-  --warning: #ff9800;
-  --error: #f44336;
-  --info: #2196f3;
-  --border-color: #2a2a4e;
-  --card-bg: #1e1e3f;
+  --bg-primary: #1a1d23;
+  --bg-secondary: #21252b;
+  --bg-tertiary: #282d36;
+  --card-bg: #21252b;
+  --card-bg-elevated: #282d36;
+  --accent-primary: #35c5f4;
+  --accent-secondary: #8e99a7;
+  --text-primary: #cccccc;
+  --text-secondary: #8e99a7;
+  --text-faint: #5d6a7e;
+  --success: #27c24c;
+  --warning: #ff902b;
+  --error: #f05050;
+  --info: #35c5f4;
+  --border-color: #2b3038;
+  --border-strong: #3b4452;
 }
 
-/* Severity-specific colors for badges and indicators */
 :root {
-  --severity-critical: #f44336;
-  --severity-high: #ff9800;
-  --severity-warning: #ffeb3b;
-  --severity-info: #2196f3;
-  --severity-success: #4caf50;
+  --severity-critical: #f05050;
+  --severity-high: #ff902b;
+  --severity-warning: #ffd148;
+  --severity-info: #35c5f4;
+  --severity-success: #27c24c;
 }

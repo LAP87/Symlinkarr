@@ -1,14 +1,14 @@
 {% extends "web/ui/base.html" %}
 
-{% block title %}Anime Remediation Result - Symlinkarr{% endblock %}
+{% block title %}Legacy Anime Cleanup Result - Symlinkarr{% endblock %}
 {% block nav_cleanup %}active{% endblock %}
 
 {% block content %}
 <div class="page-header page-header--split">
     <div>
         <p class="page-kicker">Cleanup</p>
-        <h1>&#127909; Anime Remediation</h1>
-        <p class="page-lead">This is the guarded remediation workflow. Preview first, then apply only from the saved report and confirmation token.</p>
+        <h1>&#127909; Legacy Anime Cleanup</h1>
+        <p class="page-lead">Advanced cleanup for old anime root drift. Preview first; the browser apply form below is already tied to this saved plan.</p>
     </div>
     <div class="actions">
         <a href="/cleanup/anime-remediation" class="btn btn-secondary">&#8592; Back to Backlog</a>
@@ -48,7 +48,7 @@
             <div class="metric-card"><span class="metric-label">Plex DB</span><strong class="mono">{{ data.plex_db_path }}</strong></div>
         </div>
         <p class="mt-2 mb-1">Report file: <code class="mono">{{ data.report_path.display() }}</code></p>
-        <p class="mb-1">Confirmation token: <code class="mono">{{ data.confirmation_token }}</code></p>
+        <p class="text-muted mt-1">The browser apply form below is already bound to this saved plan, so you do not need to paste a token again here.</p>
         {% if !data.title_filter.is_empty() %}
         <p class="text-muted">Title filter: <code class="mono">{{ data.title_filter }}</code></p>
         {% endif %}
@@ -142,16 +142,22 @@
     <div class="section-head">
         <div>
             <p class="section-kicker">Apply gate</p>
-            <h2 class="section-title">Apply this exact saved plan</h2>
-            <p class="text-muted">Paste the token from the preview above. This stays quarantine-first for foreign material and only acts on the saved report file.</p>
+            <h2 class="section-title">Apply this saved plan</h2>
+            <p class="text-muted">This stays quarantine-first for foreign material and only acts on the saved report file shown above.</p>
         </div>
     </div>
     <form action="/cleanup/anime-remediation/apply" method="post" class="stack-form">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input type="hidden" name="report" value="{{ data.report_path.display() }}">
+        <input type="hidden" name="token" value="{{ data.confirmation_token }}">
         <div class="form-group">
-            <label class="form-label" for="anime-remediation-token">Confirmation Token</label>
-            <input id="anime-remediation-token" name="token" type="text" class="form-control field-max-lg" placeholder="Paste the preview token exactly">
+            <label class="toggle-row">
+                <input type="checkbox" id="confirm-anime-remediation" required>
+                <div>
+                    <strong>I reviewed this saved plan and want to apply this legacy anime cleanup.</strong>
+                    <p class="text-muted">The browser will apply only the saved report shown above.</p>
+                </div>
+            </label>
         </div>
         <div class="form-group">
             <label class="form-label" for="anime-remediation-max-delete">Max Deletes (optional)</label>
@@ -159,10 +165,15 @@
             <small class="text-muted">Use this when you want to cap the first apply pass for extra caution.</small>
         </div>
         <div class="actions">
-            <button type="submit" class="btn btn-primary">&#9888;&#65039; Apply Guarded Remediation</button>
+            <button type="submit" class="btn btn-primary" id="apply-anime-remediation-btn" disabled>&#9888;&#65039; Apply Legacy Cleanup</button>
             <a href="/cleanup/anime-remediation" class="btn btn-secondary">&#128065; Re-open Backlog</a>
         </div>
     </form>
+    <script>
+        document.getElementById('confirm-anime-remediation').addEventListener('change', function() {
+            document.getElementById('apply-anime-remediation-btn').disabled = !this.checked;
+        });
+    </script>
 </section>
 {% when None %}
 {% endmatch %}

@@ -1,119 +1,109 @@
-/* Symlinkarr Web UI - Theme Switcher */
-/* Allows users to switch between different visual themes */
+/* Symlinkarr - Theme Switcher with Picker */
 
-/**
- * Theme manager for Symlinkarr web interface
- */
 class ThemeManager {
     constructor() {
-        this.themes = {
-            'dark': 'dark-theme.css',
-            'light': 'light-theme.css',
-            'accessibility': 'accessibility-theme.css',
-            'colorblind': 'colorblind-theme.css',
-            'compact': 'compact-theme.css'
-        };
-
+        this.themes = [
+            { id: 'dark',          name: 'Dark',          file: 'dark-theme.css',          swatches: ['#1a1d23','#21252b','#35c5f4'] },
+            { id: 'light',         name: 'Light',         file: 'light-theme.css',         swatches: ['#ffffff','#f8f9fa','#007bff'] },
+            { id: 'compact',       name: 'Compact',       file: 'compact-theme.css',       swatches: ['#1a1d23','#21252b','#35c5f4'] },
+            { id: 'accessibility', name: 'High Contrast', file: 'accessibility-theme.css', swatches: ['#000000','#111111','#ffff00'] },
+            { id: 'colorblind',    name: 'Colorblind',    file: 'colorblind-theme.css',    swatches: ['#1a1d23','#21252b','#0077cc'] },
+        ];
         this.currentTheme = this.loadTheme() || 'dark';
         this.themeLink = null;
-
         this.init();
     }
 
     init() {
-        // Create theme link element if it doesn't exist
-        this.themeLink = document.createElement('link');
-        this.themeLink.rel = 'stylesheet';
-        this.themeLink.id = 'theme-stylesheet';
-
-        // Remove any existing theme stylesheet
-        const existingTheme = document.getElementById('theme-stylesheet');
-        if (existingTheme) {
-            existingTheme.remove();
+        this.themeLink = document.getElementById('theme-stylesheet');
+        if (!this.themeLink) {
+            this.themeLink = document.createElement('link');
+            this.themeLink.rel = 'stylesheet';
+            this.themeLink.id = 'theme-stylesheet';
+            document.head.appendChild(this.themeLink);
         }
-
-        // Apply current theme
         this.applyTheme(this.currentTheme);
-
-        // Add to document head
-        document.head.appendChild(this.themeLink);
     }
 
-    applyTheme(themeName) {
-        if (!this.themes[themeName]) {
-            console.warn(`Theme "${themeName}" not found. Falling back to dark.`);
-            themeName = 'dark';
+    applyTheme(themeId) {
+        var theme = this.themes.find(function(t) { return t.id === themeId; });
+        if (!theme) {
+            theme = this.themes[0];
+            themeId = theme.id;
         }
-
-        this.currentTheme = themeName;
-        this.themeLink.href = `/static/themes/${this.themes[themeName]}`;
-
-        // Save preference
-        this.saveTheme(themeName);
-
-        // Trigger theme change event
-        document.dispatchEvent(new CustomEvent('themechanged', {
-            detail: { theme: themeName }
-        }));
-    }
-
-    getCurrentTheme() {
-        return this.currentTheme;
+        this.currentTheme = themeId;
+        this.themeLink.href = '/static/themes/' + theme.file;
+        this.saveTheme(themeId);
+        this.updatePicker();
     }
 
     loadTheme() {
-        try {
-            return localStorage.getItem('symlinkarr-theme');
-        } catch (e) {
-            console.warn('Unable to load theme from localStorage:', e);
-            return null;
-        }
+        try { return localStorage.getItem('symlinkarr-theme'); }
+        catch(e) { return null; }
     }
 
-    saveTheme(themeName) {
-        try {
-            localStorage.setItem('symlinkarr-theme', themeName);
-        } catch (e) {
-            console.warn('Unable to save theme to localStorage:', e);
-        }
+    saveTheme(themeId) {
+        try { localStorage.setItem('symlinkarr-theme', themeId); }
+        catch(e) {}
     }
 
-    // Theme cycling for easy switching
-    cycleTheme() {
-        const themeList = Object.keys(this.themes);
-        const currentIndex = themeList.indexOf(this.currentTheme);
-        const nextIndex = (currentIndex + 1) % themeList.length;
-        this.applyTheme(themeList[nextIndex]);
+    buildPicker(container) {
+        var self = this;
+        container.innerHTML = '';
+        this.themes.forEach(function(theme) {
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'theme-option' + (self.currentTheme === theme.id ? ' active' : '');
+            btn.setAttribute('data-theme', theme.id);
+
+            var swatchWrap = document.createElement('span');
+            swatchWrap.className = 'theme-swatches';
+            theme.swatches.forEach(function(color) {
+                var swatch = document.createElement('span');
+                swatch.style.background = color;
+                swatchWrap.appendChild(swatch);
+            });
+
+            var label = document.createElement('span');
+            label.textContent = theme.name;
+
+            btn.appendChild(swatchWrap);
+            btn.appendChild(label);
+            btn.addEventListener('click', function() {
+                self.applyTheme(theme.id);
+                // Close dropdown after selection
+                var dropdown = document.getElementById('theme-picker-dropdown');
+                if (dropdown) dropdown.style.display = 'none';
+            });
+            container.appendChild(btn);
+        });
     }
 
-    // Get available themes
-    getAvailableThemes() {
-        return Object.keys(this.themes);
+    updatePicker() {
+        var dropdown = document.getElementById('theme-picker-dropdown');
+        if (dropdown) this.buildPicker(dropdown);
     }
 }
 
-// Initialize theme manager when DOM is loaded
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', function() {
     window.themeManager = new ThemeManager();
-    const cycleButton = document.getElementById('theme-cycle-button');
-    if (cycleButton) {
-        cycleButton.addEventListener('click', () => window.themeManager.cycleTheme());
+
+    var dropdown = document.getElementById('theme-picker-dropdown');
+    var toggle = document.getElementById('theme-picker-toggle');
+
+    if (dropdown && toggle) {
+        window.themeManager.buildPicker(dropdown);
+
+        toggle.addEventListener('click', function(e) {
+            e.stopPropagation();
+            var isOpen = dropdown.style.display !== 'none';
+            dropdown.style.display = isOpen ? 'none' : 'block';
+        });
+
+        document.addEventListener('click', function(e) {
+            if (!e.target.closest('.theme-picker')) {
+                dropdown.style.display = 'none';
+            }
+        });
     }
-
-    // Add theme switcher to UI if desired
-    // This would typically be added to the header or settings panel
 });
-
-/* Example usage in HTML:
-// Add to header or settings:
-// <button onclick="themeManager.cycleTheme()" title="Switch Theme">🎨</button>
-//
-// Or for direct selection:
-// <select onchange="themeManager.applyTheme(this.value)">
-//   <option value="dark">Dark</option>
-//   <option value="light">Light</option>
-//   <option value="accessibility">Accessibility</option>
-//   <option value="colorblind">Colorblind</option>
-//   <option value="compact">Compact</option>
-// </select>
-*/

@@ -1,28 +1,56 @@
+use std::collections::HashMap;
+
 use anyhow::Result;
 use serde::Serialize;
 use tracing::info;
 
 use crate::api;
 use crate::api::realdebrid::RealDebridClient;
+use crate::cache::cached_files_from_db;
 use crate::commands::{print_json, selected_libraries};
 use crate::config::Config;
 use crate::db::Database;
-use crate::discovery;
-use crate::discovery::DiscoveredItem;
+use crate::discovery::{
+    DiscoverFolderPlan, DiscoverPlacement, DiscoverPlan, DiscoverSummary, Discovery,
+};
 use crate::library_scanner::LibraryScanner;
+use crate::linker::Linker;
+use crate::matcher::{MatchRunOutput, Matcher};
+use crate::source_scanner::SourceScanner;
+use crate::utils::stdout_text_guard;
 use crate::{DiscoverAction, OutputFormat};
 
 pub(crate) struct DiscoverySnapshot {
-    pub items: Vec<DiscoveredItem>,
+    pub summary: DiscoverSummary,
+    pub folders: Vec<DiscoverFolderPlan>,
+    pub items: Vec<DiscoverPlacement>,
     pub status_message: Option<String>,
 }
 
 #[derive(Serialize)]
-struct GapSummary<'a> {
-    rd_torrent_id: &'a str,
-    status: &'a str,
-    size: i64,
-    parsed_title: &'a str,
+struct FolderSummary<'a> {
+    library_name: &'a str,
+    media_id: &'a str,
+    title: &'a str,
+    folder_path: String,
+    existing_links: usize,
+    planned_creates: usize,
+    planned_updates: usize,
+    blocked: usize,
+}
+
+#[derive(Serialize)]
+struct PlacementSummary<'a> {
+    library_name: &'a str,
+    media_id: &'a str,
+    title: &'a str,
+    folder_path: String,
+    source_path: String,
+    source_name: &'a str,
+    target_path: String,
+    action: &'a str,
+    season: Option<u32>,
+    episode: Option<u32>,
 }
 
 fn cached_only_notice(cfg: &Config) -> Option<String> {
@@ -32,22 +60,141 @@ fn cached_only_notice(cfg: &Config) -> Option<String> {
     })
 }
 
-fn build_discover_json(gaps: &[DiscoveredItem], status_message: Option<&str>) -> serde_json::Value {
-    let out: Vec<GapSummary<'_>> = gaps
+fn build_discover_json(snapshot: &DiscoverySnapshot) -> serde_json::Value {
+    let folders: Vec<FolderSummary<'_>> = snapshot
+        .folders
         .iter()
-        .map(|g| GapSummary {
-            rd_torrent_id: &g.rd_torrent_id,
-            status: &g.status,
-            size: g.size,
-            parsed_title: &g.parsed_title,
+        .map(|folder| FolderSummary {
+            library_name: &folder.library_name,
+            media_id: &folder.media_id,
+            title: &folder.title,
+            folder_path: folder.folder_path.display().to_string(),
+            existing_links: folder.existing_links,
+            planned_creates: folder.planned_creates,
+            planned_updates: folder.planned_updates,
+            blocked: folder.blocked,
+        })
+        .collect();
+
+    let items: Vec<PlacementSummary<'_>> = snapshot
+        .items
+        .iter()
+        .map(|item| PlacementSummary {
+            library_name: &item.library_name,
+            media_id: &item.media_id,
+            title: &item.title,
+            folder_path: item.folder_path.display().to_string(),
+            source_path: item.source_path.display().to_string(),
+            source_name: &item.source_name,
+            target_path: item.target_path.display().to_string(),
+            action: item.action.as_str(),
+            season: item.season,
+            episode: item.episode,
         })
         .collect();
 
     serde_json::json!({
-        "count": out.len(),
-        "status_message": status_message,
-        "items": out,
+        "summary": {
+            "folders": snapshot.summary.folders,
+            "placements": snapshot.summary.placements,
+            "creates": snapshot.summary.creates,
+            "updates": snapshot.summary.updates,
+            "blocked": snapshot.summary.blocked,
+        },
+        "status_message": snapshot.status_message,
+        "folders": folders,
+        "items": items,
     })
+}
+
+fn build_discover_matcher(cfg: &Config) -> Matcher {
+    let tmdb = if cfg.has_tmdb() {
+        Some(crate::api::tmdb::TmdbClient::new(
+            &cfg.api.tmdb_api_key,
+            Some(&cfg.api.tmdb_read_access_token),
+            cfg.api.cache_ttl_hours,
+        ))
+    } else {
+        None
+    };
+
+    let tvdb = if cfg.has_tvdb() {
+        Some(crate::api::tvdb::TvdbClient::new(
+            &cfg.api.tvdb_api_key,
+            cfg.api.cache_ttl_hours,
+        ))
+    } else {
+        None
+    };
+
+    Matcher::new(
+        tmdb,
+        tvdb,
+        cfg.matching.mode,
+        cfg.matching.metadata_mode,
+        cfg.matching.metadata_concurrency,
+    )
+}
+
+async fn collect_discovery_source_items(
+    cfg: &Config,
+    db: &Database,
+    refresh_cache: bool,
+) -> Result<(Vec<crate::models::SourceItem>, Option<String>)> {
+    let mut notices = Vec::new();
+    if let Some(message) = cached_only_notice(cfg) {
+        notices.push(message);
+    }
+
+    if refresh_cache && cfg.has_realdebrid() {
+        let rd_client = RealDebridClient::from_config(&cfg.realdebrid);
+        let cache = crate::cache::TorrentCache::new(db, &rd_client);
+        if let Err(e) = cache.sync().await {
+            notices.push(format!(
+                "RD cache sync failed ({}). Showing cached or on-disk results only.",
+                e
+            ));
+        }
+    }
+
+    let scanner = SourceScanner::new();
+    let mut by_path = HashMap::new();
+
+    for source in &cfg.sources {
+        let cached_files = match cached_files_from_db(db, &source.path).await {
+            Ok(files) => files,
+            Err(e) => {
+                notices.push(format!(
+                    "Could not read cached RD files for source {} ({}). Falling back to filesystem scan.",
+                    source.name, e
+                ));
+                Vec::new()
+            }
+        };
+
+        let mut cached_count = 0usize;
+        for (path, _) in cached_files {
+            if !path.exists() {
+                continue;
+            }
+
+            if let Some(item) = scanner.parse_path_for_source(&path, source) {
+                cached_count += 1;
+                by_path.entry(item.path.clone()).or_insert(item);
+            }
+        }
+
+        if cached_count == 0 {
+            for item in scanner.scan_source(source) {
+                by_path.entry(item.path.clone()).or_insert(item);
+            }
+        }
+    }
+
+    let mut items = by_path.into_values().collect::<Vec<_>>();
+    items.sort_by(|a, b| a.path.cmp(&b.path));
+
+    Ok((items, (!notices.is_empty()).then(|| notices.join(" "))))
 }
 
 pub(crate) async fn load_discovery_snapshot(
@@ -62,28 +209,31 @@ pub(crate) async fn load_discovery_snapshot(
     for lib in &selected {
         library_items.extend(lib_scanner.scan_library(lib));
     }
+    library_items.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
 
-    let mut notices = Vec::new();
-    if let Some(message) = cached_only_notice(cfg) {
-        notices.push(message);
-    }
+    let (source_items, status_message) =
+        collect_discovery_source_items(cfg, db, refresh_cache).await?;
+    let matcher = build_discover_matcher(cfg);
+    let MatchRunOutput { mut matches, .. } = matcher
+        .find_matches_with_telemetry(&library_items, &source_items, db)
+        .await?;
+    matcher.enrich_episode_titles(&mut matches, db).await?;
 
-    if refresh_cache && cfg.has_realdebrid() {
-        let rd_client = RealDebridClient::from_config(&cfg.realdebrid);
-        let cache = crate::cache::TorrentCache::new(db, &rd_client);
-        if let Err(e) = cache.sync().await {
-            notices.push(format!(
-                "RD cache sync failed ({}). Showing cached results only.",
-                e
-            ));
-        }
-    }
+    let linker = Linker::new_with_options(
+        true,
+        cfg.matching.mode.is_strict(),
+        &cfg.symlink.naming_template,
+        cfg.features.reconcile_links,
+    );
+    let plan = Discovery::new()
+        .build_link_plan(db, &matches, |m| linker.build_target_path(m))
+        .await?;
 
-    let disc = discovery::Discovery::new();
-    let items = disc.find_gaps(db, &library_items).await?;
     Ok(DiscoverySnapshot {
-        items,
-        status_message: (!notices.is_empty()).then(|| notices.join(" ")),
+        summary: plan.summary(),
+        folders: plan.folders,
+        items: plan.placements,
+        status_message,
     })
 }
 
@@ -94,26 +244,22 @@ pub(crate) async fn run_discover(
     library_filter: Option<&str>,
     output: OutputFormat,
 ) -> Result<()> {
+    let _stdout_guard = stdout_text_guard(output != OutputFormat::Json);
     match action {
         DiscoverAction::List => {
-            if !cfg.has_realdebrid() {
-                anyhow::bail!("Real-Debrid API key not configured in config.yaml");
-            }
-
-            info!("=== Symlinkarr Discovery ===");
+            info!("=== Symlinkarr Discover Review ===");
             let snapshot = load_discovery_snapshot(cfg, db, library_filter, true).await?;
-            let gaps = snapshot.items;
 
             if output == OutputFormat::Json {
-                print_json(&build_discover_json(
-                    &gaps,
-                    snapshot.status_message.as_deref(),
-                ));
+                print_json(&build_discover_json(&snapshot));
             } else {
                 if let Some(message) = snapshot.status_message.as_deref() {
                     println!("   ℹ️  {}", message);
                 }
-                discovery::Discovery::print_summary(&gaps);
+                Discovery::print_summary(&DiscoverPlan {
+                    folders: snapshot.folders,
+                    placements: snapshot.items,
+                });
             }
         }
         DiscoverAction::Add { torrent_id, arr } => {
@@ -124,7 +270,7 @@ pub(crate) async fn run_discover(
                 anyhow::bail!("Decypharr not configured in config.yaml");
             }
 
-            info!("=== Symlinkarr Discover Add ===");
+            info!("=== Symlinkarr Discover Manual Handoff ===");
 
             let rd_client = RealDebridClient::from_config(&cfg.realdebrid);
             let torrent_info = rd_client.get_torrent_info(&torrent_id).await?;
@@ -142,7 +288,9 @@ pub(crate) async fn run_discover(
             let _ = decypharr.add_content(&[magnet], &arr, "none").await?;
 
             println!("   ✅ Sent to Decypharr ({} → {})", arr, cfg.decypharr.url);
-            println!("   ℹ️  Run 'symlinkarr scan' once the download completes.");
+            println!(
+                "   ℹ️  This is a manual handoff path. Run 'symlinkarr scan' once the download completes."
+            );
         }
     }
 
@@ -200,6 +348,7 @@ mod tests {
         SecurityConfig, SonarrConfig, SourceConfig, SymlinkConfig, TautulliConfig, WebConfig,
     };
     use crate::db::Database;
+    use crate::discovery::DiscoverPlacementAction;
     use crate::models::MediaType;
 
     #[test]
@@ -265,12 +414,38 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cfg = test_config(dir.path());
         let db = Database::new(&cfg.db_path).await.unwrap();
+        std::fs::create_dir_all(dir.path().join("anime").join("Missing Show {tvdb-1}")).unwrap();
+        std::fs::create_dir_all(
+            dir.path()
+                .join("rd")
+                .join("Missing.Show.S01E01.1080p.WEB-DL"),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path()
+                .join("rd")
+                .join("Missing.Show.S01E01.1080p.WEB-DL")
+                .join("Missing.Show.S01E01.1080p.WEB-DL.mkv"),
+            b"video",
+        )
+        .unwrap();
+        db.upsert_rd_torrent(
+            "rd-1",
+            "hash-1",
+            "Missing.Show.S01E01.1080p.WEB-DL.mkv",
+            "downloaded",
+            r#"{"files":[{"selected":1,"bytes":1073741824,"path":"Missing.Show.S01E01.1080p.WEB-DL.mkv"}]}"#,
+        )
+        .await
+        .unwrap();
 
         let snapshot = load_discovery_snapshot(&cfg, &db, None, false)
             .await
             .unwrap();
 
-        assert!(snapshot.items.is_empty());
+        assert_eq!(snapshot.summary.creates, 1);
+        assert_eq!(snapshot.items.len(), 1);
+        assert_eq!(snapshot.items[0].action, DiscoverPlacementAction::Create);
         assert!(snapshot
             .status_message
             .as_deref()
@@ -285,24 +460,48 @@ mod tests {
 
     #[test]
     fn build_discover_json_embeds_status_message_without_side_channel_text() {
-        let item = DiscoveredItem {
-            rd_torrent_id: "rd-1".to_string(),
-            torrent_name: "Show.S01E01.1080p.WEB-DL.mkv".to_string(),
-            status: "downloaded".to_string(),
-            size: 1_073_741_824,
-            parsed_title: "Show".to_string(),
-        };
+        let payload = build_discover_json(&DiscoverySnapshot {
+            summary: DiscoverSummary {
+                folders: 1,
+                placements: 1,
+                creates: 1,
+                updates: 0,
+                blocked: 0,
+            },
+            folders: vec![DiscoverFolderPlan {
+                library_name: "Anime".to_string(),
+                media_id: "tvdb-1".to_string(),
+                title: "Show".to_string(),
+                folder_path: "/library/Show {tvdb-1}".into(),
+                existing_links: 0,
+                planned_creates: 1,
+                planned_updates: 0,
+                blocked: 0,
+            }],
+            items: vec![DiscoverPlacement {
+                library_name: "Anime".to_string(),
+                media_id: "tvdb-1".to_string(),
+                title: "Show".to_string(),
+                folder_path: "/library/Show {tvdb-1}".into(),
+                source_path: "/rd/Show.S01E01/Show.S01E01.mkv".into(),
+                target_path: "/library/Show {tvdb-1}/Season 01/Show - S01E01.mkv".into(),
+                source_name: "Show.S01E01.mkv".to_string(),
+                action: DiscoverPlacementAction::Create,
+                season: Some(1),
+                episode: Some(1),
+            }],
+            status_message: Some(
+                "RD cache sync failed (timeout). Showing cached results only.".to_string(),
+            ),
+        });
 
-        let payload = build_discover_json(
-            &[item],
-            Some("RD cache sync failed (timeout). Showing cached results only."),
-        );
-
-        assert_eq!(payload["count"], 1);
+        assert_eq!(payload["summary"]["placements"], 1);
+        assert_eq!(payload["summary"]["creates"], 1);
         assert_eq!(
             payload["status_message"],
             "RD cache sync failed (timeout). Showing cached results only."
         );
-        assert_eq!(payload["items"][0]["rd_torrent_id"], "rd-1");
+        assert_eq!(payload["items"][0]["action"], "create");
+        assert_eq!(payload["folders"][0]["planned_creates"], 1);
     }
 }

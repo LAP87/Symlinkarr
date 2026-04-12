@@ -166,6 +166,23 @@ fn validate_managed_backup_file_name(file_name: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_restore_input_path(backup_path: &Path) -> Result<()> {
+    if backup_path.is_absolute() {
+        anyhow::bail!("Backup restore only accepts files inside the configured backup directory");
+    }
+
+    if backup_path.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
+        anyhow::bail!("Backup restore path escapes the configured backup directory");
+    }
+
+    Ok(())
+}
+
 fn backup_path_candidates(backup_path: &Path, backup_root: &Path) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
@@ -232,6 +249,7 @@ impl BackupManager {
 
     pub fn resolve_restore_path(&self, backup_path: &Path) -> Result<PathBuf> {
         let backup_root = self.canonical_backup_root()?;
+        validate_restore_input_path(backup_path)?;
 
         for candidate in backup_path_candidates(backup_path, &backup_root) {
             let Ok(canonical) = candidate.canonicalize() else {
@@ -241,21 +259,6 @@ impl BackupManager {
             if canonical.starts_with(&backup_root) {
                 return Ok(canonical);
             }
-            anyhow::bail!("Backup restore path escapes the configured backup directory");
-        }
-
-        if backup_path.is_absolute() {
-            anyhow::bail!(
-                "Backup restore only accepts files inside the configured backup directory"
-            );
-        }
-
-        if backup_path.components().any(|component| {
-            matches!(
-                component,
-                Component::ParentDir | Component::RootDir | Component::Prefix(_)
-            )
-        }) {
             anyhow::bail!("Backup restore path escapes the configured backup directory");
         }
 
@@ -461,7 +464,18 @@ impl BackupManager {
         allowed_target_roots: &[PathBuf],
         enforce_roots: bool,
     ) -> Result<(usize, usize, usize)> {
-        let backup_path = self.resolve_restore_path(backup_path)?;
+        let backup_root = self.canonical_backup_root()?;
+        let backup_path = if backup_path.is_absolute() {
+            let canonical = backup_path.canonicalize().with_context(|| {
+                format!("Backup restore file not found: {}", backup_path.display())
+            })?;
+            if !canonical.starts_with(&backup_root) {
+                anyhow::bail!("Backup restore path escapes the configured backup directory");
+            }
+            canonical
+        } else {
+            self.resolve_restore_path(backup_path)?
+        };
         let json = std::fs::read_to_string(&backup_path)?;
         let manifest = parse_backup_manifest(&json, &backup_path)?;
         let mut source_health_cache = std::collections::HashMap::new();
@@ -482,11 +496,12 @@ impl BackupManager {
         let mut restored = 0usize;
         let mut skipped = 0usize;
         let mut errors = 0usize;
+        let mut created_symlinks = Vec::new();
 
         for entry in &manifest.symlinks {
             let resolved_target_path = resolve_restore_target_path(entry);
             if enforce_roots {
-                if !path_is_within_roots(&entry.symlink_path, allowed_symlink_roots) {
+                if !path_is_within_roots(&entry.symlink_path, allowed_symlink_roots, false) {
                     warn!(
                         "Skipping restore outside allowed library roots: {:?}",
                         entry.symlink_path
@@ -494,7 +509,7 @@ impl BackupManager {
                     skipped += 1;
                     continue;
                 }
-                if !path_is_within_roots(&resolved_target_path, allowed_target_roots) {
+                if !path_is_within_roots(&resolved_target_path, allowed_target_roots, true) {
                     warn!(
                         "Skipping restore outside allowed source roots: {:?}",
                         resolved_target_path
@@ -600,6 +615,7 @@ impl BackupManager {
                         match restore_tx.as_mut() {
                             Some(tx) => match upsert_restored_link_in_tx(db, tx, entry).await {
                                 Ok(()) => {
+                                    created_symlinks.push(entry.symlink_path.clone());
                                     restored += 1;
                                 }
                                 Err(e) => {
@@ -613,6 +629,7 @@ impl BackupManager {
                             },
                             None => match upsert_restored_link(db, entry).await {
                                 Ok(()) => {
+                                    created_symlinks.push(entry.symlink_path.clone());
                                     restored += 1;
                                 }
                                 Err(e) => {
@@ -626,6 +643,7 @@ impl BackupManager {
                             },
                         }
                     } else {
+                        created_symlinks.push(entry.symlink_path.clone());
                         restored += 1;
                     }
                 }
@@ -643,12 +661,15 @@ impl BackupManager {
             );
         } else {
             if let Some(tx) = restore_tx.take() {
-                tx.commit().await.with_context(|| {
-                    format!(
-                        "Backup restore from {} finished filesystem work but failed to commit database updates",
-                        backup_path.display()
-                    )
-                })?;
+                if let Err(err) = tx.commit().await {
+                    rollback_created_restore_symlinks(&created_symlinks);
+                    return Err(err).with_context(|| {
+                        format!(
+                            "Backup restore from {} finished filesystem work but failed to commit database updates",
+                            backup_path.display()
+                        )
+                    });
+                }
             }
             info!(
                 "Restore complete: {} restored, {} skipped, {} errors",
@@ -701,7 +722,7 @@ impl BackupManager {
         while files.len() > max_count {
             let oldest = files.remove(0);
             info!("Rotating old backup: {:?}", oldest);
-            std::fs::remove_file(&oldest)?;
+            remove_backup_artifacts(&oldest)?;
         }
 
         Ok(())
@@ -758,6 +779,49 @@ impl BackupManager {
     }
 }
 
+fn rollback_created_restore_symlinks(paths: &[PathBuf]) {
+    for path in paths.iter().rev() {
+        if let Err(err) = std::fs::remove_file(path) {
+            if path.exists() || path.is_symlink() {
+                warn!(
+                    "Failed to roll back restored symlink after backup restore commit error {:?}: {}",
+                    path, err
+                );
+            }
+        }
+    }
+}
+
+fn remove_backup_artifacts(manifest_path: &Path) -> Result<()> {
+    let mut companion_paths = Vec::new();
+
+    if let Ok(json) = std::fs::read_to_string(manifest_path) {
+        if let Ok(manifest) = serde_json::from_str::<BackupManifest>(&json) {
+            if let Some(snapshot) = manifest.database_snapshot.as_ref() {
+                let path = manifest_path
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."))
+                    .join(&snapshot.filename);
+                companion_paths.push(path);
+            }
+        }
+    }
+
+    let derived_snapshot = manifest_path.with_extension("sqlite3");
+    if derived_snapshot != manifest_path && !companion_paths.contains(&derived_snapshot) {
+        companion_paths.push(derived_snapshot);
+    }
+
+    std::fs::remove_file(manifest_path)?;
+    for companion in companion_paths {
+        if companion.exists() {
+            std::fs::remove_file(companion)?;
+        }
+    }
+
+    Ok(())
+}
+
 fn restore_target_available(
     target_path: &Path,
     source_health_cache: &mut std::collections::HashMap<PathBuf, PathHealth>,
@@ -806,7 +870,7 @@ impl std::fmt::Display for BackupSummary {
     }
 }
 
-fn path_is_within_roots(path: &Path, roots: &[PathBuf]) -> bool {
+fn path_is_within_roots(path: &Path, roots: &[PathBuf], follow_leaf_symlink: bool) -> bool {
     if roots.is_empty() {
         return false;
     }
@@ -818,7 +882,8 @@ fn path_is_within_roots(path: &Path, roots: &[PathBuf]) -> bool {
     } else {
         path.to_path_buf()
     };
-    let normalized_abs = normalize_path_for_root_check(&resolve_path_for_root_check(&abs));
+    let normalized_abs =
+        normalize_path_for_root_check(&resolve_path_for_root_check(&abs, follow_leaf_symlink));
 
     roots.iter().any(|root| {
         let normalized_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.clone());
@@ -883,9 +948,11 @@ fn resolve_restore_target_path(entry: &BackupEntry) -> PathBuf {
     }
 }
 
-fn resolve_path_for_root_check(path: &Path) -> PathBuf {
-    if let Ok(canonical) = std::fs::canonicalize(path) {
-        return canonical;
+fn resolve_path_for_root_check(path: &Path, follow_leaf_symlink: bool) -> PathBuf {
+    if follow_leaf_symlink {
+        if let Ok(canonical) = std::fs::canonicalize(path) {
+            return canonical;
+        }
     }
 
     if let Some(parent) = path.parent() {
@@ -894,6 +961,12 @@ fn resolve_path_for_root_check(path: &Path) -> PathBuf {
                 return canonical_parent.join(name);
             }
             return canonical_parent;
+        }
+    }
+
+    if !follow_leaf_symlink {
+        if let Ok(canonical) = std::fs::canonicalize(path) {
+            return canonical;
         }
     }
 
@@ -1051,6 +1124,39 @@ mod tests {
         assert!(snapshot_path.exists());
         assert_eq!(snapshot.sha256, sha256_file(&snapshot_path).unwrap());
         assert!(manifest.content_sha256.is_some());
+    }
+
+    #[test]
+    fn test_resolve_restore_path_rejects_absolute_input_inside_backup_root() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let backup_dir = dir.path().join("backups");
+        std::fs::create_dir_all(&backup_dir).unwrap();
+        let manager = BackupManager::new(&test_config(&backup_dir));
+        let manifest_path = backup_dir.join("backup.json");
+        std::fs::write(&manifest_path, "{}").unwrap();
+
+        let err = manager.resolve_restore_path(&manifest_path).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("only accepts files inside the configured backup directory"));
+    }
+
+    #[test]
+    fn test_resolve_restore_path_rejects_parent_segments_even_if_they_normalize_inside_backup_root()
+    {
+        let dir = tempfile::TempDir::new().unwrap();
+        let backup_dir = dir.path().join("backups");
+        std::fs::create_dir_all(&backup_dir).unwrap();
+        let manager = BackupManager::new(&test_config(&backup_dir));
+        let manifest_path = backup_dir.join("backup.json");
+        std::fs::write(&manifest_path, "{}").unwrap();
+
+        let err = manager
+            .resolve_restore_path(Path::new("../backups/backup.json"))
+            .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("escapes the configured backup directory"));
     }
 
     #[tokio::test]
@@ -1320,6 +1426,74 @@ mod tests {
     }
 
     #[test]
+    fn test_rotation_removes_snapshot_alongside_rotated_manifest() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config = test_config(dir.path());
+        let manager = BackupManager::new(&config);
+
+        for i in 0..5 {
+            let timestamp = format!("2026010{}-120000", i);
+            let manifest_name = format!("backup-{timestamp}.json");
+            let snapshot_name = format!("backup-{timestamp}.sqlite3");
+            let manifest = BackupManifest {
+                version: BACKUP_MANIFEST_VERSION,
+                timestamp: Utc::now(),
+                backup_type: BackupType::Scheduled,
+                label: format!("test {}", i),
+                symlinks: vec![],
+                total_count: 0,
+                database_snapshot: Some(BackupDatabaseSnapshot {
+                    filename: snapshot_name.clone(),
+                    sha256: "deadbeef".to_string(),
+                    size_bytes: 4,
+                }),
+                content_sha256: Some("checksum".to_string()),
+            };
+            std::fs::write(
+                dir.path().join(&manifest_name),
+                serde_json::to_string_pretty(&manifest).unwrap(),
+            )
+            .unwrap();
+            std::fs::write(dir.path().join(snapshot_name), "db").unwrap();
+        }
+
+        manager.rotate().unwrap();
+
+        let remaining_manifests: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().map(|ext| ext == "json").unwrap_or(false))
+            .collect();
+        let remaining_snapshots: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.extension()
+                    .map(|ext| ext == "sqlite3")
+                    .unwrap_or(false)
+            })
+            .collect();
+
+        assert_eq!(remaining_manifests.len(), 3);
+        assert_eq!(remaining_snapshots.len(), 3);
+
+        let remaining_stems = remaining_manifests
+            .iter()
+            .filter_map(|path| path.file_stem().map(|stem| stem.to_os_string()))
+            .collect::<Vec<_>>();
+        for snapshot in remaining_snapshots {
+            let stem = snapshot.file_stem().unwrap().to_os_string();
+            assert!(
+                remaining_stems.contains(&stem),
+                "snapshot {:?} should not survive without its manifest",
+                snapshot
+            );
+        }
+    }
+
+    #[test]
     fn test_list_backups() {
         let dir = tempfile::TempDir::new().unwrap();
         let manager = BackupManager::new(&test_config(dir.path()));
@@ -1357,7 +1531,7 @@ mod tests {
         std::fs::create_dir_all(&allowed).unwrap();
 
         let escaped = allowed.join("..").join("escaped").join("file.mkv");
-        assert!(!path_is_within_roots(&escaped, &[allowed]));
+        assert!(!path_is_within_roots(&escaped, &[allowed], true));
     }
 
     #[cfg(unix)]
@@ -1377,7 +1551,8 @@ mod tests {
 
         assert!(!path_is_within_roots(
             &alias_dir.join("file.mkv"),
-            &[allowed]
+            &[allowed],
+            true
         ));
     }
 
@@ -1389,11 +1564,48 @@ mod tests {
         let nested = root.join("a/b/c");
         std::fs::create_dir_all(&nested).unwrap();
 
-        assert!(path_is_within_roots(&nested, &[root.to_path_buf()]));
+        assert!(path_is_within_roots(&nested, &[root.to_path_buf()], true));
         assert!(path_is_within_roots(
             &nested.join("file.mkv"),
-            &[root.to_path_buf()]
+            &[root.to_path_buf()],
+            true
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_path_is_within_roots_accepts_existing_library_symlink_without_following_leaf() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let library_root = dir.path().join("library");
+        let source_root = dir.path().join("source");
+        std::fs::create_dir_all(library_root.join("Show")).unwrap();
+        std::fs::create_dir_all(&source_root).unwrap();
+
+        let source_file = source_root.join("episode.mkv");
+        std::fs::write(&source_file, "video").unwrap();
+
+        let symlink_path = library_root.join("Show").join("S01E01.mkv");
+        std::os::unix::fs::symlink(&source_file, &symlink_path).unwrap();
+
+        assert!(path_is_within_roots(&symlink_path, &[library_root], false));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_path_is_within_roots_rejects_leaf_symlink_escape_when_following_leaf() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let source_root = dir.path().join("source");
+        let outside_root = dir.path().join("outside");
+        std::fs::create_dir_all(&source_root).unwrap();
+        std::fs::create_dir_all(&outside_root).unwrap();
+
+        let outside_file = outside_root.join("episode.mkv");
+        std::fs::write(&outside_file, "video").unwrap();
+
+        let alias = source_root.join("alias.mkv");
+        std::os::unix::fs::symlink(&outside_file, &alias).unwrap();
+
+        assert!(!path_is_within_roots(&alias, &[source_root], true));
     }
 
     #[test]
@@ -1416,7 +1628,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let file = dir.path().join("file.mkv");
         std::fs::write(&file, "video").unwrap();
-        assert!(!path_is_within_roots(&file, &[]));
+        assert!(!path_is_within_roots(&file, &[], true));
     }
 
     #[cfg(unix)]

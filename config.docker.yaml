@@ -29,11 +29,11 @@ db_path: "/app/data/symlinkarr.db"
 
 daemon:
   interval_minutes: 60
-  vacuum_enabled: false
+  vacuum_enabled: true
   vacuum_hour_local: 4      # run once per day at or after this local hour when daemon is active
 
 symlink:
-  naming_template: "{Show} - S{season:02}E{episode:02} - {Title}.{ext}"
+  naming_template: "{title} - S{season:02}E{episode:02} - {episode_title}"
   dry_run: false
 
 matching:
@@ -136,7 +136,7 @@ backup:
 
 # Web UI (optional, for dashboard access)
 web:
-  enabled: false
+  enabled: true
   # Docker usually implies remote operator mode.
   # Keep Basic auth configured whenever you publish the port outside the host.
   bind_address: "0.0.0.0"

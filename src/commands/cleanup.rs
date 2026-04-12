@@ -1630,6 +1630,7 @@ fn build_anime_remediation_cleanup_report(
             warning: findings.len(),
         },
         findings,
+        applied_at: None,
     }
 }
 
@@ -2151,6 +2152,7 @@ mod tests {
                     scope: CleanupScope::Anime,
                     summary: cleanup_audit::CleanupSummary::default(),
                     findings: Vec::new(),
+                    applied_at: None,
                 },
             })
             .unwrap(),

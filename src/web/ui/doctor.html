@@ -4,22 +4,50 @@
 {% block nav_doctor %}active{% endblock %}
 
 {% block content %}
-<div class="page-header">
-    <h1>&#129658; Doctor</h1>
-    <p>Preflight health checks for your Symlinkarr installation.</p>
+<div class="page-header page-header--split">
+    <div>
+        <p class="page-kicker">Maintenance</p>
+        <h1>Doctor</h1>
+        <p class="page-lead">Preflight and runtime checks for Symlinkarr itself. Use this before mutating runs or when the install looks broken.</p>
+    </div>
+    <div class="header-badges">
+        <span class="badge badge-info">Checks {{ checks|length }}</span>
+        <span class="badge {% if all_passed %}badge-success{% else %}badge-danger{% endif %}">
+            {% if all_passed %}Healthy{% else %}Needs review{% endif %}
+        </span>
+    </div>
 </div>
 
 {% if all_passed %}
 <div class="alert alert-success">
-    <strong>&#9989; All checks passed!</strong> Your Symlinkarr installation is healthy.
+    <strong>All checks passed.</strong> Your Symlinkarr installation is healthy.
 </div>
 {% else %}
 <div class="alert alert-error">
-    <strong>&#10060; Some checks failed.</strong> Review the issues below.
+    <strong>Some checks failed.</strong> Review the issues below.
 </div>
 {% endif %}
 
-<div class="card">
+<section class="card">
+    <div class="metric-grid metric-grid--compact">
+        <div class="metric-card"><span class="metric-label">Checks</span><strong>{{ checks|length }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Status</span><strong>{% if all_passed %}Healthy{% else %}Needs review{% endif %}</strong></div>
+    </div>
+</section>
+
+<section class="card">
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Results</p>
+            <h2 class="section-title">Inspection checklist</h2>
+            <p class="section-copy">This page is intentionally blunt: failures here should block risky mutation runs until the underlying cause is understood.</p>
+        </div>
+        <div class="actions">
+            <a href="/doctor" class="btn btn-primary">Re-run Checks</a>
+            <a href="/config" class="btn btn-secondary">View Config</a>
+            <a href="/status" class="btn btn-secondary">Service Status</a>
+        </div>
+    </div>
     <ul class="check-list">
         {% for check in checks %}
         <li>
@@ -43,10 +71,5 @@
     {% if checks|length == 0 %}
     <p class="text-muted">No checks available.</p>
     {% endif %}
-</div>
-
-<div class="actions mt-2">
-    <a href="/doctor" class="btn btn-primary">&#128260; Re-run Checks</a>
-    <a href="/config" class="btn btn-secondary">&#9881;&#65039; View Config</a>
-</div>
+</section>
 {% endblock %}

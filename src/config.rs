@@ -13,7 +13,7 @@ type DotenvOverlay = std::collections::HashMap<String, String>;
 
 /// Content type that controls which filename parser to use.
 /// Separate from MediaType — Anime maps to MediaType::Tv in the DB.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ContentType {
     #[default]
@@ -401,6 +401,12 @@ pub struct SymlinkConfig {
     /// Naming template for symlinked episodes
     #[serde(default = "default_naming_template")]
     pub naming_template: String,
+    /// Probe Decypharr WebDAV readability before creating/updating live symlinks
+    #[serde(default = "default_true")]
+    pub verify_source_readability: bool,
+    /// Timeout for the pre-link WebDAV readability probe
+    #[serde(default = "default_source_probe_timeout_ms")]
+    pub source_probe_timeout_ms: u64,
 }
 
 impl Default for SymlinkConfig {
@@ -408,6 +414,8 @@ impl Default for SymlinkConfig {
         Self {
             dry_run: false,
             naming_template: default_naming_template(),
+            verify_source_readability: default_true(),
+            source_probe_timeout_ms: default_source_probe_timeout_ms(),
         }
     }
 }
@@ -909,6 +917,10 @@ fn default_naming_template() -> String {
     "{title} - S{season:02}E{episode:02} - {episode_title}".to_string()
 }
 
+fn default_source_probe_timeout_ms() -> u64 {
+    2500
+}
+
 fn default_decypharr_url() -> String {
     "http://localhost:8282".to_string()
 }
@@ -1199,6 +1211,12 @@ impl Config {
         }
 
         validate_naming_template(&self.symlink.naming_template, &mut report);
+        if self.symlink.verify_source_readability && self.symlink.source_probe_timeout_ms == 0 {
+            report.errors.push(
+                "symlink.source_probe_timeout_ms must be greater than 0 when symlink.verify_source_readability is enabled"
+                    .to_string(),
+            );
+        }
 
         report
     }

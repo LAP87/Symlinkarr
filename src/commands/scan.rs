@@ -175,7 +175,8 @@ pub(crate) async fn run_scan(
         cfg.matching.mode.is_strict(),
         &cfg.symlink.naming_template,
         cfg.features.reconcile_links,
-    );
+    )
+    .with_source_readiness_from_config(cfg);
 
     let title_enrichment_started = Instant::now();
     matcher.enrich_episode_titles(&mut matches, db).await?;
@@ -508,8 +509,37 @@ pub(crate) async fn run_scan(
         auto_acquire_failed = auto_acquire_summary.failed,
         "Scan complete"
     );
+    emit_remaining_dead_link_notice(db).await;
     info!("=== Scan Complete ===");
     Ok((linked_total as i64, dead.removed as i64))
+}
+
+async fn emit_remaining_dead_link_notice(db: &Database) {
+    let Ok((_, dead_links, _)) = db.get_stats().await else {
+        return;
+    };
+    if dead_links == 0 {
+        return;
+    }
+
+    user_println(format!(
+        "\n   ⚠️  {} dead link(s) remain tracked after this scan. They will continue to surface until repaired or pruned.",
+        dead_links
+    ));
+
+    let preview_limit = 3i64;
+    if let Ok(preview_links) = db.get_dead_links_limited(preview_limit).await {
+        for link in &preview_links {
+            user_println(format!("      ✗ {}", link.target_path.display()));
+        }
+        let remaining = dead_links.saturating_sub(preview_links.len() as i64);
+        if remaining > 0 {
+            user_println(format!(
+                "      … {} more tracked dead link(s) remain.",
+                remaining
+            ));
+        }
+    }
 }
 
 fn generate_scan_run_token() -> String {
@@ -659,7 +689,7 @@ fn log_scan_telemetry(
     link_summary: &LinkProcessSummary,
 ) {
     info!(
-        "Scan phase telemetry: runtime_checks={}, library_scan={}, source_inventory={}, matching={}, title_enrichment={}, linking={}, plex_refresh={}, dead_link_sweep={}",
+        "Scan phase telemetry: runtime_checks={}, library_scan={}, source_inventory={}, matching={}, title_enrichment={}, linking={}, media_refresh={}, dead_link_sweep={}",
         fmt_duration(telemetry.runtime_checks),
         fmt_duration(telemetry.library_scan),
         fmt_duration(telemetry.source_inventory),
@@ -703,7 +733,7 @@ fn log_scan_telemetry(
     );
 
     user_println(format!(
-        "   📊 Scan telemetry: checks={} | library={} | source={} | match={} | titles={} | link={} | plex={} | dead={}",
+        "   📊 Scan telemetry: checks={} | library={} | source={} | match={} | titles={} | link={} | refresh={} | dead={}",
         fmt_duration(telemetry.runtime_checks),
         fmt_duration(telemetry.library_scan),
         fmt_duration(telemetry.source_inventory),

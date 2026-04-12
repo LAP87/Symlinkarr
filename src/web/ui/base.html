@@ -5,72 +5,124 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Symlinkarr{% endblock %}</title>
     <link rel="stylesheet" href="/static/style.css">
+    <script>
+        (function () {
+            try {
+                if (localStorage.getItem("symlinkarr-advanced") === "1") {
+                    document.documentElement.classList.add("show-advanced");
+                }
+            } catch (e) {}
+        }());
+    </script>
     <script src="/static/vendor/htmx-1.9.10.min.js"></script>
     <script src="/static/themes/theme-switcher.js" defer></script>
+    <script src="/static/ui-preferences.js" defer></script>
     {% block head %}{% endblock %}
 </head>
-<body>
+<body class="{% block body_class %}{% endblock %}">
     <div class="app-container">
-        <!-- Sidebar -->
         <nav class="sidebar">
-            <a href="/" class="logo">
-                &#128279; <span>Symlinkarr</span>
-            </a>
+            <div class="sidebar-top">
+                <a href="/" class="logo">
+                    <span class="logo-mark">SY</span>
+                    <span class="logo-copy">
+                        <span class="logo-title">Symlinkarr</span>
+                        <span class="logo-subtitle">Operator UI</span>
+                    </span>
+                </a>
+
+                <div class="sidebar-tools">
+                    <p class="nav-section-label nav-section-label--tight">Display</p>
+                    <div class="sidebar-controls">
+                        <button
+                            id="advanced-toggle"
+                            type="button"
+                            class="btn btn-secondary btn-secondary--subtle pref-toggle"
+                            data-label-off="Advanced Off"
+                            data-label-on="Advanced On"
+                            aria-pressed="false"
+                        >
+                            <span class="pref-toggle__label">Advanced Off</span>
+                        </button>
+                        <div class="theme-picker">
+                            <button id="theme-picker-toggle" type="button" class="btn btn-secondary btn-secondary--subtle">
+                                Theme
+                            </button>
+                            <div id="theme-picker-dropdown" class="theme-picker-dropdown" style="display:none;"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <ul class="nav">
+                <li class="nav-section-label">Overview</li>
                 <li class="nav-item">
                     <a href="/" class="nav-link {% block nav_dashboard %}{% endblock %}">
-                        &#128202; Dashboard
+                        <span class="nav-link__icon">OV</span>
+                        <span class="nav-link__label">Dashboard</span>
+                    </a>
+                </li>
+                <li class="nav-section-label">Activity</li>
+                <li class="nav-item">
+                    <a href="/scan" class="nav-link {% block nav_scan %}{% endblock %}">
+                        <span class="nav-link__icon">SC</span>
+                        <span class="nav-link__label">Scan</span>
                     </a>
                 </li>
                 <li class="nav-item">
                     <a href="/status" class="nav-link {% block nav_status %}{% endblock %}">
-                        &#128200; Status
-                    </a>
-                </li>
-                <li class="nav-item">
-                    <a href="/health" class="nav-link {% block nav_health %}{% endblock %}">
-                        &#128154; Health
-                    </a>
-                </li>
-                <li class="nav-item">
-                    <a href="/scan" class="nav-link {% block nav_scan %}{% endblock %}">
-                        &#128269; Scan
-                    </a>
-                </li>
-                <li class="nav-item">
-                    <a href="/cleanup" class="nav-link {% block nav_cleanup %}{% endblock %}">
-                        &#129529; Cleanup
+                        <span class="nav-link__icon">ST</span>
+                        <span class="nav-link__label">Status</span>
                     </a>
                 </li>
                 <li class="nav-item">
                     <a href="/links" class="nav-link {% block nav_links %}{% endblock %}">
-                        &#128279; Links
+                        <span class="nav-link__icon">LK</span>
+                        <span class="nav-link__label">Links</span>
                     </a>
                 </li>
+                <li class="nav-section-label">Maintenance</li>
                 <li class="nav-item">
-                    <a href="/config" class="nav-link {% block nav_config %}{% endblock %}">
-                        &#9881;&#65039; Config
+                    <a href="/cleanup" class="nav-link {% block nav_cleanup %}{% endblock %}">
+                        <span class="nav-link__icon">CL</span>
+                        <span class="nav-link__label">Cleanup</span>
                     </a>
                 </li>
                 <li class="nav-item">
                     <a href="/doctor" class="nav-link {% block nav_doctor %}{% endblock %}">
-                        &#129658; Doctor
+                        <span class="nav-link__icon">DR</span>
+                        <span class="nav-link__label">Doctor</span>
                     </a>
                 </li>
-                <li class="nav-item">
+                <li class="nav-item advanced-only">
                     <a href="/discover" class="nav-link {% block nav_discover %}{% endblock %}">
-                        &#129517; Discover
+                        <span class="nav-link__icon">DV</span>
+                        <span class="nav-link__label">Discover</span>
                     </a>
                 </li>
-                <li class="nav-item">
+                <li class="nav-section-label advanced-only">System</li>
+                <li class="nav-item advanced-only">
                     <a href="/backup" class="nav-link {% block nav_backup %}{% endblock %}">
-                        &#128190; Backup
+                        <span class="nav-link__icon">BK</span>
+                        <span class="nav-link__label">Backup</span>
+                    </a>
+                </li>
+                <li class="nav-item advanced-only">
+                    <a href="/config" class="nav-link {% block nav_config %}{% endblock %}">
+                        <span class="nav-link__icon">CF</span>
+                        <span class="nav-link__label">Config</span>
                     </a>
                 </li>
             </ul>
+
+            <div class="sidebar-meta">
+                <div class="shell-status">
+                    <span class="status-indicator healthy"></span>
+                    <span>Local operator surface</span>
+                </div>
+            </div>
         </nav>
 
-        <!-- Main content -->
         <main class="main-content">
             <div class="main-shell">
                 {% block content %}{% endblock %}
@@ -79,12 +131,6 @@
                     <div>
                         Symlinkarr v{{ ""|app_version }} |
                         <a href="https://github.com/LAP87/Symlinkarr" target="_blank" rel="noopener noreferrer">GitHub</a>
-                    </div>
-                    <div style="display:flex; align-items:center; gap:0.75rem;">
-                        <button id="theme-cycle-button" type="button" class="btn btn-secondary">
-                            Theme
-                        </button>
-                        <div class="status-indicator healthy"></div>
                     </div>
                 </footer>
             </div>

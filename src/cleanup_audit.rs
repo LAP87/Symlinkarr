@@ -172,6 +172,8 @@ pub struct CleanupReport {
     pub scope: CleanupScope,
     pub findings: Vec<CleanupFinding>,
     pub summary: CleanupSummary,
+    #[serde(default)]
+    pub applied_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone)]
@@ -707,6 +709,7 @@ impl<'a> CleanupAuditor<'a> {
             scope,
             findings,
             summary,
+            applied_at: None,
         })
     }
 
@@ -1170,6 +1173,13 @@ pub async fn run_prune(
         });
     }
 
+    if report.applied_at.is_some() {
+        anyhow::bail!(
+            "Refusing prune apply: this report was already applied at {}",
+            report.applied_at.unwrap().format("%Y-%m-%d %H:%M:%S UTC")
+        );
+    }
+
     if plan.candidate_paths.is_empty() {
         if let Some(blocked) = plan.blocked_reason_summary.first() {
             anyhow::bail!(
@@ -1397,6 +1407,17 @@ pub async fn run_prune(
                     .await;
                 skipped += 1;
             }
+        }
+    }
+
+    // Stamp applied_at and write back so this report cannot be reused
+    report.applied_at = Some(Utc::now());
+    if let Ok(updated_json) = serde_json::to_string_pretty(&report) {
+        if let Err(e) = std::fs::write(report_path, &updated_json) {
+            warn!(
+                "Cleanup prune: applied successfully but failed to stamp report: {}",
+                e
+            );
         }
     }
 
@@ -3515,6 +3536,7 @@ cleanup:
             scope: CleanupScope::Anime,
             findings,
             summary,
+            applied_at: None,
         }
     }
 

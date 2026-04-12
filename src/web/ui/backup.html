@@ -2,30 +2,78 @@
 
 {% block title %}Backup - Symlinkarr{% endblock %}
 {% block nav_backup %}active{% endblock %}
+{% block body_class %}page-requires-advanced{% endblock %}
 
 {% block content %}
-<div class="page-header">
-    <h1>&#128190; Backup</h1>
-    <p>Create and manage backups of your symlink database.</p>
+<div class="page-header page-header--split">
+    <div>
+        <p class="page-kicker">System</p>
+        <h1>Backup</h1>
+        <p class="page-lead">Create and manage backup snapshots for Symlinkarr state and symlink metadata.</p>
+    </div>
+    <div class="header-badges">
+        <span class="badge badge-info">Backups {{ backups|length }}</span>
+    </div>
 </div>
 
-<div class="card">
-    <h2 class="section-title">Create New Backup</h2>
-    <p class="text-muted mb-2">Backup directory: <code class="mono">{{ backup_dir.display() }}</code></p>
-    <form action="/backup/create" method="post">
+<div class="split-grid">
+<section class="card">
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Create</p>
+            <h2 class="section-title">Create new backup</h2>
+            <p class="section-copy">Use a short label before risky repair, cleanup, or migration work so rollback points stay obvious later.</p>
+        </div>
+    </div>
+    <form action="/backup/create" method="post" class="stack-form">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <div class="form-group">
-            <label class="form-label" for="label">Label (optional):</label>
-            <input type="text" id="label" name="label" class="form-control" style="max-width:350px;" placeholder="e.g. before-cleanup">
+            <label class="form-label" for="label">Label (optional)</label>
+            <input type="text" id="label" name="label" class="form-control field-max-sm" placeholder="e.g. before-cleanup">
+            <small class="field-help">Stored alongside the timestamp in the backup filename.</small>
         </div>
-        <button type="submit" class="btn btn-primary">&#128190; Create Backup</button>
+        <div class="actions">
+            <button type="submit" class="btn btn-primary">Create Backup</button>
+        </div>
     </form>
+    </section>
+
+    <section class="card">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Storage</p>
+                <h2 class="section-title">Backup location</h2>
+            </div>
+        </div>
+        <div class="key-value-grid">
+            <div class="key-value-row">
+                <div class="key-value-label">Directory</div>
+                <div><code class="mono">{{ backup_dir.display() }}</code></div>
+            </div>
+            <div class="key-value-row">
+                <div class="key-value-label">Snapshots</div>
+                <div>{{ backups|length }}</div>
+            </div>
+        </div>
+        <div class="alert alert-warning mt-2">
+            <strong>Restore is destructive.</strong> A restore overwrites current link state with the selected snapshot.
+        </div>
+    </section>
 </div>
 
-<div class="card">
-    <h2 class="section-title">Existing Backups ({{ backups|length }})</h2>
+<section class="card">
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">History</p>
+            <h2 class="section-title">Existing backups</h2>
+        </div>
+        <div class="header-badges">
+            <span class="badge badge-info">{{ backups|length }} items</span>
+        </div>
+    </div>
     {% if backups|length > 0 %}
-    <table class="data-table">
+    <div class="table-wrap">
+    <table class="data-table dense-table">
         <thead>
             <tr>
                 <th>Filename</th>
@@ -48,7 +96,7 @@
                         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                         <input type="hidden" name="backup_file" value="{{ backup.filename }}">
                         <button type="submit" class="btn btn-secondary" style="padding:0.4rem 0.8rem;font-size:0.8rem;">
-                            &#9850; Restore
+                            Restore
                         </button>
                     </form>
                 </td>
@@ -56,8 +104,9 @@
             {% endfor %}
         </tbody>
     </table>
+    </div>
     {% else %}
     <p class="text-muted">No backups found in <code class="mono">{{ backup_dir.display() }}</code>.</p>
     {% endif %}
-</div>
+</section>
 {% endblock %}

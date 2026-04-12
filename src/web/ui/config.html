@@ -2,57 +2,106 @@
 
 {% block title %}Config - Symlinkarr{% endblock %}
 {% block nav_config %}active{% endblock %}
+{% block body_class %}page-requires-advanced{% endblock %}
 
 {% block content %}
-<div class="page-header">
-    <h1>&#9881;&#65039; Configuration</h1>
-    <p>Current Symlinkarr configuration and validation.</p>
+<div class="page-header page-header--split">
+    <div>
+        <p class="page-kicker">System</p>
+        <h1>Configuration</h1>
+        <p class="page-lead">Current Symlinkarr configuration, library layout, and validation status.</p>
+    </div>
+    <div class="header-badges">
+        <span class="badge badge-info">Libraries {{ config.libraries|length }}</span>
+        <span class="badge badge-info">Sources {{ config.sources|length }}</span>
+        {% match validation_result %}
+        {% when Some with (result) %}
+        <span class="badge {% if result.valid %}badge-success{% else %}badge-danger{% endif %}">
+            {% if result.valid %}Validated{% else %}Needs review{% endif %}
+        </span>
+        {% when None %}
+        <span class="badge badge-warning">Unchecked</span>
+        {% endmatch %}
+    </div>
 </div>
 
-{% match validation_result %}
-{% when Some with (result) %}
-{% if result.valid %}
-<div class="alert alert-success">
-    <strong>&#9989; Configuration is valid</strong>
-    {% if result.warnings|length > 0 %}
-    <ul style="margin-top:0.5rem;padding-left:1.5rem;">
-        {% for w in result.warnings %}
-        <li class="text-warning">&#9888; {{ w }}</li>
-        {% endfor %}
-    </ul>
+<section class="card">
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Validation</p>
+            <h2 class="section-title">Check current configuration</h2>
+            <p class="section-copy">Run validation after changing libraries, sources, or matching rules so the UI and daemon share the same assumptions.</p>
+        </div>
+        <form action="/config/validate" method="post" class="actions">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="btn btn-primary">Validate Config</button>
+        </form>
+    </div>
+
+    {% match validation_result %}
+    {% when Some with (result) %}
+    {% if result.valid %}
+    <div class="alert alert-success">
+        <strong>Configuration is valid.</strong>
+        {% if result.warnings|length > 0 %}
+        <ul style="margin-top:0.5rem;padding-left:1.5rem;">
+            {% for w in result.warnings %}
+            <li class="text-warning">{{ w }}</li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+    </div>
+    {% else %}
+    <div class="alert alert-error">
+        <strong>Configuration has errors.</strong>
+        <ul style="margin-top:0.5rem;padding-left:1.5rem;">
+            {% for e in result.errors %}
+            <li>{{ e }}</li>
+            {% endfor %}
+        </ul>
+        {% if result.warnings|length > 0 %}
+        <ul style="margin-top:0.5rem;padding-left:1.5rem;">
+            {% for w in result.warnings %}
+            <li class="text-warning">{{ w }}</li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+    </div>
     {% endif %}
-</div>
-{% else %}
-<div class="alert alert-error">
-    <strong>&#10060; Configuration has errors</strong>
-    <ul style="margin-top:0.5rem;padding-left:1.5rem;">
-        {% for e in result.errors %}
-        <li>{{ e }}</li>
-        {% endfor %}
-    </ul>
-    {% if result.warnings|length > 0 %}
-    <ul style="margin-top:0.5rem;padding-left:1.5rem;">
-        {% for w in result.warnings %}
-        <li class="text-warning">&#9888; {{ w }}</li>
-        {% endfor %}
-    </ul>
-    {% endif %}
-</div>
-{% endif %}
-{% when None %}
-{% endmatch %}
+    {% when None %}
+    <div class="empty-state">
+        No validation snapshot yet. Use the action on the right to verify paths, credentials, and library definitions against the current config file.
+    </div>
+    {% endmatch %}
+</section>
 
-<div class="card" style="margin-bottom:1rem;">
-    <form action="/config/validate" method="post">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button type="submit" class="btn btn-primary">&#9989; Validate Config</button>
-    </form>
-</div>
+<section class="card">
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Overview</p>
+            <h2 class="section-title">Current system defaults</h2>
+        </div>
+    </div>
+    <div class="metric-grid metric-grid--compact">
+        <div class="metric-card"><span class="metric-label">Libraries</span><strong>{{ config.libraries|length }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Sources</span><strong>{{ config.sources|length }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Log Level</span><strong>{{ config.log_level }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Match Mode</span><strong>{{ config.matching.mode }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Metadata</span><strong>{{ config.matching.metadata_mode }}</strong></div>
+    </div>
+</section>
 
-<div class="card">
-    <h2 class="section-title">Libraries ({{ config.libraries|length }})</h2>
+<div class="split-grid">
+<section class="card">
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Libraries</p>
+            <h2 class="section-title">Tagged library roots</h2>
+        </div>
+    </div>
     {% if config.libraries|length > 0 %}
-    <table class="data-table">
+    <div class="table-wrap">
+    <table class="data-table dense-table">
         <thead>
             <tr>
                 <th>Name</th>
@@ -77,15 +126,22 @@
             {% endfor %}
         </tbody>
     </table>
+    </div>
     {% else %}
     <p class="text-muted">No libraries configured.</p>
     {% endif %}
-</div>
+</section>
 
-<div class="card">
-    <h2 class="section-title">Sources ({{ config.sources|length }})</h2>
+<section class="card">
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Sources</p>
+            <h2 class="section-title">Ingestion roots</h2>
+        </div>
+    </div>
     {% if config.sources|length > 0 %}
-    <table class="data-table">
+    <div class="table-wrap">
+    <table class="data-table dense-table">
         <thead>
             <tr><th>Name</th><th>Path</th><th>Media Type</th></tr>
         </thead>
@@ -99,21 +155,42 @@
             {% endfor %}
         </tbody>
     </table>
+    </div>
     {% else %}
     <p class="text-muted">No sources configured.</p>
     {% endif %}
+</section>
 </div>
 
-<div class="card">
-    <h2 class="section-title">General Settings</h2>
-    <table class="data-table">
-        <tbody>
-            <tr><td><strong>Database Path</strong></td><td><code class="mono">{{ config.db_path }}</code></td></tr>
-            <tr><td><strong>Log Level</strong></td><td>{{ config.log_level }}</td></tr>
-            <tr><td><strong>Matching Mode</strong></td><td>{{ config.matching.mode }}</td></tr>
-            <tr><td><strong>Metadata Mode</strong></td><td>{{ config.matching.metadata_mode }}</td></tr>
-            <tr><td><strong>Backup Path</strong></td><td><code class="mono">{{ config.backup.path.display() }}</code></td></tr>
-        </tbody>
-    </table>
-</div>
+<section class="card">
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Defaults</p>
+            <h2 class="section-title">General settings</h2>
+            <p class="section-copy">These values drive the current local runtime. Paths below are read directly from the active config object rendered by the server.</p>
+        </div>
+    </div>
+    <div class="key-value-grid">
+        <div class="key-value-row">
+            <div class="key-value-label">Database Path</div>
+            <div><code class="mono">{{ config.db_path }}</code></div>
+        </div>
+        <div class="key-value-row">
+            <div class="key-value-label">Log Level</div>
+            <div>{{ config.log_level }}</div>
+        </div>
+        <div class="key-value-row">
+            <div class="key-value-label">Matching Mode</div>
+            <div>{{ config.matching.mode }}</div>
+        </div>
+        <div class="key-value-row">
+            <div class="key-value-label">Metadata Mode</div>
+            <div>{{ config.matching.metadata_mode }}</div>
+        </div>
+        <div class="key-value-row">
+            <div class="key-value-label">Backup Path</div>
+            <div><code class="mono">{{ config.backup.path.display() }}</code></div>
+        </div>
+    </div>
+</section>
 {% endblock %}

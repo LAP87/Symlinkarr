@@ -75,9 +75,18 @@ pub(crate) async fn run_cache(cfg: &Config, db: &Database, action: CacheAction) 
 ///
 /// Supported key formats:
 ///   - Exact key: `tmdb:tv:12345`, `tvdb:series:67890`
+///   - Prefix: `tmdb:tv:`, `tmdb:movie:`, `tvdb:series:`
 ///   - Short media ID: `tmdb:12345` → invalidates `tmdb:tv:12345` and `tmdb:movie:12345`
 ///   - Keyword: `anime-lists` → invalidates the anime-lists XML cache
 pub(crate) async fn invalidate_metadata_cache(db: &Database, key: &str) -> Result<u64> {
+    if key.ends_with(':') {
+        let deleted = db.invalidate_cached_prefix(key).await?;
+        if deleted > 0 {
+            info!("Invalidated metadata cache key prefix: {}", key);
+        }
+        return Ok(deleted);
+    }
+
     // Expand short-form media IDs into the actual cache key patterns.
     let keys_to_try: Vec<String> = if key.starts_with("tmdb:tv:")
         || key.starts_with("tmdb:movie:")
@@ -159,6 +168,34 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn invalidate_prefix_key_removes_matching_family() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = Database::new(dir.path().join("symlinkarr.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        db.set_cached("tmdb:tv:12345", "{\"title\":\"Show\"}", 24)
+            .await
+            .unwrap();
+        db.set_cached("tmdb:tv:external_ids:12345", "{\"imdb_id\":\"tt1\"}", 24)
+            .await
+            .unwrap();
+        db.set_cached("tmdb:movie:12345", "{\"title\":\"Movie\"}", 24)
+            .await
+            .unwrap();
+
+        let deleted = invalidate_metadata_cache(&db, "tmdb:tv:").await.unwrap();
+        assert_eq!(deleted, 2);
+        assert!(db.get_cached("tmdb:tv:12345").await.unwrap().is_none());
+        assert!(db
+            .get_cached("tmdb:tv:external_ids:12345")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(db.get_cached("tmdb:movie:12345").await.unwrap().is_some());
     }
 
     #[tokio::test]

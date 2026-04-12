@@ -2,17 +2,18 @@
 
 use askama::Template;
 use axum::{
+    body::Bytes,
     extract::{Form, Path, Query, State},
     http::StatusCode,
-    response::{Html, IntoResponse, Response},
+    response::{Html, IntoResponse, Redirect, Response},
 };
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Component, Path as StdPath, PathBuf};
 use tracing::{error, info};
 
 use crate::backup::BackupManager;
-use crate::cleanup_audit::{self, CleanupScope};
+use crate::cleanup_audit;
 use crate::commands::backup::ensure_backup_restore_runtime_healthy;
 use crate::commands::cleanup::{
     anime_remediation_block_reason_catalog, apply_anime_remediation_plan_with_refresh,
@@ -27,11 +28,12 @@ use crate::commands::doctor::{collect_doctor_checks, DoctorCheckMode};
 use crate::commands::report::build_anime_remediation_report;
 use crate::commands::selected_libraries;
 use crate::db::{AcquisitionJobCounts, LinkEventHistoryRecord, ScanHistoryRecord};
+use crate::discovery::DiscoverSummary;
 use crate::media_servers::deferred_refresh_summary;
 
 use super::templates::*;
 use super::{
-    clamp_link_list_limit, latest_cleanup_report_path, load_cleanup_report,
+    clamp_link_list_limit, infer_cleanup_scope, latest_cleanup_report_path, load_cleanup_report,
     resolve_cleanup_report_path, should_surface_cleanup_audit_outcome, should_surface_scan_outcome,
     WebState,
 };
@@ -72,6 +74,63 @@ fn dashboard_stats_from_web_stats(stats: crate::db::WebStats) -> DashboardStats 
 
 fn queue_overview_from_counts(counts: AcquisitionJobCounts) -> QueueOverview {
     counts.into()
+}
+
+fn collect_health_checks(state: &WebState) -> BTreeMap<String, HealthCheck> {
+    let mut health_checks = BTreeMap::new();
+
+    health_checks.insert(
+        "database".to_string(),
+        HealthCheck {
+            service: "SQLite Database".to_string(),
+            status: "healthy".to_string(),
+            message: "Connected".to_string(),
+        },
+    );
+
+    if state.config.has_tmdb() {
+        health_checks.insert(
+            "tmdb".to_string(),
+            HealthCheck {
+                service: "TMDB API".to_string(),
+                status: "configured".to_string(),
+                message: "API key set".to_string(),
+            },
+        );
+    } else {
+        health_checks.insert(
+            "tmdb".to_string(),
+            HealthCheck {
+                service: "TMDB API".to_string(),
+                status: "missing".to_string(),
+                message: "No API key configured".to_string(),
+            },
+        );
+    }
+
+    if state.config.has_tvdb() {
+        health_checks.insert(
+            "tvdb".to_string(),
+            HealthCheck {
+                service: "TVDB API".to_string(),
+                status: "configured".to_string(),
+                message: "API key set".to_string(),
+            },
+        );
+    }
+
+    if state.config.has_realdebrid() {
+        health_checks.insert(
+            "realdebrid".to_string(),
+            HealthCheck {
+                service: "Real-Debrid API".to_string(),
+                status: "configured".to_string(),
+                message: "API token set".to_string(),
+            },
+        );
+    }
+
+    health_checks
 }
 
 fn scan_run_views(history: Vec<ScanHistoryRecord>) -> Vec<ScanRunView> {
@@ -323,81 +382,34 @@ pub async fn get_status(State(state): State<WebState>) -> impl IntoResponse {
             QueueOverview::default()
         }
     };
+    let checks = collect_health_checks(&state);
+    let deferred_refresh = deferred_refresh_summary(&state.config)
+        .map(DeferredRefreshSummaryView::from)
+        .unwrap_or_default();
+    let tracked_dead_links = match state.database.get_dead_links_limited(8).await {
+        Ok(links) => links,
+        Err(e) => {
+            error!("Failed to get tracked dead links: {}", e);
+            vec![]
+        }
+    };
 
     let template = StatusTemplate {
         stats,
         recent_links,
+        tracked_dead_links,
         queue,
+        checks,
+        deferred_refresh,
     };
     Html(template.render().unwrap_or_else(|e| e.to_string())).into_response()
 }
 
-/// GET /health - Health check page
+/// GET /health - Compatibility alias for the status page
 pub async fn get_health(State(state): State<WebState>) -> impl IntoResponse {
-    info!("Serving health page");
-
-    let mut health_checks = HashMap::new();
-
-    // Check database
-    health_checks.insert(
-        "database".to_string(),
-        HealthCheck {
-            service: "SQLite Database".to_string(),
-            status: "healthy".to_string(),
-            message: "Connected".to_string(),
-        },
-    );
-
-    // Check external services
-    if state.config.has_tmdb() {
-        health_checks.insert(
-            "tmdb".to_string(),
-            HealthCheck {
-                service: "TMDB API".to_string(),
-                status: "configured".to_string(),
-                message: "API key set".to_string(),
-            },
-        );
-    } else {
-        health_checks.insert(
-            "tmdb".to_string(),
-            HealthCheck {
-                service: "TMDB API".to_string(),
-                status: "missing".to_string(),
-                message: "No API key configured".to_string(),
-            },
-        );
-    }
-
-    if state.config.has_tvdb() {
-        health_checks.insert(
-            "tvdb".to_string(),
-            HealthCheck {
-                service: "TVDB API".to_string(),
-                status: "configured".to_string(),
-                message: "API key set".to_string(),
-            },
-        );
-    }
-
-    if state.config.has_realdebrid() {
-        health_checks.insert(
-            "realdebrid".to_string(),
-            HealthCheck {
-                service: "Real-Debrid API".to_string(),
-                status: "configured".to_string(),
-                message: "API token set".to_string(),
-            },
-        );
-    }
-
-    let template = HealthTemplate {
-        checks: health_checks,
-        deferred_refresh: deferred_refresh_summary(&state.config)
-            .map(DeferredRefreshSummaryView::from)
-            .unwrap_or_default(),
-    };
-    Html(template.render().unwrap_or_else(|e| e.to_string())).into_response()
+    let _ = state;
+    info!("Redirecting /health to /status");
+    Redirect::permanent("/status")
 }
 
 /// GET /scan - Scan page
@@ -435,6 +447,7 @@ pub async fn get_scan(
         history,
         queue,
         filters,
+        default_dry_run: state.config.symlink.dry_run,
         csrf_token: browser_csrf_token(&state),
     };
     Html(template.render().unwrap_or_else(|e| e.to_string())).into_response()
@@ -900,42 +913,18 @@ pub async fn post_cleanup_anime_remediation_apply(
 }
 
 /// POST /cleanup/audit - Run audit
-pub async fn post_cleanup_audit(
-    State(state): State<WebState>,
-    Form(form): Form<CleanupAuditForm>,
-) -> impl IntoResponse {
+pub async fn post_cleanup_audit(State(state): State<WebState>, body: Bytes) -> impl IntoResponse {
+    let form = CleanupAuditForm::from_form_bytes(&body);
     if let Some(response) = require_browser_csrf_token(&state, &form.csrf_token, "/cleanup/audit") {
         return response;
     }
 
     let selected_libraries = form.selected_libraries();
+    let scope = infer_cleanup_scope(&state.config, &selected_libraries);
     info!(
-        "Running cleanup audit (scope={}, libraries={:?})",
-        form.scope, selected_libraries
+        "Running cleanup audit (scope={:?}, libraries={:?})",
+        scope, selected_libraries
     );
-
-    let scope = match CleanupScope::parse(&form.scope) {
-        Ok(s) => s,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Html(
-                    CleanupResultTemplate {
-                        success: false,
-                        message: format!("Invalid scope: {}", e),
-                        active_cleanup_audit: state.active_cleanup_audit().await.map(Into::into),
-                        last_cleanup_audit_outcome: visible_last_cleanup_audit_outcome(&state)
-                            .await,
-                        report_path: None,
-                        report_summary: None,
-                    }
-                    .render()
-                    .unwrap_or_else(|e| e.to_string()),
-                ),
-            )
-                .into_response();
-        }
-    };
 
     match state.start_cleanup_audit(scope, selected_libraries.clone()).await
     {
@@ -1003,6 +992,7 @@ pub async fn get_cleanup_prune(
                 legacy_anime_root_groups: vec![],
                 report_path: None,
                 confirmation_token: None,
+                already_applied: false,
                 error_message: None,
                 csrf_token: browser_csrf_token(&state),
             }
@@ -1030,6 +1020,7 @@ pub async fn get_cleanup_prune(
                     legacy_anime_root_groups: vec![],
                     report_path: None,
                     confirmation_token: None,
+                    already_applied: false,
                     error_message: Some(err.to_string()),
                     csrf_token: browser_csrf_token(&state),
                 }
@@ -1056,6 +1047,7 @@ pub async fn get_cleanup_prune(
                 legacy_anime_root_groups: vec![],
                 report_path: None,
                 confirmation_token: None,
+                already_applied: false,
                 error_message: Some(format!(
                     "Cleanup report not found: {}",
                     report_path.display()
@@ -1088,6 +1080,7 @@ pub async fn get_cleanup_prune(
                     legacy_anime_root_groups: vec![],
                     report_path: None,
                     confirmation_token: None,
+                    already_applied: false,
                     error_message: Some(format!("Failed to read report: {}", e)),
                     csrf_token: browser_csrf_token(&state),
                 }
@@ -1117,6 +1110,7 @@ pub async fn get_cleanup_prune(
                     legacy_anime_root_groups: vec![],
                     report_path: None,
                     confirmation_token: None,
+                    already_applied: false,
                     error_message: Some(format!("Failed to parse report: {}", e)),
                     csrf_token: browser_csrf_token(&state),
                 }
@@ -1186,6 +1180,7 @@ pub async fn get_cleanup_prune(
             .unwrap_or_default(),
         report_path: Some(report_path.to_path_buf()),
         confirmation_token: prune_plan.map(|plan| plan.confirmation_token),
+        already_applied: report.applied_at.is_some(),
         error_message: None,
         csrf_token: browser_csrf_token(&state),
     };
@@ -1202,16 +1197,7 @@ pub async fn post_cleanup_prune(
         return response;
     }
 
-    let redacted_token = if form.token.len() <= 8 {
-        "<redacted>".to_string()
-    } else {
-        format!(
-            "{}…{}",
-            &form.token[..4],
-            &form.token[form.token.len() - 4..]
-        )
-    };
-    info!("Applying prune (token={})", redacted_token);
+    info!("Applying prune from web UI");
 
     // Validate inputs
     if form.report.is_empty() {
@@ -1219,22 +1205,6 @@ pub async fn post_cleanup_prune(
             CleanupResultTemplate {
                 success: false,
                 message: "Report path is required".to_string(),
-                active_cleanup_audit: None,
-                last_cleanup_audit_outcome: None,
-                report_path: None,
-                report_summary: None,
-            }
-            .render()
-            .unwrap_or_else(|e| e.to_string()),
-        )
-        .into_response();
-    }
-
-    if form.token.is_empty() {
-        return Html(
-            CleanupResultTemplate {
-                success: false,
-                message: "Confirmation token is required".to_string(),
                 active_cleanup_audit: None,
                 last_cleanup_audit_outcome: None,
                 report_path: None,
@@ -1348,7 +1318,7 @@ pub async fn post_cleanup_prune(
             report_path: &report_path,
             include_legacy_anime_roots: false,
             max_delete: None,
-            confirm_token: Some(&form.token),
+            confirm_token: None,
             emit_text: true,
         },
     )
@@ -1582,14 +1552,15 @@ pub async fn get_discover(
                 libraries: state.config.libraries.clone(),
                 selected_library,
                 refresh_cache: query.refresh_cache,
+                discover_summary: snapshot.summary,
+                folder_plans: snapshot.folders,
                 discovered_items: snapshot.items,
                 status_message: snapshot.status_message.or_else(|| {
                     (!query.refresh_cache).then(|| {
-                        "Showing cached RD results only. Enable refresh when you want a slower live cache sync first."
+                        "Showing cached or on-disk discover results only. Enable refresh when you want a slower live cache sync first."
                             .to_string()
                     })
                 }),
-                csrf_token: browser_csrf_token(&state),
             };
             (
                 StatusCode::OK,
@@ -1602,13 +1573,14 @@ pub async fn get_discover(
                 libraries: state.config.libraries.clone(),
                 selected_library,
                 refresh_cache: query.refresh_cache,
+                discover_summary: DiscoverSummary::default(),
+                folder_plans: vec![],
                 discovered_items: vec![],
                 status_message: Some(if message.contains("Unknown library filter") {
                     format!("Invalid library filter: {}", message)
                 } else {
                     format!("Discover failed: {}", message)
                 }),
-                csrf_token: browser_csrf_token(&state),
             };
             (
                 if message.contains("Unknown library filter") {
@@ -1620,32 +1592,6 @@ pub async fn get_discover(
             )
         }
     }
-}
-
-/// POST /discover/add - Add torrent to library
-pub async fn post_discover_add(
-    State(state): State<WebState>,
-    Form(form): Form<DiscoverAddForm>,
-) -> impl IntoResponse {
-    if let Some(response) = require_browser_csrf_token(&state, &form.csrf_token, "/discover/add") {
-        return response;
-    }
-
-    info!(
-        "Rejecting web discover-add for torrent {} (library='{}') until safe Arr selection is wired",
-        form.torrent_id, form.library
-    );
-    let template = DiscoverResultTemplate {
-        success: false,
-        message: "Web discover/add is not wired to a safe Decypharr routing flow yet. Use the CLI: `symlinkarr discover add <torrent_id> --arr <arr-name>`."
-            .to_string(),
-    };
-
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Html(template.render().unwrap_or_else(|e| e.to_string())),
-    )
-        .into_response()
 }
 
 /// GET /backup - Backup page
@@ -1825,17 +1771,42 @@ pub struct ScanTriggerForm {
     pub csrf_token: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct CleanupAuditForm {
-    pub scope: String,
     pub library: Option<String>,
-    #[serde(default)]
     pub libraries: Vec<String>,
-    #[serde(default)]
     pub csrf_token: String,
 }
 
 impl CleanupAuditForm {
+    /// Parse directly from raw form bytes. `serde_urlencoded` cannot deserialize
+    /// repeated HTML checkbox fields into `Vec<String>`, so we bypass it here.
+    fn from_form_bytes(body: &[u8]) -> Self {
+        let mut csrf_token = String::new();
+        let mut library = None;
+        let mut libraries = Vec::new();
+
+        for (key, value) in form_urlencoded::parse(body) {
+            match key.as_ref() {
+                "csrf_token" => csrf_token = value.into_owned(),
+                "library" => library = Some(value.into_owned()),
+                "libraries" => {
+                    let v = value.trim();
+                    if !v.is_empty() {
+                        libraries.push(v.to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        Self {
+            library,
+            libraries,
+            csrf_token,
+        }
+    }
+
     fn selected_libraries(&self) -> Vec<String> {
         let mut libraries = self
             .libraries
@@ -1858,7 +1829,6 @@ impl CleanupAuditForm {
 #[derive(Debug, Deserialize)]
 pub struct CleanupPruneForm {
     pub report: String,
-    pub token: String,
     #[serde(default)]
     pub csrf_token: String,
 }
@@ -1878,14 +1848,6 @@ pub struct AnimeRemediationApplyForm {
     pub token: String,
     pub max_delete: Option<usize>,
     pub library: Option<String>,
-    #[serde(default)]
-    pub csrf_token: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct DiscoverAddForm {
-    pub torrent_id: String,
-    pub library: String,
     #[serde(default)]
     pub csrf_token: String,
 }
@@ -1914,7 +1876,7 @@ mod tests {
     use std::str::FromStr;
     use tempfile::TempDir;
 
-    use crate::cleanup_audit::{CleanupReport, CleanupSummary};
+    use crate::cleanup_audit::{CleanupReport, CleanupScope, CleanupSummary};
     use crate::config::{
         ApiConfig, BackupConfig, BazarrConfig, CleanupPolicyConfig, Config, ContentType,
         DaemonConfig, DecypharrConfig, DmmConfig, FeaturesConfig, LibraryConfig, MatchingConfig,
@@ -2198,8 +2160,9 @@ mod tests {
         )
         .await;
 
-        assert!(body.contains("Start Real Scan"));
+        assert!(body.contains("Start Scan"));
         assert!(body.contains("Search Missing"));
+        assert!(!body.contains("name=\"dry_run\" value=\"true\" checked"));
         assert!(body.contains("Candidate Slots"));
         assert!(body.contains("1024"));
         assert!(body.contains("4/6"));
@@ -2337,6 +2300,7 @@ mod tests {
                 high: 1,
                 warning: 0,
             },
+            applied_at: None,
         };
         std::fs::write(&report_path, serde_json::to_vec(&report).unwrap()).unwrap();
 
@@ -2433,7 +2397,7 @@ mod tests {
         )
         .await;
 
-        assert!(body.contains("Anime Remediation Backlog"));
+        assert!(body.contains("Legacy Anime Cleanup"));
         assert!(body.contains("Show A"));
         assert!(body.contains("Show Full Backlog") || body.contains("Show Sample"));
         assert!(
@@ -2517,10 +2481,12 @@ mod tests {
         )
         .await;
 
-        assert!(body.contains("Apply this exact saved plan"));
-        assert!(body.contains("Confirmation token"));
-        assert!(body.contains("Apply Guarded Remediation"));
+        assert!(body.contains("Apply this saved plan"));
+        assert!(body.contains("already bound to this saved plan"));
+        assert!(body.contains("Apply Legacy Cleanup"));
         assert!(body.contains("Report file:"));
+        assert!(body.contains("name=\"token\""));
+        assert!(!body.contains("Confirmation token"));
     }
 
     #[cfg(unix)]
@@ -2705,6 +2671,8 @@ mod tests {
         let body = render_body(get_status(State(ctx.state.clone())).await).await;
 
         assert!(body.contains("Queue pressure"));
+        assert!(body.contains("Service connectivity"));
+        assert!(body.contains("Deferred media refresh"));
         assert!(body.contains("Recent Links"));
         assert!(body.contains("tvdb-1"));
         assert!(body.contains("Queued"));
@@ -2755,13 +2723,28 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cfg = test_config(dir.path());
         let db = Database::new(&cfg.db_path).await.unwrap();
+        std::fs::create_dir_all(dir.path().join("anime").join("Missing Show {tvdb-1}")).unwrap();
+        std::fs::create_dir_all(
+            dir.path()
+                .join("rd")
+                .join("Missing.Show.S01E01.1080p.WEB-DL"),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path()
+                .join("rd")
+                .join("Missing.Show.S01E01.1080p.WEB-DL")
+                .join("Missing.Show.S01E01.1080p.WEB-DL.mkv"),
+            b"video",
+        )
+        .unwrap();
 
         db.upsert_rd_torrent(
             "rd-1",
             "hash-1",
             "Missing.Show.S01E01.1080p.WEB-DL.mkv",
             "downloaded",
-            r#"{"files":[{"bytes":1073741824,"path":"Missing.Show.S01E01.1080p.WEB-DL.mkv"}]}"#,
+            r#"{"files":[{"selected":1,"bytes":1073741824,"path":"Missing.Show.S01E01.1080p.WEB-DL.mkv"}]}"#,
         )
         .await
         .unwrap();
@@ -2774,10 +2757,15 @@ mod tests {
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let body = String::from_utf8(bytes.to_vec()).unwrap();
 
-        assert!(body.contains("Discovered Items (1)"));
+        assert!(body.contains("Folder Plans"));
+        assert!(body.contains("Placement Report"));
         assert!(body.contains("Missing Show"));
+        assert!(body.contains("create"));
+        assert!(body.contains("Season 01"));
         assert!(body.contains("Real-Debrid API key not configured"));
         assert!(body.contains("live refresh is unavailable"));
+        assert!(body.contains("Web discover is intentionally read-only"));
+        assert!(!body.contains("name=\"torrent_id\""));
     }
 
     #[tokio::test]
@@ -2874,27 +2862,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn post_discover_add_returns_not_implemented_failure() {
-        let ctx = test_context().await;
-        let csrf_token = ctx.state.browser_session_token().to_string();
-        let response = post_discover_add(
-            State(ctx.state),
-            Form(DiscoverAddForm {
-                torrent_id: "rd-123".to_string(),
-                library: "Anime".to_string(),
-                csrf_token,
-            }),
-        )
-        .await
-        .into_response();
-
-        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
-        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let body = String::from_utf8(bytes.to_vec()).unwrap();
-        assert!(body.contains("not wired to a safe Decypharr routing flow"));
-    }
-
-    #[tokio::test]
     async fn cleanup_page_renders_latest_report_summary() {
         let ctx = test_context().await;
         let report_path = ctx
@@ -2914,6 +2881,7 @@ mod tests {
                 high: 5,
                 warning: 4,
             },
+            applied_at: None,
         };
         std::fs::write(&report_path, serde_json::to_vec(&report).unwrap()).unwrap();
 
@@ -2923,13 +2891,12 @@ mod tests {
         assert!(body.contains("12"));
         assert!(body.contains("Open Prune Preview"));
         assert!(!body.contains("Apply Cleanup"));
-        assert!(body.contains("Apply only from preview"));
+        assert!(body.contains("Apply from the preview page"));
     }
 
     #[test]
     fn cleanup_audit_form_selected_libraries_dedupes_legacy_and_multi_select_fields() {
         let form = CleanupAuditForm {
-            scope: "anime".to_string(),
             library: Some("Anime".to_string()),
             libraries: vec!["Anime".to_string(), "Anime 2".to_string()],
             csrf_token: String::new(),
@@ -2944,7 +2911,6 @@ mod tests {
     #[test]
     fn cleanup_audit_form_selected_libraries_uses_single_when_multi_empty() {
         let form = CleanupAuditForm {
-            scope: "anime".to_string(),
             library: Some("Anime".to_string()),
             libraries: vec![],
             csrf_token: String::new(),
@@ -2956,7 +2922,6 @@ mod tests {
     #[test]
     fn cleanup_audit_form_selected_libraries_ignores_empty_library() {
         let form = CleanupAuditForm {
-            scope: "anime".to_string(),
             library: Some("".to_string()),
             libraries: vec!["Anime".to_string()],
             csrf_token: String::new(),
@@ -2969,7 +2934,6 @@ mod tests {
     fn cleanup_audit_form_selected_libraries_whitespace_trimmed() {
         // Single is appended after multi-select, whitespace is trimmed throughout
         let form = CleanupAuditForm {
-            scope: "anime".to_string(),
             library: Some("  Anime  ".to_string()),
             libraries: vec!["  Anime 2  ".to_string()],
             csrf_token: String::new(),

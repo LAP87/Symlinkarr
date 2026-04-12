@@ -94,14 +94,6 @@ impl SourceScanner {
             source.name
         );
 
-        // Determine content type request from config
-        let content_type = match source.media_type.as_str() {
-            "anime" => Some(ContentType::Anime),
-            "tv" => Some(ContentType::Tv),
-            "movie" => Some(ContentType::Movie),
-            _ => None,
-        };
-
         let mut items = Vec::new();
 
         for (path, _size) in files {
@@ -114,14 +106,7 @@ impl SourceScanner {
                 continue;
             }
 
-            let item = if let Some(ct) = content_type {
-                self.parse_filename_with_type(&path, ct)
-            } else {
-                // Default behavior
-                self.parse_filename(&path)
-            };
-
-            if let Some(item) = item {
+            if let Some(item) = self.parse_path_for_source(&path, source) {
                 items.push(item);
             }
         }
@@ -143,14 +128,6 @@ impl SourceScanner {
             return Vec::new();
         }
 
-        // Determine content type request from config
-        let content_type = match source.media_type.as_str() {
-            "anime" => Some(ContentType::Anime),
-            "tv" => Some(ContentType::Tv),
-            "movie" => Some(ContentType::Movie),
-            _ => None,
-        };
-
         let mut items = Vec::new();
 
         for entry in WalkDir::new(&source.path)
@@ -162,14 +139,7 @@ impl SourceScanner {
             let path = entry.path();
             if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                 if VIDEO_EXTENSIONS.contains(&ext.to_lowercase().as_str()) {
-                    let item = if let Some(ct) = content_type {
-                        self.parse_filename_with_type(path, ct)
-                    } else {
-                        // Default behavior for "auto" or unidentified
-                        self.parse_filename(path)
-                    };
-
-                    if let Some(item) = item {
+                    if let Some(item) = self.parse_path_for_source(path, source) {
                         items.push(item);
                     }
                 }
@@ -192,6 +162,21 @@ impl SourceScanner {
             ContentType::Tv | ContentType::Movie => {
                 self.parse_filename_with_kind(path, ParserKind::Standard)
             }
+        }
+    }
+
+    /// Parse a path using the parser mode implied by a source config.
+    /// Unknown or "auto" source modes fall back to the standard parser.
+    pub fn parse_path_for_source(
+        &self,
+        path: &std::path::Path,
+        source: &SourceConfig,
+    ) -> Option<SourceItem> {
+        match source.media_type.as_str() {
+            "anime" => self.parse_filename_with_type(path, ContentType::Anime),
+            "tv" => self.parse_filename_with_type(path, ContentType::Tv),
+            "movie" => self.parse_filename_with_type(path, ContentType::Movie),
+            _ => self.parse_filename(path),
         }
     }
 

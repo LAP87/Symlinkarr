@@ -1,10 +1,12 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use tracing::{debug, info, warn};
 
+use crate::api::decypharr::{DecypharrClient, WebDavProbeError};
+use crate::config::Config;
 use crate::db::Database;
 use crate::models::{LinkRecord, LinkStatus, MatchResult, MediaType};
 use crate::utils::{
@@ -41,6 +43,132 @@ struct LinkWriteResult {
     outcome: LinkWriteOutcome,
     skip_reason: Option<&'static str>,
     refresh_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+enum SourceReadiness {
+    Ready,
+    Unreadable(String),
+}
+
+impl SourceReadiness {
+    fn into_result(self) -> std::result::Result<(), String> {
+        match self {
+            Self::Ready => Ok(()),
+            Self::Unreadable(reason) => Err(reason),
+        }
+    }
+}
+
+struct SourceReadinessGate {
+    decypharr: DecypharrClient,
+    source_roots: Vec<PathBuf>,
+    probe_timeout: Duration,
+}
+
+impl SourceReadinessGate {
+    fn from_config(cfg: &Config) -> Option<Self> {
+        if !cfg.symlink.verify_source_readability || !cfg.has_decypharr() || cfg.sources.is_empty()
+        {
+            return None;
+        }
+
+        Some(Self {
+            decypharr: DecypharrClient::from_config(&cfg.decypharr),
+            source_roots: cfg
+                .sources
+                .iter()
+                .map(|source| source.path.clone())
+                .collect(),
+            probe_timeout: Duration::from_millis(cfg.symlink.source_probe_timeout_ms),
+        })
+    }
+
+    fn matching_source_root<'a>(&'a self, source_path: &Path) -> Option<&'a PathBuf> {
+        self.source_roots
+            .iter()
+            .filter(|root| source_path.starts_with(root))
+            .max_by_key(|root| root.components().count())
+    }
+
+    fn candidate_relative_paths(source_root: &Path, source_path: &Path) -> Vec<PathBuf> {
+        let mut candidates = Vec::new();
+
+        let mut push_relative = |base: &Path| {
+            if let Ok(relative) = source_path.strip_prefix(base) {
+                let candidate = relative.to_path_buf();
+                if !candidate.as_os_str().is_empty() && !candidates.contains(&candidate) {
+                    candidates.push(candidate);
+                }
+            }
+        };
+
+        let root_name = source_root.file_name().and_then(|value| value.to_str());
+        if root_name == Some("__all__") {
+            if let Some(parent) = source_root.parent() {
+                push_relative(parent);
+            }
+            push_relative(source_root);
+        } else {
+            push_relative(source_root);
+            if let Some(parent) = source_root.parent() {
+                push_relative(parent);
+            }
+        }
+
+        candidates
+    }
+
+    async fn ensure_readable(
+        &self,
+        source_path: &Path,
+        readiness_cache: &mut HashMap<PathBuf, SourceReadiness>,
+    ) -> std::result::Result<(), String> {
+        let cache_key = source_path.parent().unwrap_or(source_path).to_path_buf();
+        if let Some(cached) = readiness_cache.get(&cache_key) {
+            return cached.clone().into_result();
+        }
+
+        let outcome = if let Some(source_root) = self.matching_source_root(source_path) {
+            let mut saw_not_found = false;
+            let mut first_failure: Option<String> = None;
+
+            for candidate in Self::candidate_relative_paths(source_root, source_path) {
+                match self
+                    .decypharr
+                    .probe_webdav_path(&candidate, self.probe_timeout)
+                    .await
+                {
+                    Ok(()) => {
+                        first_failure = None;
+                        break;
+                    }
+                    Err(WebDavProbeError::NotFound) => {
+                        saw_not_found = true;
+                    }
+                    Err(WebDavProbeError::Unreadable(reason)) => {
+                        first_failure = Some(reason);
+                        break;
+                    }
+                }
+            }
+
+            if let Some(reason) = first_failure {
+                SourceReadiness::Unreadable(reason)
+            } else if saw_not_found {
+                // The source path may belong to a non-Decypharr source tree or a mount layout
+                // we cannot map safely; bypass rather than false-blocking the link.
+                SourceReadiness::Ready
+            } else {
+                SourceReadiness::Ready
+            }
+        } else {
+            SourceReadiness::Ready
+        };
+
+        readiness_cache.insert(cache_key, outcome.clone());
+        outcome.into_result()
+    }
 }
 
 fn increment_skip_reason(skip_reasons: &mut BTreeMap<String, u64>, reason: &str) {
@@ -105,6 +233,7 @@ pub struct Linker {
     strict_mode: bool,
     reconcile_links: bool,
     naming_template: String,
+    source_readiness_gate: Option<SourceReadinessGate>,
 }
 
 impl Linker {
@@ -124,7 +253,13 @@ impl Linker {
             strict_mode,
             reconcile_links,
             naming_template: naming_template.to_string(),
+            source_readiness_gate: None,
         }
+    }
+
+    pub fn with_source_readiness_from_config(mut self, cfg: &Config) -> Self {
+        self.source_readiness_gate = SourceReadinessGate::from_config(cfg);
+        self
     }
 
     /// Process a list of matches and create/update symlinks.
@@ -144,6 +279,7 @@ impl Linker {
         });
         let mut source_exists_cache: HashMap<PathBuf, bool> = HashMap::new();
         let mut parent_exists_cache: HashMap<PathBuf, bool> = HashMap::new();
+        let mut source_readiness_cache: HashMap<PathBuf, SourceReadiness> = HashMap::new();
         let mut existing_links = self.preload_existing_links_for_matches(db, matches).await?;
 
         for (idx, m) in matches.iter().enumerate() {
@@ -182,7 +318,14 @@ impl Linker {
             }
 
             match self
-                .create_link(m, &target_path, db, &mut existing_links, run_token)
+                .create_link(
+                    m,
+                    &target_path,
+                    db,
+                    &mut existing_links,
+                    run_token,
+                    &mut source_readiness_cache,
+                )
                 .await
             {
                 Ok(result) => {
@@ -226,6 +369,7 @@ impl Linker {
         db: &Database,
         existing_links: &mut HashMap<PathBuf, LinkRecord>,
         run_token: Option<&str>,
+        source_readiness_cache: &mut HashMap<PathBuf, SourceReadiness>,
     ) -> Result<LinkWriteResult> {
         let media_id = m.library_item.id.to_string();
 
@@ -381,6 +525,35 @@ impl Linker {
             }
         }
 
+        if !self.dry_run {
+            if let Some(gate) = &self.source_readiness_gate {
+                if let Err(reason) = gate
+                    .ensure_readable(&m.source_item.path, source_readiness_cache)
+                    .await
+                {
+                    warn!(
+                        "Skipping link creation because source failed WebDAV readability probe: {:?} ({})",
+                        m.source_item.path, reason
+                    );
+                    self.log_link_event(
+                        db,
+                        run_token,
+                        "skipped",
+                        target_path,
+                        Some(&m.source_item.path),
+                        Some(media_id.as_str()),
+                        Some("source_unreadable_before_link"),
+                    )
+                    .await;
+                    return Ok(LinkWriteResult {
+                        outcome: LinkWriteOutcome::Skipped,
+                        skip_reason: Some("source_unreadable_before_link"),
+                        refresh_path: None,
+                    });
+                }
+            }
+        }
+
         if self.dry_run {
             debug!(
                 "[DRY-RUN] Would create: {:?} → {:?}",
@@ -463,9 +636,6 @@ impl Linker {
             existing_links.insert(target_path.clone(), record);
         }
 
-        // (record variable moved into the tx block above for live path;
-        //  dry-run path doesn't need DB recording)
-
         if is_update {
             self.log_link_event(
                 db,
@@ -515,7 +685,7 @@ impl Linker {
     }
 
     /// Build the target path for a symlink based on the naming template.
-    fn build_target_path(&self, m: &MatchResult) -> Result<PathBuf> {
+    pub(crate) fn build_target_path(&self, m: &MatchResult) -> Result<PathBuf> {
         let lib_path = &m.library_item.path;
 
         match m.library_item.media_type {
@@ -895,7 +1065,13 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    use crate::config::ContentType;
+    use crate::api::test_helpers::spawn_sequence_http_server;
+    use crate::config::{
+        ApiConfig, BackupConfig, BazarrConfig, CleanupPolicyConfig, Config, ContentType,
+        DaemonConfig, DecypharrConfig, DmmConfig, FeaturesConfig, MatchingConfig,
+        MediaBrowserConfig, PlexConfig, ProwlarrConfig, RadarrConfig, RealDebridConfig,
+        SecurityConfig, SonarrConfig, SourceConfig, SymlinkConfig, TautulliConfig, WebConfig,
+    };
     use crate::db::Database;
     use crate::models::{
         LibraryItem, LinkRecord, LinkStatus, MatchResult, MediaId, MediaType, SourceItem,
@@ -1124,6 +1300,45 @@ mod tests {
         }
     }
 
+    fn test_config_with_decypharr(base_url: &str, source_root: PathBuf) -> Config {
+        Config {
+            libraries: vec![],
+            sources: vec![SourceConfig {
+                name: "RD".to_string(),
+                path: source_root,
+                media_type: "auto".to_string(),
+            }],
+            api: ApiConfig::default(),
+            realdebrid: RealDebridConfig::default(),
+            decypharr: DecypharrConfig {
+                url: base_url.to_string(),
+                ..DecypharrConfig::default()
+            },
+            dmm: DmmConfig::default(),
+            backup: BackupConfig::default(),
+            db_path: ":memory:".to_string(),
+            log_level: "info".to_string(),
+            daemon: DaemonConfig::default(),
+            symlink: SymlinkConfig::default(),
+            matching: MatchingConfig::default(),
+            prowlarr: ProwlarrConfig::default(),
+            bazarr: BazarrConfig::default(),
+            tautulli: TautulliConfig::default(),
+            plex: PlexConfig::default(),
+            emby: MediaBrowserConfig::default(),
+            jellyfin: MediaBrowserConfig::default(),
+            radarr: RadarrConfig::default(),
+            sonarr: SonarrConfig::default(),
+            sonarr_anime: SonarrConfig::default(),
+            features: FeaturesConfig::default(),
+            security: SecurityConfig::default(),
+            cleanup: CleanupPolicyConfig::default(),
+            web: WebConfig::default(),
+            loaded_from: None,
+            secret_files: Vec::new(),
+        }
+    }
+
     #[tokio::test]
     async fn test_strict_mode_skips_regular_file_overwrite() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -1147,9 +1362,17 @@ mod tests {
             .preload_existing_links_for_matches(&db, std::slice::from_ref(&m))
             .await
             .unwrap();
+        let mut readiness_cache = HashMap::new();
 
         let outcome = linker
-            .create_link(&m, &target_path, &db, &mut existing_links, None)
+            .create_link(
+                &m,
+                &target_path,
+                &db,
+                &mut existing_links,
+                None,
+                &mut readiness_cache,
+            )
             .await
             .unwrap();
 
@@ -1182,9 +1405,17 @@ mod tests {
             .preload_existing_links_for_matches(&db, std::slice::from_ref(&m))
             .await
             .unwrap();
+        let mut readiness_cache = HashMap::new();
 
         let err = linker
-            .create_link(&m, &target_path, &db, &mut existing_links, None)
+            .create_link(
+                &m,
+                &target_path,
+                &db,
+                &mut existing_links,
+                None,
+                &mut readiness_cache,
+            )
             .await
             .unwrap_err();
 
@@ -1216,6 +1447,56 @@ mod tests {
         let target = lib_path.join("Sample Movie.mkv");
         assert!(db.get_link_by_target_path(&target).await.unwrap().is_none());
         assert!(!target.exists());
+    }
+
+    #[tokio::test]
+    async fn test_create_link_skips_unreadable_source_before_live_write() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let lib_path = dir.path().join("Sample Movie {tmdb-550}");
+        fs::create_dir_all(&lib_path).unwrap();
+
+        let source_root = dir.path().join("mnt").join("realdebrid").join("__all__");
+        let source_path = source_root.join("broken-release").join("sample_movie.mkv");
+        fs::create_dir_all(source_path.parent().unwrap()).unwrap();
+        fs::write(&source_path, "video").unwrap();
+
+        let (base_url, _) =
+            spawn_sequence_http_server(&[("HTTP/1.1 503 Service Unavailable", "bad object")])
+                .unwrap();
+        let cfg = test_config_with_decypharr(&base_url, source_root.clone());
+
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+        let linker = Linker::new(false, true, "").with_source_readiness_from_config(&cfg);
+        let m = sample_movie_match(&lib_path, &source_path);
+        let target_path = linker.build_target_path(&m).unwrap();
+        let mut existing_links = linker
+            .preload_existing_links_for_matches(&db, std::slice::from_ref(&m))
+            .await
+            .unwrap();
+        let mut readiness_cache = HashMap::new();
+
+        let outcome = linker
+            .create_link(
+                &m,
+                &target_path,
+                &db,
+                &mut existing_links,
+                None,
+                &mut readiness_cache,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.outcome, LinkWriteOutcome::Skipped);
+        assert_eq!(outcome.skip_reason, Some("source_unreadable_before_link"));
+        assert!(!target_path.exists());
+        assert!(db
+            .get_link_by_target_path(&target_path)
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -1261,9 +1542,17 @@ mod tests {
             .preload_existing_links_for_matches(&db, std::slice::from_ref(&m))
             .await
             .unwrap();
+        let mut readiness_cache = HashMap::new();
 
         let outcome = linker
-            .create_link(&m, &target_path, &db, &mut existing_links, None)
+            .create_link(
+                &m,
+                &target_path,
+                &db,
+                &mut existing_links,
+                None,
+                &mut readiness_cache,
+            )
             .await
             .unwrap();
 
@@ -1297,9 +1586,17 @@ mod tests {
             .preload_existing_links_for_matches(&db, std::slice::from_ref(&m))
             .await
             .unwrap();
+        let mut readiness_cache = HashMap::new();
 
         let outcome = linker
-            .create_link(&m, &target_path, &db, &mut existing_links, None)
+            .create_link(
+                &m,
+                &target_path,
+                &db,
+                &mut existing_links,
+                None,
+                &mut readiness_cache,
+            )
             .await
             .unwrap();
 
@@ -1349,9 +1646,17 @@ mod tests {
             .preload_existing_links_for_matches(&db, std::slice::from_ref(&m))
             .await
             .unwrap();
+        let mut readiness_cache = HashMap::new();
 
         let outcome = linker
-            .create_link(&m, &target_path, &db, &mut existing_links, None)
+            .create_link(
+                &m,
+                &target_path,
+                &db,
+                &mut existing_links,
+                None,
+                &mut readiness_cache,
+            )
             .await
             .unwrap();
 

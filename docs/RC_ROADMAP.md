@@ -48,8 +48,32 @@ Recently tightened:
 - backup restore now version-gates backup manifests so future schema changes fail loudly instead of restoring with silent defaults
 - full backups now also capture a sibling SQLite snapshot, and current-format manifests validate integrity before list/restore trust them
 - the wiki-style feature guide is now part of the normal docs/help surface under `docs/GITHUB_WIKI_FEATURES.md`
+- roadmap/manual/wiki/root `--help`/API schema now describe the same current security modes, cache policy, and known anime-specials limit
 
 ## Must Finish Before `v1.0 RC`
+
+### Current Remaining Work
+
+As of `2026-04-12`, the remaining RC work is now down to the intentional release cut from a clean worktree plus keeping the known limits explicit.
+
+What is still left:
+
+- cut the RC commit/tag/release intentionally from a clean worktree
+- keep the anime-specials and broader legacy-anime remediation limits explicit, even though one safe live remediation pass has now been proven
+
+Already validated live by `2026-04-12`:
+
+- daemon scan completed successfully on realistic data after a clean Docker restart
+- `doctor` and `status --health` passed against the live configured stack
+- `repair scan`, `repair auto --dry-run`, and `backup restore --dry-run` were exercised against real mounts
+- backup restore root enforcement was fixed so existing library symlinks are no longer misclassified as outside allowed library roots during restore validation
+- scheduled `VACUUM` completed in a real daemon maintenance window and the daemon resumed normal scan work afterward
+- `cleanup prune` was exercised in preview mode on a real anime audit report, with expected safety blocking for legacy anime roots
+- anime remediation was exercised against the live Plex DB, and one eligible group (`Angels of Death`) was applied safely by quarantining 16 legacy symlinks while leaving the tagged root intact
+- release Docker paths were re-verified against the live `/opt/stacks/symlinkarr` container: entrypoint/command, healthcheck, and static asset path all matched the current Dockerfile
+- a local release-style binary artifact was produced as `dist/symlinkarr-v1.0.0-rc.1-linux-amd64.tar.gz` with a matching `.sha256`
+- full `discover --output json list` completed successfully on the real library after the scoped DB fix, and JSON output is now clean on `stdout`
+- live `repair auto` repaired one real dead link and now keeps a remaining orphan dead symlink persistently surfaced in DB/status/web until it is repaired or pruned
 
 ### 1. Final Runtime Validation
 
@@ -57,9 +81,8 @@ The remaining RC work is mostly proving and packaging, not broad new implementat
 
 Must finish:
 
-- validate scheduled `VACUUM` behavior in a real daemon maintenance window
-- do one final operator-style pass over scan, repair, prune, restore, and remediation on realistic data
 - keep rollback semantics and skip reasons visible in the operator surfaces
+- cut the final RC commit/tag/release from a clean worktree, not from an exploratory dirty tree
 
 ### 2. Release Surface Hygiene
 
@@ -67,9 +90,7 @@ The code surface is close to RC; the release surface needs to match.
 
 Must finish:
 
-- cut the RC version and changelog intentionally
-- verify release artifacts and Docker image paths one more time
-- make sure docs describe current defaults, current cache policy, and current security modes
+- cut the RC version/changelog/tag intentionally from a clean worktree state
 
 ### 3. Known-Limit Documentation
 
@@ -78,8 +99,6 @@ What remains in the code is mostly narrow behavior worth documenting rather than
 Must finish:
 
 - keep the anime-specials limitations explicit where automatic acquisition still depends on upstream naming/mapping quality
-- keep stale audit docs marked as snapshots rather than live blocker lists
-- keep feature-guide/help wording aligned with the intended public-facing explanation level
 
 ## Important, But Not RC-Blocking
 
@@ -101,9 +120,9 @@ Must finish:
 
 If work resumes right now, the best next slices are:
 
-1. validate scheduled `VACUUM` and one final daemon maintenance pass on realistic data
-2. cut the RC version, changelog, and artifact/release surface intentionally
-3. review remaining known limitations and mark them clearly for operators instead of letting old audits imply hidden blockers
+1. cut the RC commit/tag/release intentionally from a clean worktree
+2. keep the anime-specials and legacy-anime remediation limits explicit in shipped docs/help
+3. only then do any optional post-RC polish
 
 ## Known Limits To Acknowledge In `v1.0 RC`
 

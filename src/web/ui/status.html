@@ -1,14 +1,14 @@
 {% extends "web/ui/base.html" %}
 
-{% block title %}Status - Symlinkarr{% endblock %}
+{% block title %}Service Status - Symlinkarr{% endblock %}
 {% block nav_status %}active{% endblock %}
 
 {% block content %}
 <div class="page-header page-header--split">
     <div>
         <p class="page-kicker">Operations</p>
-        <h1>&#128200; Status</h1>
-        <p class="page-lead">Live link health, queue pressure, and recent link churn.</p>
+        <h1>Service Status</h1>
+        <p class="page-lead">Live library state, service connectivity, deferred refresh pressure, and recent link churn. Use Doctor for preflight and repair-readiness checks on Symlinkarr itself.</p>
     </div>
     <div class="header-badges">
         <span class="badge {% if queue.active_total > 0 %}badge-warning{% else %}badge-success{% endif %}">
@@ -71,7 +71,125 @@
     </section>
 </div>
 
-<section class="card">
+<div class="split-grid">
+    <section class="card">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Dead-Link Policy</p>
+                <h2 class="section-title">Persistent unresolved links</h2>
+            </div>
+            {% if stats.dead_links > 0 %}
+            <div class="header-badges">
+                <span class="badge badge-danger">{{ stats.dead_links }} tracked</span>
+            </div>
+            {% endif %}
+        </div>
+
+        {% if stats.dead_links > 0 %}
+        <div class="alert alert-warning">
+            <strong>{{ stats.dead_links }} dead link(s) remain tracked.</strong>
+            Symlinkarr will keep surfacing them on scan and repair until a fresh source appears or you prune them intentionally.
+        </div>
+
+        {% if tracked_dead_links|length > 0 %}
+        <div class="table-wrap">
+            <table class="data-table dense-table">
+                <thead>
+                    <tr>
+                        <th>Media ID</th>
+                        <th>Target Path</th>
+                        <th>Missing Source</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for link in tracked_dead_links %}
+                    <tr>
+                        <td><strong>{{ link.media_id }}</strong></td>
+                        <td><code class="mono">{{ link.target_path.display() }}</code></td>
+                        <td><code class="mono">{{ link.source_path.display() }}</code></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+
+        <div class="actions mt-2">
+            <a href="/links/dead" class="btn btn-secondary">Review Dead Links</a>
+            <a href="/scan" class="btn btn-secondary">Run Scan</a>
+        </div>
+        {% else %}
+        <div class="alert alert-success">
+            <strong>No persistent dead links are currently tracked.</strong>
+        </div>
+        {% endif %}
+    </section>
+
+    <section class="card advanced-only">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Integrations</p>
+                <h2 class="section-title">Service connectivity</h2>
+            </div>
+        </div>
+
+        <table class="data-table dense-table">
+            <thead>
+                <tr>
+                    <th>Service</th>
+                    <th>Status</th>
+                    <th>Message</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for (key, check) in checks %}
+                <tr>
+                    <td><strong>{{ check.service }}</strong></td>
+                    <td>
+                        {% if check.status == "healthy" %}
+                        <span class="badge badge-success">&#9989; healthy</span>
+                        {% else if check.status == "configured" %}
+                        <span class="badge badge-info">&#9989; configured</span>
+                        {% else if check.status == "missing" %}
+                        <span class="badge badge-warning">&#9888; missing</span>
+                        {% else %}
+                        <span class="badge badge-danger">{{ check.status }}</span>
+                        {% endif %}
+                    </td>
+                    <td class="text-muted">{{ check.message }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </section>
+
+    <section class="card">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Refresh</p>
+                <h2 class="section-title">Deferred media refresh</h2>
+            </div>
+        </div>
+
+        {% if deferred_refresh.pending_targets > 0 %}
+        <div class="alert alert-warning">
+            <strong>{{ deferred_refresh.pending_targets }} refresh target(s) are queued.</strong>
+            Another Symlinkarr run previously held the refresh lock or deferred invalidation under load.
+        </div>
+        <div class="badge-stack">
+            {% for server in deferred_refresh.servers %}
+            <span class="badge badge-warning">{{ server.server }}: {{ server.queued_targets }}</span>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="alert alert-success">
+            <strong>No deferred refresh backlog.</strong>
+        </div>
+        {% endif %}
+    </section>
+</div>
+
+<section class="card advanced-only">
     <div class="section-head">
         <div>
             <p class="section-kicker">Recent Links</p>

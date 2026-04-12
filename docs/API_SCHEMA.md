@@ -40,6 +40,21 @@ Current CLI-only operations:
 - `symlinkarr queue retry`
 - `symlinkarr repair trigger --arr <INSTANCE>`
 
+## Current RC Operator Notes
+
+Symlinkarr is in `RC-hardening`, not broad API expansion.
+
+Remaining pre-RC work is now:
+
+- cut the RC commit/tag/release intentionally from a clean worktree
+- keep the known anime-specials and legacy-anime remediation limits explicit in the shipped operator surface
+
+Operator guidance:
+
+- use `GET /api/v1/health` for shallow config/presence/deferred-refresh state
+- use `GET /api/v1/doctor` for the preflight checklist before destructive work
+- known limit: anime specials without usable anime-lists numbering hints may still need manual search terms, because many indexers are weak at `S00Exx`-style anime queries
+
 ## Conventions
 
 - Responses are JSON.
@@ -75,7 +90,7 @@ Response:
 
 ## `GET /api/v1/health`
 
-Returns config/health presence flags for the core integrations.
+Returns the shallow config/presence summary for the core integrations.
 
 Plex, Emby, and Jellyfin are optional. If none are configured, Symlinkarr still operates normally and these fields simply return `"missing"`.
 
@@ -105,10 +120,11 @@ Notes:
 
 - `refresh_backends` lists the refresh/invalidation backends that are both configured and enabled right now. A server may still show as `"configured"` in its individual field even if it is not currently active for refresh fan-out.
 - `deferred_refresh` reports queued refresh targets that were persisted because another Symlinkarr run held the media-refresh lock or because a later mutation pass still needs to drain them.
+- this endpoint is intentionally shallow. Use `GET /api/v1/doctor` when you need DB schema, writable-path, backup-dir, and runtime-root validation before a mutating run.
 
 ## `GET /api/v1/discover`
 
-Returns read-only discovery results from the RD cache, scoped to all libraries or a single library.
+Returns a read-only placement preview for tagged folders that still look empty or underlinked, scoped to all libraries or a single library.
 
 Query params:
 
@@ -125,13 +141,37 @@ Response:
 
 ```json
 {
+  "summary": {
+    "folders": 1,
+    "placements": 1,
+    "creates": 1,
+    "updates": 0,
+    "blocked": 0
+  },
+  "folders": [
+    {
+      "library_name": "Anime",
+      "media_id": "tvdb-1",
+      "title": "Missing Show",
+      "folder_path": "/library/Missing Show {tvdb-1}",
+      "existing_links": 0,
+      "planned_creates": 1,
+      "planned_updates": 0,
+      "blocked": 0
+    }
+  ],
   "items": [
     {
-      "rd_torrent_id": "rd-1",
-      "torrent_name": "Missing.Show.S01E01.1080p.WEB-DL.mkv",
-      "status": "downloaded",
-      "size": 1073741824,
-      "parsed_title": "Missing Show"
+      "library_name": "Anime",
+      "media_id": "tvdb-1",
+      "title": "Missing Show",
+      "folder_path": "/library/Missing Show {tvdb-1}",
+      "source_path": "/rd/Missing.Show.S01E01.1080p.WEB-DL/Missing.Show.S01E01.1080p.WEB-DL.mkv",
+      "source_name": "Missing.Show.S01E01.1080p.WEB-DL.mkv",
+      "target_path": "/library/Missing Show {tvdb-1}/Season 01/Missing Show - S01E01.mkv",
+      "action": "create",
+      "season": 1,
+      "episode": 1
     }
   ],
   "status_message": "Real-Debrid API key not configured. Showing cached results only."
@@ -141,8 +181,9 @@ Response:
 Notes:
 
 - Browser/UI discover defaults to cached-only mode for lower latency and fewer inline surprises.
-- Set `refresh_cache=true` only when you explicitly want a live RD cache sync before gap detection.
-- Adding RD torrents from discover is still CLI-only today. Use `symlinkarr discover add <TORRENT_ID>` for that write path.
+- Set `refresh_cache=true` only when you explicitly want a live RD cache sync before candidate review.
+- UI/API discover is still read-only, but it now previews real source-to-target placements using the same destination-path logic as the linker.
+- Adding RD torrents from discover is still CLI-only today. `symlinkarr discover add <TORRENT_ID>` is a manual handoff path, not full library auto-fill.
 
 ## `POST /api/v1/scan`
 
@@ -214,12 +255,14 @@ Response:
 Supported key styles:
 
 - exact keys such as `tmdb:tv:12345`, `tmdb:movie:12345`, `tvdb:series:67890`
+- family prefixes such as `tmdb:tv:`, `tmdb:movie:`, `tvdb:series:`
 - short-form IDs such as `tmdb:12345` and `tvdb:67890`
 - `anime-lists` for the anime identity XML cache
 
 Notes:
 
 - this endpoint is intended for targeted metadata refresh, not the RD torrent cache
+- family prefixes invalidate all matching cache keys under that namespace
 - `tmdb:12345` fans out to TV/movie metadata plus external-ID cache entries when present
 
 ## `DELETE /api/v1/cache`
@@ -1118,10 +1161,20 @@ Response schema:
   "all_passed": true,
   "checks": [
     {
-      "check": "Library 'Anime' exists",
+      "check": "db_schema_version",
+      "passed": true,
+      "message": "1"
+    },
+    {
+      "check": "library:Anime",
       "passed": true,
       "message": "/mnt/storage/plex/anime: exists"
     }
   ]
 }
 ```
+
+Notes:
+
+- this is the API preflight surface for DB reachability, DB schema version, library/source path health, backup-dir access, and runtime policy/config validation
+- prefer it over `GET /api/v1/health` when you are deciding whether a mutating run is safe to start

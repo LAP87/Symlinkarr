@@ -444,22 +444,16 @@ pub struct DashboardTemplate {
 pub struct StatusTemplate {
     pub stats: DashboardStats,
     pub recent_links: Vec<LinkRecord>,
+    pub tracked_dead_links: Vec<LinkRecord>,
     pub queue: QueueOverview,
+    pub checks: std::collections::BTreeMap<String, HealthCheck>,
+    pub deferred_refresh: DeferredRefreshSummaryView,
 }
-
-// ─── Health ─────────────────────────────────────────────────────────
 
 pub struct HealthCheck {
     pub service: String,
     pub status: String,
     pub message: String,
-}
-
-#[derive(Template)]
-#[template(path = "web/ui/health.html")]
-pub struct HealthTemplate {
-    pub checks: std::collections::HashMap<String, HealthCheck>,
-    pub deferred_refresh: DeferredRefreshSummaryView,
 }
 
 // ─── Scan ───────────────────────────────────────────────────────────
@@ -476,6 +470,7 @@ pub struct ScanTemplate {
     pub history: Vec<ScanRunView>,
     pub queue: QueueOverview,
     pub filters: ScanHistoryFilters,
+    pub default_dry_run: bool,
     pub csrf_token: String,
 }
 
@@ -571,6 +566,7 @@ pub struct PrunePreviewTemplate {
     pub legacy_anime_root_groups: Vec<crate::cleanup_audit::LegacyAnimeRootGroupCount>,
     pub report_path: Option<PathBuf>,
     pub confirmation_token: Option<String>,
+    pub already_applied: bool,
     pub error_message: Option<String>,
     pub csrf_token: String,
 }
@@ -582,10 +578,28 @@ pub struct PruneFindingView {
     pub action_badge_class: &'static str,
     pub blocked_reason_label: Option<String>,
     pub blocked_reason_recommended_action: Option<String>,
+    pub alternate_match_summary: Option<String>,
+    pub legacy_anime_root_summary: Option<String>,
+    pub legacy_anime_tagged_roots: Vec<PathBuf>,
 }
 
 impl PruneFindingView {
     pub fn from_finding(finding: CleanupFinding, action: PrunePathAction) -> Self {
+        let alternate_match_summary = finding.alternate_match.as_ref().map(|alt| {
+            format!(
+                "Better Match: {} ({}) score {:.2}",
+                alt.title, alt.media_id, alt.score
+            )
+        });
+        let legacy_anime_root_summary = finding
+            .legacy_anime_root
+            .as_ref()
+            .map(|legacy| format!("legacy root: {}", legacy.untagged_root.display()));
+        let legacy_anime_tagged_roots = finding
+            .legacy_anime_root
+            .as_ref()
+            .map(|legacy| legacy.tagged_roots.clone())
+            .unwrap_or_default();
         let (
             action_label,
             action_badge_class,
@@ -609,6 +623,9 @@ impl PruneFindingView {
             action_badge_class,
             blocked_reason_label,
             blocked_reason_recommended_action,
+            alternate_match_summary,
+            legacy_anime_root_summary,
+            legacy_anime_tagged_roots,
         }
     }
 }
@@ -880,7 +897,7 @@ pub struct DoctorTemplate {
 
 // ─── Discover ───────────────────────────────────────────────────────
 
-use crate::discovery::DiscoveredItem;
+use crate::discovery::{DiscoverFolderPlan, DiscoverPlacement, DiscoverSummary};
 
 #[derive(Template)]
 #[template(path = "web/ui/discover.html")]
@@ -888,16 +905,10 @@ pub struct DiscoverTemplate {
     pub libraries: Vec<LibraryConfig>,
     pub selected_library: String,
     pub refresh_cache: bool,
-    pub discovered_items: Vec<DiscoveredItem>,
+    pub discover_summary: DiscoverSummary,
+    pub folder_plans: Vec<DiscoverFolderPlan>,
+    pub discovered_items: Vec<DiscoverPlacement>,
     pub status_message: Option<String>,
-    pub csrf_token: String,
-}
-
-#[derive(Template)]
-#[template(path = "web/ui/discover_result.html")]
-pub struct DiscoverResultTemplate {
-    pub success: bool,
-    pub message: String,
 }
 
 // ─── Backup ─────────────────────────────────────────────────────────
@@ -1222,6 +1233,7 @@ mod tests {
             legacy_anime_root_groups: vec![],
             report_path: Some(PathBuf::from("/tmp/cleanup-audit-all.json")),
             confirmation_token: Some("abcdef1234567890".to_string()),
+            already_applied: false,
             error_message: None,
             csrf_token: "csrf-test-token".to_string(),
         };
@@ -1283,6 +1295,7 @@ mod tests {
             }],
             report_path: Some(PathBuf::from("/tmp/cleanup-audit-anime.json")),
             confirmation_token: Some("abcdef1234567890".to_string()),
+            already_applied: false,
             error_message: None,
             csrf_token: "csrf-test-token".to_string(),
         };
@@ -1336,6 +1349,7 @@ mod tests {
             legacy_anime_root_groups: vec![],
             report_path: Some(PathBuf::from("/tmp/cleanup-audit-all.json")),
             confirmation_token: Some("abcdef1234567890".to_string()),
+            already_applied: false,
             error_message: None,
             csrf_token: "csrf-test-token".to_string(),
         };
@@ -1419,7 +1433,7 @@ mod tests {
         };
 
         let html = template.render().unwrap();
-        assert!(html.contains("Anime Remediation Backlog"));
+        assert!(html.contains("Legacy Anime Cleanup"));
         assert!(html.contains("Mobile Suit Gundam SEED"));
         assert!(html.contains("Recommended tagged root"));
         assert!(html.contains("Sample View"));
@@ -1431,6 +1445,7 @@ mod tests {
         assert!(html.contains("Candidate symlinks"));
         assert!(html.contains("Broken legacy symlinks"));
         assert!(html.contains("Real media files blocking auto-remediation"));
+        assert!(html.contains("Most users can ignore this page."));
     }
 
     #[test]
@@ -1490,5 +1505,8 @@ mod tests {
         assert!(html.contains("Broken legacy symlinks"));
         assert!(html.contains("Blocking real media files"));
         assert!(html.contains("Horimiya - S01E03.mkv"));
+        assert!(html.contains("Apply Legacy Cleanup"));
+        assert!(html.contains("name=\"token\""));
+        assert!(!html.contains("Confirmation token"));
     }
 }

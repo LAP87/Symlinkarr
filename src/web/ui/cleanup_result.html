@@ -4,14 +4,21 @@
 {% block nav_cleanup %}active{% endblock %}
 
 {% block content %}
-<div class="page-header">
-    <h1>&#129529; Cleanup Result</h1>
+<div class="page-header page-header--split">
+    <div>
+        <p class="page-kicker">Maintenance</p>
+        <h1>Cleanup Result</h1>
+    </div>
+    <div class="actions">
+        <a href="/cleanup" class="btn btn-secondary">Back to Cleanup</a>
+        <a href="/" class="btn btn-secondary">Dashboard</a>
+    </div>
 </div>
 
 {% match active_cleanup_audit %}
 {% when Some with (job) %}
 <div class="alert alert-info">
-    <strong>&#9203; Background cleanup audit running.</strong>
+    <strong>Background cleanup audit running.</strong>
     {{ job.scope_label }} across {{ job.libraries_label }} started {{ job.started_at }}.
 </div>
 {% when None %}{% endmatch %}
@@ -24,7 +31,7 @@
     {{ outcome.message }}
     {% match outcome.report_path %}
     {% when Some with (path) %}
-    <a href="/cleanup/prune?report={{ path }}" class="btn btn-secondary mt-1">&#128064; Open Prune Preview</a>
+    <a href="/cleanup/prune?report={{ path }}" class="btn btn-secondary mt-1">Open Prune Preview</a>
     {% when None %}{% endmatch %}
 </div>
 {% when None %}{% endmatch %}
@@ -33,17 +40,22 @@
 <div class="alert alert-success">
     {% match active_cleanup_audit %}
     {% when Some with (_) %}
-    <h2>&#9989; Background Audit Accepted</h2>
+    <h2>Background Audit Accepted</h2>
     {% when None %}
-    <h2>&#9989; Audit Completed Successfully</h2>
+    <h2>Audit Completed Successfully</h2>
     {% endmatch %}
     <p>{{ message }}</p>
 </div>
 
 {% match report_path %}
 {% when Some with (path) %}
-<div class="card">
-    <h2 class="section-title">&#128196; Audit Report Generated</h2>
+    <div class="card">
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Report</p>
+            <h2 class="section-title">Audit Report Generated</h2>
+        </div>
+    </div>
     <p><strong>Report Location:</strong> <code class="mono">{{ path.display() }}</code></p>
 
     {% match report_summary %}
@@ -59,22 +71,17 @@
 
     <div class="actions mt-2">
         <a href="/cleanup/prune?report={{ path.display() }}" class="btn btn-secondary">
-            &#128064; Preview Prune Actions
+            Preview Prune Actions
         </a>
-        <a href="/cleanup" class="btn btn-secondary">&#129529; Back to Cleanup</a>
+        <a href="/cleanup" class="btn btn-secondary">Back to Cleanup</a>
     </div>
 </div>
 {% when None %}
 {% endmatch %}
 {% else %}
 <div class="alert alert-error">
-    <h2>&#10060; Audit Failed</h2>
+    <h2>Audit Failed</h2>
     <p>{{ message }}</p>
 </div>
 {% endif %}
-
-<div class="actions mt-2">
-    <a href="/cleanup" class="btn btn-secondary">&#8592; Back to Cleanup</a>
-    <a href="/" class="btn">&#127968; Dashboard</a>
-</div>
 {% endblock %}

@@ -2,6 +2,8 @@
 .github
 .codex
 target
+target-*
+.tmpbuild
 data
 backups
 secrets
@@ -14,3 +16,7 @@ config.yaml
 config.docker.yaml
 *.db
 *.sqlite
+*.sqlite3
+dist
+*.tar.gz
+*.sha256

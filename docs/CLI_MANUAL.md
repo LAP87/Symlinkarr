@@ -44,6 +44,17 @@ Symlinkarr treats TMDB/TVDB metadata as intentionally sticky cache, not short-li
 - if a specific title looks stale, prefer targeted refresh/invalidation over lowering the global TTL
 - short TTLs mostly trade correctness-neutral API churn for slower scans and more rate-limit exposure
 
+## Current RC Closeout
+
+Symlinkarr is in `RC-hardening`, not broad feature expansion.
+
+Remaining pre-RC work:
+
+- cut the RC commit/tag/release intentionally from a clean worktree
+- keep the known anime-specials and legacy-anime remediation limits explicit in shipped docs/help
+
+The live checklist for that closeout work is [RC_ROADMAP.md](RC_ROADMAP.md).
+
 ## Command Reference
 
 ### `scan`
@@ -81,6 +92,7 @@ symlinkarr status --health --output json
 When configured, `status --health` now probes Plex, Emby, and Jellyfin separately. One, many, or none of those can be active for post-mutation refresh; Symlinkarr now fans out invalidation safely when multiple backends are enabled.
 No media server is required. If none are configured, Symlinkarr still works normally; the health output simply reports those integrations as not configured and skips post-mutation invalidation.
 `status --health --output json` also includes a top-level `refresh_backends` array so automation can see which refresh/invalidation backends are currently active without inferring it from per-service fields.
+Treat `status --health` as the shallow operator summary for integration presence/activation and deferred refresh state. Use `doctor` when you need the preflight checklist for DB schema, writable paths, backup dir, and runtime root validation before a mutating run.
 
 ### `queue`
 
@@ -236,7 +248,7 @@ Notes:
 
 ### `discover`
 
-Inspect RD cache content not currently represented in the library.
+Review concrete source-to-target placements for tagged folders that still look empty or underlinked.
 
 ```bash
 symlinkarr discover [--library <LIBRARY>] [--output text|json] list
@@ -250,6 +262,12 @@ symlinkarr discover list
 symlinkarr discover list --library Movies --output json
 symlinkarr discover add XXXXXXXXXXXXX --arr sonarr
 ```
+
+Notes:
+
+- `discover list` now uses the same match and target-path logic as scan/linking, but keeps the result in preview/report form.
+- the output is a placement review: which source file would land in which tagged folder path, plus whether that would be a create, update, or blocked write.
+- `discover add` is a manual Decypharr handoff for one RD torrent. It is not the long-term folder-fill workflow.
 
 ### `backup`
 
@@ -297,6 +315,7 @@ Examples:
 symlinkarr cache status
 symlinkarr cache build
 symlinkarr cache invalidate tmdb:12345
+symlinkarr cache invalidate tmdb:tv:
 symlinkarr cache invalidate anime-lists
 symlinkarr cache clear
 ```
@@ -306,6 +325,7 @@ Notes:
 - `cache build` and `cache status` are about the Real-Debrid torrent cache.
 - `cache invalidate` is for targeted metadata refresh when a specific title or anime mapping looks stale.
 - `cache clear` removes all cached TMDB/TVDB/anime-lists metadata and forces fresh fetches on later lookups.
+- `cache invalidate tmdb:tv:` or similar family prefixes invalidate whole metadata families when you need a wider refetch than a single title.
 - `cache invalidate tmdb:12345` expands to both TMDB TV/movie metadata plus external-id cache entries for that ID.
 - the metadata cache is intentionally sticky by default; prefer `cache invalidate` over lowering the global metadata TTL.
 

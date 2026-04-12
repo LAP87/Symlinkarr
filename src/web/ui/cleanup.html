@@ -4,15 +4,28 @@
 {% block nav_cleanup %}active{% endblock %}
 
 {% block content %}
-<div class="page-header">
-    <h1>&#129529; Cleanup &amp; Maintenance</h1>
-    <p class="page-lead">Cleanup is intentionally two-step: run an audit to produce a report, review that report in prune preview, then apply prune only if the preview still looks correct.</p>
+<div class="page-header page-header--split">
+    <div>
+        <p class="page-kicker">Maintenance</p>
+        <h1>Cleanup</h1>
+        <p class="page-lead">Cleanup is intentionally two-step: run an audit to produce a report, review that report in prune preview, then apply prune only if the preview still looks correct.</p>
+    </div>
+    <div class="header-badges">
+        {% if libraries|length > 0 %}
+        <span class="badge badge-info">Libraries {{ libraries|length }}</span>
+        {% endif %}
+        {% match last_report %}
+        {% when Some with (report) %}
+        <span class="badge {% if report.total_findings > 0 %}badge-warning{% else %}badge-success{% endif %}">Findings {{ report.total_findings }}</span>
+        {% when None %}
+        {% endmatch %}
+    </div>
 </div>
 
 {% match active_cleanup_audit %}
 {% when Some with (job) %}
 <div class="alert alert-info">
-    <strong>&#9203; Background cleanup audit running.</strong>
+    <strong>Background cleanup audit running.</strong>
     {{ job.scope_label }} across {{ job.libraries_label }} started {{ job.started_at }}.
     Refresh this page for the finished report.
 </div>
@@ -26,7 +39,7 @@
     {{ outcome.message }}
     {% match outcome.report_path %}
     {% when Some with (path) %}
-    <a href="/cleanup/prune?report={{ path }}" class="btn btn-secondary mt-1">&#128064; Open Prune Preview</a>
+    <a href="/cleanup/prune?report={{ path }}" class="btn btn-secondary mt-1">Open Prune Preview</a>
     {% when None %}{% endmatch %}
 </div>
 {% when None %}{% endmatch %}
@@ -55,23 +68,11 @@
             {% endfor %}
         </div>
 
-        <div class="form-group">
-            <label class="form-label" for="scope">Audit Scope:</label>
-            <select id="scope" name="scope" class="form-control field-max-sm">
-                <option value="anime">Anime (Recommended)</option>
-                <option value="tv">TV Series</option>
-                <option value="movie">Movies</option>
-                <option value="all">All Libraries</option>
-            </select>
-            <small class="text-muted">Use a narrower scope when you want lower-noise reports. Use <code class="mono">all</code> for a broad legacy cleanup pass.</small>
-        </div>
-
         <div class="actions">
             <button type="submit" class="btn btn-primary">
-                &#128269; Start Audit and Build Report
+                Start Audit and Build Report
             </button>
-            <a href="/links/dead" class="btn btn-secondary">&#128683; Review Dead Links</a>
-            <a href="/cleanup/anime-remediation" class="btn btn-secondary">&#127909; Anime Remediation Backlog</a>
+            <a href="/links/dead" class="btn btn-secondary">Review Dead Links</a>
         </div>
     </form>
 </div>
@@ -98,8 +99,8 @@
         </div>
         <ol class="steps-list text-muted">
             <li>Open the preview for this exact report and review the findings.</li>
-            <li>If the report still looks right, paste the preview token into the apply form.</li>
-            <li>Only then remove the links listed in the report.</li>
+            <li>If the preview still looks right, tick the confirmation checkbox on that page.</li>
+            <li>Apply cleanup from that same preview page.</li>
         </ol>
         <div class="metric-grid metric-grid--compact mt-2">
             <div class="metric-card"><span class="metric-label">Critical</span><strong class="text-error">{{ report.critical }}</strong></div>
@@ -108,43 +109,45 @@
         </div>
         <div class="actions mt-2">
             <a href="/cleanup/prune?report={{ report.path.display() }}" class="btn btn-secondary">
-                &#128064; Open Prune Preview
-            </a>
-            <a href="/cleanup/anime-remediation" class="btn btn-secondary">
-                &#127909; Review Anime Remediation
+                Open Prune Preview
             </a>
         </div>
     </section>
 </div>
 
 <div class="card">
-    <div class="section-head">
-        <div>
-            <p class="section-kicker">Apply Gate</p>
-            <h2 class="section-title">Apply only from preview</h2>
-            <p class="text-muted">If you rerun the audit, the preview token changes. Open prune preview from the button below and apply only from that page.</p>
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Apply Gate</p>
+                <h2 class="section-title">Apply from the preview page</h2>
+                <p class="text-muted">If you rerun the audit, the preview changes too. Open prune preview from the button below and apply only from that page.</p>
+            </div>
         </div>
-    </div>
     <p class="mb-1">Report file: <code class="mono">{{ report.path.display() }}</code></p>
     <div class="actions mt-2">
         <a href="/cleanup/prune?report={{ report.path.display() }}" class="btn btn-secondary">
-            &#128064; Preview Prune Actions
+            Preview Prune Actions
         </a>
     </div>
     <small class="text-muted mt-1">
-        &#9888;&#65039; Prune is permanent. Preview is the only place where the report token should be used.
+        Prune is permanent. Review the preview before applying it.
     </small>
 </div>
 {% when None %}
     {% match last_report_path %}
     {% when Some with (path) %}
     <div class="card">
-        <h2 class="section-title">Last Audit Report</h2>
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">History</p>
+                <h2 class="section-title">Last audit report</h2>
+            </div>
+        </div>
         <p>Report file: <code class="mono">{{ path.display() }}</code></p>
         <p class="text-muted mt-1">The report exists on disk but could not be parsed into a summary. Open the preview before applying prune.</p>
         <div class="actions mt-2">
             <a href="/cleanup/prune?report={{ path.display() }}" class="btn btn-secondary">
-                &#128064; Open Prune Preview
+                Open Prune Preview
             </a>
         </div>
     </div>
@@ -153,14 +156,19 @@
 {% endmatch %}
 
 <div class="card">
-    <h2 class="section-title">How Cleanup Works</h2>
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Guide</p>
+            <h2 class="section-title">How Cleanup Works</h2>
+        </div>
+    </div>
     <ol class="steps-list">
         <li><strong>Audit:</strong> Scan the selected libraries and write a report with candidate findings.</li>
         <li><strong>Preview:</strong> Open prune preview to review that report and inspect the exact rows that would be removed.</li>
-        <li><strong>Apply:</strong> Paste the report-specific confirmation token only after the preview matches what you expect.</li>
+        <li><strong>Apply:</strong> Confirm the preview and apply from that same page when it matches what you expect.</li>
     </ol>
 
-    <h3 class="section-title mt-2">Finding Severities</h3>
+    <h3 class="subsection-title mt-2">Finding severities</h3>
     <ul class="severity-list">
         <li><span class="badge badge-danger">Critical</span> Definitely problematic links, such as broken sources or out-of-range episodes.</li>
         <li><span class="badge badge-warning">High</span> Likely problematic links that should be reviewed closely before pruning.</li>

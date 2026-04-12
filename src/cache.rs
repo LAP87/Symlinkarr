@@ -265,37 +265,43 @@ impl<'a> TorrentCache<'a> {
     /// Retrieve all files from the cache, mapped to the local mount path.
     /// Returns a list of (full_path, size_bytes).
     pub async fn get_files(&self, mount_path: &Path) -> Result<Vec<(PathBuf, u64)>> {
-        let torrents = self.db.get_rd_torrents().await?;
-        let mut all_files = Vec::new();
+        cached_files_from_db(self.db, mount_path).await
+    }
+}
 
-        for (_, _, torrent_filename, status, files_json) in torrents {
-            // Only consider downloaded torrents, as others might not appear on mount yet
-            if status != "downloaded" {
+/// Retrieve all cached files for a mount path directly from the database.
+/// This works even when a live RD client is unavailable.
+pub async fn cached_files_from_db(db: &Database, mount_path: &Path) -> Result<Vec<(PathBuf, u64)>> {
+    let torrents = db.get_rd_torrents().await?;
+    let mut all_files = Vec::new();
+
+    for (_, _, torrent_filename, status, files_json) in torrents {
+        // Only consider downloaded torrents, as others might not appear on mount yet
+        if status != "downloaded" {
+            continue;
+        }
+
+        let cached: CachedTorrentFiles = match serde_json::from_str(&files_json) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!("Failed to deserialize files for torrent: {}", e);
+                continue;
+            }
+        };
+
+        for file in cached.files {
+            // Only selected files appear on mount (usually)
+            if file.selected != 1 {
                 continue;
             }
 
-            let cached: CachedTorrentFiles = match serde_json::from_str(&files_json) {
-                Ok(c) => c,
-                Err(e) => {
-                    warn!("Failed to deserialize files for torrent: {}", e);
-                    continue;
-                }
-            };
+            let full_path = cached_mount_path(mount_path, &torrent_filename, &file.path);
 
-            for file in cached.files {
-                // Only selected files appear on mount (usually)
-                if file.selected != 1 {
-                    continue;
-                }
-
-                let full_path = cached_mount_path(mount_path, &torrent_filename, &file.path);
-
-                all_files.push((full_path, file.bytes as u64));
-            }
+            all_files.push((full_path, file.bytes as u64));
         }
-
-        Ok(all_files)
     }
+
+    Ok(all_files)
 }
 
 fn cached_mount_path(mount_path: &Path, torrent_filename: &str, rd_file_path: &str) -> PathBuf {

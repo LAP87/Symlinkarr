@@ -2,9 +2,100 @@
 
 ## Release Target
 
-- package version for this push: `0.3.0-beta.2`
-- posture: `rc-prep with downloadable binary artifacts`
+- package version for this push: `1.0.0-rc.1`
+- posture: `release-candidate with downloadable binary artifacts`
 - intended use: local-first host or Docker installs, with Windows 11 users running through WSL2 or a Linux container
+
+## 2026-04-12 - RC Release Surface Verification and Persistent Dead-Link Signaling
+
+### Code Changes
+
+- fixed `discover --output json` so machine-readable JSON no longer leaks human progress text on `stdout`.
+  - files: `src/commands/discover.rs`
+- replaced discovers large scoped-link query path with a hybrid DB-layer strategy, removing the SQLite expression-tree failure on real library root sets without resetting caches or rewriting the schema.
+  - files: `src/db.rs`, `src/discovery.rs`
+- promoted orphan dead symlinks found only on disk into persisted `dead` DB records during live repair, so unresolved items remain visible in status, scan, and the web UI until repaired or pruned.
+  - files: `src/repair.rs`
+- surfaced remaining tracked dead links directly in scan/repair CLI output, background web outcomes, and the status page so operators see recurring unresolved items every pass instead of only inside ad hoc repair sweeps.
+  - files: `src/commands/scan.rs`, `src/commands/repair.rs`, `src/web/mod.rs`, `src/web/handlers.rs`, `src/web/templates.rs`, `src/web/ui/status.html`
+- moved the web operator shell closer to a `*arr`-style layout with grouped navigation, a persistent `Advanced` toggle, and more consistent section/action patterns.
+  - files: `src/web/ui/base.html`, `src/web/static/style.css`, `src/web/static/ui-preferences.js`, `src/web/ui/*.html`
+- closed the remaining actionable RC review findings in backup/cache land by rejecting absolute or traversal-style restore user input, rolling back newly created restore symlinks when the final DB commit fails, rotating paired `.sqlite3` snapshots with their manifests, and adding real metadata-cache family-prefix invalidation.
+  - files: `src/backup.rs`, `src/db.rs`, `src/commands/cache.rs`, `src/main.rs`, `src/web/api/mod.rs`
+- restored prune-preview operator context after the UI unification pass so blocked reasons, alternate-match evidence, legacy anime root groups, and discover/cleanup headings remain truthful and visible.
+  - files: `src/web/templates.rs`, `src/web/ui/prune_preview.html`, `src/web/ui/cleanup.html`, `src/web/ui/cleanup_result.html`, `src/web/ui/discover.html`
+
+### Validation
+
+- `cargo test test_repair_all_detects_orphan_dead_symlink_not_tracked_in_db -- --nocapture`
+  - result: passed locally
+- `cargo test test_repair_all_persists_orphan_dead_symlink_when_unrepairable -- --nocapture`
+  - result: passed locally
+- `cargo check`
+  - result: passed locally
+- `cargo fmt --all -- --check`
+  - result: passed locally
+- `cargo build --release --locked`
+  - result: passed locally
+- `cargo test -q`
+  - result: `630 passed; 0 failed; 1 ignored`
+- local packaging smoke using the same archive shape as `.github/workflows/release.yml`
+  - result: produced `dist/symlinkarr-v1.0.0-rc.1-linux-amd64.tar.gz` and matching `.sha256`
+- live Docker verification against `/opt/stacks/symlinkarr`
+  - result: rebuilt `symlinkarr:1.0.0-rc.1`, recreated the live container healthy, confirmed runtime entrypoint `["symlinkarr"]` + command `["--config","/app/config/config.yaml","daemon"]`, and verified static assets at `/usr/local/share/symlinkarr/static`
+- live operator verification on `2026-04-12`
+  - result: `repair auto` repaired `Send Help`, kept `The Bride!` tracked as unresolved, `status --health --output json` returned `active=73707`, `dead=1`, `total=73708`, `/status` rendered the new persistent dead-link section, and `scan --dry-run --library Movies` surfaced the remaining tracked dead link in normal CLI output
+- live config/doctor verification on `2026-04-12`
+  - result: `doctor --output json` passed after tightening the mounted `web_password` secret to mode `0600`
+
+## 2026-04-08 - Live VACUUM Verification and First Anime Remediation Apply
+
+### Validation
+
+- live daemon maintenance-window validation in `docker-compose.local.yml`
+  - result: scheduled `VACUUM` ran successfully against the real SQLite DB, took about `31.6s`, and the daemon immediately continued with a clean scan cycle afterward
+- live anime cleanup validation against the real Plex DB
+  - result: `cleanup audit --scope anime` reported `11358` findings, `cleanup prune` preview surfaced `4254` candidates with expected blocking for excluded legacy anime roots, and `cleanup remediate-anime --apply` safely quarantined `16` legacy symlinks for the one eligible group (`Angels of Death`)
+- live post-apply verification
+  - result: the legacy `Angels of Death` root dropped from `16` symlinks to `0`, the tagged root stayed intact at `32` symlinks, health remained green, and the quarantined links landed under `/app/data/backups/quarantine/anime/Angels of Death`
+
+## 2026-04-08 - Live RC Validation and Restore Root Guard
+
+### Code Changes
+
+- fixed backup-restore root enforcement so library-path checks no longer follow the leaf symlink itself before validating allowed library roots, while source-root checks still resolve the final target to catch escape paths.
+  - files: `src/backup.rs`
+
+### Validation
+
+- `TMPDIR=/home/lenny/apps/Symlinkarr/.tmpbuild cargo test path_is_within_roots --target-dir /home/lenny/apps/Symlinkarr/target-rc-test-tmpdir`
+  - result: passed locally
+- `TMPDIR=/home/lenny/apps/Symlinkarr/.tmpbuild cargo test restore_skips --target-dir /home/lenny/apps/Symlinkarr/target-rc-test-tmpdir`
+  - result: passed locally
+- live Docker validation against real mounts and data
+  - result: `backup restore --dry-run` no longer emitted false "outside allowed library roots" warnings and instead reported `restored=27`, `skipped=69999`, `errors=0`
+- live daemon/runtime validation in `docker-compose.local.yml`
+  - result: daemon scan completed successfully on realistic data (`9 created`, `1 updated`), `doctor` passed, and `status --health` returned green for the configured Sonarr/Radarr/Prowlarr/Bazarr/Tautulli adapters after a transient external `sonarr_anime` service restart
+
+## 2026-04-07 - RC Operator Surface Alignment
+
+### Code Changes
+
+- tightened root CLI `--help` wording so operator-facing help now points directly at the live RC roadmap, distinguishes `status --health` from `doctor`, and keeps the known anime-specials limit visible in the shipped help surface.
+  - files: `src/main.rs`
+- narrowed the RC roadmap to the actual remaining work after the recent hardening passes, so the live task list now clearly says the only work left is operational validation plus final release verification.
+  - files: `docs/RC_ROADMAP.md`
+- aligned the CLI manual, wiki feature guide, and API schema around the same current RC-closeout message, operator expectations, and `health` versus `doctor` distinction.
+  - files: `docs/CLI_MANUAL.md`, `docs/GITHUB_WIKI_FEATURES.md`, `docs/API_SCHEMA.md`
+
+### Validation
+
+- `cargo fmt --all -- --check`
+  - result: passed locally
+- `cargo test -q --target-dir /tmp/symlinkarr-cargo-test-20260407`
+  - result: `618 passed; 0 failed; 1 ignored`
+- `cargo clippy --all-targets --all-features --target-dir /tmp/symlinkarr-cargo-clippy-20260407 -- -D warnings`
+  - result: passed locally
 
 ## 2026-04-06 - RC Closeout Hardening Pass
 

@@ -88,16 +88,44 @@ pub struct ApiDiscoverQuery {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct ApiDiscoverSummary {
+    pub folders: usize,
+    pub placements: usize,
+    pub creates: usize,
+    pub updates: usize,
+    pub blocked: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApiDiscoverFolder {
+    pub library_name: String,
+    pub media_id: String,
+    pub title: String,
+    pub folder_path: String,
+    pub existing_links: usize,
+    pub planned_creates: usize,
+    pub planned_updates: usize,
+    pub blocked: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ApiDiscoverItem {
-    pub rd_torrent_id: String,
-    pub torrent_name: String,
-    pub status: String,
-    pub size: i64,
-    pub parsed_title: String,
+    pub library_name: String,
+    pub media_id: String,
+    pub title: String,
+    pub folder_path: String,
+    pub source_path: String,
+    pub source_name: String,
+    pub target_path: String,
+    pub action: String,
+    pub season: Option<u32>,
+    pub episode: Option<u32>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ApiDiscoverResponse {
+    pub summary: ApiDiscoverSummary,
+    pub folders: Vec<ApiDiscoverFolder>,
     pub items: Vec<ApiDiscoverItem>,
     pub status_message: Option<String>,
 }
@@ -674,20 +702,46 @@ pub async fn api_get_discover(
     .await
     {
         Ok(snapshot) => Ok(Json(ApiDiscoverResponse {
+            summary: ApiDiscoverSummary {
+                folders: snapshot.summary.folders,
+                placements: snapshot.summary.placements,
+                creates: snapshot.summary.creates,
+                updates: snapshot.summary.updates,
+                blocked: snapshot.summary.blocked,
+            },
+            folders: snapshot
+                .folders
+                .into_iter()
+                .map(|folder| ApiDiscoverFolder {
+                    library_name: folder.library_name,
+                    media_id: folder.media_id,
+                    title: folder.title,
+                    folder_path: folder.folder_path.display().to_string(),
+                    existing_links: folder.existing_links,
+                    planned_creates: folder.planned_creates,
+                    planned_updates: folder.planned_updates,
+                    blocked: folder.blocked,
+                })
+                .collect(),
             items: snapshot
                 .items
                 .into_iter()
                 .map(|item| ApiDiscoverItem {
-                    rd_torrent_id: item.rd_torrent_id,
-                    torrent_name: item.torrent_name,
-                    status: item.status,
-                    size: item.size,
-                    parsed_title: item.parsed_title,
+                    library_name: item.library_name,
+                    media_id: item.media_id,
+                    title: item.title,
+                    folder_path: item.folder_path.display().to_string(),
+                    source_path: item.source_path.display().to_string(),
+                    source_name: item.source_name,
+                    target_path: item.target_path.display().to_string(),
+                    action: item.action.as_str().to_string(),
+                    season: item.season,
+                    episode: item.episode,
                 })
                 .collect(),
             status_message: snapshot.status_message.or_else(|| {
                 (!query.refresh_cache).then(|| {
-                    "Showing cached RD results only. Set refresh_cache=true when you want a slower live cache sync first."
+                    "Showing cached or on-disk discover results only. Set refresh_cache=true when you want a slower live cache sync first."
                         .to_string()
                 })
             }),
@@ -1828,7 +1882,7 @@ pub async fn api_get_doctor(State(state): State<WebState>) -> Json<ApiDoctorResp
 
 #[derive(Deserialize)]
 struct CacheInvalidateRequest {
-    /// Cache key or short-form media ID (e.g., "tmdb:12345", "tvdb:67890", "anime-lists")
+    /// Cache key prefix, exact key, or short-form media ID (e.g., "tmdb:tv:", "tmdb:12345", "tvdb:67890", "anime-lists")
     key: String,
 }
 
@@ -2455,12 +2509,27 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cfg = test_config(dir.path());
         let db = Database::new(&cfg.db_path).await.unwrap();
+        std::fs::create_dir_all(dir.path().join("library").join("Missing Show {tvdb-1}")).unwrap();
+        std::fs::create_dir_all(
+            dir.path()
+                .join("source")
+                .join("Missing.Show.S01E01.1080p.WEB-DL"),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path()
+                .join("source")
+                .join("Missing.Show.S01E01.1080p.WEB-DL")
+                .join("Missing.Show.S01E01.1080p.WEB-DL.mkv"),
+            b"video",
+        )
+        .unwrap();
         db.upsert_rd_torrent(
             "rd-1",
             "hash-1",
             "Missing.Show.S01E01.1080p.WEB-DL.mkv",
             "downloaded",
-            r#"{"files":[{"bytes":1073741824,"path":"Missing.Show.S01E01.1080p.WEB-DL.mkv"}]}"#,
+            r#"{"files":[{"selected":1,"bytes":1073741824,"path":"Missing.Show.S01E01.1080p.WEB-DL.mkv"}]}"#,
         )
         .await
         .unwrap();
@@ -2480,9 +2549,13 @@ mod tests {
         let bytes = to_bytes(body.into_body(), usize::MAX).await.unwrap();
         let json: ApiDiscoverResponse = serde_json::from_slice(&bytes).unwrap();
 
+        assert_eq!(json.summary.placements, 1);
+        assert_eq!(json.summary.creates, 1);
+        assert_eq!(json.folders.len(), 1);
         assert_eq!(json.items.len(), 1);
-        assert_eq!(json.items[0].rd_torrent_id, "rd-1");
-        assert_eq!(json.items[0].parsed_title, "Missing Show");
+        assert_eq!(json.items[0].title, "Missing Show");
+        assert_eq!(json.items[0].action, "create");
+        assert!(json.items[0].target_path.contains("Season 01"));
         assert!(json
             .status_message
             .as_deref()
@@ -2806,6 +2879,7 @@ mod tests {
                 high: 1,
                 warning: 0,
             },
+            applied_at: None,
         };
         let report_path = cfg.backup.path.join("report.json");
         std::fs::write(&report_path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
@@ -2884,6 +2958,7 @@ mod tests {
                 high: 1,
                 warning: 0,
             },
+            applied_at: None,
         };
         let report_path = cfg.backup.path.join("report.json");
         std::fs::write(&report_path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
@@ -3005,6 +3080,7 @@ mod tests {
                 high: 1,
                 warning: 0,
             },
+            applied_at: None,
         };
         std::fs::write(&report_path, serde_json::to_vec(&report).unwrap()).unwrap();
 

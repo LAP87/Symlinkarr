@@ -4,6 +4,8 @@ services:
     # image: ghcr.io/lenny/symlinkarr:latest  # Use when published
     container_name: symlinkarr
     restart: unless-stopped
+    ports:
+      - "8726:8726"
     user: "1000:1000"
     command: ["--config", "/app/config/config.yaml", "daemon"]
     environment:

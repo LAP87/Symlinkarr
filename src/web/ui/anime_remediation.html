@@ -1,14 +1,14 @@
 {% extends "web/ui/base.html" %}
 
-{% block title %}Anime Remediation - Symlinkarr{% endblock %}
+{% block title %}Legacy Anime Cleanup - Symlinkarr{% endblock %}
 {% block nav_cleanup %}active{% endblock %}
 
 {% block content %}
 <div class="page-header page-header--split">
     <div>
         <p class="page-kicker">Cleanup</p>
-        <h1>&#127909; Anime Remediation Backlog</h1>
-        <p class="page-lead">Operator worklist for mixed anime roots and Plex Hama split groups. Review the backlog here, then build a guarded remediation plan before applying anything.</p>
+        <h1>&#127909; Legacy Anime Cleanup</h1>
+        <p class="page-lead">Advanced tool for older anime libraries with split roots or Plex Hama AniDB/TVDB duplicates. Most users can ignore this page.</p>
     </div>
     <div class="header-badges">
         {% match summary %}
@@ -35,12 +35,17 @@
 
 {% match summary %}
 {% when Some with (data) %}
+<div class="alert alert-info">
+    <strong>Use this only for legacy anime messes.</strong>
+    If your anime library already lives under one tagged root per show, normal scan and cleanup are the right tools.
+</div>
+
 <section class="card">
     <div class="section-head">
         <div>
             <p class="section-kicker">Workflow</p>
-            <h2 class="section-title">Build a guarded remediation plan</h2>
-            <p class="text-muted">This creates a saved plan under the backup directory, shows the confirmation token, and only then allows apply. It does not mutate anything by itself.</p>
+            <h2 class="section-title">Preview a saved legacy cleanup plan</h2>
+            <p class="text-muted">This writes a saved plan under the backup directory. Preview does not change anything by itself.</p>
         </div>
     </div>
     <form action="/cleanup/anime-remediation/preview" method="post" class="stack-form">
@@ -152,10 +157,10 @@
         <div class="section-head">
             <div>
                 <p class="section-kicker">Context</p>
-                <h2 class="section-title">Why this page exists</h2>
+                <h2 class="section-title">When you actually need this</h2>
             </div>
         </div>
-        <p class="text-muted">This page answers three questions before any apply step: which tagged root should win, how much legacy symlink drift still exists, and whether Plex still has a live AniDB/TVDB split for that title.</p>
+        <p class="text-muted">Use this only when the same anime title still exists in old legacy folders as well as tagged roots, or when Plex/Hama split one show into separate AniDB and TVDB entries. If that is not your situation, skip this page.</p>
         <div class="metric-grid metric-grid--compact mt-2">
             <div class="metric-card">
                 <span class="metric-label">Mixed roots</span>
@@ -201,8 +206,8 @@
     <div class="section-head">
         <div>
             <p class="section-kicker">Groups</p>
-            <h2 class="section-title">Recommended remediation order</h2>
-            <p class="text-muted">The queue is already ranked by legacy impact. Titles near the top usually have the largest pile of untracked symlinks or the most drift between Plex and the tagged root.</p>
+            <h2 class="section-title">Review order</h2>
+            <p class="text-muted">The queue is ranked by legacy impact. Titles near the top usually have the biggest pile of old symlink drift.</p>
             {% if data.visible_groups != data.returned_groups %}
             <p class="text-muted">Showing {{ data.visible_groups }} filtered groups from {{ data.returned_groups }} loaded backlog rows.</p>
             {% endif %}

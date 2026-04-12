@@ -10,6 +10,15 @@ use crate::models::{LinkRecord, LinkStatus, MediaType};
 
 /// Maximum number of attempts before a job stops being picked up for retry (H-10).
 const MAX_JOB_ATTEMPTS: i64 = 5;
+const SCOPED_ROOT_QUERY_CHUNK_SIZE: usize = 250;
+const SCOPED_ROOT_IN_MEMORY_FILTER_THRESHOLD: usize = 1024;
+
+fn escape_sql_like(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
 
 /// Result of a housekeeping run (H-09).
 #[derive(Debug, Default)]
@@ -1240,78 +1249,82 @@ impl Database {
             LinkStatus::Removed => "removed",
         };
 
-        let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(
-            "SELECT id, source_path, target_path, media_id, media_type, status, created_at, updated_at
-             FROM links
-             WHERE status = ",
-        );
-        qb.push_bind(status_str);
-
-        if let Some(roots) = allowed_target_roots {
-            if !roots.is_empty() {
-                qb.push(" AND (");
-                let mut first = true;
-                for root in roots {
-                    if !first {
-                        qb.push(" OR ");
-                    }
-                    first = false;
-                    let root_str = path_to_db_text(root)?;
-                    let normalized = root_str.trim_end_matches('/');
-                    let like_pattern = format!("{}/%", escape_sql_like_pattern(normalized));
-                    qb.push("target_path LIKE ")
-                        .push_bind(like_pattern)
-                        .push(" ESCAPE '\\'");
-                }
-                qb.push(")");
-            }
+        let Some(roots) = normalize_scoped_root_texts(allowed_target_roots)? else {
+            return self.get_links_by_status(status).await;
+        };
+        if roots.len() > SCOPED_ROOT_IN_MEMORY_FILTER_THRESHOLD {
+            let records = self.get_links_by_status(status).await?;
+            return Ok(filter_link_records_by_roots(records, &roots));
         }
 
-        let rows = qb.build().fetch_all(&self.pool).await?;
-        let records = rows
-            .iter()
-            .map(|row| self.row_to_link_record(row))
-            .collect::<Result<Vec<_>>>()?;
+        let mut records = Vec::new();
+        for chunk in roots.chunks(SCOPED_ROOT_QUERY_CHUNK_SIZE) {
+            let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(
+                "SELECT id, source_path, target_path, media_id, media_type, status, created_at, updated_at
+                 FROM links
+                 WHERE status = ",
+            );
+            qb.push_bind(status_str);
+            push_target_root_like_clause(&mut qb, chunk);
 
-        Ok(records)
+            let rows = qb.build().fetch_all(&self.pool).await?;
+            records.extend(
+                rows.iter()
+                    .map(|row| self.row_to_link_record(row))
+                    .collect::<Result<Vec<_>>>()?,
+            );
+        }
+
+        dedupe_link_records(records)
     }
 
     pub async fn get_links_scoped(
         &self,
         allowed_target_roots: Option<&[PathBuf]>,
     ) -> Result<Vec<LinkRecord>> {
-        let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(
-            "SELECT id, source_path, target_path, media_id, media_type, status, created_at, updated_at
-             FROM links",
-        );
-
-        if let Some(roots) = allowed_target_roots {
-            if !roots.is_empty() {
-                qb.push(" WHERE (");
-                let mut first = true;
-                for root in roots {
-                    if !first {
-                        qb.push(" OR ");
-                    }
-                    first = false;
-                    let root_str = path_to_db_text(root)?;
-                    let normalized = root_str.trim_end_matches('/');
-                    let like_pattern = format!("{}/%", escape_sql_like_pattern(normalized));
-                    qb.push("target_path LIKE ")
-                        .push_bind(like_pattern)
-                        .push(" ESCAPE '\\'");
-                }
-                qb.push(")");
-            }
+        let Some(roots) = normalize_scoped_root_texts(allowed_target_roots)? else {
+            let rows = sqlx::query(
+                "SELECT id, source_path, target_path, media_id, media_type, status, created_at, updated_at
+                 FROM links",
+            )
+            .fetch_all(&self.pool)
+            .await?;
+            return rows
+                .iter()
+                .map(|row| self.row_to_link_record(row))
+                .collect::<Result<Vec<_>>>();
+        };
+        if roots.len() > SCOPED_ROOT_IN_MEMORY_FILTER_THRESHOLD {
+            let rows = sqlx::query(
+                "SELECT id, source_path, target_path, media_id, media_type, status, created_at, updated_at
+                 FROM links",
+            )
+            .fetch_all(&self.pool)
+            .await?;
+            let records = rows
+                .iter()
+                .map(|row| self.row_to_link_record(row))
+                .collect::<Result<Vec<_>>>()?;
+            return Ok(filter_link_records_by_roots(records, &roots));
         }
 
-        let rows = qb.build().fetch_all(&self.pool).await?;
-        let records = rows
-            .iter()
-            .map(|row| self.row_to_link_record(row))
-            .collect::<Result<Vec<_>>>()?;
+        let mut records = Vec::new();
+        for chunk in roots.chunks(SCOPED_ROOT_QUERY_CHUNK_SIZE) {
+            let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(
+                "SELECT id, source_path, target_path, media_id, media_type, status, created_at, updated_at
+                 FROM links",
+            );
+            push_target_root_like_clause(&mut qb, chunk);
 
-        Ok(records)
+            let rows = qb.build().fetch_all(&self.pool).await?;
+            records.extend(
+                rows.iter()
+                    .map(|row| self.row_to_link_record(row))
+                    .collect::<Result<Vec<_>>>()?,
+            );
+        }
+
+        dedupe_link_records(records)
     }
 
     pub async fn get_links_by_targets(&self, target_paths: &[PathBuf]) -> Result<Vec<LinkRecord>> {
@@ -1412,30 +1425,30 @@ impl Database {
         &self,
         allowed_target_roots: Option<&[PathBuf]>,
     ) -> Result<Vec<DeadLinkSeed>> {
+        let Some(roots) = normalize_scoped_root_texts(allowed_target_roots)? else {
+            return self.get_dead_link_seeds_root_chunk(&[]).await;
+        };
+        if roots.len() > SCOPED_ROOT_IN_MEMORY_FILTER_THRESHOLD {
+            let seeds = self.get_dead_link_seeds_root_chunk(&[]).await?;
+            return Ok(filter_dead_link_seeds_by_roots(seeds, &roots));
+        }
+
+        let mut seeds = Vec::new();
+        for chunk in roots.chunks(SCOPED_ROOT_QUERY_CHUNK_SIZE) {
+            seeds.extend(self.get_dead_link_seeds_root_chunk(chunk).await?);
+        }
+
+        dedupe_dead_link_seeds(seeds)
+    }
+
+    async fn get_dead_link_seeds_root_chunk(&self, roots: &[String]) -> Result<Vec<DeadLinkSeed>> {
         let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(
             "SELECT source_path, target_path, media_id, media_type
              FROM links
              WHERE status = 'dead'",
         );
-
-        if let Some(roots) = allowed_target_roots {
-            if !roots.is_empty() {
-                qb.push(" AND (");
-                let mut first = true;
-                for root in roots {
-                    if !first {
-                        qb.push(" OR ");
-                    }
-                    first = false;
-                    let root_str = path_to_db_text(root)?;
-                    let normalized = root_str.trim_end_matches('/');
-                    let like_pattern = format!("{}/%", escape_sql_like_pattern(normalized));
-                    qb.push("target_path LIKE ")
-                        .push_bind(like_pattern)
-                        .push(" ESCAPE '\\'");
-                }
-                qb.push(")");
-            }
+        if !roots.is_empty() {
+            push_target_root_like_clause(&mut qb, roots);
         }
 
         let rows = qb.build().fetch_all(&self.pool).await?;
@@ -1925,6 +1938,17 @@ impl Database {
             .await?
             .rows_affected();
         Ok(deleted > 0)
+    }
+
+    /// Remove cached API responses matching a key prefix.
+    pub async fn invalidate_cached_prefix(&self, cache_key_prefix: &str) -> Result<u64> {
+        let like_pattern = format!("{}%", escape_sql_like(cache_key_prefix));
+        let deleted = sqlx::query("DELETE FROM api_cache WHERE cache_key LIKE ? ESCAPE '\\'")
+            .bind(like_pattern)
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
+        Ok(deleted)
     }
 
     /// Remove all entries from the API metadata cache. Returns the number of deleted rows.
@@ -2670,6 +2694,100 @@ impl Database {
     }
 }
 
+fn normalize_scoped_root_texts(
+    allowed_target_roots: Option<&[PathBuf]>,
+) -> Result<Option<Vec<String>>> {
+    let Some(roots) = allowed_target_roots else {
+        return Ok(None);
+    };
+    if roots.is_empty() {
+        return Ok(None);
+    }
+
+    let mut normalized = Vec::with_capacity(roots.len());
+    for root in roots {
+        normalized.push(path_to_db_text(root)?.trim_end_matches('/').to_string());
+    }
+    normalized.sort();
+    normalized.dedup();
+
+    Ok((!normalized.is_empty()).then_some(normalized))
+}
+
+fn push_target_root_like_clause(qb: &mut QueryBuilder<'_, Sqlite>, roots: &[String]) {
+    if roots.is_empty() {
+        return;
+    }
+
+    let has_where = qb.sql().contains(" WHERE ");
+    if has_where {
+        qb.push(" AND (");
+    } else {
+        qb.push(" WHERE (");
+    }
+
+    let mut first = true;
+    for root in roots {
+        if !first {
+            qb.push(" OR ");
+        }
+        first = false;
+        let like_pattern = format!("{}/%", escape_sql_like_pattern(root));
+        qb.push("target_path LIKE ")
+            .push_bind(like_pattern)
+            .push(" ESCAPE '\\'");
+    }
+    qb.push(")");
+}
+
+fn dedupe_link_records(records: Vec<LinkRecord>) -> Result<Vec<LinkRecord>> {
+    let mut by_target = std::collections::HashMap::with_capacity(records.len());
+    for record in records {
+        let key = path_to_db_text(&record.target_path)?.to_string();
+        by_target.entry(key).or_insert(record);
+    }
+    Ok(by_target.into_values().collect())
+}
+
+fn dedupe_dead_link_seeds(seeds: Vec<DeadLinkSeed>) -> Result<Vec<DeadLinkSeed>> {
+    let mut by_target = std::collections::HashMap::with_capacity(seeds.len());
+    for seed in seeds {
+        let key = path_to_db_text(&seed.target_path)?.to_string();
+        by_target.entry(key).or_insert(seed);
+    }
+    Ok(by_target.into_values().collect())
+}
+
+fn filter_link_records_by_roots(records: Vec<LinkRecord>, roots: &[String]) -> Vec<LinkRecord> {
+    let root_set: std::collections::HashSet<&str> =
+        roots.iter().map(|root| root.as_str()).collect();
+    records
+        .into_iter()
+        .filter(|record| path_matches_any_root(&record.target_path, &root_set))
+        .collect()
+}
+
+fn filter_dead_link_seeds_by_roots(
+    seeds: Vec<DeadLinkSeed>,
+    roots: &[String],
+) -> Vec<DeadLinkSeed> {
+    let root_set: std::collections::HashSet<&str> =
+        roots.iter().map(|root| root.as_str()).collect();
+    seeds
+        .into_iter()
+        .filter(|seed| path_matches_any_root(&seed.target_path, &root_set))
+        .collect()
+}
+
+fn path_matches_any_root(path: &Path, root_set: &std::collections::HashSet<&str>) -> bool {
+    path.ancestors().any(|ancestor| {
+        ancestor
+            .to_str()
+            .map(|text| root_set.contains(text.trim_end_matches('/')))
+            .unwrap_or(false)
+    })
+}
+
 fn path_to_db_text(path: &Path) -> Result<&str> {
     path.to_str()
         .ok_or_else(|| anyhow::anyhow!("Path is not valid UTF-8: {:?}", path))
@@ -2841,6 +2959,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_get_active_links_scoped_batches_large_root_lists() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        let anime = sample_link("/mnt/rd/anime/ep01.mkv", "/plex/Anime/Show/S01E01.mkv");
+        db.insert_link(&anime).await.unwrap();
+
+        let mut roots = (0..1200)
+            .map(|i| PathBuf::from(format!("/plex/Noise/{i}")))
+            .collect::<Vec<_>>();
+        roots.push(PathBuf::from("/plex/Anime"));
+
+        let scoped = db.get_active_links_scoped(Some(&roots)).await.unwrap();
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(
+            scoped[0].target_path,
+            PathBuf::from("/plex/Anime/Show/S01E01.mkv")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_dead_link_seeds_scoped_batches_large_root_lists() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        let anime = sample_link("/mnt/rd/anime/ep01.mkv", "/plex/Anime/Show/S01E01.mkv");
+        db.insert_link(&anime).await.unwrap();
+        db.mark_dead_path(&anime.target_path).await.unwrap();
+
+        let mut roots = (0..1200)
+            .map(|i| PathBuf::from(format!("/plex/Noise/{i}")))
+            .collect::<Vec<_>>();
+        roots.push(PathBuf::from("/plex/Anime"));
+
+        let scoped = db.get_dead_link_seeds_scoped(Some(&roots)).await.unwrap();
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(
+            scoped[0].target_path,
+            PathBuf::from("/plex/Anime/Show/S01E01.mkv")
+        );
+    }
+
+    #[tokio::test]
     async fn test_get_links_by_targets_returns_only_exact_matches() {
         let dir = tempfile::tempdir().unwrap();
         let db = Database::new(dir.path().join("test.db").to_str().unwrap())
@@ -2932,6 +3097,34 @@ mod tests {
         assert!(db.invalidate_cached("tmdb:invalidate-me").await.unwrap());
         assert!(db.get_cached("tmdb:invalidate-me").await.unwrap().is_none());
         assert!(!db.invalidate_cached("tmdb:invalidate-me").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_cache_prefix_invalidation_removes_matching_entries_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        db.set_cached("tmdb:tv:1", r#"{"title":"One"}"#, 168)
+            .await
+            .unwrap();
+        db.set_cached("tmdb:tv:external_ids:1", r#"{"imdb_id":"tt1"}"#, 168)
+            .await
+            .unwrap();
+        db.set_cached("tmdb:movie:1", r#"{"title":"Movie"}"#, 168)
+            .await
+            .unwrap();
+
+        let deleted = db.invalidate_cached_prefix("tmdb:tv:").await.unwrap();
+        assert_eq!(deleted, 2);
+        assert!(db.get_cached("tmdb:tv:1").await.unwrap().is_none());
+        assert!(db
+            .get_cached("tmdb:tv:external_ids:1")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(db.get_cached("tmdb:movie:1").await.unwrap().is_some());
     }
 
     #[tokio::test]

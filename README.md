@@ -109,6 +109,40 @@ From a release binary:
 
 Web UI default: `http://127.0.0.1:8726`
 
+### Local Docker Daemon
+
+For a host-local daemon install, keep Symlinkarr in its own compose file and mount the real host paths directly.
+
+Example local stack:
+
+```yaml
+services:
+  symlinkarr:
+    image: symlinkarr:1.0.0-rc.1
+    container_name: symlinkarr
+    restart: unless-stopped
+    user: "1000:1000"
+    command: ["--config", "/app/config/config.yaml", "daemon"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./config.docker.yaml:/app/config/config.yaml:ro
+      - ./data:/app/data
+      - /mnt:/mnt:rslave
+      - /path/to/secrets:/app/secrets:ro
+```
+
+Typical local operations:
+
+```bash
+docker compose -f docker-compose.local.yml up -d
+docker compose -f docker-compose.local.yml logs -f symlinkarr
+docker exec symlinkarr symlinkarr --config /app/config/config.yaml status --output json
+docker stop symlinkarr
+```
+
+If you are replacing another standalone tool, stop that container separately instead of editing its compose file unless both services truly belong to the same stack.
+
 ## Security Modes
 
 Symlinkarr follows a local-first security model similar to how many people already run *arr apps:
@@ -140,6 +174,7 @@ Symlinkarr keeps TMDB/TVDB metadata cached for a long time on purpose.
 Useful commands:
 
 - `symlinkarr cache invalidate tmdb:12345`
+- `symlinkarr cache invalidate tmdb:tv:`
 - `symlinkarr cache invalidate anime-lists`
 - `symlinkarr cache clear`
 
@@ -152,6 +187,7 @@ Symlinkarr backups preserve two layers on purpose:
 
 Current-format manifests are integrity-checked during `backup list` and `backup restore`, so corrupted or tampered backups fail loudly instead of half-restoring.
 Restore also stays confined to the configured `backup.path`, so a mistyped absolute path or symlink escape cannot make the restore flow read arbitrary files outside the backup directory.
+When old scheduled backups rotate out, their paired `.sqlite3` snapshots are removed with them so retention limits still bound disk usage.
 
 ## Common Commands
 
@@ -162,15 +198,18 @@ symlinkarr status --health
 symlinkarr status --health --output json
 symlinkarr cleanup audit --scope anime
 symlinkarr cleanup prune --report <REPORT.json>
-symlinkarr cleanup remediate-anime --plex-db "<PLEX_DB_PATH>"
 symlinkarr repair auto --dry-run
 symlinkarr discover list
 symlinkarr cache status
 symlinkarr cache invalidate tmdb:12345
+symlinkarr cache invalidate tmdb:tv:
 symlinkarr web
 ```
 
 If you are running from a source checkout, prepend `cargo run --` to the same commands.
+
+Advanced note: `cleanup remediate-anime` exists for older anime libraries with mixed legacy roots or Plex Hama AniDB/TVDB duplicates. Most setups do not need it.
+Discover note: `discover list` now previews concrete source-to-target placements for tagged folders that still look empty or underlinked. Web/API discover stay read-only until unattended apply is trustworthy enough for cron-safe runs.
 
 ## Why People Use It
 

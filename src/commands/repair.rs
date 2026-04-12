@@ -21,6 +21,31 @@ use crate::models::MediaType;
 use crate::repair;
 use crate::RepairAction;
 
+async fn print_remaining_dead_link_notice(db: &Database) {
+    let Ok((_, dead_links, _)) = db.get_stats().await else {
+        return;
+    };
+    if dead_links == 0 {
+        return;
+    }
+
+    println!(
+        "\n   ⚠️  {} dead link(s) remain tracked after repair. They will continue to surface on scan/status until repaired or pruned.",
+        dead_links
+    );
+
+    let preview_limit = 3i64;
+    if let Ok(preview_links) = db.get_dead_links_limited(preview_limit).await {
+        for link in &preview_links {
+            println!("      ✗ {}", link.target_path.display());
+        }
+        let remaining = dead_links.saturating_sub(preview_links.len() as i64);
+        if remaining > 0 {
+            println!("      … {} more tracked dead link(s) remain.", remaining);
+        }
+    }
+}
+
 pub(crate) async fn run_repair(
     cfg: &Config,
     db: &Database,
@@ -195,6 +220,10 @@ pub(crate) async fn run_repair(
                 info!("Bazarr integration ready — needs Sonarr/Radarr IDs in future");
                 let _ = bazarr;
             }
+
+            if !dry_run {
+                print_remaining_dead_link_notice(db).await;
+            }
         }
         RepairAction::Trigger { arr } => {
             if !cfg.has_decypharr() {
@@ -220,6 +249,7 @@ pub(crate) async fn execute_repair_auto(
     let repairer = repair::Repairer::new();
     let selected = selected_libraries(cfg, library_filter)?;
     let selected_library_paths: Vec<_> = selected.iter().map(|l| l.path.clone()).collect();
+    let selected_owned: Vec<_> = selected.iter().map(|lib| (*lib).clone()).collect();
 
     ensure_runtime_directories_healthy(&selected, &cfg.sources, "repair auto").await?;
 
@@ -306,6 +336,7 @@ pub(crate) async fn execute_repair_auto(
             dry_run,
             &skip_paths,
             Some(&selected_library_paths),
+            Some(&selected_owned),
             cache_ref,
         )
         .await?;

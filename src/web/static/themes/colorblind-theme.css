@@ -2,18 +2,22 @@
 /* Uses shapes, patterns, and color combinations safe for various types of color blindness */
 
 :root {
-  --bg-primary: #1a1a2e;
-  --bg-secondary: #16213e;
-  --accent-primary: #0066cc;
-  --accent-secondary: #cc6600;
+  --bg-primary: #1a1d23;
+  --bg-secondary: #21252b;
+  --bg-tertiary: #282d36;
+  --card-bg: #21252b;
+  --card-bg-elevated: #282d36;
+  --accent-primary: #0077cc;
+  --accent-secondary: #cc7700;
   --text-primary: #ffffff;
   --text-secondary: #b0b0b0;
-  --success: #009900;
+  --text-faint: #6a7585;
+  --success: #009944;
   --warning: #cc9900;
   --error: #cc0000;
-  --info: #0066cc;
-  --border-color: #404040;
-  --card-bg: #222222;
+  --info: #0077cc;
+  --border-color: #2b3038;
+  --border-strong: #404550;
 }
 
 /* Colorblind-safe severity indicators */

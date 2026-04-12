@@ -165,8 +165,22 @@ pub(crate) async fn run_doctor(cfg: &Config, db: &Database, output: OutputFormat
 }
 
 fn can_write_in_directory(path: &std::path::Path) -> bool {
-    if std::fs::create_dir_all(path).is_err() {
-        return false;
+    let created = if path.exists() {
+        false
+    } else {
+        if std::fs::create_dir_all(path).is_err() {
+            return false;
+        }
+        true
+    };
+
+    #[cfg(unix)]
+    if created {
+        use std::os::unix::fs::PermissionsExt;
+
+        if std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).is_err() {
+            return false;
+        }
     }
 
     let probe = path.join(format!(
@@ -331,6 +345,19 @@ mod tests {
         let nested = dir.path().join("doctor").join("probe");
         assert!(can_write_in_directory(&nested));
         assert!(nested.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn can_write_in_directory_secures_missing_path_on_create() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("doctor").join("probe");
+        assert!(can_write_in_directory(&nested));
+
+        let mode = std::fs::metadata(&nested).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
     }
 
     #[test]

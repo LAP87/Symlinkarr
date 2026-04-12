@@ -1,6 +1,9 @@
+use std::path::{Component, Path};
+use std::time::Duration;
+
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use reqwest::Client;
+use reqwest::{Client, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
@@ -129,6 +132,23 @@ struct TorrentListResponse {
     has_next: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WebDavProbeError {
+    NotFound,
+    Unreadable(String),
+}
+
+impl std::fmt::Display for WebDavProbeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound => write!(f, "webdav probe path not found"),
+            Self::Unreadable(reason) => write!(f, "{reason}"),
+        }
+    }
+}
+
+impl std::error::Error for WebDavProbeError {}
+
 /// Client for Decypharr's web API (chi-based, typically port 8282)
 pub struct DecypharrClient {
     client: Client,
@@ -166,6 +186,73 @@ impl DecypharrClient {
         self.api_token
             .as_ref()
             .map(|t| ("Authorization", format!("Bearer {}", t)))
+    }
+
+    fn build_webdav_url(&self, relative_path: &Path) -> Result<Url> {
+        let mut url = Url::parse(&self.base_url)?;
+        let mut segments = url
+            .path_segments_mut()
+            .map_err(|_| anyhow::anyhow!("Decypharr base URL cannot be extended"))?;
+        segments.pop_if_empty();
+        segments.push("webdav");
+
+        for component in relative_path.components() {
+            match component {
+                Component::Normal(segment) => {
+                    let segment = segment.to_str().ok_or_else(|| {
+                        anyhow::anyhow!("Decypharr WebDAV probe path contains non-UTF-8 segment")
+                    })?;
+                    segments.push(segment);
+                }
+                Component::CurDir => {}
+                Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                    anyhow::bail!(
+                        "Decypharr WebDAV probe path must be relative and normalized: {}",
+                        relative_path.display()
+                    );
+                }
+            }
+        }
+
+        drop(segments);
+        Ok(url)
+    }
+
+    pub async fn probe_webdav_path(
+        &self,
+        relative_path: &Path,
+        timeout: Duration,
+    ) -> std::result::Result<(), WebDavProbeError> {
+        let url = self
+            .build_webdav_url(relative_path)
+            .map_err(|err| WebDavProbeError::Unreadable(err.to_string()))?;
+
+        let mut req = self
+            .client
+            .get(url)
+            .timeout(timeout)
+            .header(reqwest::header::RANGE, "bytes=0-0");
+        if let Some((key, val)) = self.auth_header() {
+            req = req.header(key, val);
+        }
+
+        let resp = req.send().await.map_err(|err| {
+            WebDavProbeError::Unreadable(format!("webdav probe transport error: {}", err))
+        })?;
+
+        match resp.status() {
+            StatusCode::OK | StatusCode::PARTIAL_CONTENT => Ok(()),
+            StatusCode::NOT_FOUND | StatusCode::GONE => Err(WebDavProbeError::NotFound),
+            status => {
+                let body = resp.text().await.unwrap_or_default();
+                let detail = body.trim();
+                Err(WebDavProbeError::Unreadable(if detail.is_empty() {
+                    format!("webdav probe error {}", status)
+                } else {
+                    format!("webdav probe error {}: {}", status, detail)
+                }))
+            }
+        }
     }
 
     /// Browse a content group on the Decypharr mount.
@@ -378,6 +465,11 @@ impl DecypharrClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::test_helpers::spawn_sequence_http_server;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+    use std::time::Duration;
 
     #[test]
     fn test_parse_browse_entry() {
@@ -450,5 +542,60 @@ mod tests {
 
         assert!(torrent.is_failed());
         assert_eq!(torrent.failure_reason(), Some("torrent marked bad"));
+    }
+
+    #[tokio::test]
+    async fn probe_webdav_path_encodes_segments_and_sends_range() {
+        let (base_url, requests) =
+            spawn_sequence_http_server(&[("HTTP/1.1 206 Partial Content", "x")]).unwrap();
+        let client = DecypharrClient::new(&base_url, None);
+
+        client
+            .probe_webdav_path(
+                Path::new(
+                    "__all__/12.Monkeys.S02E13.720p.HDTV.x264-AVS[rarbg]/12.Monkeys.S02E13.720p.HDTV.x264-AVS.mkv",
+                ),
+                Duration::from_millis(500),
+            )
+            .await
+            .unwrap();
+
+        let captured = requests.lock().unwrap();
+        let request = captured.first().unwrap();
+        assert!(request.contains("GET /webdav/__all__/"));
+        assert!(request.contains("12.Monkeys.S02E13.720p.HDTV.x264-AVS"));
+        assert!(request.contains("12.Monkeys.S02E13.720p.HDTV.x264-AVS.mkv HTTP/1.1"));
+        assert!(request.to_ascii_lowercase().contains("range: bytes=0-0"));
+    }
+
+    #[tokio::test]
+    async fn probe_webdav_path_times_out_when_server_stalls() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut req_buf = [0u8; 1024];
+                let _ = stream.read(&mut req_buf);
+                thread::sleep(Duration::from_millis(200));
+                let _ = stream.write_all(
+                    b"HTTP/1.1 206 Partial Content\r\nContent-Length: 1\r\nConnection: close\r\n\r\nx",
+                );
+            }
+        });
+
+        let client = DecypharrClient::new(&format!("http://{}", addr), None);
+        let err = client
+            .probe_webdav_path(
+                Path::new("__all__/slow/file.mkv"),
+                Duration::from_millis(50),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains("webdav probe transport error"),
+            "unexpected error: {err}"
+        );
     }
 }

@@ -12,6 +12,17 @@ In plain language:
 - your library folders are the clean shelves Plex, Emby, Jellyfin, Sonarr, or Radarr expect
 - Symlinkarr keeps the shelves tidy by creating and maintaining symlinks instead of moving the real files around
 
+## Current RC Closeout
+
+Symlinkarr is in `RC-hardening`, not broad feature expansion.
+
+Remaining pre-RC work is now mostly operator proof, not new features:
+
+- cut the RC commit/tag/release intentionally from a clean worktree
+- keep the known anime-specials and legacy-anime remediation limits explicit in shipped docs/help
+
+The live checklist is tracked in [RC_ROADMAP.md](RC_ROADMAP.md).
+
 ## Core Features
 
 ### `scan`
@@ -55,13 +66,13 @@ What it does:
 ### `discover`
 
 In plain English:
-Show me RD cache content I already have access to, but have not linked into the library yet.
+Show me which RD-backed files Symlinkarr would place into which tagged folders.
 
 What it does:
 
-- compares cached RD content against your linked library state
-- highlights likely gaps
-- helps you see what is available before you go hunting manually
+- compares RD-backed source files against tagged library folders
+- previews concrete source-to-target placements, including season paths
+- keeps the web/UI side read-only until unattended placement is trustworthy
 
 ### `queue`
 
@@ -94,7 +105,7 @@ What it does:
 
 - builds or refreshes RD torrent/file-info cache entries
 - reports RD cache coverage and health
-- invalidates one sticky metadata entry when TMDB/TVDB/anime-lists data looks stale
+- invalidates one sticky metadata entry, a whole metadata family prefix, or the anime-lists cache when TMDB/TVDB/anime-lists data looks stale
 - can clear all sticky metadata so later lookups repopulate it from upstream APIs
 
 Why the metadata cache is intentionally sticky:
@@ -111,6 +122,7 @@ Check whether the room is safe before you start moving furniture.
 What it does:
 
 - runs preflight health checks
+- verifies DB schema/version and writable path expectations
 - catches config mistakes
 - catches mount/runtime issues before destructive work
 

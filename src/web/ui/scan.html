@@ -7,8 +7,8 @@
 <div class="page-header page-header--split">
     <div>
         <p class="page-kicker">Pipeline</p>
-        <h1>&#128269; Scan</h1>
-        <p class="page-lead">Run the real scan path, inspect phase timings, and verify auto-acquire outcomes without leaving the browser.</p>
+        <h1>Scan</h1>
+        <p class="page-lead">Run a dry run or live scan, inspect phase timings, and verify auto-acquire outcomes without leaving the browser.</p>
     </div>
     <div class="header-badges">
         <span class="badge {% if queue.active_total > 0 %}badge-warning{% else %}badge-success{% endif %}">
@@ -60,7 +60,7 @@
             </div>
 
             <label class="toggle-row">
-                <input type="checkbox" name="dry_run" value="true" checked>
+                <input type="checkbox" name="dry_run" value="true" {% if default_dry_run %}checked{% endif %}>
                 <div>
                     <strong>Dry run</strong>
                     <p class="text-muted">Preview links and acquisitions without writing symlinks or submitting downloads.</p>
@@ -77,10 +77,10 @@
 
             <div class="actions mt-2">
                 <button type="submit" class="btn btn-primary">
-                    &#128269; Start Real Scan
+                    Start Scan
                     <span class="htmx-indicator">&#8987;</span>
                 </button>
-                <a href="/scan/history" class="btn btn-secondary">&#128340; Full History</a>
+                <a href="/scan/history" class="btn btn-secondary">Full History</a>
             </div>
         </form>
     </section>
@@ -138,6 +138,9 @@
         <div class="metric-card"><span class="metric-label">Cache Hit</span><strong>{{ run.cache_hit_ratio }}</strong></div>
     </div>
 
+    <p class="text-muted">Advanced view reveals phase timings, matcher signals, and auto-acquire request breakdown for this run.</p>
+
+    <div class="advanced-only">
     <div class="telemetry-grid">
         <div class="telemetry-item"><span>Checks</span><strong>{{ run.runtime_checks }}</strong></div>
         <div class="telemetry-item"><span>Library</span><strong>{{ run.library_scan }}</strong></div>
@@ -145,8 +148,9 @@
         <div class="telemetry-item"><span>Matching</span><strong>{{ run.matching }}</strong></div>
         <div class="telemetry-item"><span>Title Enrichment</span><strong>{{ run.title_enrichment }}</strong></div>
         <div class="telemetry-item"><span>Linking</span><strong>{{ run.linking }}</strong></div>
-        <div class="telemetry-item"><span>Plex Refresh</span><strong>{{ run.plex_refresh }}</strong></div>
+        <div class="telemetry-item"><span>Media Refresh</span><strong>{{ run.plex_refresh }}</strong></div>
         <div class="telemetry-item"><span>Dead Sweep</span><strong>{{ run.dead_link_sweep }}</strong></div>
+    </div>
     </div>
 
     {% if run.plex_refresh_capped_batches > 0 || run.plex_refresh_skipped_batches > 0 || run.plex_refresh_failed_batches > 0 || run.plex_refresh_unresolved_paths > 0 %}
@@ -164,6 +168,7 @@
     </div>
     {% endif %}
 
+    <div class="advanced-only">
     <div class="split-grid split-grid--tight mt-2">
         <div class="card card--nested">
             <h3 class="subsection-title">Matcher Signals</h3>
@@ -190,6 +195,7 @@
             {% endif %}
         </div>
     </div>
+    </div>
 </section>
 {% when None %}{% endmatch %}
 
@@ -201,7 +207,7 @@
         </div>
     </div>
 
-    <form action="/scan" method="get" class="stack-form mb-2">
+    <form action="/scan" method="get" class="stack-form mb-2 advanced-only">
         <div class="split-grid split-grid--tight">
             <div class="form-group">
                 <label class="form-label" for="history_mode">Mode</label>
@@ -233,7 +239,7 @@
 
         <div class="actions">
             <button type="submit" class="btn btn-secondary">Filter Recent Runs</button>
-            <a href="/scan/history" class="btn btn-primary">&#128340; Open Full History</a>
+            <a href="/scan/history" class="btn btn-primary">Open Full History</a>
         </div>
     </form>
 
