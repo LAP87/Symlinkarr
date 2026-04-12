@@ -13,7 +13,7 @@ serde_yml = "0.0.12"
 reqwest = { version = "0.13.2", default-features = false, features = ["form", "json", "multipart", "query", "rustls"] }
 regex = "1.10"
 quick-xml = { version = "0.31", features = ["serialize"] }
-sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite"] }
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite"] }
 anyhow = "1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
