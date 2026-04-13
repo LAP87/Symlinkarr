@@ -71,7 +71,7 @@ Already validated live by `2026-04-12`:
 - `cleanup prune` was exercised in preview mode on a real anime audit report, with expected safety blocking for legacy anime roots
 - anime remediation was exercised against the live Plex DB, and one eligible group (`Angels of Death`) was applied safely by quarantining 16 legacy symlinks while leaving the tagged root intact
 - release Docker paths were re-verified against the live `/opt/stacks/symlinkarr` container: entrypoint/command, healthcheck, and static asset path all matched the current Dockerfile
-- a local release-style binary artifact was produced as `dist/symlinkarr-v1.0.0-rc.1-linux-amd64.tar.gz` with a matching `.sha256`
+- a local release-style binary artifact path was validated with matching `.sha256` output, and the tagged release workflow is now responsible for publishing the canonical downloadable artifacts
 - full `discover --output json list` completed successfully on the real library after the scoped DB fix, and JSON output is now clean on `stdout`
 - live `repair auto` repaired one real dead link and now keeps a remaining orphan dead symlink persistently surfaced in DB/status/web until it is repaired or pruned
 

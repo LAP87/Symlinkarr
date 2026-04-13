@@ -2,7 +2,7 @@
 
 ## Release Target
 
-- package version for this push: `1.0.0-rc.1`
+- package version for this push: `1.0.0-rc.2`
 - posture: `release-candidate with downloadable binary artifacts`
 - intended use: local-first host or Docker installs, with Windows 11 users running through WSL2 or a Linux container
 
@@ -47,6 +47,26 @@
   - result: `repair auto` repaired `Send Help`, kept `The Bride!` tracked as unresolved, `status --health --output json` returned `active=73707`, `dead=1`, `total=73708`, `/status` rendered the new persistent dead-link section, and `scan --dry-run --library Movies` surfaced the remaining tracked dead link in normal CLI output
 - live config/doctor verification on `2026-04-12`
   - result: `doctor --output json` passed after tightening the mounted `web_password` secret to mode `0600`
+
+## 2026-04-13 - RC.2 Release Pipeline Recovery
+
+### Code Changes
+
+- bumped the package version and operator-facing Docker example to `v1.0.0-rc.2`, aligning the published compose path with the GHCR namespace instead of the old local-only image tag.
+  - files: `Cargo.toml`, `README.md`
+- taught the release workflow to mark hyphenated version tags such as `v1.0.0-rc.2` as prereleases automatically, so future release-candidate tags publish consistently without a manual post-step.
+  - files: `.github/workflows/release.yml`
+
+### Validation
+
+- `cargo test -q`
+  - result: passed locally
+- `cargo clippy --all-targets --all-features -- -D warnings`
+  - result: passed locally
+- `cargo audit`
+  - result: passed locally
+- `cargo build --release --locked`
+  - result: passed locally
 
 ## 2026-04-08 - Live VACUUM Verification and First Anime Remediation Apply
 
