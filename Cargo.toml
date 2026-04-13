@@ -12,7 +12,7 @@ serde_json = "1.0"
 serde_yml = { package = "serde_yaml", version = "0.9" }
 reqwest = { version = "0.13.2", default-features = false, features = ["form", "json", "multipart", "query", "rustls"] }
 regex = "1.10"
-quick-xml = { version = "0.31", features = ["serialize"] }
+quick-xml = { version = "0.39", features = ["serialize"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
 anyhow = "1.0"
 tracing = "0.1"
