@@ -808,7 +808,7 @@ pub(crate) fn infer_cleanup_scope(cfg: &Config, selected_libraries: &[String]) -
                     .iter()
                     .any(|name| name.eq_ignore_ascii_case(&lib.name))
         })
-        .map(|lib| effective_content_type(lib))
+        .map(effective_content_type)
         .collect();
 
     if types.len() == 1 {

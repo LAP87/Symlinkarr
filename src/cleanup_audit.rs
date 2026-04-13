@@ -1173,10 +1173,10 @@ pub async fn run_prune(
         });
     }
 
-    if report.applied_at.is_some() {
+    if let Some(applied_at) = report.applied_at {
         anyhow::bail!(
             "Refusing prune apply: this report was already applied at {}",
-            report.applied_at.unwrap().format("%Y-%m-%d %H:%M:%S UTC")
+            applied_at.format("%Y-%m-%d %H:%M:%S UTC")
         );
     }
 

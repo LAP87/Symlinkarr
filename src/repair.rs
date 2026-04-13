@@ -244,9 +244,13 @@ fn extract_media_id_from_tagged_ancestors(path: &Path, library_root: &Path) -> O
             break;
         }
 
-        let folder_name = ancestor.file_name()?.to_str()?;
-        let captures = tagged_media_id_regex().captures(folder_name)?;
-        return Some(format!("{}-{}", &captures[1], &captures[2]));
+        let folder_name = match ancestor.file_name().and_then(|n| n.to_str()) {
+            Some(name) => name,
+            None => continue,
+        };
+        if let Some(captures) = tagged_media_id_regex().captures(folder_name) {
+            return Some(format!("{}-{}", &captures[1], &captures[2]));
+        }
     }
 
     None
@@ -1127,6 +1131,7 @@ impl Repairer {
     ///
     /// `skip_paths` — symlink file paths currently being streamed (from Tautulli/Plex).
     /// Dead links whose symlink path exactly matches any of these are skipped.
+    #[allow(clippy::too_many_arguments)]
     pub async fn repair_all(
         &self,
         db: &Database,
@@ -2274,10 +2279,8 @@ mod tests {
                 assert_eq!(dead_link.content_type, ContentType::Movie);
                 assert_eq!(
                     replacement,
-                    &PathBuf::from(
-                        tmp.path()
-                            .join("rd/Movie.Title.2024.1080p.WEB-DL.x265-GROUP.mkv")
-                    )
+                    &tmp.path()
+                        .join("rd/Movie.Title.2024.1080p.WEB-DL.x265-GROUP.mkv")
                 );
             }
             other => panic!("expected repaired orphan dead symlink, got {:?}", other),
