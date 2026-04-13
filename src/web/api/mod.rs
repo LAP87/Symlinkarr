@@ -46,7 +46,7 @@ pub fn create_router(state: WebState) -> Router<WebState> {
         .route("/scan/status", get(api_get_scan_status))
         .route("/scan/jobs", get(api_get_scan_jobs))
         .route("/scan/history", get(api_get_scan_history))
-        .route("/scan/:id", get(api_get_scan_run))
+        .route("/scan/{id}", get(api_get_scan_run))
         .route("/report/anime-remediation", get(api_get_anime_remediation))
         .route(
             "/cleanup/anime-remediation/preview",

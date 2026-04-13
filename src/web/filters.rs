@@ -1,7 +1,7 @@
 //! Custom Askama template filters for the web UI.
-//! Askama 0.12 does not include `length` as a built-in filter, so we provide it here.
+//! Askama does not include `length` as a built-in filter, so we provide it here.
 
-use askama::Result;
+use askama::{Result, Values};
 
 pub trait Len {
     fn askama_len(&self) -> usize;
@@ -39,12 +39,14 @@ impl<T> Len for [T] {
 
 /// Returns the length of a collection.
 /// Used in templates as `{{ collection|length }}`.
-pub fn length<C: Len + ?Sized>(val: &C) -> Result<usize> {
+#[askama::filter_fn]
+pub fn length<C: Len + ?Sized>(val: &C, _: &dyn Values) -> Result<usize> {
     Ok(val.askama_len())
 }
 
 /// Returns the current application version from Cargo metadata.
 /// Used in templates as `{{ ""|app_version }}`.
-pub fn app_version<T: ?Sized>(_: &T) -> Result<&'static str> {
+#[askama::filter_fn]
+pub fn app_version<T: ?Sized>(_: &T, _: &dyn Values) -> Result<&'static str> {
     Ok(env!("CARGO_PKG_VERSION"))
 }

@@ -1195,7 +1195,7 @@ mod tests {
         };
         let app = Router::new()
             .route("/library/sections", get(mock_plex_sections))
-            .route("/library/sections/:key/refresh", get(mock_plex_refresh))
+            .route("/library/sections/{key}/refresh", get(mock_plex_refresh))
             .with_state(state);
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr().unwrap();

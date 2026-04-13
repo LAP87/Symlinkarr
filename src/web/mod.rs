@@ -929,7 +929,7 @@ fn create_router(state: WebState) -> Router {
         .route("/scan", get(handlers::get_scan))
         .route("/scan/trigger", post(handlers::post_scan_trigger))
         .route("/scan/history", get(handlers::get_scan_history))
-        .route("/scan/history/:id", get(handlers::get_scan_run_detail))
+        .route("/scan/history/{id}", get(handlers::get_scan_run_detail))
         // Cleanup
         .route("/cleanup", get(handlers::get_cleanup))
         .route(

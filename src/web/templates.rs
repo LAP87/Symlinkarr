@@ -1,6 +1,10 @@
 //! Askama templates for the web UI
 
 use askama::Template;
+use axum::{
+    http::StatusCode,
+    response::{Html, IntoResponse, Response},
+};
 use chrono::{DateTime, Utc};
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -20,6 +24,32 @@ use crate::config::Config;
 use crate::db::{AcquisitionJobCounts, ScanHistoryRecord};
 use crate::media_servers::{DeferredRefreshSummary, LibraryInvalidationServerOutcome};
 use crate::models::LinkRecord;
+
+macro_rules! impl_template_into_response {
+    ($($template:ty),+ $(,)?) => {
+        $(
+            impl IntoResponse for $template {
+                fn into_response(self) -> Response {
+                    match self.render() {
+                        Ok(body) => Html(body).into_response(),
+                        Err(err) => {
+                            tracing::error!(
+                                "failed to render {}: {}",
+                                stringify!($template),
+                                err
+                            );
+                            (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "Template render error",
+                            )
+                                .into_response()
+                        }
+                    }
+                }
+            }
+        )+
+    };
+}
 
 // ─── Dashboard ──────────────────────────────────────────────────────
 
@@ -935,6 +965,28 @@ pub struct BackupResultTemplate {
     pub backup_path: Option<PathBuf>,
     pub database_snapshot_path: Option<PathBuf>,
 }
+
+impl_template_into_response!(
+    DashboardTemplate,
+    StatusTemplate,
+    ScanTemplate,
+    ScanResultTemplate,
+    ScanHistoryTemplate,
+    ScanRunDetailTemplate,
+    CleanupTemplate,
+    CleanupResultTemplate,
+    PrunePreviewTemplate,
+    AnimeRemediationTemplate,
+    AnimeRemediationResultTemplate,
+    LinksTemplate,
+    DeadLinksTemplate,
+    RepairResultTemplate,
+    ConfigTemplate,
+    DoctorTemplate,
+    DiscoverTemplate,
+    BackupTemplate,
+    BackupResultTemplate,
+);
 
 #[cfg(test)]
 mod tests {
