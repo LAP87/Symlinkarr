@@ -544,7 +544,7 @@ async fn emit_remaining_dead_link_notice(db: &Database) {
 
 fn generate_scan_run_token() -> String {
     let mut bytes = [0u8; 16];
-    if getrandom::getrandom(&mut bytes).is_ok() {
+    if getrandom::fill(&mut bytes).is_ok() {
         return bytes.iter().map(|byte| format!("{byte:02x}")).collect();
     }
 

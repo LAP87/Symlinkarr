@@ -1244,7 +1244,7 @@ async fn add_security_headers(
 
 fn generate_browser_session_token() -> Result<String> {
     let mut bytes = [0u8; 32];
-    if getrandom::getrandom(&mut bytes).is_ok() {
+    if getrandom::fill(&mut bytes).is_ok() {
         return Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect());
     }
 

@@ -270,7 +270,7 @@ fn best_effort_jitter_ms(max_exclusive: u64) -> u64 {
     }
 
     let mut bytes = [0u8; 8];
-    if getrandom::getrandom(&mut bytes).is_ok() {
+    if getrandom::fill(&mut bytes).is_ok() {
         return u64::from_le_bytes(bytes) % max_exclusive;
     }
 
