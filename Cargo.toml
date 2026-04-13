@@ -26,7 +26,7 @@ rayon = "1.8"
 
 # Web UI dependencies
 axum = "0.7"
-askama = "0.12"
+askama = "0.15"
 askama_axum = "0.4"
 tower-http = { version = "0.5", features = ["fs", "trace"] }
 form_urlencoded = "1.2"
