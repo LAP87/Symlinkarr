@@ -2,7 +2,7 @@
 
 ## Release Target
 
-- package version for this push: `1.0.0-rc.3`
+- package version for this push: `1.0.0-rc.4`
 - posture: `release-candidate with downloadable binary artifacts`
 - intended use: local-first host or Docker installs, with Windows 11 users running through WSL2 or a Linux container
 
@@ -48,16 +48,16 @@
 - live config/doctor verification on `2026-04-12`
   - result: `doctor --output json` passed after tightening the mounted `web_password` secret to mode `0600`
 
-## 2026-04-13 - RC.3 Release Pipeline Recovery
+## 2026-04-14 - RC.4 Runtime Compatibility
 
 ### Code Changes
 
-- bumped the package version and operator-facing Docker example to `v1.0.0-rc.3`, aligning the published compose path with the GHCR namespace instead of the old local-only image tag.
+- bumped the package version and operator-facing Docker example to `1.0.0-rc.4`, correcting the GHCR reference so the docs no longer suggest an invalid `v`-prefixed image tag.
   - files: `Cargo.toml`, `README.md`
-- taught the release workflow to mark hyphenated version tags such as `v1.0.0-rc.3` as prereleases automatically, so future release-candidate tags publish consistently without a manual post-step.
-  - files: `.github/workflows/release.yml`
-- replaced the release Docker build path so the image is assembled from the already verified release artifacts instead of recompiling Rust inside multi-arch Docker builds, removing the slowest part of the tagged release pipeline.
+- pinned the release workflow to `ubuntu-24.04` and moved the runtime image to the same base so the published binary and GHCR image share the same glibc floor instead of drifting.
   - files: `.github/workflows/release.yml`, `Dockerfile.release`
+- kept the artifact-driven Docker publish path so the multi-arch release image is still assembled from verified release tarballs instead of recompiling Rust inside Buildx.
+  - files: `.github/workflows/release.yml`
 
 ### Validation
 

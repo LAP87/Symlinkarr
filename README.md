@@ -118,7 +118,7 @@ Example local stack:
 ```yaml
 services:
   symlinkarr:
-    image: ghcr.io/lap87/symlinkarr:v1.0.0-rc.3
+    image: ghcr.io/lap87/symlinkarr:1.0.0-rc.4
     container_name: symlinkarr
     restart: unless-stopped
     user: "1000:1000"
