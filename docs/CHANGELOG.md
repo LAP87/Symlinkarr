@@ -2,7 +2,7 @@
 
 ## Release Target
 
-- package version for this push: `1.0.0-rc.5`
+- package version for this push: `1.0.0-rc.6`
 - posture: `release-candidate with downloadable binary artifacts`
 - intended use: local-first host or Docker installs, with Windows 11 users running through WSL2 or a Linux container
 
@@ -48,11 +48,11 @@
 - live config/doctor verification on `2026-04-12`
   - result: `doctor --output json` passed after tightening the mounted `web_password` secret to mode `0600`
 
-## 2026-04-14 - RC.5 Workflow Runtime Hygiene
+## 2026-04-14 - RC.6 Workflow Action Refresh
 
 ### Code Changes
 
-- bumped the package version and operator-facing Docker example to `1.0.0-rc.5`, keeping the published GHCR reference aligned with the current release-candidate tag.
+- bumped the package version and operator-facing Docker example to `1.0.0-rc.6`, keeping the published GHCR reference aligned with the current release-candidate tag.
   - files: `Cargo.toml`, `README.md`
 - pinned the release workflow to `ubuntu-24.04` and moved the runtime image to the same base so the published binary and GHCR image share the same glibc floor instead of drifting.
   - files: `.github/workflows/release.yml`, `Dockerfile.release`
@@ -60,6 +60,8 @@
   - files: `.github/workflows/release.yml`
 - opted the CI and release workflows into Node 24 for JavaScript-based actions now, clearing the remaining GitHub deprecation warnings before the forced runtime switch later in 2026.
   - files: `.github/workflows/ci.yml`, `.github/workflows/release.yml`
+- refreshed the remaining artifact/buildx actions to their current majors so the release workflow no longer emits Node 20 deprecation annotations while running on Node 24.
+  - files: `.github/workflows/release.yml`
 
 ### Validation
 
