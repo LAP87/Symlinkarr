@@ -2,7 +2,7 @@
 
 ## Release Target
 
-- package version for this push: `1.0.0-rc.4`
+- package version for this push: `1.0.0-rc.5`
 - posture: `release-candidate with downloadable binary artifacts`
 - intended use: local-first host or Docker installs, with Windows 11 users running through WSL2 or a Linux container
 
@@ -48,16 +48,18 @@
 - live config/doctor verification on `2026-04-12`
   - result: `doctor --output json` passed after tightening the mounted `web_password` secret to mode `0600`
 
-## 2026-04-14 - RC.4 Runtime Compatibility
+## 2026-04-14 - RC.5 Workflow Runtime Hygiene
 
 ### Code Changes
 
-- bumped the package version and operator-facing Docker example to `1.0.0-rc.4`, correcting the GHCR reference so the docs no longer suggest an invalid `v`-prefixed image tag.
+- bumped the package version and operator-facing Docker example to `1.0.0-rc.5`, keeping the published GHCR reference aligned with the current release-candidate tag.
   - files: `Cargo.toml`, `README.md`
 - pinned the release workflow to `ubuntu-24.04` and moved the runtime image to the same base so the published binary and GHCR image share the same glibc floor instead of drifting.
   - files: `.github/workflows/release.yml`, `Dockerfile.release`
 - kept the artifact-driven Docker publish path so the multi-arch release image is still assembled from verified release tarballs instead of recompiling Rust inside Buildx.
   - files: `.github/workflows/release.yml`
+- opted the CI and release workflows into Node 24 for JavaScript-based actions now, clearing the remaining GitHub deprecation warnings before the forced runtime switch later in 2026.
+  - files: `.github/workflows/ci.yml`, `.github/workflows/release.yml`
 
 ### Validation
 
