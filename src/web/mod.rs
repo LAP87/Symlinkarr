@@ -958,6 +958,7 @@ fn create_router(state: WebState) -> Router {
         .route("/doctor", get(handlers::get_doctor))
         // Discover
         .route("/discover", get(handlers::get_discover))
+        .route("/discover/content", get(handlers::get_discover_content))
         // Backup
         .route("/backup", get(handlers::get_backup))
         .route("/backup/create", post(handlers::post_backup_create))

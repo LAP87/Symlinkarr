@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::Instant;
 
 use anyhow::Result;
 use serde::Serialize;
@@ -203,21 +204,33 @@ pub(crate) async fn load_discovery_snapshot(
     library_filter: Option<&str>,
     refresh_cache: bool,
 ) -> Result<DiscoverySnapshot> {
+    let discover_started = Instant::now();
     let selected = selected_libraries(cfg, library_filter)?;
+
+    let library_scan_started = Instant::now();
     let lib_scanner = LibraryScanner::new();
     let mut library_items = Vec::new();
     for lib in &selected {
         library_items.extend(lib_scanner.scan_library(lib));
     }
     library_items.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+    let library_scan_elapsed = library_scan_started.elapsed();
 
+    let source_collect_started = Instant::now();
     let (source_items, status_message) =
         collect_discovery_source_items(cfg, db, refresh_cache).await?;
+    let source_collect_elapsed = source_collect_started.elapsed();
+
     let matcher = build_discover_matcher(cfg);
+    let match_started = Instant::now();
     let MatchRunOutput { mut matches, .. } = matcher
         .find_matches_with_telemetry(&library_items, &source_items, db)
         .await?;
+    let match_elapsed = match_started.elapsed();
+
+    let enrich_started = Instant::now();
     matcher.enrich_episode_titles(&mut matches, db).await?;
+    let enrich_elapsed = enrich_started.elapsed();
 
     let linker = Linker::new_with_options(
         true,
@@ -225,9 +238,30 @@ pub(crate) async fn load_discovery_snapshot(
         &cfg.symlink.naming_template,
         cfg.features.reconcile_links,
     );
+    let plan_started = Instant::now();
     let plan = Discovery::new()
         .build_link_plan(db, &matches, |m| linker.build_target_path(m))
         .await?;
+    let plan_elapsed = plan_started.elapsed();
+    let total_elapsed = discover_started.elapsed();
+
+    info!(
+        library_filter = library_filter.unwrap_or("all"),
+        refresh_cache,
+        selected_libraries = selected.len(),
+        library_items = library_items.len(),
+        source_items = source_items.len(),
+        matches = matches.len(),
+        folders = plan.folders.len(),
+        placements = plan.placements.len(),
+        library_scan_ms = library_scan_elapsed.as_millis(),
+        source_collect_ms = source_collect_elapsed.as_millis(),
+        match_ms = match_elapsed.as_millis(),
+        enrich_ms = enrich_elapsed.as_millis(),
+        plan_ms = plan_elapsed.as_millis(),
+        total_ms = total_elapsed.as_millis(),
+        "discover snapshot built"
+    );
 
     Ok(DiscoverySnapshot {
         summary: plan.summary(),

@@ -230,5 +230,6 @@ Discover note: `discover list` now previews concrete source-to-target placements
 - [CLI manual](docs/CLI_MANUAL.md)
 - [API schema](docs/API_SCHEMA.md)
 - [RC roadmap](docs/RC_ROADMAP.md)
+- [Web UI charter](docs/WEB_UI_CHARTER.md)
 - [Changelog](docs/CHANGELOG.md)
 - [WSL development setup](docs/DEV_SETUP_WSL.md)

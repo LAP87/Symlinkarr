@@ -1603,6 +1603,7 @@ fn build_anime_remediation_cleanup_report(
                     parsed: cleanup_audit::ParsedContext {
                         library_title: group.normalized_title.clone(),
                         parsed_title: group.normalized_title.clone(),
+                        year: None,
                         season: None,
                         episode: None,
                     },

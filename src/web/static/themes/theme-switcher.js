@@ -3,11 +3,9 @@
 class ThemeManager {
     constructor() {
         this.themes = [
-            { id: 'dark',          name: 'Dark',          file: 'dark-theme.css',          swatches: ['#1a1d23','#21252b','#35c5f4'] },
-            { id: 'light',         name: 'Light',         file: 'light-theme.css',         swatches: ['#ffffff','#f8f9fa','#007bff'] },
-            { id: 'compact',       name: 'Compact',       file: 'compact-theme.css',       swatches: ['#1a1d23','#21252b','#35c5f4'] },
-            { id: 'accessibility', name: 'High Contrast', file: 'accessibility-theme.css', swatches: ['#000000','#111111','#ffff00'] },
-            { id: 'colorblind',    name: 'Colorblind',    file: 'colorblind-theme.css',    swatches: ['#1a1d23','#21252b','#0077cc'] },
+            { id: 'dark',   name: 'Dark',   file: 'dark-theme.css',          swatches: ['#1a1d23', '#21252b', '#35c5f4'] },
+            { id: 'light',  name: 'Light',  file: 'light-theme.css',         swatches: ['#f4f7fb', '#ffffff', '#1677ff'] },
+            { id: 'matrix', name: 'Matrix', file: 'accessibility-theme.css', swatches: ['#030706', '#07110d', '#6dff8b'] },
         ];
         this.currentTheme = this.loadTheme() || 'dark';
         this.themeLink = null;
@@ -33,8 +31,15 @@ class ThemeManager {
         }
         this.currentTheme = themeId;
         this.themeLink.href = '/static/themes/' + theme.file;
+        document.documentElement.setAttribute('data-theme', themeId);
         this.saveTheme(themeId);
         this.updatePicker();
+
+        var toggle = document.getElementById('theme-picker-toggle');
+        if (toggle) {
+            toggle.setAttribute('aria-label', 'Choose theme (' + theme.name + ')');
+            toggle.setAttribute('title', 'Theme: ' + theme.name);
+        }
     }
 
     loadTheme() {

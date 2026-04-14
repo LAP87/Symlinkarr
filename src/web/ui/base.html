@@ -30,28 +30,6 @@
                         <span class="logo-subtitle">Operator UI</span>
                     </span>
                 </a>
-
-                <div class="sidebar-tools">
-                    <p class="nav-section-label nav-section-label--tight">Display</p>
-                    <div class="sidebar-controls">
-                        <button
-                            id="advanced-toggle"
-                            type="button"
-                            class="btn btn-secondary btn-secondary--subtle pref-toggle"
-                            data-label-off="Advanced Off"
-                            data-label-on="Advanced On"
-                            aria-pressed="false"
-                        >
-                            <span class="pref-toggle__label">Advanced Off</span>
-                        </button>
-                        <div class="theme-picker">
-                            <button id="theme-picker-toggle" type="button" class="btn btn-secondary btn-secondary--subtle">
-                                Theme
-                            </button>
-                            <div id="theme-picker-dropdown" class="theme-picker-dropdown" style="display:none;"></div>
-                        </div>
-                    </div>
-                </div>
             </div>
 
             <ul class="nav">
@@ -116,6 +94,39 @@
             </ul>
 
             <div class="sidebar-meta">
+                <div class="sidebar-preferences">
+                    <button
+                        id="advanced-toggle"
+                        type="button"
+                        class="sidebar-toggle pref-toggle"
+                        data-label-off="Off"
+                        data-label-on="On"
+                        aria-pressed="false"
+                    >
+                        <span class="sidebar-toggle__copy">
+                            <span class="sidebar-toggle__title">Advanced</span>
+                            <span class="pref-toggle__label">Off</span>
+                        </span>
+                        <span class="sidebar-toggle__track">
+                            <span class="sidebar-toggle__thumb"></span>
+                        </span>
+                    </button>
+
+                    <div class="theme-picker">
+                        <button
+                            id="theme-picker-toggle"
+                            type="button"
+                            class="theme-picker-button"
+                            aria-label="Choose theme"
+                            title="Choose theme"
+                        >
+                            <span class="theme-picker-button__glyph" aria-hidden="true">☀</span>
+                            <span class="theme-picker-button__glyph theme-picker-button__glyph--moon" aria-hidden="true">☾</span>
+                        </button>
+                        <div id="theme-picker-dropdown" class="theme-picker-dropdown" style="display:none;"></div>
+                    </div>
+                </div>
+
                 <div class="shell-status">
                     <span class="status-indicator healthy"></span>
                     <span>Local operator surface</span>

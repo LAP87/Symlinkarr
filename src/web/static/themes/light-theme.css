@@ -1,25 +1,54 @@
-/* Symlinkarr Web UI - Light Theme Alternative */
+/* Symlinkarr Web UI - Light Theme */
 
 :root {
-  --bg-primary: #ffffff;
-  --bg-secondary: #f8f9fa;
-  --accent-primary: #007bff;
-  --accent-secondary: #28a745;
-  --text-primary: #212529;
-  --text-secondary: #6c757d;
-  --success: #28a745;
-  --warning: #ffc107;
-  --error: #dc3545;
-  --info: #17a2b8;
-  --border-color: #dee2e6;
+  --bg-primary: #f4f7fb;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #eaf0f7;
   --card-bg: #ffffff;
-}
-
-/* Severity-specific colors for badges and indicators */
-:root {
-  --severity-critical: #dc3545;
-  --severity-high: #fd7e14;
-  --severity-warning: #ffc107;
-  --severity-info: #17a2b8;
-  --severity-success: #28a745;
+  --card-bg-elevated: #f8fbff;
+  --accent-primary: #1677ff;
+  --accent-secondary: #61758a;
+  --text-primary: #17202b;
+  --text-secondary: #5f6f80;
+  --text-faint: #8a97a5;
+  --success: #1f9d55;
+  --warning: #b7791f;
+  --error: #c84557;
+  --info: #1677ff;
+  --border-color: #d9e2ec;
+  --border-strong: #c3cfdb;
+  --shadow-subtle: 0 12px 32px rgba(15, 23, 42, 0.08);
+  --surface-muted: rgba(23, 32, 43, 0.03);
+  --logo-mark-bg-start: rgba(22, 119, 255, 0.18);
+  --logo-mark-bg-end: rgba(22, 119, 255, 0.08);
+  --logo-mark-border: rgba(22, 119, 255, 0.24);
+  --nav-icon-bg: rgba(23, 32, 43, 0.04);
+  --nav-icon-border: rgba(23, 32, 43, 0.08);
+  --nav-icon-active-bg: rgba(22, 119, 255, 0.1);
+  --nav-icon-active-border: rgba(22, 119, 255, 0.18);
+  --badge-success-bg: rgba(31, 157, 85, 0.12);
+  --badge-success-border: rgba(31, 157, 85, 0.2);
+  --badge-warning-bg: rgba(183, 121, 31, 0.12);
+  --badge-warning-border: rgba(183, 121, 31, 0.2);
+  --badge-danger-bg: rgba(200, 69, 87, 0.12);
+  --badge-danger-border: rgba(200, 69, 87, 0.2);
+  --badge-info-bg: rgba(22, 119, 255, 0.12);
+  --badge-info-border: rgba(22, 119, 255, 0.2);
+  --badge-secondary-bg: rgba(95, 111, 128, 0.1);
+  --badge-secondary-border: rgba(95, 111, 128, 0.18);
+  --btn-primary-hover: #0d67e0;
+  --btn-secondary-hover: #e1e9f2;
+  --btn-danger-hover: #b63d4e;
+  --text-on-accent: #ffffff;
+  --focus-ring: rgba(22, 119, 255, 0.18);
+  --alert-success-bg: rgba(31, 157, 85, 0.12);
+  --alert-error-bg: rgba(200, 69, 87, 0.12);
+  --alert-warning-bg: rgba(183, 121, 31, 0.12);
+  --dropdown-shadow: 0 20px 48px rgba(15, 23, 42, 0.14);
+  --theme-swatch-border: rgba(23, 32, 43, 0.1);
+  --toggle-track-bg: #d6e2ef;
+  --toggle-track-border: #c1cfdd;
+  --toggle-thumb-bg: #ffffff;
+  --toggle-track-active-bg: rgba(22, 119, 255, 0.18);
+  --toggle-track-active-border: rgba(22, 119, 255, 0.28);
 }

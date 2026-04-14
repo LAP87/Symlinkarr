@@ -120,6 +120,8 @@ impl std::fmt::Display for FindingReason {
 pub struct ParsedContext {
     pub library_title: String,
     pub parsed_title: String,
+    #[serde(default)]
+    pub year: Option<u32>,
     pub season: Option<u32>,
     pub episode: Option<u32>,
 }
@@ -369,6 +371,7 @@ struct WorkingEntry {
     media_type: MediaType,
     content_type: ContentType,
     parsed_title: String,
+    year: Option<u32>,
     season: Option<u32>,
     episode: Option<u32>,
     library_title: String,
@@ -586,30 +589,39 @@ impl<'a> CleanupAuditor<'a> {
                 let owner_idx = *library_indices_by_id
                     .get(&entry.media_id)
                     .expect("owner index should exist when item exists");
+                let owner_item = library_items
+                    .get(owner_idx)
+                    .expect("owner item should exist when index exists");
+                let owner_metadata = metadata_map
+                    .get(&entry.media_id)
+                    .and_then(|meta| meta.as_ref());
                 let aliases = alias_map_by_index
                     .get(owner_idx)
                     .map(Vec::as_slice)
                     .unwrap_or(&[]);
-                if !entry.parsed_title.is_empty() {
-                    let normalized_parsed = normalize(&entry.parsed_title);
-                    if !owner_title_matches(entry.content_type, aliases, &normalized_parsed) {
-                        entry.reasons.insert(FindingReason::ParserTitleMismatch);
-                        if let Some(alternate_match) = find_alternate_library_match(
-                            owner_idx,
-                            entry,
-                            &normalized_parsed,
-                            &library_items,
-                            &alias_map_by_index,
-                            &alias_token_index,
-                        ) {
-                            entry.reasons.insert(FindingReason::AlternateLibraryMatch);
-                            entry.alternate_match = Some(alternate_match);
-                        }
+                let normalized_parsed = normalize(&entry.parsed_title);
+                let owner_title_ok = entry.parsed_title.is_empty()
+                    || owner_title_matches(entry.content_type, aliases, &normalized_parsed);
+                let owner_metadata_ok =
+                    candidate_metadata_compatible(owner_item, entry, owner_metadata);
+                if !owner_title_ok || !owner_metadata_ok {
+                    entry.reasons.insert(FindingReason::ParserTitleMismatch);
+                    if let Some(alternate_match) = find_alternate_library_match(
+                        owner_idx,
+                        entry,
+                        &normalized_parsed,
+                        &library_items,
+                        &alias_map_by_index,
+                        &alias_token_index,
+                        &metadata_map,
+                    ) {
+                        entry.reasons.insert(FindingReason::AlternateLibraryMatch);
+                        entry.alternate_match = Some(alternate_match);
                     }
                 }
 
                 if let (Some(season), Some(episode)) = (entry.season, entry.episode) {
-                    if let Some(Some(meta)) = metadata_map.get(&entry.media_id) {
+                    if let Some(meta) = owner_metadata {
                         if episode_out_of_range(meta, season, episode) {
                             entry.reasons.insert(FindingReason::EpisodeOutOfRange);
                         }
@@ -674,6 +686,7 @@ impl<'a> CleanupAuditor<'a> {
                 parsed: ParsedContext {
                     library_title: entry.library_title,
                     parsed_title: entry.parsed_title,
+                    year: entry.year,
                     season: entry.season,
                     episode: entry.episode,
                 },
@@ -849,6 +862,7 @@ impl<'a> CleanupAuditor<'a> {
                         .as_ref()
                         .map(|s| s.parsed_title.clone())
                         .unwrap_or_default(),
+                    year: parsed_source.as_ref().and_then(|s| s.year),
                     season: parsed_source.as_ref().and_then(|s| s.season),
                     episode: parsed_source.as_ref().and_then(|s| s.episode),
                     library_title,
@@ -1783,6 +1797,69 @@ fn owner_title_matches(
     }
 }
 
+fn extract_title_year(title: &str) -> Option<u32> {
+    fn parse_year(token: &str) -> Option<u32> {
+        if token.len() != 4 {
+            return None;
+        }
+        let year: u32 = token.parse().ok()?;
+        (1900..=2099).contains(&year).then_some(year)
+    }
+
+    let mut digits = String::new();
+    for ch in title.chars() {
+        if ch.is_ascii_digit() {
+            digits.push(ch);
+            continue;
+        }
+        if let Some(year) = parse_year(&digits) {
+            return Some(year);
+        }
+        digits.clear();
+    }
+
+    parse_year(&digits)
+}
+
+fn candidate_release_year(item: &LibraryItem, metadata: Option<&ContentMetadata>) -> Option<u32> {
+    metadata
+        .and_then(|metadata| metadata.year)
+        .or_else(|| extract_title_year(&item.title))
+}
+
+fn candidate_metadata_compatible(
+    item: &LibraryItem,
+    entry: &WorkingEntry,
+    metadata: Option<&ContentMetadata>,
+) -> bool {
+    if let (Some(source_year), Some(candidate_year)) =
+        (entry.year, candidate_release_year(item, metadata))
+    {
+        if source_year != candidate_year {
+            return false;
+        }
+    }
+
+    if item.media_type == MediaType::Tv && item.content_type == ContentType::Tv {
+        if let (Some(source_season), Some(metadata)) = (entry.season, metadata) {
+            let has_season_metadata = metadata
+                .seasons
+                .iter()
+                .any(|season| !season.episodes.is_empty());
+            if has_season_metadata
+                && !metadata
+                    .seasons
+                    .iter()
+                    .any(|season| season.season_number == source_season)
+            {
+                return false;
+            }
+        }
+    }
+
+    true
+}
+
 const MAX_ALTERNATE_MATCH_CANDIDATES: usize = 50;
 
 fn title_lookup_tokens(title: &str) -> Vec<String> {
@@ -1824,6 +1901,7 @@ fn find_alternate_library_match(
     library_items: &[LibraryItem],
     alias_map_by_index: &[Vec<String>],
     alias_token_index: &HashMap<String, Vec<usize>>,
+    metadata_map: &HashMap<String, Option<ContentMetadata>>,
 ) -> Option<AlternateMatchContext> {
     if normalized_parsed.is_empty() {
         return None;
@@ -1842,6 +1920,12 @@ fn find_alternate_library_match(
         };
         if candidate.media_type != entry.media_type || candidate.content_type != entry.content_type
         {
+            continue;
+        }
+        let candidate_metadata = metadata_map
+            .get(&candidate.id.to_string())
+            .and_then(|meta| meta.as_ref());
+        if !candidate_metadata_compatible(candidate, entry, candidate_metadata) {
             continue;
         }
 
@@ -2689,6 +2773,7 @@ mod tests {
             media_type: MediaType::Tv,
             content_type: ContentType::Anime,
             parsed_title: String::new(),
+            year: None,
             season,
             episode,
             library_title: String::new(),
@@ -2717,6 +2802,7 @@ mod tests {
             parsed: ParsedContext {
                 library_title: String::new(),
                 parsed_title: String::new(),
+                year: None,
                 season: Some(season),
                 episode: Some(episode),
             },
@@ -2842,6 +2928,7 @@ mod tests {
             media_type: MediaType::Tv,
             content_type: ContentType::Tv,
             parsed_title: "Chucky".to_string(),
+            year: Some(2021),
             season: Some(1),
             episode: Some(1),
             library_title: "Chuck (2007)".to_string(),
@@ -2857,6 +2944,7 @@ mod tests {
             &library_items,
             &alias_map_by_index,
             &alias_token_index,
+            &metadata_map,
         );
 
         assert_eq!(
@@ -2877,6 +2965,231 @@ mod tests {
 
         assert_eq!(classify_severity(&reasons), FindingSeverity::Critical);
         assert_eq!(classify_confidence(&reasons), 0.98);
+    }
+
+    #[test]
+    fn test_candidate_metadata_compatible_rejects_tv_year_mismatch() {
+        let item = LibraryItem {
+            id: MediaId::Tvdb(1),
+            path: PathBuf::from("/library/Dark Matter (2015) {tvdb-1}"),
+            title: "Dark Matter (2015)".to_string(),
+            library_name: "Series".to_string(),
+            media_type: MediaType::Tv,
+            content_type: ContentType::Tv,
+        };
+        let entry = WorkingEntry {
+            symlink_path: PathBuf::from(
+                "/library/Dark Matter (2015) {tvdb-1}/Season 01/Dark Matter - S01E01.mkv",
+            ),
+            source_path: PathBuf::from("/src/Dark.Matter.2024.S01E01.mkv"),
+            media_id: "tvdb-1".to_string(),
+            media_type: MediaType::Tv,
+            content_type: ContentType::Tv,
+            parsed_title: "Dark Matter".to_string(),
+            year: Some(2024),
+            season: Some(1),
+            episode: Some(1),
+            library_title: "Dark Matter (2015)".to_string(),
+            alternate_match: None,
+            legacy_anime_root: None,
+            reasons: BTreeSet::new(),
+        };
+        let metadata = ContentMetadata {
+            title: "Dark Matter".to_string(),
+            aliases: Vec::new(),
+            year: Some(2015),
+            seasons: vec![crate::models::SeasonInfo {
+                season_number: 1,
+                episodes: vec![crate::models::EpisodeInfo {
+                    episode_number: 1,
+                    title: "Episode 1".to_string(),
+                }],
+            }],
+        };
+
+        assert!(!candidate_metadata_compatible(
+            &item,
+            &entry,
+            Some(&metadata)
+        ));
+    }
+
+    #[test]
+    fn test_candidate_metadata_compatible_rejects_regular_tv_unknown_season() {
+        let item = LibraryItem {
+            id: MediaId::Tvdb(1),
+            path: PathBuf::from("/library/Dark Matter (2024) {tvdb-1}"),
+            title: "Dark Matter (2024)".to_string(),
+            library_name: "Series".to_string(),
+            media_type: MediaType::Tv,
+            content_type: ContentType::Tv,
+        };
+        let entry = WorkingEntry {
+            symlink_path: PathBuf::from(
+                "/library/Dark Matter (2024) {tvdb-1}/Season 02/Dark Matter - S02E01.mkv",
+            ),
+            source_path: PathBuf::from("/src/Dark.Matter.2024.S02E01.mkv"),
+            media_id: "tvdb-1".to_string(),
+            media_type: MediaType::Tv,
+            content_type: ContentType::Tv,
+            parsed_title: "Dark Matter".to_string(),
+            year: Some(2024),
+            season: Some(2),
+            episode: Some(1),
+            library_title: "Dark Matter (2024)".to_string(),
+            alternate_match: None,
+            legacy_anime_root: None,
+            reasons: BTreeSet::new(),
+        };
+        let metadata = ContentMetadata {
+            title: "Dark Matter".to_string(),
+            aliases: Vec::new(),
+            year: Some(2024),
+            seasons: vec![crate::models::SeasonInfo {
+                season_number: 1,
+                episodes: vec![crate::models::EpisodeInfo {
+                    episode_number: 1,
+                    title: "Episode 1".to_string(),
+                }],
+            }],
+        };
+
+        assert!(!candidate_metadata_compatible(
+            &item,
+            &entry,
+            Some(&metadata)
+        ));
+    }
+
+    #[test]
+    fn test_find_alternate_library_match_prefers_same_title_matching_year() {
+        let library_items = vec![
+            LibraryItem {
+                id: MediaId::Tvdb(1),
+                path: PathBuf::from("/library/Dark Matter (2015) {tvdb-1}"),
+                title: "Dark Matter (2015)".to_string(),
+                library_name: "Series".to_string(),
+                media_type: MediaType::Tv,
+                content_type: ContentType::Tv,
+            },
+            LibraryItem {
+                id: MediaId::Tvdb(2),
+                path: PathBuf::from("/library/Dark Matter (2024) {tvdb-2}"),
+                title: "Dark Matter (2024)".to_string(),
+                library_name: "Series".to_string(),
+                media_type: MediaType::Tv,
+                content_type: ContentType::Tv,
+            },
+        ];
+        let metadata_map = HashMap::from([
+            (
+                "tvdb-1".to_string(),
+                Some(ContentMetadata {
+                    title: "Dark Matter".to_string(),
+                    aliases: Vec::new(),
+                    year: Some(2015),
+                    seasons: vec![crate::models::SeasonInfo {
+                        season_number: 1,
+                        episodes: vec![crate::models::EpisodeInfo {
+                            episode_number: 1,
+                            title: "Episode 1".to_string(),
+                        }],
+                    }],
+                }),
+            ),
+            (
+                "tvdb-2".to_string(),
+                Some(ContentMetadata {
+                    title: "Dark Matter".to_string(),
+                    aliases: Vec::new(),
+                    year: Some(2024),
+                    seasons: vec![crate::models::SeasonInfo {
+                        season_number: 1,
+                        episodes: vec![crate::models::EpisodeInfo {
+                            episode_number: 1,
+                            title: "Episode 1".to_string(),
+                        }],
+                    }],
+                }),
+            ),
+        ]);
+        let alias_map_by_index = build_aliases_by_index(&library_items, &metadata_map);
+        let alias_token_index = build_alias_token_index(&alias_map_by_index);
+        let entry = WorkingEntry {
+            symlink_path: PathBuf::from(
+                "/library/Dark Matter (2015) {tvdb-1}/Season 01/Dark Matter - S01E01.mkv",
+            ),
+            source_path: PathBuf::from("/src/Dark.Matter.2024.S01E01.mkv"),
+            media_id: "tvdb-1".to_string(),
+            media_type: MediaType::Tv,
+            content_type: ContentType::Tv,
+            parsed_title: "Dark Matter".to_string(),
+            year: Some(2024),
+            season: Some(1),
+            episode: Some(1),
+            library_title: "Dark Matter (2015)".to_string(),
+            alternate_match: None,
+            legacy_anime_root: None,
+            reasons: BTreeSet::new(),
+        };
+
+        let alt = find_alternate_library_match(
+            0,
+            &entry,
+            &normalize("Dark Matter"),
+            &library_items,
+            &alias_map_by_index,
+            &alias_token_index,
+            &metadata_map,
+        );
+
+        assert_eq!(
+            alt,
+            Some(AlternateMatchContext {
+                media_id: "tvdb-2".to_string(),
+                title: "Dark Matter (2024)".to_string(),
+                score: 1.0,
+            })
+        );
+    }
+
+    #[test]
+    fn test_candidate_metadata_compatible_rejects_movie_year_mismatch() {
+        let item = LibraryItem {
+            id: MediaId::Tmdb(1),
+            path: PathBuf::from("/library/The Crow (1994) {tmdb-1}"),
+            title: "The Crow (1994)".to_string(),
+            library_name: "Movies".to_string(),
+            media_type: MediaType::Movie,
+            content_type: ContentType::Movie,
+        };
+        let entry = WorkingEntry {
+            symlink_path: PathBuf::from("/library/The Crow (1994) {tmdb-1}/The Crow (1994).mkv"),
+            source_path: PathBuf::from("/src/The.Crow.2024.1080p.mkv"),
+            media_id: "tmdb-1".to_string(),
+            media_type: MediaType::Movie,
+            content_type: ContentType::Movie,
+            parsed_title: "The Crow".to_string(),
+            year: Some(2024),
+            season: None,
+            episode: None,
+            library_title: "The Crow (1994)".to_string(),
+            alternate_match: None,
+            legacy_anime_root: None,
+            reasons: BTreeSet::new(),
+        };
+        let metadata = ContentMetadata {
+            title: "The Crow".to_string(),
+            aliases: Vec::new(),
+            year: Some(1994),
+            seasons: Vec::new(),
+        };
+
+        assert!(!candidate_metadata_compatible(
+            &item,
+            &entry,
+            Some(&metadata)
+        ));
     }
 
     #[test]
@@ -3271,6 +3584,7 @@ mod tests {
                 parsed: ParsedContext {
                     library_title: "Show".to_string(),
                     parsed_title: "Show".to_string(),
+                    year: None,
                     season: Some(1),
                     episode: Some(1),
                 },
@@ -3309,6 +3623,7 @@ mod tests {
                 parsed: ParsedContext {
                     library_title: "Show".to_string(),
                     parsed_title: "Show".to_string(),
+                    year: None,
                     season: Some(1),
                     episode: Some(1),
                 },
@@ -3368,6 +3683,7 @@ mod tests {
                 parsed: ParsedContext {
                     library_title: "Show".to_string(),
                     parsed_title: "Show".to_string(),
+                    year: None,
                     season: Some(1),
                     episode: Some(2),
                 },
@@ -3508,6 +3824,7 @@ cleanup:
             parsed: ParsedContext {
                 library_title: "Show".to_string(),
                 parsed_title: "Show".to_string(),
+                year: None,
                 season: Some(1),
                 episode: Some(1),
             },

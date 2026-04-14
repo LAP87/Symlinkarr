@@ -935,6 +935,11 @@ pub struct DiscoverTemplate {
     pub libraries: Vec<LibraryConfig>,
     pub selected_library: String,
     pub refresh_cache: bool,
+}
+
+#[derive(Template)]
+#[template(path = "web/ui/discover_content.html")]
+pub struct DiscoverContentTemplate {
     pub discover_summary: DiscoverSummary,
     pub folder_plans: Vec<DiscoverFolderPlan>,
     pub discovered_items: Vec<DiscoverPlacement>,
@@ -984,6 +989,7 @@ impl_template_into_response!(
     ConfigTemplate,
     DoctorTemplate,
     DiscoverTemplate,
+    DiscoverContentTemplate,
     BackupTemplate,
     BackupResultTemplate,
 );
@@ -1253,6 +1259,7 @@ mod tests {
                     parsed: ParsedContext {
                         library_title: "Chuck (2007)".to_string(),
                         parsed_title: "Chucky".to_string(),
+                        year: None,
                         season: Some(1),
                         episode: Some(1),
                     },
@@ -1311,6 +1318,7 @@ mod tests {
                     parsed: ParsedContext {
                         library_title: "Show".to_string(),
                         parsed_title: "Show".to_string(),
+                        year: None,
                         season: Some(1),
                         episode: Some(1),
                     },
@@ -1371,6 +1379,7 @@ mod tests {
                 parsed: ParsedContext {
                     library_title: "Show".to_string(),
                     parsed_title: "Show".to_string(),
+                    year: None,
                     season: Some(1),
                     episode: Some(1),
                 },

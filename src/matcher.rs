@@ -702,6 +702,69 @@ fn source_shape_matches_media_type(item: &LibraryItem, parsed: &SourceItem) -> b
     }
 }
 
+fn extract_title_year(title: &str) -> Option<u32> {
+    fn parse_year(token: &str) -> Option<u32> {
+        if token.len() != 4 {
+            return None;
+        }
+        let year: u32 = token.parse().ok()?;
+        (1900..=2099).contains(&year).then_some(year)
+    }
+
+    let mut digits = String::new();
+    for ch in title.chars() {
+        if ch.is_ascii_digit() {
+            digits.push(ch);
+            continue;
+        }
+        if let Some(year) = parse_year(&digits) {
+            return Some(year);
+        }
+        digits.clear();
+    }
+
+    parse_year(&digits)
+}
+
+fn candidate_release_year(item: &LibraryItem, metadata: Option<&ContentMetadata>) -> Option<u32> {
+    metadata
+        .and_then(|metadata| metadata.year)
+        .or_else(|| extract_title_year(&item.title))
+}
+
+fn candidate_metadata_compatible(
+    item: &LibraryItem,
+    parsed: &SourceItem,
+    metadata: Option<&ContentMetadata>,
+) -> bool {
+    if let (Some(source_year), Some(candidate_year)) =
+        (parsed.year, candidate_release_year(item, metadata))
+    {
+        if source_year != candidate_year {
+            return false;
+        }
+    }
+
+    if item.media_type == MediaType::Tv && item.content_type == ContentType::Tv {
+        if let (Some(source_season), Some(metadata)) = (parsed.season, metadata) {
+            let has_season_metadata = metadata
+                .seasons
+                .iter()
+                .any(|season| !season.episodes.is_empty());
+            if has_season_metadata
+                && !metadata
+                    .seasons
+                    .iter()
+                    .any(|season| season.season_number == source_season)
+            {
+                return false;
+            }
+        }
+    }
+
+    true
+}
+
 fn resolve_anime_scene_episode_mapping(
     item: &LibraryItem,
     metadata: Option<&ContentMetadata>,
@@ -1113,19 +1176,18 @@ fn match_source_slice(
         }) {
             let item = &library_items[exact_idx];
             let parser_kind = parser_kind_for_content(item.content_type);
+            let metadata = metadata_map.get(&exact_idx).and_then(|meta| meta.as_ref());
             let parsed = variants
                 .get(&parser_kind)
                 .or_else(|| variants.get(&ParserKind::Standard))
                 .or_else(|| variants.values().next());
             if let Some(parsed) = parsed {
-                let parsed = resolve_source_for_library_item(
-                    item,
-                    parsed,
-                    metadata_map.get(&exact_idx).and_then(|meta| meta.as_ref()),
-                    anime_identity,
-                );
+                let parsed =
+                    resolve_source_for_library_item(item, parsed, metadata, anime_identity);
                 if let Some(parsed) = parsed {
-                    if !source_shape_matches_media_type(item, &parsed) {
+                    if !source_shape_matches_media_type(item, &parsed)
+                        || !candidate_metadata_compatible(item, &parsed, metadata)
+                    {
                         continue;
                     }
                     let media_id = item.id.to_string();
@@ -1170,19 +1232,17 @@ fn match_source_slice(
             let Some(parsed) = parsed else {
                 continue;
             };
-            let parsed = resolve_source_for_library_item(
-                item,
-                parsed,
-                metadata_map
-                    .get(&library_idx)
-                    .and_then(|meta| meta.as_ref()),
-                anime_identity,
-            );
+            let metadata = metadata_map
+                .get(&library_idx)
+                .and_then(|meta| meta.as_ref());
+            let parsed = resolve_source_for_library_item(item, parsed, metadata, anime_identity);
             let Some(parsed) = parsed else {
                 continue;
             };
 
-            if !source_shape_matches_media_type(item, &parsed) {
+            if !source_shape_matches_media_type(item, &parsed)
+                || !candidate_metadata_compatible(item, &parsed, metadata)
+            {
                 continue;
             }
 
@@ -1401,6 +1461,44 @@ mod tests {
         }
     }
 
+    fn tv_item(title: &str, tvdb_id: u64) -> LibraryItem {
+        LibraryItem {
+            title: title.to_string(),
+            path: PathBuf::from(format!("/library/{title} {{tvdb-{tvdb_id}}}")),
+            id: MediaId::Tvdb(tvdb_id),
+            library_name: "Series".to_string(),
+            media_type: MediaType::Tv,
+            content_type: ContentType::Tv,
+        }
+    }
+
+    fn tv_metadata(title: &str, year: u32, seasons: &[u32]) -> ContentMetadata {
+        ContentMetadata {
+            title: title.to_string(),
+            aliases: Vec::new(),
+            year: Some(year),
+            seasons: seasons
+                .iter()
+                .map(|season_number| SeasonInfo {
+                    season_number: *season_number,
+                    episodes: vec![EpisodeInfo {
+                        episode_number: 1,
+                        title: "Episode 1".to_string(),
+                    }],
+                })
+                .collect(),
+        }
+    }
+
+    fn movie_metadata(title: &str, year: u32) -> ContentMetadata {
+        ContentMetadata {
+            title: title.to_string(),
+            aliases: Vec::new(),
+            year: Some(year),
+            seasons: Vec::new(),
+        }
+    }
+
     fn anime_item(title: &str, tvdb_id: u64) -> LibraryItem {
         LibraryItem {
             title: title.to_string(),
@@ -1416,6 +1514,12 @@ mod tests {
         SourceScanner::new()
             .parse_filename_with_type(Path::new(path), ContentType::Tv)
             .expect("expected source to parse")
+    }
+
+    fn parsed_movie_source(path: &str) -> SourceItem {
+        SourceScanner::new()
+            .parse_filename_with_type(Path::new(path), ContentType::Movie)
+            .expect("expected movie source to parse")
     }
 
     #[test]
@@ -1772,6 +1876,160 @@ mod tests {
         assert_eq!(chunk.best_per_source.len(), 1);
         assert_eq!(chunk.best_per_source[0].media_id, "tmdb-6043");
         assert_eq!(chunk.exact_id_hits, 1);
+    }
+
+    #[test]
+    fn test_tv_same_title_year_selects_matching_series() {
+        let library_items = vec![
+            tv_item("Dark Matter (2024)", 2024),
+            tv_item("Dark Matter (2015)", 2015),
+        ];
+        let source_items = vec![parsed_standard_source("/rd/Dark.Matter.2024.S01E01.mkv")];
+
+        let mut alias_map = HashMap::new();
+        alias_map.insert(
+            0usize,
+            vec!["dark matter 2024".to_string(), "dark matter".to_string()],
+        );
+        alias_map.insert(
+            1usize,
+            vec!["dark matter 2015".to_string(), "dark matter".to_string()],
+        );
+
+        let mut metadata_map = HashMap::new();
+        metadata_map.insert(0usize, Some(tv_metadata("Dark Matter", 2024, &[1])));
+        metadata_map.insert(1usize, Some(tv_metadata("Dark Matter", 2015, &[1, 2, 3])));
+
+        let alias_token_index = build_alias_token_index(&alias_map);
+        let chunk = match_source_slice(
+            0,
+            &source_items,
+            &library_items,
+            &alias_map,
+            &metadata_map,
+            &alias_token_index,
+            MatchingMode::Strict,
+            true,
+            None,
+        );
+
+        assert_eq!(chunk.best_per_source.len(), 1);
+        assert_eq!(chunk.best_per_source[0].media_id, "tvdb-2024");
+    }
+
+    #[test]
+    fn test_tv_wrong_year_candidate_rejected_when_correct_show_lacks_plain_alias() {
+        let library_items = vec![
+            tv_item("Dark Matter (2024)", 2024),
+            tv_item("Dark Matter (2015)", 2015),
+        ];
+        let source_items = vec![parsed_standard_source("/rd/Dark.Matter.2024.S01E01.mkv")];
+
+        let mut alias_map = HashMap::new();
+        alias_map.insert(0usize, vec!["dark matter 2024".to_string()]);
+        alias_map.insert(
+            1usize,
+            vec!["dark matter 2015".to_string(), "dark matter".to_string()],
+        );
+
+        let mut metadata_map = HashMap::new();
+        metadata_map.insert(0usize, None);
+        metadata_map.insert(1usize, Some(tv_metadata("Dark Matter", 2015, &[1, 2, 3])));
+
+        let alias_token_index = build_alias_token_index(&alias_map);
+        let chunk = match_source_slice(
+            0,
+            &source_items,
+            &library_items,
+            &alias_map,
+            &metadata_map,
+            &alias_token_index,
+            MatchingMode::Strict,
+            true,
+            None,
+        );
+
+        assert!(chunk.best_per_source.is_empty());
+    }
+
+    #[test]
+    fn test_tv_same_title_season_guard_prefers_series_with_known_season() {
+        let library_items = vec![
+            tv_item("Dark Matter (2024)", 2024),
+            tv_item("Dark Matter (2015)", 2015),
+        ];
+        let source_items = vec![parsed_standard_source("/rd/Dark.Matter.S03E01.mkv")];
+
+        let mut alias_map = HashMap::new();
+        alias_map.insert(
+            0usize,
+            vec!["dark matter 2024".to_string(), "dark matter".to_string()],
+        );
+        alias_map.insert(
+            1usize,
+            vec!["dark matter 2015".to_string(), "dark matter".to_string()],
+        );
+
+        let mut metadata_map = HashMap::new();
+        metadata_map.insert(0usize, Some(tv_metadata("Dark Matter", 2024, &[1])));
+        metadata_map.insert(1usize, Some(tv_metadata("Dark Matter", 2015, &[1, 2, 3])));
+
+        let alias_token_index = build_alias_token_index(&alias_map);
+        let chunk = match_source_slice(
+            0,
+            &source_items,
+            &library_items,
+            &alias_map,
+            &metadata_map,
+            &alias_token_index,
+            MatchingMode::Strict,
+            true,
+            None,
+        );
+
+        assert_eq!(chunk.best_per_source.len(), 1);
+        assert_eq!(chunk.best_per_source[0].media_id, "tvdb-2015");
+    }
+
+    #[test]
+    fn test_movie_same_title_year_selects_matching_release() {
+        let library_items = vec![
+            movie_item("The Thing (1982)", 1982),
+            movie_item("The Thing (2011)", 2011),
+        ];
+        let source_items = vec![parsed_movie_source(
+            "/rd/The.Thing.2011.1080p.BluRay.x264-GROUP.mkv",
+        )];
+
+        let mut alias_map = HashMap::new();
+        alias_map.insert(
+            0usize,
+            vec!["the thing 1982".to_string(), "the thing".to_string()],
+        );
+        alias_map.insert(
+            1usize,
+            vec!["the thing 2011".to_string(), "the thing".to_string()],
+        );
+
+        let mut metadata_map = HashMap::new();
+        metadata_map.insert(0usize, Some(movie_metadata("The Thing", 1982)));
+        metadata_map.insert(1usize, Some(movie_metadata("The Thing", 2011)));
+
+        let alias_token_index = build_alias_token_index(&alias_map);
+        let chunk = match_source_slice(
+            0,
+            &source_items,
+            &library_items,
+            &alias_map,
+            &metadata_map,
+            &alias_token_index,
+            MatchingMode::Strict,
+            true,
+            None,
+        );
+
+        assert_eq!(chunk.best_per_source.len(), 1);
+        assert_eq!(chunk.best_per_source[0].media_id, "tmdb-2011");
     }
 
     #[tokio::test]

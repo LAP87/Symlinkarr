@@ -1538,7 +1538,22 @@ pub async fn get_discover(
     State(state): State<WebState>,
     Query(query): Query<DiscoverQuery>,
 ) -> impl IntoResponse {
-    let selected_library = query.library.clone().unwrap_or_default();
+    let template = DiscoverTemplate {
+        libraries: state.config.libraries.clone(),
+        selected_library: query.library.unwrap_or_default(),
+        refresh_cache: query.refresh_cache,
+    };
+    (
+        StatusCode::OK,
+        Html(template.render().unwrap_or_else(|e| e.to_string())),
+    )
+}
+
+/// GET /discover/content - Discover content fragment
+pub async fn get_discover_content(
+    State(state): State<WebState>,
+    Query(query): Query<DiscoverQuery>,
+) -> impl IntoResponse {
     match load_discovery_snapshot(
         &state.config,
         &state.database,
@@ -1548,10 +1563,7 @@ pub async fn get_discover(
     .await
     {
         Ok(snapshot) => {
-            let template = DiscoverTemplate {
-                libraries: state.config.libraries.clone(),
-                selected_library,
-                refresh_cache: query.refresh_cache,
+            let template = DiscoverContentTemplate {
                 discover_summary: snapshot.summary,
                 folder_plans: snapshot.folders,
                 discovered_items: snapshot.items,
@@ -1569,10 +1581,7 @@ pub async fn get_discover(
         }
         Err(err) => {
             let message = err.to_string();
-            let template = DiscoverTemplate {
-                libraries: state.config.libraries.clone(),
-                selected_library,
-                refresh_cache: query.refresh_cache,
+            let template = DiscoverContentTemplate {
                 discover_summary: DiscoverSummary::default(),
                 folder_plans: vec![],
                 discovered_items: vec![],
@@ -2719,7 +2728,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn discover_page_renders_cached_gap_items() {
+    async fn discover_page_shell_renders_async_loader() {
+        let ctx = test_context().await;
+        let response = get_discover(State(ctx.state), Query(DiscoverQuery::default()))
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+
+        assert!(body.contains("Loading discover preview"));
+        assert!(body.contains("hx-get=\"/discover/content\""));
+        assert!(body.contains("Web discover is intentionally read-only"));
+        assert!(body.contains("Refresh Discover"));
+    }
+
+    #[tokio::test]
+    async fn discover_content_renders_cached_gap_items() {
         let dir = tempfile::tempdir().unwrap();
         let cfg = test_config(dir.path());
         let db = Database::new(&cfg.db_path).await.unwrap();
@@ -2750,7 +2775,7 @@ mod tests {
         .unwrap();
 
         let state = WebState::new(cfg, db);
-        let response = get_discover(State(state), Query(DiscoverQuery::default()))
+        let response = get_discover_content(State(state), Query(DiscoverQuery::default()))
             .await
             .into_response();
         assert_eq!(response.status(), StatusCode::OK);
@@ -2764,14 +2789,13 @@ mod tests {
         assert!(body.contains("Season 01"));
         assert!(body.contains("Real-Debrid API key not configured"));
         assert!(body.contains("live refresh is unavailable"));
-        assert!(body.contains("Web discover is intentionally read-only"));
         assert!(!body.contains("name=\"torrent_id\""));
     }
 
     #[tokio::test]
-    async fn discover_page_rejects_invalid_library_filter() {
+    async fn discover_content_rejects_invalid_library_filter() {
         let ctx = test_context().await;
-        let response = get_discover(
+        let response = get_discover_content(
             State(ctx.state),
             Query(DiscoverQuery {
                 library: Some("Nope".to_string()),

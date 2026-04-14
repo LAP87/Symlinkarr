@@ -1,0 +1,113 @@
+{% match status_message %}
+{% when Some with (message) %}
+<div class="alert alert-info">
+    <strong>Discover status</strong><br>
+    {{ message }}
+</div>
+{% when None %}{% endmatch %}
+
+<section class="card">
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Summary</p>
+            <h2 class="section-title">Current placement plan</h2>
+            <p class="section-copy">Counts below reflect the currently rendered review scope. This is a preview only and does not mutate links.</p>
+        </div>
+    </div>
+    <div class="metric-grid metric-grid--compact">
+        <div class="metric-card"><span class="metric-label">Folders</span><strong>{{ discover_summary.folders }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Placements</span><strong>{{ discover_summary.placements }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Creates</span><strong>{{ discover_summary.creates }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Updates</span><strong>{{ discover_summary.updates }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Blocked</span><strong>{{ discover_summary.blocked }}</strong></div>
+    </div>
+</section>
+
+{% if folder_plans|length > 0 %}
+<section class="card">
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Folders</p>
+            <h2 class="section-title">Folder Plans</h2>
+            <p class="section-copy">Tagged folders with concrete discoverable placements behind them.</p>
+        </div>
+    </div>
+    <div class="table-wrap">
+    <table class="data-table dense-table">
+        <thead>
+            <tr>
+                <th>Library</th>
+                <th>Title</th>
+                <th>Existing</th>
+                <th>Create</th>
+                <th>Update</th>
+                <th>Blocked</th>
+                <th>Folder</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for folder in folder_plans %}
+            <tr>
+                <td>{{ folder.library_name }}</td>
+                <td><strong>{{ folder.title }}</strong><br><span class="text-muted mono">{{ folder.media_id }}</span></td>
+                <td>{{ folder.existing_links }}</td>
+                <td>{{ folder.planned_creates }}</td>
+                <td>{{ folder.planned_updates }}</td>
+                <td>{{ folder.blocked }}</td>
+                <td><code class="mono">{{ folder.folder_path.display() }}</code></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </div>
+</section>
+{% endif %}
+
+{% if discovered_items|length > 0 %}
+<section class="card">
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Placements</p>
+            <h2 class="section-title">Placement Report</h2>
+            <p class="section-copy">What Discover would place where if this plan were applied by a future write-enabled flow.</p>
+        </div>
+        <div class="header-badges">
+            <span class="badge badge-info">{{ discovered_items|length }} rows</span>
+        </div>
+    </div>
+    <div class="table-wrap">
+    <table class="data-table dense-table">
+        <thead>
+            <tr>
+                <th>Action</th>
+                <th>Library</th>
+                <th>Title</th>
+                <th>Source</th>
+                <th>Target</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in discovered_items %}
+            <tr>
+                <td><span class="badge {{ item.action_badge_class() }}">{{ item.action_label() }}</span></td>
+                <td>{{ item.library_name }}</td>
+                <td>
+                    <strong>{{ item.title }}</strong>
+                    <br>
+                    <span class="text-muted mono">{{ item.media_id }}</span>
+                </td>
+                <td><code class="mono">{{ item.source_path.display() }}</code></td>
+                <td><code class="mono">{{ item.target_path.display() }}</code></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </div>
+</section>
+{% else %}
+<section class="card">
+    <div class="empty-state">
+        No discoverable placements were found for this library scope.
+    </div>
+</section>
+{% endif %}

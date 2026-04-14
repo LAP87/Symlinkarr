@@ -2865,6 +2865,7 @@ mod tests {
                 parsed: crate::cleanup_audit::ParsedContext {
                     library_title: "Show".to_string(),
                     parsed_title: "Show".to_string(),
+                    year: None,
                     season: Some(1),
                     episode: Some(1),
                 },
@@ -2944,6 +2945,7 @@ mod tests {
                 parsed: crate::cleanup_audit::ParsedContext {
                     library_title: "Show".to_string(),
                     parsed_title: "Show".to_string(),
+                    year: None,
                     season: Some(1),
                     episode: Some(1),
                 },
