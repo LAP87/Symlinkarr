@@ -1,0 +1,66 @@
+{% extends "web/ui/base.html" %}
+
+{% block title %}Setup Required - Symlinkarr{% endblock %}
+{% block body_class %}page-noconfig{% endblock %}
+
+{% block content %}
+<div class="page-header page-header--split">
+    <div>
+    <p class="page-kicker">Getting Started</p>
+    <h1>Setup required</h1>
+    <p class="page-lead">Symlinkarr needs a config.yaml before it can start. Choose an option below to get set up.</p>
+    <div class="page-help-links">
+        <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Getting-Started" target="_blank" rel="noreferrer noopener">
+            <span class="help-link__eyebrow">Wiki</span>
+            <span class="help-link__title">Getting Started</span>
+        </a>
+        <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/User-Guide" target="_blank" rel="noreferrer noopener">
+            <span class="help-link__eyebrow">Learn more</span>
+            <span class="help-link__title">User Guide</span>
+        </a>
+    </div>
+    </div>
+</div>
+
+<div class="split-grid">
+<section class="card">
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Option 1</p>
+            <h2 class="section-title">Restore from backup</h2>
+            <p class="section-copy">Place a Symlinkarr backup in your backup directory and restart. Config, database, and secrets are restored automatically.</p>
+        </div>
+    </div>
+    <div class="card-body">
+        <p><strong>Docker:</strong> mount the backup file into your backup directory and restart the container.</p>
+        <p><strong>Local:</strong> run in your terminal:</p>
+        <pre><code>symlinkarr restore &lt;path-to-backup.json&gt;</code></pre>
+        <p class="text-muted">Use <code>--dry-run</code> to preview, <code>--list</code> to inspect backup contents before restoring.</p>
+    </div>
+</section>
+
+<section class="card">
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Option 2</p>
+            <h2 class="section-title">Create new installation</h2>
+            <p class="section-copy">Generate a starter config.yaml and required directories for a fresh install.</p>
+        </div>
+    </div>
+    <div class="card-body">
+        <p>Run in your terminal:</p>
+        <pre><code>symlinkarr bootstrap</code></pre>
+        <p class="text-muted">Use <code>--list</code> to check what is missing without creating anything. Docker users can skip this — compose already mounts config and data.</p>
+    </div>
+</section>
+</div>
+
+<div class="alert alert-info">
+    <strong>What a backup can restore:</strong> config.yaml, SQLite database, tracked symlinks, and config-local secretfiles.<br>
+    Environment-only secrets and other external secret paths still need to be added manually.
+</div>
+
+<div class="alert alert-secondary">
+    <strong>Auto-restore:</strong> if a backup exists in the default backup directory when config.yaml is missing, Symlinkarr restores it automatically on startup. No manual step needed.
+</div>
+{% endblock %}

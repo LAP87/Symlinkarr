@@ -1,4 +1,6 @@
 pub mod backup;
+pub mod bootstrap;
+pub mod restore;
 pub mod cache;
 pub mod cleanup;
 pub mod config;

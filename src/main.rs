@@ -51,9 +51,6 @@ Operator notes:
   status --health = shallow integration presence/activation summary
   doctor          = preflight checklist for DB schema, paths, and runtime safety
 
-RC closeout:
-  docs/RC_ROADMAP.md tracks the live remaining work before the RC tag
-
 Known limit:
   anime specials without good anime-lists hints may still need manual terms
 
@@ -62,7 +59,8 @@ Docs:
   docs/API_SCHEMA.md
   docs/PRODUCT_SCOPE.md
   docs/GITHUB_WIKI_FEATURES.md
-  docs/RC_ROADMAP.md
+  docs/CHANGELOG.md
+  docs/dev-notes/
 "#;
 
 // ─── CLI definitions ───────────────────────────────────────────────
@@ -210,6 +208,29 @@ enum Commands {
         action: BackupAction,
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         output: OutputFormat,
+    },
+    /// Restore from a backup archive without needing a config file
+    Restore {
+        /// Path to the backup .json file
+        file: String,
+        /// Target directory for restored config and database
+        #[arg(long)]
+        dir: Option<String>,
+        /// Preview what would be restored without writing files
+        #[arg(long)]
+        dry_run: bool,
+        /// Show backup contents without restoring
+        #[arg(long)]
+        list: bool,
+    },
+    /// Create a starter config and required directories for a fresh install
+    Bootstrap {
+        /// Target directory
+        #[arg(long)]
+        dir: Option<String>,
+        /// Show what is missing without creating anything
+        #[arg(long)]
+        list: bool,
     },
     /// Manage RD torrent cache and sticky metadata cache entries
     Cache {
@@ -391,17 +412,203 @@ pub(crate) enum CleanupAction {
 
 // ─── Entry point ───────────────────────────────────────────────────
 
+fn init_minimal_logger() {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .try_init();
+}
+
+fn missing_config_target_path(cli: &Cli) -> std::path::PathBuf {
+    if let Some(path) = &cli.config {
+        return std::path::PathBuf::from(path);
+    }
+
+    if std::path::Path::new("/app/config").is_dir() {
+        std::path::PathBuf::from("/app/config/config.yaml")
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            .join("config.yaml")
+    }
+}
+
+/// When config.yaml is missing, try to auto-restore from the latest backup.
+/// Guard: only runs if config.yaml genuinely does not exist anywhere on the search path.
+/// Returns Some(Config) if restore succeeded, None if no backup was found.
+async fn try_auto_restore(cli: &Cli) -> Result<Option<config::Config>> {
+    use std::path::Path;
+
+    // Guard: if config.yaml exists at any candidate path, never auto-restore.
+    for candidate in &config::candidate_config_paths(cli.config.clone()) {
+        if candidate.exists() {
+            return Ok(None);
+        }
+    }
+
+    // Search for backups in default locations
+    let backup_dirs = vec![
+        std::path::PathBuf::from("backups"),
+        std::path::PathBuf::from("/app/config/backups"),
+        std::path::PathBuf::from("/app/backups"),
+    ];
+
+    for backup_dir in &backup_dirs {
+        if !backup_dir.is_dir() {
+            continue;
+        }
+
+        let bm = backup::BackupManager::new(&config::BackupConfig::standalone(backup_dir.clone()));
+        let backups = match bm.list() {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+
+        // Prefer the latest scheduled backup; fall back to latest overall
+        let best = backups.iter()
+            .filter(|b| matches!(b.backup_type, backup::BackupType::Scheduled))
+            .max_by_key(|b| b.timestamp);
+
+        let best = match best.or_else(|| backups.iter().max_by_key(|b| b.timestamp)) {
+            Some(b) => b,
+            None => continue,
+        };
+
+        println!("No config.yaml found. Auto-restoring from: {}", best.filename);
+        tracing::info!("Auto-restoring from backup: {}", best.filename);
+
+        let config_path = missing_config_target_path(cli);
+        let config_dir = config_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
+
+        // Parse manifest to restore app-state
+        let json = match std::fs::read_to_string(&best.path) {
+            Ok(j) => j,
+            Err(_) => continue,
+        };
+        let manifest = match backup::parse_backup_manifest(&json, &best.path) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+
+        // Restore app state (config + secrets) without overwriting existing files
+        commands::restore::restore_app_state_auto(&bm, &manifest, &config_path)?;
+
+        let db_target = if config_path.exists() {
+            match config::inspect_restore_targets(&config_path) {
+                Ok(targets) => targets.db_path,
+                Err(err) => {
+                    tracing::warn!(
+                        "Auto-restore: failed to inspect restored config {}: {}",
+                        config_path.display(),
+                        err
+                    );
+                    config_dir.join("symlinkarr.db")
+                }
+            }
+        } else {
+            config_dir.join("symlinkarr.db")
+        };
+
+        // Restore database snapshot if present and not already on disk
+        if let Some(ref db_snap) = manifest.database_snapshot {
+            let source = match bm.resolve_restore_path(Path::new(&db_snap.filename)) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            if !db_target.exists() {
+                if let Some(parent) = db_target.parent() {
+                    if !parent.as_os_str().is_empty() {
+                        if let Err(e) = std::fs::create_dir_all(parent) {
+                            tracing::warn!(
+                                "Auto-restore: failed to create database directory {}: {}",
+                                parent.display(),
+                                e
+                            );
+                            continue;
+                        }
+                    }
+                }
+                if let Err(e) = std::fs::copy(&source, &db_target) {
+                    tracing::warn!(
+                        "Auto-restore: failed to copy database snapshot to {}: {}",
+                        db_target.display(),
+                        e
+                    );
+                }
+            }
+        }
+
+        // Try loading config again
+        match config::Config::load(cli.config.clone()) {
+            Ok(cfg) => {
+                println!("Auto-restore succeeded. Starting normally.");
+                tracing::info!("Auto-restore succeeded, config loaded from restored file");
+                return Ok(Some(cfg));
+            }
+            Err(e) => {
+                tracing::warn!("Auto-restore wrote files but config still fails to load: {}", e);
+                return Err(e);
+            }
+        }
+    }
+
+    Ok(None)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let cfg = config::Config::load(cli.config)?;
+ 
+    // Restore and Bootstrap can run without a config file.
+    // Handle them before loading config so a fresh install can use them.
+    match &cli.command {
+        Commands::Restore { file, dir, dry_run, list } => {
+            init_minimal_logger();
+            return commands::restore::run_standalone_restore(
+                std::path::Path::new(file),
+                dir.as_deref().map(std::path::Path::new),
+                *dry_run,
+                *list,
+            ).await;
+        }
+        Commands::Bootstrap { dir, list } => {
+            init_minimal_logger();
+            return commands::bootstrap::run_bootstrap(
+                dir.as_deref().map(std::path::Path::new),
+                *list,
+            );
+        }
+        _ => {}
+    }
+ 
+    let cfg = match config::Config::load(cli.config.clone()) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            init_minimal_logger();
+            // Config missing: try auto-restore from latest backup before giving up.
+            if let Some(restored_cfg) = try_auto_restore(&cli).await? {
+                restored_cfg
+            } else if let Commands::Web { port } = &cli.command {
+                // No backup found + web command = serve the no-config setup page
+                crate::web::serve_noconfig(port.unwrap_or(8726)).await?;
+                return Ok(());
+            } else {
+                return Err(e);
+            }
+        }
+    };
     let log_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .or_else(|_| tracing_subscriber::EnvFilter::try_new(cfg.log_level.clone()))
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    tracing_subscriber::fmt()
+    let _ = tracing_subscriber::fmt()
         .with_env_filter(log_filter)
         .with_writer(std::io::stderr)
-        .init();
+        .try_init();
     let db = db::Database::new(&cfg.db_path).await?;
 
     match cli.command {
@@ -516,13 +723,15 @@ async fn main() -> Result<()> {
                     pretty,
                 },
             )
-            .await?
+            .await?;
         }
+        Commands::Restore { .. } | Commands::Bootstrap { .. } => unreachable!(),
     }
+
+
 
     Ok(())
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

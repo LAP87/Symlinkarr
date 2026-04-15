@@ -1022,6 +1022,16 @@ impl_template_into_response!(
     BackupTemplate,
     BackupResultTemplate,
 );
+ 
+ // ─── No-config setup page ──────────────────────────────────────────
+ 
+ #[derive(Template)]
+ #[template(path = "web/ui/noconfig.html")]
+ pub struct NoConfigTemplate;
+ 
+ impl_template_into_response!(
+     NoConfigTemplate,
+ );
 
 #[cfg(test)]
 mod tests {

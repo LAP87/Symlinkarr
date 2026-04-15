@@ -286,6 +286,56 @@ symlinkarr backup create
 symlinkarr backup list --output json
 symlinkarr backup restore backups/symlinkarr-backup-20260321-010203.json --dry-run
 ```
+### `restore`
+
+Restore from a backup archive without needing a config file. Designed for bootstrapping a fresh installation.
+
+```bash
+symlinkarr restore <FILE> [--dir <DIR>] [--dry-run] [--list]
+```
+
+Examples:
+
+```bash
+symlinkarr restore backups/symlinkarr-backup-20260321-010203.json
+symlinkarr restore backups/symlinkarr-backup-20260321-010203.json --dry-run
+symlinkarr restore backups/symlinkarr-backup-20260321-010203.json --list
+symlinkarr restore backups/symlinkarr-backup-20260321-010203.json --dir /app/config
+```
+
+Notes:
+
+- runs without a `config.yaml` — the whole point is that a fresh install has none
+- restores `config.yaml` and the SQLite snapshot when present in the backup
+- standalone/no-config restore only recreates secrets inside the config tree or the standard Docker `/app/secrets` layout; other external secret paths still need to be recreated manually
+- `--dry-run` previews what would be restored without writing files
+- `--list` shows backup contents (symlink count, timestamps, what snapshots are included)
+- `--dir` sets the target directory for restored files (defaults to `/app/config` if it exists, otherwise current directory)
+- environment-only secrets are not included in backups and must be added manually
+- after restore, edit the config to match your environment, then start normally
+
+### `bootstrap`
+
+Create a starter config and required directories for a fresh install.
+
+```bash
+symlinkarr bootstrap [--dir <DIR>] [--list]
+```
+
+Examples:
+
+```bash
+symlinkarr bootstrap
+symlinkarr bootstrap --dir /app/config
+symlinkarr bootstrap --list
+```
+
+Notes:
+
+- creates a commented starter `config.yaml` and `backups/` directory
+- `--list` checks what is missing without creating anything
+- `--dir` sets the target directory (defaults to `/app/config` if it exists, otherwise current directory)
+- edit the generated config before starting Symlinkarr
 
 Notes:
 
@@ -419,3 +469,6 @@ Prefer:
 ```bash
 symlinkarr scan --dry-run
 ```
+- Docker users typically do not need `bootstrap`; the image or compose setup already creates directories and mounts config. Use `bootstrap` only for local/bare-metal first-run.
+- If `symlinkarr web` is started without a `config.yaml`, it serves a setup page with instructions for `symlinkarr restore` and `symlinkarr bootstrap` instead of refusing to start.
+- Docker users: to restore into a fresh container, mount the backup directory and run `docker exec symlinkarr symlinkarr restore /app/backups/<file>.json`, then restart the container.

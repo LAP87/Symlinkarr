@@ -1356,10 +1356,25 @@ async fn shutdown_signal() {
     info!("Shutdown signal received; stopping web UI");
 }
 
-/// Start the web server
-///
-/// Binds to the specified port and serves the web UI.
-/// This function blocks until the server is shut down.
+/// Serve a minimal no-config page when config.yaml is missing.
+/// This starts a lightweight HTTP server that only renders the setup page.
+pub async fn serve_noconfig(port: u16) -> Result<()> {
+    let addr = format!("127.0.0.1:{}", port);
+    let router = Router::new()
+        .route("/", get(handlers::get_noconfig))
+        .nest_service("/static", ServeDir::new(static_dir()));
+
+    info!("Symlinkarr web UI (no-config mode) on {}", addr);
+    println!("⚙️  No config.yaml found. Open http://{} for setup instructions.", addr);
+
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    axum::serve(listener, router)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
+
+    Ok(())
+}
+
 pub async fn serve(config: Config, db: Database, port: u16) -> Result<()> {
     ensure_remote_bind_allowed(&config)?;
     let bind_address = config.web.normalized_bind_address();

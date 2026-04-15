@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::models::MediaType;
@@ -296,6 +296,12 @@ pub struct Config {
 pub struct ValidationReport {
     pub errors: Vec<String>,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestoreConfigTargets {
+    pub db_path: PathBuf,
+    pub secret_files: Vec<PathBuf>,
 }
 
 /// Configuration for a Plex/Jellyfin library directory
@@ -745,6 +751,20 @@ impl Default for BackupConfig {
         Self {
             enabled: default_backup_enabled(),
             path: default_backup_path(),
+            interval_hours: default_backup_interval(),
+            max_backups: default_max_backups(),
+            max_safety_backups: default_max_safety_backups(),
+        }
+    }
+}
+
+impl BackupConfig {
+    /// Create a BackupConfig suitable for standalone restore (no config.yaml needed).
+    /// Uses the given directory as the backup directory with safe defaults.
+    pub fn standalone(backup_dir: PathBuf) -> Self {
+        Self {
+            enabled: true,
+            path: backup_dir,
             interval_hours: default_backup_interval(),
             max_backups: default_max_backups(),
             max_safety_backups: default_max_safety_backups(),
@@ -1521,6 +1541,42 @@ impl Config {
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct RestoreConfigProbe {
+    #[serde(default = "default_db_path")]
+    db_path: String,
+}
+
+fn resolve_restore_target_path(path: &Path, base_dir: Option<&Path>) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else if let Some(base_dir) = base_dir {
+        base_dir.join(path)
+    } else {
+        path.to_path_buf()
+    }
+}
+
+pub fn inspect_restore_targets(config_path: &Path) -> Result<RestoreConfigTargets> {
+    let config_str = std::fs::read_to_string(config_path)
+        .with_context(|| format!("Failed to read config file {}", config_path.display()))?;
+    let mut value: serde_yml::Value = serde_yml::from_str(&config_str)
+        .with_context(|| format!("Failed to parse config file {}", config_path.display()))?;
+    apply_legacy_aliases(&mut value);
+    let secret_files = collect_secret_file_paths(&value, config_path.parent());
+    let probe: RestoreConfigProbe = serde_yml::from_value(value).with_context(|| {
+        format!(
+            "Failed to inspect restore targets from config {}",
+            config_path.display()
+        )
+    })?;
+
+    Ok(RestoreConfigTargets {
+        db_path: resolve_restore_target_path(Path::new(&probe.db_path), config_path.parent()),
+        secret_files,
+    })
+}
+
 fn validate_naming_template(template: &str, report: &mut ValidationReport) {
     let known: &[&str] = &[
         "{title}",
@@ -1569,7 +1625,7 @@ fn validate_naming_template(template: &str, report: &mut ValidationReport) {
     }
 }
 
-fn candidate_config_paths(path: Option<String>) -> Vec<PathBuf> {
+pub fn candidate_config_paths(path: Option<String>) -> Vec<PathBuf> {
     if let Some(p) = path {
         return vec![PathBuf::from(p)];
     }
@@ -2905,5 +2961,59 @@ web:
         assert!(MetadataMode::Full.allows_network());
         assert!(!MetadataMode::CacheOnly.allows_network());
         assert!(!MetadataMode::Off.allows_network());
+    }
+
+    #[test]
+    fn test_inspect_restore_targets_resolves_relative_paths_from_config_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path().join("config");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let config_path = config_dir.join("config.yaml");
+        std::fs::write(
+            &config_path,
+            r#"
+db_path: "./data/symlinkarr.db"
+realdebrid:
+  api_token: "secretfile:./secrets/rd-token"
+prowlarr:
+  url: "http://localhost:9696"
+  api_key: "secretfile:./secrets/prowlarr-token"
+"#,
+        )
+        .unwrap();
+
+        let targets = inspect_restore_targets(&config_path).unwrap();
+
+        assert_eq!(targets.db_path, config_dir.join("data/symlinkarr.db"));
+        assert_eq!(targets.secret_files.len(), 2);
+        assert!(targets
+            .secret_files
+            .iter()
+            .any(|path| path.ends_with("secrets/rd-token")));
+        assert!(targets
+            .secret_files
+            .iter()
+            .any(|path| path.ends_with("secrets/prowlarr-token")));
+    }
+
+    #[test]
+    fn test_inspect_restore_targets_uses_default_db_path_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path().join("config");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let config_path = config_dir.join("config.yaml");
+        std::fs::write(
+            &config_path,
+            r#"
+realdebrid:
+  api_token: "secretfile:./secrets/rd-token"
+"#,
+        )
+        .unwrap();
+
+        let targets = inspect_restore_targets(&config_path).unwrap();
+
+        assert_eq!(targets.db_path, config_dir.join("symlinkarr.db"));
+        assert_eq!(targets.secret_files, vec![config_dir.join("secrets/rd-token")]);
     }
 }

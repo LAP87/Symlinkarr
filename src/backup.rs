@@ -89,7 +89,7 @@ pub struct BackupManifest {
     pub content_sha256: Option<String>,
 }
 
-fn parse_backup_manifest(json: &str, source: &Path) -> Result<BackupManifest> {
+pub fn parse_backup_manifest(json: &str, source: &Path) -> Result<BackupManifest> {
     let manifest: BackupManifest = serde_json::from_str(json)
         .with_context(|| format!("Failed to parse backup manifest {:?}", source))?;
     validate_backup_manifest(&manifest, source)?;

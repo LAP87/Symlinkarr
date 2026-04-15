@@ -102,13 +102,35 @@ What it does:
 ### `backup`
 
 In plain English:
-Make a save point before something goes wrong.
+Make a save point before something goes wrong, or rebuild from one.
 
 What it does:
 
 - snapshots Symlinkarr database/state
 - lets you inspect available backups
 - restores previous state when needed
+- standalone `symlinkarr restore <path>` works without a config file, for bootstrapping a fresh install from a backup archive
+
+### `bootstrap`
+
+In plain English:
+Set up a fresh install without guessing.
+
+What it does:
+
+- creates a starter `config.yaml` with guidance comments
+- creates required directories (backups, etc.)
+- `--list` checks what is missing without creating anything
+
+### no-config web page
+
+In plain English:
+If you open the web UI before configuring anything, it tells you what to do next.
+
+What it does:
+
+- shows a setup page when `symlinkarr web` is started without a `config.yaml`
+- points to `symlinkarr restore` and `symlinkarr bootstrap` as the two paths forward
 
 ### `cache`
 
@@ -297,3 +319,5 @@ For `v1.0`, the center of the product is:
 - operator UI/API
 
 Everything else should support that core, not redefine it.
+- mainly for local/bare-metal first-run; Docker users typically already have directories and config mounted via compose
+- Docker users: `restore` is still useful when spinning up a fresh container after a reinstall — mount the backup dir and run `docker exec symlinkarr symlinkarr restore <path>`
