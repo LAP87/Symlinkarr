@@ -6,7 +6,7 @@ use axum::{
     response::{Html, IntoResponse, Response},
 };
 use chrono::{DateTime, Utc};
-use std::path::PathBuf;
+use std::{collections::BTreeMap, path::PathBuf};
 
 #[allow(unused_imports)]
 use super::filters;
@@ -251,7 +251,17 @@ pub struct MediaServerRefreshServerView {
 #[derive(Debug, Clone)]
 pub struct SkipReasonView {
     pub reason: String,
+    pub label: String,
+    pub group: String,
+    pub help: String,
     pub count: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct SkipReasonGroupView {
+    pub group: String,
+    pub total: i64,
+    pub reasons: Vec<SkipReasonView>,
 }
 
 #[derive(Debug, Clone)]
@@ -259,9 +269,348 @@ pub struct SkipEventView {
     pub event_at: String,
     pub action: String,
     pub reason: String,
+    pub reason_label: String,
+    pub reason_group: String,
     pub target_path: String,
     pub source_path: Option<String>,
     pub media_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SkipReasonGroupKind {
+    Matcher,
+    Linking,
+    Cleanup,
+    AutoAcquire,
+}
+
+impl SkipReasonGroupKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Matcher => "Matcher",
+            Self::Linking => "Linking",
+            Self::Cleanup => "Cleanup",
+            Self::AutoAcquire => "Auto-Acquire",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SkipReasonPresentation {
+    group: SkipReasonGroupKind,
+    label: String,
+    help: String,
+}
+
+fn title_case_token(token: &str) -> String {
+    match token {
+        "" => String::new(),
+        "api" => "API".to_string(),
+        "dmm" => "DMM".to_string(),
+        "id" => "ID".to_string(),
+        "rd" => "RD".to_string(),
+        "tv" => "TV".to_string(),
+        "ui" => "UI".to_string(),
+        other => {
+            let mut chars = other.chars();
+            match chars.next() {
+                Some(first) => {
+                    let mut title = first.to_uppercase().collect::<String>();
+                    title.push_str(chars.as_str());
+                    title
+                }
+                None => String::new(),
+            }
+        }
+    }
+}
+
+fn humanize_skip_reason(reason: &str) -> String {
+    let tail = reason
+        .strip_prefix("matcher_")
+        .or_else(|| reason.strip_prefix("auto_acquire_"))
+        .unwrap_or(reason);
+    tail.split('_')
+        .filter(|token| !token.is_empty())
+        .map(title_case_token)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn skip_reason_group_kind(reason: &str) -> SkipReasonGroupKind {
+    match reason {
+        "ambiguous_match" => SkipReasonGroupKind::Matcher,
+        "directory_guard" | "not_symlink" | "source_or_target_invalid" => {
+            SkipReasonGroupKind::Cleanup
+        }
+        _ if reason.starts_with("matcher_") => SkipReasonGroupKind::Matcher,
+        _ if reason.starts_with("auto_acquire_") => SkipReasonGroupKind::AutoAcquire,
+        _ => SkipReasonGroupKind::Linking,
+    }
+}
+
+fn skip_reason_presentation(reason: &str) -> SkipReasonPresentation {
+    match reason {
+        "ambiguous_match" => SkipReasonPresentation {
+            group: SkipReasonGroupKind::Matcher,
+            label: "Ambiguous match".to_string(),
+            help: "Multiple candidates scored too closely, so Symlinkarr refused to guess."
+                .to_string(),
+        },
+        "matcher_no_library_candidates" => SkipReasonPresentation {
+            group: SkipReasonGroupKind::Matcher,
+            label: "No library candidates".to_string(),
+            help: "The parser did not produce any plausible library candidates for this source."
+                .to_string(),
+        },
+        "matcher_exact_id_incompatible" => SkipReasonPresentation {
+            group: SkipReasonGroupKind::Matcher,
+            label: "Exact-ID candidate incompatible".to_string(),
+            help: "A media ID was found in the source, but shape or metadata checks rejected it."
+                .to_string(),
+        },
+        "matcher_episode_mapping_unresolved" => SkipReasonPresentation {
+            group: SkipReasonGroupKind::Matcher,
+            label: "Episode mapping unresolved".to_string(),
+            help: "The matcher could not resolve season or episode context for the candidate."
+                .to_string(),
+        },
+        "matcher_media_shape_mismatch" => SkipReasonPresentation {
+            group: SkipReasonGroupKind::Matcher,
+            label: "Media shape mismatch".to_string(),
+            help: "The source looked like the wrong shape for the candidate, such as movie vs episode."
+                .to_string(),
+        },
+        "matcher_metadata_mismatch" => SkipReasonPresentation {
+            group: SkipReasonGroupKind::Matcher,
+            label: "Metadata mismatch".to_string(),
+            help: "Year, season, or other metadata disagreed with the candidate item."
+                .to_string(),
+        },
+        "matcher_empty_parsed_title" => SkipReasonPresentation {
+            group: SkipReasonGroupKind::Matcher,
+            label: "Parsed title empty".to_string(),
+            help: "The parser did not leave enough title text to score aliases safely."
+                .to_string(),
+        },
+        "matcher_missing_aliases" => SkipReasonPresentation {
+            group: SkipReasonGroupKind::Matcher,
+            label: "No aliases available".to_string(),
+            help: "The library item had no usable aliases to compare against the source title."
+                .to_string(),
+        },
+        "matcher_alias_score_below_threshold" => SkipReasonPresentation {
+            group: SkipReasonGroupKind::Matcher,
+            label: "Alias score below threshold".to_string(),
+            help: "Candidates existed, but name similarity stayed below the configured threshold."
+                .to_string(),
+        },
+        "matcher_no_candidate" => SkipReasonPresentation {
+            group: SkipReasonGroupKind::Matcher,
+            label: "No surviving candidate".to_string(),
+            help: "Candidates were considered, but none survived the full matcher pipeline."
+                .to_string(),
+        },
+        "already_correct" => SkipReasonPresentation {
+            group: SkipReasonGroupKind::Linking,
+            label: "Already correct".to_string(),
+            help: "The target already pointed at the intended source, so no update was needed."
+                .to_string(),
+        },
+        "already_correct_disk" => SkipReasonPresentation {
+            group: SkipReasonGroupKind::Linking,
+            label: "Already correct on disk".to_string(),
+            help: "The filesystem already had the desired symlink, so Symlinkarr backfilled state."
+                .to_string(),
+        },
+        "source_missing_before_link" => SkipReasonPresentation {
+            group: SkipReasonGroupKind::Linking,
+            label: "Source missing before link".to_string(),
+            help: "The source disappeared before Symlinkarr could create or update the symlink."
+                .to_string(),
+        },
+        "source_unreadable_before_link" => SkipReasonPresentation {
+            group: SkipReasonGroupKind::Linking,
+            label: "Source unreadable before link".to_string(),
+            help: "The source still existed, but could not be read safely at link time."
+                .to_string(),
+        },
+        "regular_file_guard" => SkipReasonPresentation {
+            group: SkipReasonGroupKind::Linking,
+            label: "Regular-file guard".to_string(),
+            help: "The target path already contained a normal file, so Symlinkarr refused to overwrite it."
+                .to_string(),
+        },
+        "dry_run" => SkipReasonPresentation {
+            group: SkipReasonGroupKind::Linking,
+            label: "Dry-run preview".to_string(),
+            help: "The linker intentionally stopped before writing because this run was a dry run."
+                .to_string(),
+        },
+        "directory_guard" => SkipReasonPresentation {
+            group: SkipReasonGroupKind::Cleanup,
+            label: "Directory guard".to_string(),
+            help: "Dead-link cleanup skipped this path because it resolved to a directory."
+                .to_string(),
+        },
+        "not_symlink" => SkipReasonPresentation {
+            group: SkipReasonGroupKind::Cleanup,
+            label: "Not a symlink".to_string(),
+            help: "Cleanup found a normal path where a tracked symlink was expected."
+                .to_string(),
+        },
+        "source_or_target_invalid" => SkipReasonPresentation {
+            group: SkipReasonGroupKind::Cleanup,
+            label: "Source or target invalid".to_string(),
+            help: "The tracked link pointed at a broken or otherwise invalid source or target."
+                .to_string(),
+        },
+        "auto_acquire_queue_capacity_deferred" => SkipReasonPresentation {
+            group: SkipReasonGroupKind::AutoAcquire,
+            label: "Queue capacity deferred".to_string(),
+            help: "The acquisition queue hit its current limit, so Symlinkarr paused new work."
+                .to_string(),
+        },
+        "auto_acquire_download_failed" => SkipReasonPresentation {
+            group: SkipReasonGroupKind::AutoAcquire,
+            label: "Download failed".to_string(),
+            help: "A submitted acquisition did not finish cleanly.".to_string(),
+        },
+        "auto_acquire_completed_linked" => SkipReasonPresentation {
+            group: SkipReasonGroupKind::AutoAcquire,
+            label: "Completed and linked".to_string(),
+            help: "The acquisition completed and Symlinkarr observed the relink.".to_string(),
+        },
+        "auto_acquire_relink_timeout" => SkipReasonPresentation {
+            group: SkipReasonGroupKind::AutoAcquire,
+            label: "Relink timeout".to_string(),
+            help: "The download completed, but Symlinkarr did not observe the relink before timeout."
+                .to_string(),
+        },
+        "auto_acquire_queue_failing" => SkipReasonPresentation {
+            group: SkipReasonGroupKind::AutoAcquire,
+            label: "Queue failing guard".to_string(),
+            help: "The queue entered a failing state and blocked new submissions.".to_string(),
+        },
+        "auto_acquire_provider_pending" => SkipReasonPresentation {
+            group: SkipReasonGroupKind::AutoAcquire,
+            label: "Provider still pending".to_string(),
+            help: "The provider reported the request as pending rather than ready to submit."
+                .to_string(),
+        },
+        "auto_acquire_no_result_provider_fallback_exhausted" => SkipReasonPresentation {
+            group: SkipReasonGroupKind::AutoAcquire,
+            label: "No result from providers".to_string(),
+            help: "Prowlarr returned nothing usable and the DMM fallback also found no usable result."
+                .to_string(),
+        },
+        "auto_acquire_no_result_prowlarr_empty" => SkipReasonPresentation {
+            group: SkipReasonGroupKind::AutoAcquire,
+            label: "No Prowlarr result".to_string(),
+            help: "Prowlarr returned no usable release for the query variants tried."
+                .to_string(),
+        },
+        "auto_acquire_no_result_dmm_empty" => SkipReasonPresentation {
+            group: SkipReasonGroupKind::AutoAcquire,
+            label: "No DMM result".to_string(),
+            help: "DMM fallback found no usable cached result for the title variants tried."
+                .to_string(),
+        },
+        "auto_acquire_no_provider_configured" => SkipReasonPresentation {
+            group: SkipReasonGroupKind::AutoAcquire,
+            label: "No provider configured".to_string(),
+            help: "Search-missing was enabled, but no acquisition provider is configured."
+                .to_string(),
+        },
+        "auto_acquire_dry_run_preview" => SkipReasonPresentation {
+            group: SkipReasonGroupKind::AutoAcquire,
+            label: "Dry-run acquire preview".to_string(),
+            help: "A release was found, but dry-run mode stopped before queue submission."
+                .to_string(),
+        },
+        "auto_acquire_submit_failed" => SkipReasonPresentation {
+            group: SkipReasonGroupKind::AutoAcquire,
+            label: "Submit failed".to_string(),
+            help: "A usable release was found, but submission to the acquisition backend failed."
+                .to_string(),
+        },
+        "auto_acquire_internal_error" => SkipReasonPresentation {
+            group: SkipReasonGroupKind::AutoAcquire,
+            label: "Internal auto-acquire error".to_string(),
+            help: "An unexpected auto-acquire error interrupted the request.".to_string(),
+        },
+        _ => {
+            let group = skip_reason_group_kind(reason);
+            let help = match group {
+                SkipReasonGroupKind::Matcher => {
+                    "Matcher skipped the item at this stage.".to_string()
+                }
+                SkipReasonGroupKind::Linking => {
+                    "Link creation or update was skipped for this reason.".to_string()
+                }
+                SkipReasonGroupKind::Cleanup => {
+                    "Cleanup skipped or flagged work for this reason.".to_string()
+                }
+                SkipReasonGroupKind::AutoAcquire => {
+                    "Auto-acquire recorded this request outcome.".to_string()
+                }
+            };
+            SkipReasonPresentation {
+                group,
+                label: humanize_skip_reason(reason),
+                help,
+            }
+        }
+    }
+}
+
+pub(crate) fn skip_reason_label(reason: &str) -> String {
+    skip_reason_presentation(reason).label
+}
+
+pub(crate) fn skip_reason_group_label(reason: &str) -> String {
+    skip_reason_presentation(reason).group.label().to_string()
+}
+
+impl SkipReasonView {
+    fn from_reason(reason: String, count: i64) -> Self {
+        let presentation = skip_reason_presentation(&reason);
+        Self {
+            reason,
+            label: presentation.label,
+            group: presentation.group.label().to_string(),
+            help: presentation.help,
+            count,
+        }
+    }
+}
+
+fn build_skip_reason_groups(skip_reasons: &[SkipReasonView]) -> Vec<SkipReasonGroupView> {
+    let group_order = [
+        SkipReasonGroupKind::Matcher,
+        SkipReasonGroupKind::Linking,
+        SkipReasonGroupKind::Cleanup,
+        SkipReasonGroupKind::AutoAcquire,
+    ];
+    let mut groups = Vec::new();
+
+    for group_kind in group_order {
+        let reasons = skip_reasons
+            .iter()
+            .filter(|reason| skip_reason_group_kind(&reason.reason) == group_kind)
+            .cloned()
+            .collect::<Vec<_>>();
+        if reasons.is_empty() {
+            continue;
+        }
+        groups.push(SkipReasonGroupView {
+            group: group_kind.label().to_string(),
+            total: reasons.iter().map(|reason| reason.count).sum(),
+            reasons,
+        });
+    }
+
+    groups
 }
 
 #[derive(Debug, Clone)]
@@ -281,6 +630,10 @@ pub struct ScanRunView {
     pub links_skipped: i64,
     pub ambiguous_skipped: i64,
     pub skip_reasons: Vec<SkipReasonView>,
+    pub skip_reason_highlights: Vec<SkipReasonView>,
+    pub skip_reason_groups: Vec<SkipReasonGroupView>,
+    pub skip_reason_total: i64,
+    pub skip_reason_extra_buckets: i64,
     pub runtime_checks: String,
     pub library_scan: String,
     pub source_inventory: String,
@@ -325,15 +678,13 @@ impl ScanRunView {
         let mut entries = record
             .skip_reason_json
             .as_deref()
-            .and_then(|json| {
-                serde_json::from_str::<std::collections::BTreeMap<String, i64>>(json).ok()
-            })
+            .and_then(|json| serde_json::from_str::<BTreeMap<String, i64>>(json).ok())
             .unwrap_or_default()
             .into_iter()
-            .map(|(reason, count)| SkipReasonView { reason, count })
+            .map(|(reason, count)| SkipReasonView::from_reason(reason, count))
             .collect::<Vec<_>>();
 
-        entries.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.reason.cmp(&b.reason)));
+        entries.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.label.cmp(&b.label)));
         entries
     }
 
@@ -363,6 +714,11 @@ impl ScanRunView {
 
     pub fn from_record(record: ScanHistoryRecord) -> Self {
         let skip_reasons = Self::skip_reasons_from_record(&record);
+        let skip_reason_total = skip_reasons.iter().map(|entry| entry.count).sum();
+        let skip_reason_highlights = skip_reasons.iter().take(3).cloned().collect::<Vec<_>>();
+        let skip_reason_extra_buckets =
+            skip_reasons.len().saturating_sub(skip_reason_highlights.len()) as i64;
+        let skip_reason_groups = build_skip_reason_groups(&skip_reasons);
         let media_server_refresh = Self::media_server_refresh_from_record(&record);
         let total_runtime_ms = record.runtime_checks_ms
             + record.library_scan_ms
@@ -396,6 +752,10 @@ impl ScanRunView {
             links_skipped: record.links_skipped,
             ambiguous_skipped: record.ambiguous_skipped,
             skip_reasons,
+            skip_reason_highlights,
+            skip_reason_groups,
+            skip_reason_total,
+            skip_reason_extra_buckets,
             runtime_checks: format_duration_ms(record.runtime_checks_ms),
             library_scan: format_duration_ms(record.library_scan_ms),
             source_inventory: format_duration_ms(record.source_inventory_ms),
@@ -1043,7 +1403,23 @@ mod tests {
     };
     use crate::models::{LinkStatus, MediaType};
 
+    fn sample_skip_reasons() -> Vec<SkipReasonView> {
+        vec![
+            SkipReasonView::from_reason("already_correct".to_string(), 6200),
+            SkipReasonView::from_reason("source_missing_before_link".to_string(), 3044),
+            SkipReasonView::from_reason("ambiguous_match".to_string(), 70),
+            SkipReasonView::from_reason("auto_acquire_no_result_prowlarr_empty".to_string(), 6),
+        ]
+    }
+
     fn sample_scan_run_view() -> ScanRunView {
+        let skip_reasons = sample_skip_reasons();
+        let skip_reason_highlights = skip_reasons.iter().take(3).cloned().collect::<Vec<_>>();
+        let skip_reason_extra_buckets =
+            skip_reasons.len().saturating_sub(skip_reason_highlights.len()) as i64;
+        let skip_reason_groups = build_skip_reason_groups(&skip_reasons);
+        let skip_reason_total = skip_reasons.iter().map(|reason| reason.count).sum();
+
         ScanRunView {
             id: 42,
             started_at: "2026-03-21 20:15:00".to_string(),
@@ -1059,20 +1435,11 @@ mod tests {
             links_removed: 2,
             links_skipped: 9314,
             ambiguous_skipped: 70,
-            skip_reasons: vec![
-                SkipReasonView {
-                    reason: "already_correct".to_string(),
-                    count: 6200,
-                },
-                SkipReasonView {
-                    reason: "source_missing_before_link".to_string(),
-                    count: 3044,
-                },
-                SkipReasonView {
-                    reason: "ambiguous_match".to_string(),
-                    count: 70,
-                },
-            ],
+            skip_reasons,
+            skip_reason_highlights,
+            skip_reason_groups,
+            skip_reason_total,
+            skip_reason_extra_buckets,
             runtime_checks: "0.2s".to_string(),
             library_scan: "12.4s".to_string(),
             source_inventory: "148.2s".to_string(),
@@ -1173,6 +1540,8 @@ mod tests {
                 event_at: "2026-03-21 21:12:00".to_string(),
                 action: "skipped".to_string(),
                 reason: "source_missing_before_link".to_string(),
+                reason_label: "Source missing before link".to_string(),
+                reason_group: "Linking".to_string(),
                 target_path: "/library/Show A/Season 01/Show A - S01E01.mkv".to_string(),
                 source_path: Some("/rd/Show.A.S01E01.mkv".to_string()),
                 media_id: Some("tvdb-1".to_string()),
@@ -1188,6 +1557,11 @@ mod tests {
         assert!(html.contains("cap 1") || html.contains(">1<"));
         assert!(html.contains("Auto-Acquire"));
         assert!(html.contains("Skip Reasons"));
+        assert!(html.contains("Already correct"));
+        assert!(html.contains("Source missing before link"));
+        assert!(html.contains("Auto-Acquire"));
+        assert!(html.contains("No Prowlarr result"));
+        assert!(html.contains("Linking"));
         assert!(html.contains("source_missing_before_link"));
         assert!(html.contains(">3044<"));
         assert!(html.contains("Recent concrete skip events"));
@@ -1208,6 +1582,55 @@ mod tests {
 
         let html = template.render().unwrap();
         assert!(html.contains("deferred"));
+    }
+
+    #[test]
+    fn scan_history_template_renders_humanized_skip_reason_highlights() {
+        let template = ScanHistoryTemplate {
+            libraries: Vec::new(),
+            history: vec![sample_scan_run_view()],
+            filters: ScanHistoryFilters::default(),
+        };
+
+        let html = template.render().unwrap();
+        assert!(html.contains("Why Not"));
+        assert!(html.contains("Already correct 6200"));
+        assert!(html.contains("Source missing before link 3044"));
+        assert!(html.contains("+1 more bucket(s)"));
+    }
+
+    #[test]
+    fn scan_template_renders_top_skip_reason_summary() {
+        let template = ScanTemplate {
+            libraries: Vec::new(),
+            active_scan: None,
+            last_scan_outcome: None,
+            latest_run: Some(sample_scan_run_view()),
+            history: vec![sample_scan_run_view()],
+            queue: QueueOverview::default(),
+            filters: ScanHistoryFilters::default(),
+            default_dry_run: false,
+            csrf_token: "csrf-test-token".to_string(),
+        };
+
+        let html = template.render().unwrap();
+        assert!(html.contains("Top Skip Reasons"));
+        assert!(html.contains("Matcher: Ambiguous match 70"));
+        assert!(html.contains("Open the detail view for grouped counts and raw reason codes."));
+    }
+
+    #[test]
+    fn skip_reason_presenter_humanizes_matcher_and_auto_acquire_codes() {
+        let matcher = SkipReasonView::from_reason("matcher_metadata_mismatch".to_string(), 3);
+        let auto_acquire =
+            SkipReasonView::from_reason("auto_acquire_no_result_prowlarr_empty".to_string(), 4);
+
+        assert_eq!(matcher.group, "Matcher");
+        assert_eq!(matcher.label, "Metadata mismatch");
+        assert!(matcher.help.contains("metadata"));
+        assert_eq!(auto_acquire.group, "Auto-Acquire");
+        assert_eq!(auto_acquire.label, "No Prowlarr result");
+        assert!(auto_acquire.help.contains("Prowlarr"));
     }
 
     #[test]

@@ -80,6 +80,7 @@
                 <th>Cache</th>
                 <th>Refresh</th>
                 <th>Acquire</th>
+                <th>Why Not</th>
                 <th>Dead</th>
             </tr>
         </thead>
@@ -138,6 +139,20 @@
                 <td>
                     {% if run.auto_acquire_requests > 0 %}
                     {{ run.auto_acquire_successes }}/{{ run.auto_acquire_requests }}
+                    {% else %}
+                    <span class="text-muted">n/a</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if !run.skip_reason_highlights.is_empty() %}
+                    <div>
+                        {% for reason in run.skip_reason_highlights %}
+                        <span class="badge badge-secondary">{{ reason.label }} {{ reason.count }}</span>
+                        {% endfor %}
+                    </div>
+                    {% if run.skip_reason_extra_buckets > 0 %}
+                    <div class="text-muted">+{{ run.skip_reason_extra_buckets }} more bucket(s)</div>
+                    {% endif %}
                     {% else %}
                     <span class="text-muted">n/a</span>
                     {% endif %}

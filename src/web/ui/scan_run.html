@@ -80,11 +80,26 @@
     </div>
 
     {% if !run.skip_reasons.is_empty() %}
-    <div class="metric-grid metric-grid--compact">
-        {% for reason in run.skip_reasons %}
-        <div class="metric-card">
-            <span class="metric-label mono">{{ reason.reason }}</span>
-            <strong>{{ reason.count }}</strong>
+    <p class="text-muted mb-2">{{ run.skip_reason_total }} structured skip signals persisted across {{ run.skip_reason_groups|length }} pipeline areas.</p>
+    <div class="split-grid split-grid--tight">
+        {% for group in run.skip_reason_groups %}
+        <div class="card card--nested">
+            <div class="section-head">
+                <div>
+                    <p class="section-kicker">{{ group.group }}</p>
+                    <h3 class="subsection-title">{{ group.total }} signals</h3>
+                </div>
+            </div>
+            <div class="metric-grid metric-grid--compact">
+                {% for reason in group.reasons %}
+                <div class="metric-card">
+                    <span class="metric-label">{{ reason.label }}</span>
+                    <strong>{{ reason.count }}</strong>
+                    <div class="text-muted">{{ reason.help }}</div>
+                    <div class="text-muted mono">{{ reason.reason }}</div>
+                </div>
+                {% endfor %}
+            </div>
         </div>
         {% endfor %}
     </div>
@@ -117,7 +132,11 @@
             {% for event in skip_events %}
             <tr>
                 <td class="mono">{{ event.event_at }}</td>
-                <td class="mono">{{ event.reason }}</td>
+                <td>
+                    <strong>{{ event.reason_label }}</strong>
+                    <div class="text-muted">{{ event.reason_group }}</div>
+                    <div class="text-muted mono">{{ event.reason }}</div>
+                </td>
                 <td>{{ event.action }}</td>
                 <td><code class="mono">{{ event.target_path }}</code></td>
                 <td>

@@ -288,13 +288,18 @@ async fn filtered_scan_history(
 fn skip_event_views(events: Vec<LinkEventHistoryRecord>) -> Vec<SkipEventView> {
     events
         .into_iter()
-        .map(|event| SkipEventView {
-            event_at: event.event_at,
-            action: event.action,
-            reason: event.note.unwrap_or_else(|| "unknown".to_string()),
-            target_path: event.target_path.display().to_string(),
-            source_path: event.source_path.map(|path| path.display().to_string()),
-            media_id: event.media_id,
+        .map(|event| {
+            let reason = event.note.unwrap_or_else(|| "unknown".to_string());
+            SkipEventView {
+                event_at: event.event_at,
+                action: event.action,
+                reason_label: skip_reason_label(&reason),
+                reason_group: skip_reason_group_label(&reason),
+                reason,
+                target_path: event.target_path.display().to_string(),
+                source_path: event.source_path.map(|path| path.display().to_string()),
+                media_id: event.media_id,
+            }
         })
         .collect()
 }
