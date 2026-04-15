@@ -1005,6 +1005,24 @@ select.form-control {
   font-weight: 700;
 }
 
+.confirm-dialog {
+  width: min(680px, calc(100vw - 2rem));
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--card-bg);
+  color: var(--text-primary);
+  box-shadow: var(--dropdown-shadow);
+}
+
+.confirm-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.6);
+}
+
+.confirm-dialog__shell {
+  padding: 1.25rem;
+}
+
 .empty-state {
   padding: 1rem 1.1rem;
   border: 1px dashed var(--border-strong);

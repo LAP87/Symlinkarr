@@ -1605,29 +1605,56 @@ pub async fn get_discover_content(
 
 /// GET /backup - Backup page
 pub async fn get_backup(State(state): State<WebState>) -> impl IntoResponse {
-    // List existing backups
-    let mut backups = vec![];
-    if let Ok(entries) = std::fs::read_dir(&state.config.backup.path) {
-        for entry in entries.flatten() {
-            if let Some(name) = entry.file_name().to_str() {
-                if name.ends_with(".json") {
-                    if let Ok(meta) = entry.metadata() {
-                        backups.push(BackupInfo {
-                            filename: name.to_string(),
-                            size: meta.len(),
-                            modified: meta.modified().ok(),
-                        });
-                    }
+    let backup_manager = BackupManager::new(&state.config.backup);
+    let current_active_links = state
+        .database
+        .get_web_stats()
+        .await
+        .map(|stats| stats.active_links.max(0) as usize)
+        .unwrap_or(0);
+    let backups = backup_manager
+        .list()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|backup| {
+            let (kind_label, kind_badge_class) = match &backup.backup_type {
+                crate::backup::BackupType::Scheduled => {
+                    ("Symlinkarr Backup".to_string(), "badge-info")
                 }
-            }
-        }
-    }
+                crate::backup::BackupType::Safety { .. } => {
+                    ("Restore Point".to_string(), "badge-warning")
+                }
+            };
+            let link_delta_label = if backup.symlink_count == current_active_links {
+                "Matches current tracked links".to_string()
+            } else if backup.symlink_count > current_active_links {
+                format!(
+                    "{} more than current",
+                    backup.symlink_count - current_active_links
+                )
+            } else {
+                format!(
+                    "{} fewer than current",
+                    current_active_links - backup.symlink_count
+                )
+            };
 
-    backups.sort_by(|a, b| {
-        b.modified
-            .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
-            .cmp(&a.modified.unwrap_or(std::time::SystemTime::UNIX_EPOCH))
-    });
+            BackupInfo {
+                filename: backup.filename,
+                label: backup.label,
+                kind_label,
+                kind_badge_class,
+                created_at: format_backup_timestamp(backup.timestamp),
+                age_label: format_backup_age(backup.timestamp),
+                recorded_links: backup.symlink_count,
+                link_delta_label,
+                manifest_size_bytes: backup.file_size,
+                database_snapshot_size_bytes: backup
+                    .database_snapshot
+                    .map(|snapshot| snapshot.size_bytes),
+            }
+        })
+        .collect();
 
     let template = BackupTemplate {
         backups,

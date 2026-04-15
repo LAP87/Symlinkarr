@@ -2122,7 +2122,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(backup_entries
             .iter()
-            .any(|name| name.starts_with("safety-anime-remediation-")));
+            .any(|name| name.starts_with("symlinkarr-restore-point-anime-remediation-")));
     }
 
     #[tokio::test]

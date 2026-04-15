@@ -7,7 +7,6 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use std::path::PathBuf;
-use std::time::SystemTime;
 
 #[allow(unused_imports)]
 use super::filters;
@@ -446,6 +445,23 @@ fn format_duration_ms(value: i64) -> String {
 
 fn format_cleanup_report_timestamp(value: DateTime<Utc>) -> String {
     value.format("%Y-%m-%d %H:%M:%S UTC").to_string()
+}
+
+pub(crate) fn format_backup_timestamp(value: DateTime<Utc>) -> String {
+    value.format("%Y-%m-%d %H:%M:%S UTC").to_string()
+}
+
+pub(crate) fn format_backup_age(value: DateTime<Utc>) -> String {
+    let age = Utc::now().signed_duration_since(value);
+    if age.num_days() > 0 {
+        format!("{}d ago", age.num_days())
+    } else if age.num_hours() > 0 {
+        format!("{}h ago", age.num_hours())
+    } else if age.num_minutes() > 0 {
+        format!("{}m ago", age.num_minutes())
+    } else {
+        "just now".to_string()
+    }
 }
 
 fn cleanup_scope_label(scope: CleanupScope) -> &'static str {
@@ -950,8 +966,15 @@ pub struct DiscoverContentTemplate {
 
 pub struct BackupInfo {
     pub filename: String,
-    pub size: u64,
-    pub modified: Option<SystemTime>,
+    pub label: String,
+    pub kind_label: String,
+    pub kind_badge_class: &'static str,
+    pub created_at: String,
+    pub age_label: String,
+    pub recorded_links: usize,
+    pub link_delta_label: String,
+    pub manifest_size_bytes: u64,
+    pub database_snapshot_size_bytes: Option<u64>,
 }
 
 #[derive(Template)]

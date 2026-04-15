@@ -284,7 +284,7 @@ Examples:
 ```bash
 symlinkarr backup create
 symlinkarr backup list --output json
-symlinkarr backup restore backups/backup-20260321-010203.json --dry-run
+symlinkarr backup restore backups/symlinkarr-backup-20260321-010203.json --dry-run
 ```
 
 Notes:
@@ -292,7 +292,9 @@ Notes:
 - `backup restore` now uses the same runtime safety gate as scan/repair/cleanup apply: if configured library roots or source mounts are unhealthy, the restore is refused before any symlink or DB mutation happens.
 - `backup restore` only accepts manifests that resolve inside the configured `backup.path`; symlink escapes and arbitrary absolute paths are rejected in both CLI and web flows.
 - restore failures now include the backup file path in the top-level error context so operators can tell which snapshot aborted.
-- `backup create` now writes both `backup-...json` and a sibling `backup-....sqlite3` snapshot. The JSON manifest drives restore; the SQLite snapshot is the full-database recovery artifact.
+- `backup create` now writes both `symlinkarr-backup-...json` and a sibling `symlinkarr-backup-....sqlite3` snapshot. The JSON manifest drives restore; the SQLite snapshot is the full-database recovery artifact.
+- treat `Symlinkarr Backup` as the main backup to keep. `Restore Point` is the lighter rollback snapshot created around risky runs.
+- this is still not a full app backup in the Sonarr/Radarr sense. Config and secret files remain outside the backup set.
 - `backup list` and `backup restore` validate manifest integrity for current-format backups before trusting them.
 
 ### `cache`

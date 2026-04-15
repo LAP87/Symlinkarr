@@ -9,10 +9,10 @@
     <div>
         <p class="page-kicker">System</p>
         <h1>Backup</h1>
-        <p class="page-lead">Create and manage backup snapshots for Symlinkarr state and symlink metadata.</p>
+        <p class="page-lead">Create and manage Symlinkarr backups and restore points for tracked links and SQLite state.</p>
     </div>
     <div class="header-badges">
-        <span class="badge badge-info">Backups {{ backups|length }}</span>
+        <span class="badge badge-info">Items {{ backups|length }}</span>
     </div>
 </div>
 
@@ -21,8 +21,8 @@
     <div class="section-head">
         <div>
             <p class="section-kicker">Create</p>
-            <h2 class="section-title">Create new backup</h2>
-            <p class="section-copy">Use a short label before risky repair, cleanup, or migration work so rollback points stay obvious later.</p>
+            <h2 class="section-title">Create new Symlinkarr backup</h2>
+            <p class="section-copy">Use a short label before risky repair, cleanup, or migration work so your main rollback points stay obvious later.</p>
         </div>
     </div>
     <form action="/backup/create" method="post" class="stack-form">
@@ -30,10 +30,10 @@
         <div class="form-group">
             <label class="form-label" for="label">Label (optional)</label>
             <input type="text" id="label" name="label" class="form-control field-max-sm" placeholder="e.g. before-cleanup">
-            <small class="field-help">Stored alongside the timestamp in the backup filename.</small>
+            <small class="field-help">Used in the backup name, for example <code class="mono">symlinkarr-backup-before-cleanup-20260415-220000.json</code>.</small>
         </div>
         <div class="actions">
-            <button type="submit" class="btn btn-primary">Create Backup</button>
+            <button type="submit" class="btn btn-primary">Create Symlinkarr Backup</button>
         </div>
     </form>
     </section>
@@ -56,7 +56,13 @@
             </div>
         </div>
         <div class="alert alert-warning mt-2">
-            <strong>Restore is destructive.</strong> A restore overwrites current link state with the selected snapshot.
+            <strong>Restore is destructive.</strong> A restore overwrites current tracked link state with the selected snapshot.
+        </div>
+        <div class="alert alert-info mt-2">
+            <strong>Not a full app backup.</strong> Backups include tracked links plus an optional SQLite snapshot. Config and secret files still live outside the backup set.
+        </div>
+        <div class="alert alert-info mt-2">
+            <strong>Use the names as intended.</strong> <em>Symlinkarr Backup</em> is the main backup to keep. <em>Restore Point</em> is a lighter rollback point created around risky runs.
         </div>
     </section>
 </div>
@@ -76,29 +82,60 @@
     <table class="data-table dense-table">
         <thead>
             <tr>
-                <th>Filename</th>
-                <th>Size</th>
-                <th>Modified</th>
+                <th>Backup</th>
+                <th>Created</th>
+                <th>Contents</th>
                 <th>Action</th>
             </tr>
         </thead>
         <tbody>
             {% for backup in backups %}
             <tr>
-                <td><code class="mono">{{ backup.filename }}</code></td>
-                <td class="text-muted">{{ backup.size }} bytes</td>
                 <td class="text-muted">
-                    {% match backup.modified %}
-                    {% when Some with (_ts) %}available{% when None %}&mdash;{% endmatch %}
+                    <code class="mono">{{ backup.filename }}</code>
+                    <div class="badge-stack mt-1">
+                        <span class="badge {{ backup.kind_badge_class }}">{{ backup.kind_label }}</span>
+                    </div>
+                    <small class="text-muted">{{ backup.label }}</small>
+                </td>
+                <td class="text-muted">
+                    <strong>{{ backup.created_at }}</strong>
+                    <br>
+                    <small class="text-muted">{{ backup.age_label }}</small>
+                </td>
+                <td class="text-muted">
+                    <strong>{{ backup.recorded_links }} recorded links</strong>
+                    <br>
+                    <small class="text-muted">{{ backup.link_delta_label }}</small>
+                    <br>
+                    <small class="text-muted">Manifest: {{ backup.manifest_size_bytes }} bytes</small>
+                    {% match backup.database_snapshot_size_bytes %}
+                    {% when Some with (size) %}
+                    <br>
+                    <small class="text-muted">SQLite snapshot: {{ size }} bytes</small>
+                    {% when None %}
+                    <br>
+                    <small class="text-muted">No SQLite snapshot</small>
+                    {% endmatch %}
                 </td>
                 <td>
-                    <form action="/backup/restore" method="post" style="display:inline;" onsubmit="return confirm('Restore backup {{ backup.filename }}? This will overwrite current links.');">
-                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                        <input type="hidden" name="backup_file" value="{{ backup.filename }}">
-                        <button type="submit" class="btn btn-secondary" style="padding:0.4rem 0.8rem;font-size:0.8rem;">
-                            Restore
-                        </button>
-                    </form>
+                    <button
+                        type="button"
+                        class="btn btn-danger"
+                        style="padding:0.4rem 0.8rem;font-size:0.8rem;"
+                        data-restore-trigger
+                        data-backup-file="{{ backup.filename }}"
+                        data-backup-label="{{ backup.label }}"
+                        data-backup-kind="{{ backup.kind_label }}"
+                        data-created-at="{{ backup.created_at }}"
+                        data-age-label="{{ backup.age_label }}"
+                        data-recorded-links="{{ backup.recorded_links }}"
+                        data-link-delta-label="{{ backup.link_delta_label }}"
+                        data-manifest-size-bytes="{{ backup.manifest_size_bytes }}"
+                        data-snapshot-size-bytes="{% match backup.database_snapshot_size_bytes %}{% when Some with (size) %}{{ size }}{% when None %}{% endmatch %}"
+                    >
+                        Restore
+                    </button>
                 </td>
             </tr>
             {% endfor %}
@@ -109,4 +146,124 @@
     <p class="text-muted">No backups found in <code class="mono">{{ backup_dir.display() }}</code>.</p>
     {% endif %}
 </section>
+
+<dialog id="restore-confirm-dialog" class="confirm-dialog">
+    <form method="dialog" class="confirm-dialog__shell">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Restore</p>
+                <h2 class="section-title">Confirm backup restore</h2>
+                <p class="section-copy">This will overwrite the current link state with the selected snapshot.</p>
+            </div>
+        </div>
+
+        <div class="key-value-grid">
+            <div class="key-value-row">
+                <div class="key-value-label">Backup</div>
+                <div><code id="restore-confirm-file" class="mono"></code></div>
+            </div>
+            <div class="key-value-row">
+                <div class="key-value-label">Type</div>
+                <div id="restore-confirm-kind"></div>
+            </div>
+            <div class="key-value-row">
+                <div class="key-value-label">Label</div>
+                <div id="restore-confirm-label"></div>
+            </div>
+            <div class="key-value-row">
+                <div class="key-value-label">Created</div>
+                <div>
+                    <strong id="restore-confirm-created"></strong>
+                    <br>
+                    <small id="restore-confirm-age" class="text-muted"></small>
+                </div>
+            </div>
+            <div class="key-value-row">
+                <div class="key-value-label">Recorded links</div>
+                <div>
+                    <strong id="restore-confirm-links"></strong>
+                    <br>
+                    <small id="restore-confirm-link-delta" class="text-muted"></small>
+                </div>
+            </div>
+            <div class="key-value-row">
+                <div class="key-value-label">Manifest size</div>
+                <div id="restore-confirm-manifest-size"></div>
+            </div>
+            <div class="key-value-row">
+                <div class="key-value-label">SQLite snapshot</div>
+                <div id="restore-confirm-snapshot-size"></div>
+            </div>
+        </div>
+
+        <div class="alert alert-error mb-1">
+            <strong>Are you sure?</strong> Restore replaces the current tracked links with this backup.
+        </div>
+
+        <div class="actions">
+            <button type="submit" class="btn btn-secondary">Cancel</button>
+            <button type="button" id="restore-confirm-submit" class="btn btn-danger">Yes, Restore</button>
+        </div>
+    </form>
+</dialog>
+
+<form id="restore-confirm-form" action="/backup/restore" method="post" style="display:none;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" id="restore-confirm-input" name="backup_file" value="">
+</form>
+
+<script>
+    (function () {
+        const dialog = document.getElementById('restore-confirm-dialog');
+        const restoreForm = document.getElementById('restore-confirm-form');
+        const restoreInput = document.getElementById('restore-confirm-input');
+        const confirmSubmit = document.getElementById('restore-confirm-submit');
+        const triggers = document.querySelectorAll('[data-restore-trigger]');
+
+        function setText(id, value) {
+            const element = document.getElementById(id);
+            if (element) {
+                element.textContent = value;
+            }
+        }
+
+        triggers.forEach(function (trigger) {
+            trigger.addEventListener('click', function () {
+                const snapshotSize = trigger.dataset.snapshotSizeBytes;
+                const summary = [
+                    'Restore backup ' + trigger.dataset.backupFile + '?',
+                    '',
+                    'Type: ' + trigger.dataset.backupKind,
+                    'Created: ' + trigger.dataset.createdAt + ' (' + trigger.dataset.ageLabel + ')',
+                    'Recorded links: ' + trigger.dataset.recordedLinks + ' (' + trigger.dataset.linkDeltaLabel + ')',
+                    'Manifest size: ' + trigger.dataset.manifestSizeBytes + ' bytes',
+                    'SQLite snapshot: ' + (snapshotSize ? snapshotSize + ' bytes' : 'not included'),
+                ].join('\n');
+
+                restoreInput.value = trigger.dataset.backupFile;
+                setText('restore-confirm-file', trigger.dataset.backupFile);
+                setText('restore-confirm-kind', trigger.dataset.backupKind);
+                setText('restore-confirm-label', trigger.dataset.backupLabel);
+                setText('restore-confirm-created', trigger.dataset.createdAt);
+                setText('restore-confirm-age', trigger.dataset.ageLabel);
+                setText('restore-confirm-links', trigger.dataset.recordedLinks);
+                setText('restore-confirm-link-delta', trigger.dataset.linkDeltaLabel);
+                setText('restore-confirm-manifest-size', trigger.dataset.manifestSizeBytes + ' bytes');
+                setText('restore-confirm-snapshot-size', snapshotSize ? snapshotSize + ' bytes' : 'Not included');
+
+                if (dialog && typeof dialog.showModal === 'function') {
+                    dialog.showModal();
+                } else if (window.confirm(summary)) {
+                    restoreForm.submit();
+                }
+            });
+        });
+
+        if (confirmSubmit) {
+            confirmSubmit.addEventListener('click', function () {
+                restoreForm.submit();
+            });
+        }
+    }());
+</script>
 {% endblock %}

@@ -202,6 +202,42 @@ fn backup_path_candidates(backup_path: &Path, backup_root: &Path) -> Vec<PathBuf
     candidates
 }
 
+fn slugify_backup_name_part(value: &str) -> Option<String> {
+    let mut slug = String::new();
+    let mut last_was_dash = false;
+
+    for ch in value.trim().chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+            last_was_dash = false;
+        } else if !last_was_dash {
+            slug.push('-');
+            last_was_dash = true;
+        }
+    }
+
+    let slug = slug.trim_matches('-').to_string();
+    if slug.is_empty() {
+        None
+    } else {
+        Some(slug)
+    }
+}
+
+fn scheduled_backup_base_name(timestamp: DateTime<Utc>, label: &str) -> String {
+    let ts = timestamp.format("%Y%m%d-%H%M%S");
+    match slugify_backup_name_part(label) {
+        Some(slug) if slug != "manual-backup" => format!("symlinkarr-backup-{slug}-{ts}"),
+        _ => format!("symlinkarr-backup-{ts}"),
+    }
+}
+
+fn safety_snapshot_base_name(timestamp: DateTime<Utc>, operation: &str) -> String {
+    let ts = timestamp.format("%Y%m%d-%H%M%S");
+    let operation = slugify_backup_name_part(operation).unwrap_or_else(|| "restore-point".into());
+    format!("symlinkarr-restore-point-{operation}-{ts}")
+}
+
 // ─── BackupManager ──────────────────────────────────────────────────
 
 /// Manages symlink backup creation, rotation and restoration.
@@ -313,7 +349,12 @@ impl BackupManager {
 
         let total_count = entries.len();
         let timestamp = Utc::now();
-        let base_name = format!("backup-{}", timestamp.format("%Y%m%d-%H%M%S"));
+        let label = if label.trim().is_empty() {
+            "Manual backup"
+        } else {
+            label.trim()
+        };
+        let base_name = scheduled_backup_base_name(timestamp, label);
         let snapshot_filename = format!("{base_name}.sqlite3");
         let snapshot_path = self.resolve_managed_output_path(&snapshot_filename)?;
         db.export_snapshot(&snapshot_path)
@@ -435,7 +476,7 @@ impl BackupManager {
         };
         manifest.content_sha256 = Some(compute_manifest_checksum(&manifest)?);
 
-        let filename = format!("safety-{}-{}.json", operation, now.format("%Y%m%d-%H%M%S"));
+        let filename = format!("{}.json", safety_snapshot_base_name(now, operation));
         let path = self.resolve_managed_output_path(&filename)?;
 
         let json = serde_json::to_string_pretty(&manifest)?;
@@ -447,7 +488,10 @@ impl BackupManager {
         );
 
         if self.max_safety_backups > 0 {
-            self.rotate_by_prefix("safety-", self.max_safety_backups)?;
+            self.rotate_by_prefixes(
+                &["symlinkarr-restore-point-", "safety-"],
+                self.max_safety_backups,
+            )?;
         }
 
         Ok(path)
@@ -689,25 +733,30 @@ impl BackupManager {
         }
 
         // Rotate scheduled backups
-        self.rotate_by_prefix("backup-", self.max_backups)?;
+        self.rotate_by_prefixes(&["symlinkarr-backup-", "backup-"], self.max_backups)?;
 
         // Rotate safety snapshots (0 = keep all)
         if self.max_safety_backups > 0 {
-            self.rotate_by_prefix("safety-", self.max_safety_backups)?;
+            self.rotate_by_prefixes(
+                &["symlinkarr-restore-point-", "safety-"],
+                self.max_safety_backups,
+            )?;
         }
 
         Ok(())
     }
 
     /// Rotate files matching a prefix, keeping only `max_count`.
-    fn rotate_by_prefix(&self, prefix: &str, max_count: usize) -> Result<()> {
+    fn rotate_by_prefixes(&self, prefixes: &[&str], max_count: usize) -> Result<()> {
         let mut files: Vec<PathBuf> = std::fs::read_dir(&self.backup_dir)?
             .filter_map(|e| e.ok())
             .map(|e| e.path())
             .filter(|p| {
                 p.file_name()
                     .and_then(|n| n.to_str())
-                    .map(|n| n.starts_with(prefix) && n.ends_with(".json"))
+                    .map(|n| {
+                        prefixes.iter().any(|prefix| n.starts_with(prefix)) && n.ends_with(".json")
+                    })
                     .unwrap_or(false)
             })
             .collect();
@@ -760,6 +809,7 @@ impl BackupManager {
                             label: manifest.label,
                             symlink_count: manifest.total_count,
                             file_size,
+                            database_snapshot: manifest.database_snapshot,
                         });
                     }
                     Err(e) => {
@@ -849,6 +899,7 @@ pub struct BackupSummary {
     pub label: String,
     pub symlink_count: usize,
     pub file_size: u64,
+    pub database_snapshot: Option<BackupDatabaseSnapshot>,
 }
 
 impl std::fmt::Display for BackupSummary {
@@ -1113,6 +1164,11 @@ mod tests {
         .unwrap();
 
         let backup_path = manager.create_backup(&db, "Manual backup").await.unwrap();
+        assert!(backup_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .starts_with("symlinkarr-backup-"));
         let manifest = parse_backup_manifest(
             &std::fs::read_to_string(&backup_path).unwrap(),
             &backup_path,
@@ -1371,7 +1427,7 @@ mod tests {
 
         // Create 5 scheduled backups (max is 3)
         for i in 0..5 {
-            let filename = format!("backup-2026010{}-120000.json", i);
+            let filename = format!("symlinkarr-backup-2026010{}-120000.json", i);
             let manifest = BackupManifest {
                 version: 1,
                 timestamp: Utc::now(),
@@ -1400,7 +1456,12 @@ mod tests {
             content_sha256: None,
         };
         let json = serde_json::to_string_pretty(&safety_manifest).unwrap();
-        std::fs::write(dir.path().join("safety-repair-20260101-120000.json"), json).unwrap();
+        std::fs::write(
+            dir.path()
+                .join("symlinkarr-restore-point-repair-20260101-120000.json"),
+            json,
+        )
+        .unwrap();
 
         // Rotate
         manager.rotate().unwrap();
@@ -1412,7 +1473,7 @@ mod tests {
             .filter(|e| {
                 e.file_name()
                     .to_str()
-                    .map(|n| n.starts_with("backup-"))
+                    .map(|n| n.starts_with("backup-") || n.starts_with("symlinkarr-backup-"))
                     .unwrap_or(false)
             })
             .collect();
@@ -1421,7 +1482,7 @@ mod tests {
         // Safety snapshot should still exist
         assert!(dir
             .path()
-            .join("safety-repair-20260101-120000.json")
+            .join("symlinkarr-restore-point-repair-20260101-120000.json")
             .exists());
     }
 
@@ -1433,8 +1494,8 @@ mod tests {
 
         for i in 0..5 {
             let timestamp = format!("2026010{}-120000", i);
-            let manifest_name = format!("backup-{timestamp}.json");
-            let snapshot_name = format!("backup-{timestamp}.sqlite3");
+            let manifest_name = format!("symlinkarr-backup-{timestamp}.json");
+            let snapshot_name = format!("symlinkarr-backup-{timestamp}.sqlite3");
             let manifest = BackupManifest {
                 version: BACKUP_MANIFEST_VERSION,
                 timestamp: Utc::now(),
@@ -1516,7 +1577,11 @@ mod tests {
             content_sha256: None,
         };
         let json = serde_json::to_string_pretty(&manifest).unwrap();
-        std::fs::write(dir.path().join("backup-20260212-120000.json"), json).unwrap();
+        std::fs::write(
+            dir.path().join("symlinkarr-backup-20260212-120000.json"),
+            json,
+        )
+        .unwrap();
 
         let list = manager.list().unwrap();
         assert_eq!(list.len(), 1);
