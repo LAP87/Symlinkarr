@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -76,6 +76,7 @@ pub enum AutoAcquireStatus {
 #[derive(Debug, Clone)]
 pub struct AutoAcquireOutcome {
     pub status: AutoAcquireStatus,
+    pub reason_code: &'static str,
     pub release_title: Option<String>,
     pub message: String,
 }
@@ -91,6 +92,11 @@ pub struct AutoAcquireBatchSummary {
     pub completed_linked: usize,
     pub completed_unlinked: usize,
     pub deferred_capacity: usize,
+    pub reason_counts: BTreeMap<String, u64>,
+}
+
+fn increment_reason_count(reason_counts: &mut BTreeMap<String, u64>, reason_code: &str) {
+    *reason_counts.entry(reason_code.to_string()).or_insert(0) += 1;
 }
 
 impl AutoAcquireBatchSummary {
@@ -356,6 +362,10 @@ pub async fn process_auto_acquire_queue(
                     }
                     pending.push_front(queued);
                     summary.deferred_capacity += 1;
+                    increment_reason_count(
+                        &mut summary.reason_counts,
+                        "auto_acquire_queue_capacity_deferred",
+                    );
                     deferred_capacity = true;
                     user_println(format!("      ⏳ Queue paused: {}", reason));
                     break;
@@ -424,6 +434,10 @@ pub async fn process_auto_acquire_queue(
                     SubmitAttempt::Deferred { reason } => {
                         user_println(format!("      ⏳ '{}' → {}", queued.request.query, reason));
                         summary.blocked += 1;
+                        increment_reason_count(
+                            &mut summary.reason_counts,
+                            "auto_acquire_queue_capacity_deferred",
+                        );
                     }
                     SubmitAttempt::Submitted(_) => unreachable!("dry-run should not submit"),
                 }
@@ -462,6 +476,7 @@ pub async fn process_auto_acquire_queue(
                         .await?;
                         let outcome = AutoAcquireOutcome {
                             status: AutoAcquireStatus::Failed,
+                            reason_code: "auto_acquire_download_failed",
                             release_title: Some(submitted.release_title.clone()),
                             message,
                         };
@@ -521,6 +536,7 @@ pub async fn process_auto_acquire_queue(
                     .await?;
                     let outcome = AutoAcquireOutcome {
                         status: AutoAcquireStatus::CompletedLinked,
+                        reason_code: "auto_acquire_completed_linked",
                         release_title: Some(pending_link.submitted.release_title.clone()),
                         message: "download complete and linked".to_string(),
                     };
@@ -554,6 +570,7 @@ pub async fn process_auto_acquire_queue(
                     .await?;
                     let outcome = AutoAcquireOutcome {
                         status: AutoAcquireStatus::CompletedUnlinked,
+                        reason_code: "auto_acquire_relink_timeout",
                         release_title: Some(pending_link.submitted.release_title.clone()),
                         message,
                     };
@@ -867,6 +884,7 @@ async fn submit_request(
             QueueGuard::Capacity => SubmitAttempt::Deferred { reason },
             QueueGuard::Failing => SubmitAttempt::Immediate(AutoAcquireOutcome {
                 status: AutoAcquireStatus::Blocked,
+                reason_code: "auto_acquire_queue_failing",
                 release_title: None,
                 message: reason,
             }),
@@ -893,31 +911,45 @@ async fn submit_request(
         CandidateLookup::Pending(message) => {
             return Ok(SubmitAttempt::Immediate(AutoAcquireOutcome {
                 status: AutoAcquireStatus::Blocked,
+                reason_code: "auto_acquire_provider_pending",
                 release_title: None,
                 message,
             }))
         }
         CandidateLookup::Empty => {
-            let message = match (cfg.has_prowlarr(), cfg.has_dmm()) {
-                (true, true) => format!(
+            let (reason_code, message) = match (cfg.has_prowlarr(), cfg.has_dmm()) {
+                (true, true) => (
+                    "auto_acquire_no_result_provider_fallback_exhausted",
+                    format!(
                     "no Prowlarr result for '{}' ({} query variant(s) tried); DMM cache fallback also returned no usable result",
                     request.label,
                     candidate_queries.len()
                 ),
-                (true, false) => format!(
+                ),
+                (true, false) => (
+                    "auto_acquire_no_result_prowlarr_empty",
+                    format!(
                     "no Prowlarr result for '{}' ({} query variant(s) tried)",
                     request.label,
                     candidate_queries.len()
                 ),
-                (false, true) => format!(
+                ),
+                (false, true) => (
+                    "auto_acquire_no_result_dmm_empty",
+                    format!(
                     "DMM cache fallback found no usable result for '{}' ({} title variant(s) tried)",
                     request.label,
                     candidate_queries.len()
                 ),
-                (false, false) => "no external acquisition provider configured".to_string(),
+                ),
+                (false, false) => (
+                    "auto_acquire_no_provider_configured",
+                    "no external acquisition provider configured".to_string(),
+                ),
             };
             return Ok(SubmitAttempt::Immediate(AutoAcquireOutcome {
                 status: AutoAcquireStatus::NoResult,
+                reason_code,
                 release_title: None,
                 message,
             }));
@@ -929,6 +961,7 @@ async fn submit_request(
         if dry_run {
             return Ok(SubmitAttempt::Immediate(AutoAcquireOutcome {
                 status: AutoAcquireStatus::DryRun,
+                reason_code: "auto_acquire_dry_run_preview",
                 release_title: Some(candidate.title),
                 message: format!("would queue via Decypharr ({} via {})", arr, source),
             }));
@@ -980,6 +1013,7 @@ async fn submit_request(
 
     Ok(SubmitAttempt::Immediate(AutoAcquireOutcome {
         status: AutoAcquireStatus::Failed,
+        reason_code: "auto_acquire_submit_failed",
         release_title: None,
         message: last_add_error
             .unwrap_or_else(|| format!("no usable downloadable result from {}", source)),
@@ -2372,17 +2406,30 @@ fn print_terminal_outcome(request: &AutoAcquireRequest, outcome: &AutoAcquireOut
 fn record_terminal_outcome(summary: &mut AutoAcquireBatchSummary, outcome: &AutoAcquireOutcome) {
     match outcome.status {
         AutoAcquireStatus::DryRun => summary.dry_run += 1,
-        AutoAcquireStatus::NoResult => summary.no_result += 1,
-        AutoAcquireStatus::Blocked => summary.blocked += 1,
+        AutoAcquireStatus::NoResult => {
+            summary.no_result += 1;
+            increment_reason_count(&mut summary.reason_counts, outcome.reason_code);
+        }
+        AutoAcquireStatus::Blocked => {
+            summary.blocked += 1;
+            increment_reason_count(&mut summary.reason_counts, outcome.reason_code);
+        }
         AutoAcquireStatus::CompletedLinked => summary.completed_linked += 1,
-        AutoAcquireStatus::CompletedUnlinked => summary.completed_unlinked += 1,
-        AutoAcquireStatus::Failed => summary.failed += 1,
+        AutoAcquireStatus::CompletedUnlinked => {
+            summary.completed_unlinked += 1;
+            increment_reason_count(&mut summary.reason_counts, outcome.reason_code);
+        }
+        AutoAcquireStatus::Failed => {
+            summary.failed += 1;
+            increment_reason_count(&mut summary.reason_counts, outcome.reason_code);
+        }
     }
 }
 
 fn request_error_outcome(err: anyhow::Error) -> AutoAcquireOutcome {
     AutoAcquireOutcome {
         status: AutoAcquireStatus::Failed,
+        reason_code: "auto_acquire_internal_error",
         release_title: None,
         message: err.to_string(),
     }
@@ -2580,8 +2627,52 @@ mod tests {
         let outcome =
             request_error_outcome(anyhow::anyhow!("DMM tv lookup error 429 Too Many Requests"));
         assert_eq!(outcome.status, AutoAcquireStatus::Failed);
+        assert_eq!(outcome.reason_code, "auto_acquire_internal_error");
         assert!(outcome.release_title.is_none());
         assert!(outcome.message.contains("429 Too Many Requests"));
+    }
+
+    #[test]
+    fn record_terminal_outcome_tracks_reason_counts_for_non_success_states() {
+        let mut summary = AutoAcquireBatchSummary::default();
+
+        record_terminal_outcome(
+            &mut summary,
+            &AutoAcquireOutcome {
+                status: AutoAcquireStatus::NoResult,
+                reason_code: "auto_acquire_no_result_prowlarr_empty",
+                release_title: None,
+                message: "no result".to_string(),
+            },
+        );
+        record_terminal_outcome(
+            &mut summary,
+            &AutoAcquireOutcome {
+                status: AutoAcquireStatus::Blocked,
+                reason_code: "auto_acquire_queue_failing",
+                release_title: None,
+                message: "blocked".to_string(),
+            },
+        );
+        record_terminal_outcome(
+            &mut summary,
+            &AutoAcquireOutcome {
+                status: AutoAcquireStatus::CompletedLinked,
+                reason_code: "auto_acquire_completed_linked",
+                release_title: Some("Release".to_string()),
+                message: "linked".to_string(),
+            },
+        );
+
+        assert_eq!(
+            summary.reason_counts.get("auto_acquire_no_result_prowlarr_empty"),
+            Some(&1)
+        );
+        assert_eq!(
+            summary.reason_counts.get("auto_acquire_queue_failing"),
+            Some(&1)
+        );
+        assert!(!summary.reason_counts.contains_key("auto_acquire_completed_linked"));
     }
 
     #[test]

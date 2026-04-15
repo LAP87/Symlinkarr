@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -37,6 +37,7 @@ struct MatchChunkResult {
     prefiltered_library_candidates: usize,
     scored_candidates: usize,
     exact_id_hits: usize,
+    skip_reasons: BTreeMap<String, u64>,
     best_per_source: Vec<MatchCandidate>,
 }
 
@@ -51,6 +52,7 @@ pub struct MatchTelemetry {
     pub scored_candidates: usize,
     pub exact_id_hits: usize,
     pub ambiguous_skipped: usize,
+    pub skip_reasons: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -87,6 +89,52 @@ enum MetadataCacheState {
     Miss,
     Hit(ContentMetadata),
     NegativeHit,
+}
+
+#[derive(Debug, Default)]
+struct MatchSkipDiagnostics {
+    exact_id_incompatible: bool,
+    any_resolved_candidate: bool,
+    any_shape_compatible: bool,
+    any_metadata_compatible: bool,
+    any_non_empty_title: bool,
+    any_aliases_available: bool,
+    any_alias_score: bool,
+}
+
+fn increment_skip_reason(skip_reasons: &mut BTreeMap<String, u64>, reason: &str) {
+    *skip_reasons.entry(reason.to_string()).or_insert(0) += 1;
+}
+
+fn dominant_match_skip_reason(
+    diagnostics: &MatchSkipDiagnostics,
+    candidate_count: usize,
+) -> &'static str {
+    if candidate_count == 0 {
+        return "matcher_no_library_candidates";
+    }
+    if diagnostics.exact_id_incompatible {
+        return "matcher_exact_id_incompatible";
+    }
+    if !diagnostics.any_resolved_candidate {
+        return "matcher_episode_mapping_unresolved";
+    }
+    if !diagnostics.any_shape_compatible {
+        return "matcher_media_shape_mismatch";
+    }
+    if !diagnostics.any_metadata_compatible {
+        return "matcher_metadata_mismatch";
+    }
+    if !diagnostics.any_non_empty_title {
+        return "matcher_empty_parsed_title";
+    }
+    if !diagnostics.any_aliases_available {
+        return "matcher_missing_aliases";
+    }
+    if !diagnostics.any_alias_score {
+        return "matcher_alias_score_below_threshold";
+    }
+    "matcher_no_candidate"
 }
 
 /// The core matching engine of Symlinkarr.
@@ -283,6 +331,7 @@ impl Matcher {
             prefiltered_library_candidates,
             scored_candidates,
             exact_id_hits,
+            skip_reasons,
         ) = if worker_count <= 1 {
             let chunk = match_source_slice(
                 0,
@@ -301,6 +350,7 @@ impl Matcher {
                 chunk.prefiltered_library_candidates,
                 chunk.scored_candidates,
                 chunk.exact_id_hits,
+                chunk.skip_reasons,
             )
         } else {
             user_println(format!(
@@ -346,6 +396,7 @@ impl Matcher {
             let mut prefiltered_library_candidates = 0usize;
             let mut scored_candidates = 0usize;
             let mut exact_id_hits = 0usize;
+            let mut skip_reasons = BTreeMap::new();
             let mut best_per_source = Vec::new();
 
             while let Some(result) = workers.join_next().await {
@@ -355,6 +406,9 @@ impl Matcher {
                 prefiltered_library_candidates += chunk.prefiltered_library_candidates;
                 scored_candidates += chunk.scored_candidates;
                 exact_id_hits += chunk.exact_id_hits;
+                for (reason, count) in chunk.skip_reasons {
+                    *skip_reasons.entry(reason).or_insert(0) += count;
+                }
                 best_per_source.extend(chunk.best_per_source);
                 progress.update(format!(
                     "{}/{} ({:.1}%)",
@@ -376,6 +430,7 @@ impl Matcher {
                 prefiltered_library_candidates,
                 scored_candidates,
                 exact_id_hits,
+                skip_reasons,
             )
         };
         let candidate_scan = candidate_started.elapsed();
@@ -447,6 +502,7 @@ impl Matcher {
             scored_candidates,
             exact_id_hits,
             ambiguous_skipped,
+            skip_reasons,
         };
 
         info!(
@@ -1147,6 +1203,7 @@ fn match_source_slice(
     let mut prefiltered_library_candidates = 0usize;
     let mut scored_candidates = 0usize;
     let mut exact_id_hits = 0usize;
+    let mut skip_reasons = BTreeMap::new();
 
     for (offset, source) in source_items.iter().enumerate() {
         let source_idx = start_idx + offset;
@@ -1158,6 +1215,7 @@ fn match_source_slice(
             variants.insert(ParserKind::Standard, source.clone());
         }
 
+        let mut diagnostics = MatchSkipDiagnostics::default();
         let mut candidates_by_media: HashMap<String, MatchCandidate> = HashMap::new();
         let candidate_library_indices = candidate_library_indices(
             &variants,
@@ -1165,7 +1223,8 @@ fn match_source_slice(
             library_items.len(),
             allow_global_fallback,
         );
-        prefiltered_library_candidates += candidate_library_indices.len();
+        let candidate_count = candidate_library_indices.len();
+        prefiltered_library_candidates += candidate_count;
 
         // Early-exit: if the source file path contains a library item's exact media ID
         // (e.g. "tvdb-81189" embedded in the RD path), skip scoring and use it directly.
@@ -1185,17 +1244,30 @@ fn match_source_slice(
                 let parsed =
                     resolve_source_for_library_item(item, parsed, metadata, anime_identity);
                 if let Some(parsed) = parsed {
+                    diagnostics.any_resolved_candidate = true;
                     if !source_shape_matches_media_type(item, &parsed)
-                        || !candidate_metadata_compatible(item, &parsed, metadata)
                     {
+                        diagnostics.exact_id_incompatible = true;
                         continue;
                     }
+                    diagnostics.any_shape_compatible = true;
+                    if !candidate_metadata_compatible(item, &parsed, metadata) {
+                        diagnostics.exact_id_incompatible = true;
+                        continue;
+                    }
+                    diagnostics.any_metadata_compatible = true;
                     let media_id = item.id.to_string();
                     let aliases = alias_map
                         .get(&exact_idx)
                         .map(|v| v.as_slice())
                         .unwrap_or(&[]);
                     let normalized_source = normalize(&parsed.parsed_title);
+                    if !normalized_source.is_empty() {
+                        diagnostics.any_non_empty_title = true;
+                    }
+                    if !aliases.is_empty() {
+                        diagnostics.any_aliases_available = true;
+                    }
                     let matched_alias = aliases
                         .first()
                         .cloned()
@@ -1207,6 +1279,7 @@ fn match_source_slice(
                             .map(|(s, _)| s)
                             .unwrap_or(1.0)
                     };
+                    diagnostics.any_alias_score = true;
                     best_per_source.push(MatchCandidate {
                         source_idx,
                         library_idx: exact_idx,
@@ -1239,26 +1312,35 @@ fn match_source_slice(
             let Some(parsed) = parsed else {
                 continue;
             };
+            diagnostics.any_resolved_candidate = true;
 
-            if !source_shape_matches_media_type(item, &parsed)
-                || !candidate_metadata_compatible(item, &parsed, metadata)
-            {
+            if !source_shape_matches_media_type(item, &parsed) {
                 continue;
             }
+            diagnostics.any_shape_compatible = true;
+            if !candidate_metadata_compatible(item, &parsed, metadata) {
+                continue;
+            }
+            diagnostics.any_metadata_compatible = true;
 
             let normalized_source = normalize(&parsed.parsed_title);
             if normalized_source.is_empty() {
                 continue;
             }
+            diagnostics.any_non_empty_title = true;
 
             let Some(aliases) = alias_map.get(&library_idx) else {
                 continue;
             };
+            if !aliases.is_empty() {
+                diagnostics.any_aliases_available = true;
+            }
 
             let Some((score, matched_alias)) = best_alias_score(mode, aliases, &normalized_source)
             else {
                 continue;
             };
+            diagnostics.any_alias_score = true;
             scored_candidates += 1;
 
             let candidate = MatchCandidate {
@@ -1280,6 +1362,10 @@ fn match_source_slice(
 
         let candidates: Vec<MatchCandidate> = candidates_by_media.into_values().collect();
         if candidates.is_empty() {
+            increment_skip_reason(
+                &mut skip_reasons,
+                dominant_match_skip_reason(&diagnostics, candidate_count),
+            );
             continue;
         }
 
@@ -1294,6 +1380,7 @@ fn match_source_slice(
                     source.path, best.score, second.score
                 );
                 ambiguous_skipped += 1;
+                increment_skip_reason(&mut skip_reasons, "ambiguous_match");
                 continue;
             }
         }
@@ -1307,6 +1394,7 @@ fn match_source_slice(
         prefiltered_library_candidates,
         scored_candidates,
         exact_id_hits,
+        skip_reasons,
         best_per_source,
     }
 }
@@ -1797,6 +1885,10 @@ mod tests {
         );
 
         assert!(chunk.best_per_source.is_empty());
+        assert_eq!(
+            chunk.skip_reasons.get("matcher_media_shape_mismatch"),
+            Some(&1)
+        );
     }
 
     #[test]
@@ -1950,6 +2042,97 @@ mod tests {
         );
 
         assert!(chunk.best_per_source.is_empty());
+    }
+
+    #[test]
+    fn test_match_source_slice_records_no_library_candidates_reason() {
+        let library_items = vec![anime_item("Example Anime", 1234)];
+        let source_items = vec![parsed_standard_source("/rd/Completely.Different.S01E01.mkv")];
+
+        let mut alias_map = HashMap::new();
+        alias_map.insert(0usize, vec!["example anime".to_string()]);
+        let mut metadata_map = HashMap::new();
+        metadata_map.insert(0usize, Some(tv_metadata("Example Anime", 2024, &[1])));
+        let alias_token_index = build_alias_token_index(&alias_map);
+
+        let chunk = match_source_slice(
+            0,
+            &source_items,
+            &library_items,
+            &alias_map,
+            &metadata_map,
+            &alias_token_index,
+            MatchingMode::Strict,
+            false,
+            None,
+        );
+
+        assert!(chunk.best_per_source.is_empty());
+        assert_eq!(
+            chunk.skip_reasons.get("matcher_no_library_candidates"),
+            Some(&1)
+        );
+    }
+
+    #[test]
+    fn test_match_source_slice_records_metadata_mismatch_reason() {
+        let library_items = vec![movie_item("The Thing (1982)", 1982)];
+        let source_items =
+            vec![parsed_movie_source("/rd/The.Thing.2011.1080p.BluRay.x264-GROUP.mkv")];
+
+        let mut alias_map = HashMap::new();
+        alias_map.insert(0usize, vec!["the thing".to_string()]);
+        let mut metadata_map = HashMap::new();
+        metadata_map.insert(0usize, Some(movie_metadata("The Thing", 1982)));
+        let alias_token_index = build_alias_token_index(&alias_map);
+
+        let chunk = match_source_slice(
+            0,
+            &source_items,
+            &library_items,
+            &alias_map,
+            &metadata_map,
+            &alias_token_index,
+            MatchingMode::Strict,
+            true,
+            None,
+        );
+
+        assert!(chunk.best_per_source.is_empty());
+        assert_eq!(
+            chunk.skip_reasons.get("matcher_metadata_mismatch"),
+            Some(&1)
+        );
+    }
+
+    #[test]
+    fn test_match_source_slice_records_alias_threshold_reason() {
+        let library_items = vec![movie_item("The Avengers", 24428)];
+        let source_items = vec![parsed_movie_source("/rd/Avengers.of.Ultron.2015.mkv")];
+
+        let mut alias_map = HashMap::new();
+        alias_map.insert(0usize, vec!["the avengers".to_string()]);
+        let mut metadata_map = HashMap::new();
+        metadata_map.insert(0usize, None);
+        let alias_token_index = build_alias_token_index(&alias_map);
+
+        let chunk = match_source_slice(
+            0,
+            &source_items,
+            &library_items,
+            &alias_map,
+            &metadata_map,
+            &alias_token_index,
+            MatchingMode::Strict,
+            true,
+            None,
+        );
+
+        assert!(chunk.best_per_source.is_empty());
+        assert_eq!(
+            chunk.skip_reasons.get("matcher_alias_score_below_threshold"),
+            Some(&1)
+        );
     }
 
     #[test]

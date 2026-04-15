@@ -441,6 +441,17 @@ pub(crate) async fn run_scan(
         user_println("\n   ⚠️  --search-missing specified but Decypharr not configured");
     }
 
+    let aggregated_skip_reasons =
+        aggregate_skip_reasons(&telemetry, &link_summary, &dead, &auto_acquire_summary);
+    if !aggregated_skip_reasons.is_empty() {
+        user_println("   🧭 Top skip reasons:");
+        let mut top_reasons = aggregated_skip_reasons.iter().collect::<Vec<_>>();
+        top_reasons.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+        for (reason, count) in top_reasons.into_iter().take(6) {
+            user_println(format!("      • {} = {}", reason, count));
+        }
+    }
+
     db.record_scan_run(&crate::db::ScanRunRecord {
         dry_run: effective_dry_run,
         library_filter: library_filter.map(str::to_string),
@@ -455,7 +466,12 @@ pub(crate) async fn run_scan(
         links_removed: dead.removed as i64,
         links_skipped: (link_summary.skipped + dead.skipped) as i64,
         ambiguous_skipped: telemetry.match_stats.ambiguous_skipped as i64,
-        skip_reason_json: build_skip_reason_json(&telemetry, &link_summary, &dead)?,
+        skip_reason_json: build_skip_reason_json(
+            &telemetry,
+            &link_summary,
+            &dead,
+            &auto_acquire_summary,
+        )?,
         runtime_checks_ms: duration_ms_i64(telemetry.runtime_checks),
         library_scan_ms: duration_ms_i64(telemetry.library_scan),
         source_inventory_ms: duration_ms_i64(telemetry.source_inventory),
@@ -556,25 +572,38 @@ fn build_skip_reason_json(
     telemetry: &ScanTelemetry,
     link_summary: &LinkProcessSummary,
     dead_summary: &crate::linker::DeadLinkSummary,
+    auto_acquire_summary: &AutoAcquireBatchSummary,
 ) -> Result<Option<String>> {
+    let reasons = aggregate_skip_reasons(telemetry, link_summary, dead_summary, auto_acquire_summary);
+    if reasons.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(serde_json::to_string(&reasons)?))
+    }
+}
+
+fn aggregate_skip_reasons(
+    telemetry: &ScanTelemetry,
+    link_summary: &LinkProcessSummary,
+    dead_summary: &crate::linker::DeadLinkSummary,
+    auto_acquire_summary: &AutoAcquireBatchSummary,
+) -> BTreeMap<String, i64> {
     let mut reasons: BTreeMap<String, i64> = BTreeMap::new();
 
+    for (reason, count) in &telemetry.match_stats.skip_reasons {
+        *reasons.entry(reason.clone()).or_insert(0) += *count as i64;
+    }
     for (reason, count) in &link_summary.skip_reasons {
         *reasons.entry(reason.clone()).or_insert(0) += *count as i64;
     }
     for (reason, count) in &dead_summary.skip_reasons {
         *reasons.entry(reason.clone()).or_insert(0) += *count as i64;
     }
-    if telemetry.match_stats.ambiguous_skipped > 0 {
-        *reasons.entry("ambiguous_match".to_string()).or_insert(0) +=
-            telemetry.match_stats.ambiguous_skipped as i64;
+    for (reason, count) in &auto_acquire_summary.reason_counts {
+        *reasons.entry(reason.clone()).or_insert(0) += *count as i64;
     }
 
-    if reasons.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(serde_json::to_string(&reasons)?))
-    }
+    reasons
 }
 
 async fn collect_source_items(
@@ -850,6 +879,47 @@ mod tests {
         };
 
         assert_eq!(telemetry.cache_hit_ratio(), Some(0.8));
+    }
+
+    #[test]
+    fn aggregate_skip_reasons_merges_match_link_dead_and_auto_acquire_counts() {
+        let telemetry = ScanTelemetry {
+            match_stats: MatchTelemetry {
+                skip_reasons: BTreeMap::from([
+                    ("ambiguous_match".to_string(), 2),
+                    ("matcher_metadata_mismatch".to_string(), 3),
+                ]),
+                ..MatchTelemetry::default()
+            },
+            ..ScanTelemetry::default()
+        };
+        let link_summary = LinkProcessSummary {
+            skip_reasons: BTreeMap::from([("already_correct".to_string(), 5)]),
+            ..LinkProcessSummary::default()
+        };
+        let dead_summary = crate::linker::DeadLinkSummary {
+            skip_reasons: BTreeMap::from([("not_symlink".to_string(), 1)]),
+            ..crate::linker::DeadLinkSummary::default()
+        };
+        let auto_acquire_summary = AutoAcquireBatchSummary {
+            reason_counts: BTreeMap::from([(
+                "auto_acquire_no_result_prowlarr_empty".to_string(),
+                4,
+            )]),
+            ..AutoAcquireBatchSummary::default()
+        };
+
+        let reasons =
+            aggregate_skip_reasons(&telemetry, &link_summary, &dead_summary, &auto_acquire_summary);
+
+        assert_eq!(reasons.get("ambiguous_match"), Some(&2));
+        assert_eq!(reasons.get("matcher_metadata_mismatch"), Some(&3));
+        assert_eq!(reasons.get("already_correct"), Some(&5));
+        assert_eq!(reasons.get("not_symlink"), Some(&1));
+        assert_eq!(
+            reasons.get("auto_acquire_no_result_prowlarr_empty"),
+            Some(&4)
+        );
     }
 
     #[test]
