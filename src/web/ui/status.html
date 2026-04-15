@@ -12,7 +12,7 @@
         <div class="page-help-links">
             <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Media-Servers" target="_blank" rel="noreferrer noopener">
                 <span class="help-link__eyebrow">Learn more</span>
-                <span class="help-link__title">Media-server posture</span>
+                <span class="help-link__title">Media server refresh</span>
             </a>
             <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Troubleshooting" target="_blank" rel="noreferrer noopener">
                 <span class="help-link__eyebrow">Wiki</span>
@@ -184,7 +184,7 @@
         {% if deferred_refresh.pending_targets > 0 %}
         <div class="alert alert-warning">
             <strong>{{ deferred_refresh.pending_targets }} refresh target(s) are queued.</strong>
-            Another Symlinkarr run previously held the refresh lock or deferred invalidation under load.
+            Another Symlinkarr run previously held the refresh lock or deferred refresh work under load.
         </div>
         <div class="badge-stack">
             {% for server in deferred_refresh.servers %}

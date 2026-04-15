@@ -1505,7 +1505,7 @@ mod tests {
         assert!(html.contains("Apply Filters"));
         assert!(html.contains("Candidate symlinks"));
         assert!(html.contains("Broken legacy symlinks"));
-        assert!(html.contains("Real media files blocking auto-remediation"));
+        assert!(html.contains("Real media files blocking automatic cleanup"));
         assert!(html.contains("Most users can ignore this page."));
     }
 

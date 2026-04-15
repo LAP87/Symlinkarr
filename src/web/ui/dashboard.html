@@ -56,7 +56,7 @@
     <section class="hero-card">
         <p class="hero-label">Media Refresh Backlog</p>
         <div class="hero-value">{{ deferred_refresh.pending_targets }}</div>
-        <p class="hero-copy">Refresh targets waiting for the media-server lock or a later mutation pass.</p>
+        <p class="hero-copy">Refresh targets waiting for the media-server lock or a later scan.</p>
         <div class="hero-inline-stats">
             {% if deferred_refresh.servers|length > 0 %}
             {% for server in deferred_refresh.servers %}
@@ -128,7 +128,7 @@
                 </div>
             </div>
 
-            <p class="text-muted">Advanced view reveals per-phase timings and deeper matcher telemetry for this run.</p>
+            <p class="text-muted">Advanced view shows per-phase timings and deeper matcher details for this run.</p>
 
             <div class="advanced-only">
             <div class="telemetry-grid">
