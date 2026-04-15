@@ -3014,6 +3014,9 @@ realdebrid:
         let targets = inspect_restore_targets(&config_path).unwrap();
 
         assert_eq!(targets.db_path, config_dir.join("symlinkarr.db"));
-        assert_eq!(targets.secret_files, vec![config_dir.join("secrets/rd-token")]);
+        assert_eq!(
+            targets.secret_files,
+            vec![config_dir.join("secrets/rd-token")]
+        );
     }
 }

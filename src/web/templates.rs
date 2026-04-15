@@ -720,8 +720,10 @@ impl ScanRunView {
         let skip_reasons = Self::skip_reasons_from_record(&record);
         let skip_reason_total = skip_reasons.iter().map(|entry| entry.count).sum();
         let skip_reason_highlights = skip_reasons.iter().take(3).cloned().collect::<Vec<_>>();
-        let skip_reason_extra_buckets =
-            skip_reasons.len().saturating_sub(skip_reason_highlights.len()) as i64;
+        let skip_reason_extra_buckets = skip_reasons
+            .len()
+            .saturating_sub(skip_reason_highlights.len())
+            as i64;
         let skip_reason_groups = build_skip_reason_groups(&skip_reasons);
         let media_server_refresh = Self::media_server_refresh_from_record(&record);
         let total_runtime_ms = record.runtime_checks_ms
@@ -1386,16 +1388,14 @@ impl_template_into_response!(
     BackupTemplate,
     BackupResultTemplate,
 );
- 
- // ─── No-config setup page ──────────────────────────────────────────
- 
- #[derive(Template)]
- #[template(path = "web/ui/noconfig.html")]
- pub struct NoConfigTemplate;
- 
- impl_template_into_response!(
-     NoConfigTemplate,
- );
+
+// ─── No-config setup page ──────────────────────────────────────────
+
+#[derive(Template)]
+#[template(path = "web/ui/noconfig.html")]
+pub struct NoConfigTemplate;
+
+impl_template_into_response!(NoConfigTemplate,);
 
 #[cfg(test)]
 mod tests {
@@ -1419,8 +1419,10 @@ mod tests {
     fn sample_scan_run_view() -> ScanRunView {
         let skip_reasons = sample_skip_reasons();
         let skip_reason_highlights = skip_reasons.iter().take(3).cloned().collect::<Vec<_>>();
-        let skip_reason_extra_buckets =
-            skip_reasons.len().saturating_sub(skip_reason_highlights.len()) as i64;
+        let skip_reason_extra_buckets = skip_reasons
+            .len()
+            .saturating_sub(skip_reason_highlights.len())
+            as i64;
         let skip_reason_groups = build_skip_reason_groups(&skip_reasons);
         let skip_reason_total = skip_reasons.iter().map(|reason| reason.count).sum();
 

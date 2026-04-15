@@ -2273,10 +2273,7 @@ mod tests {
         assert_eq!(json.skip_reasons[0].group, "Linking");
         assert_eq!(json.skip_reasons[0].count, 6200);
         assert_eq!(json.skip_reasons[1].reason, "source_missing_before_link");
-        assert_eq!(
-            json.skip_reasons[1].label,
-            "Source missing before link"
-        );
+        assert_eq!(json.skip_reasons[1].label, "Source missing before link");
         assert_eq!(json.skip_reasons[1].count, 3044);
         assert_eq!(json.skip_reasons[2].reason, "ambiguous_match");
         assert_eq!(json.skip_reasons[2].group, "Matcher");

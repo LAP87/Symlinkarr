@@ -467,7 +467,8 @@ async fn try_auto_restore(cli: &Cli) -> Result<Option<config::Config>> {
         };
 
         // Prefer the latest scheduled backup; fall back to latest overall
-        let best = backups.iter()
+        let best = backups
+            .iter()
             .filter(|b| matches!(b.backup_type, backup::BackupType::Scheduled))
             .max_by_key(|b| b.timestamp);
 
@@ -476,7 +477,10 @@ async fn try_auto_restore(cli: &Cli) -> Result<Option<config::Config>> {
             None => continue,
         };
 
-        println!("No config.yaml found. Auto-restoring from: {}", best.filename);
+        println!(
+            "No config.yaml found. Auto-restoring from: {}",
+            best.filename
+        );
         tracing::info!("Auto-restoring from backup: {}", best.filename);
 
         let config_path = missing_config_target_path(cli);
@@ -551,7 +555,10 @@ async fn try_auto_restore(cli: &Cli) -> Result<Option<config::Config>> {
                 return Ok(Some(cfg));
             }
             Err(e) => {
-                tracing::warn!("Auto-restore wrote files but config still fails to load: {}", e);
+                tracing::warn!(
+                    "Auto-restore wrote files but config still fails to load: {}",
+                    e
+                );
                 return Err(e);
             }
         }
@@ -563,18 +570,24 @@ async fn try_auto_restore(cli: &Cli) -> Result<Option<config::Config>> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
- 
+
     // Restore and Bootstrap can run without a config file.
     // Handle them before loading config so a fresh install can use them.
     match &cli.command {
-        Commands::Restore { file, dir, dry_run, list } => {
+        Commands::Restore {
+            file,
+            dir,
+            dry_run,
+            list,
+        } => {
             init_minimal_logger();
             return commands::restore::run_standalone_restore(
                 std::path::Path::new(file),
                 dir.as_deref().map(std::path::Path::new),
                 *dry_run,
                 *list,
-            ).await;
+            )
+            .await;
         }
         Commands::Bootstrap { dir, list } => {
             init_minimal_logger();
@@ -585,7 +598,7 @@ async fn main() -> Result<()> {
         }
         _ => {}
     }
- 
+
     let cfg = match config::Config::load(cli.config.clone()) {
         Ok(cfg) => cfg,
         Err(e) => {
@@ -727,8 +740,6 @@ async fn main() -> Result<()> {
         }
         Commands::Restore { .. } | Commands::Bootstrap { .. } => unreachable!(),
     }
-
-
 
     Ok(())
 }

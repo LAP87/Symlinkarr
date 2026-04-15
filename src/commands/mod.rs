@@ -1,6 +1,5 @@
 pub mod backup;
 pub mod bootstrap;
-pub mod restore;
 pub mod cache;
 pub mod cleanup;
 pub mod config;
@@ -10,6 +9,7 @@ pub mod doctor;
 pub mod queue;
 pub mod repair;
 pub mod report;
+pub mod restore;
 pub mod scan;
 pub mod status;
 

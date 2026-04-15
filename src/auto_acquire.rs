@@ -2665,14 +2665,18 @@ mod tests {
         );
 
         assert_eq!(
-            summary.reason_counts.get("auto_acquire_no_result_prowlarr_empty"),
+            summary
+                .reason_counts
+                .get("auto_acquire_no_result_prowlarr_empty"),
             Some(&1)
         );
         assert_eq!(
             summary.reason_counts.get("auto_acquire_queue_failing"),
             Some(&1)
         );
-        assert!(!summary.reason_counts.contains_key("auto_acquire_completed_linked"));
+        assert!(!summary
+            .reason_counts
+            .contains_key("auto_acquire_completed_linked"));
     }
 
     #[test]

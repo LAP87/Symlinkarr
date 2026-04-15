@@ -71,14 +71,14 @@ fn dashboard_stats_from_web_stats(stats: crate::db::WebStats) -> DashboardStats 
         last_scan: stats.last_scan,
     }
 }
- 
- // ─── No-config setup page ──────────────────────────────────────────
- 
- pub async fn get_noconfig() -> impl IntoResponse {
-     use super::templates::NoConfigTemplate;
-     let template = NoConfigTemplate;
-     template.into_response()
- }
+
+// ─── No-config setup page ──────────────────────────────────────────
+
+pub async fn get_noconfig() -> impl IntoResponse {
+    use super::templates::NoConfigTemplate;
+    let template = NoConfigTemplate;
+    template.into_response()
+}
 
 fn queue_overview_from_counts(counts: AcquisitionJobCounts) -> QueueOverview {
     counts.into()

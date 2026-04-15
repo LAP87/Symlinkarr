@@ -40,7 +40,10 @@ pub async fn run_standalone_restore(
     // ── List mode ──────────────────────────────────────────────────
     if list_only {
         println!("📦 {}\n", manifest.label);
-        println!("   Created:  {}", manifest.timestamp.format("%Y-%m-%d %H:%M:%S"));
+        println!(
+            "   Created:  {}",
+            manifest.timestamp.format("%Y-%m-%d %H:%M:%S")
+        );
         println!("   Symlinks: {}", manifest.total_count);
         println!(
             "   Type:     {}",
@@ -74,10 +77,7 @@ pub async fn run_standalone_restore(
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| {
             // Try common locations for an existing config
-            let candidates = vec![
-                PathBuf::from("/app/config"),
-                PathBuf::from("."),
-            ];
+            let candidates = vec![PathBuf::from("/app/config"), PathBuf::from(".")];
             for dir in &candidates {
                 if dir.join("config.yaml").exists() {
                     return dir.clone();
@@ -94,7 +94,10 @@ pub async fn run_standalone_restore(
     // ── Dry-run mode ──────────────────────────────────────────────
     if dry_run {
         println!("📋 Backup: {}", manifest.label);
-        println!("   Created: {}", manifest.timestamp.format("%Y-%m-%d %H:%M:%S"));
+        println!(
+            "   Created: {}",
+            manifest.timestamp.format("%Y-%m-%d %H:%M:%S")
+        );
         println!("   Symlinks: {}", manifest.total_count);
         println!("\n🔍 Dry run — no files will be written.");
         println!("   Would restore app state to: {}", config_dir.display());
@@ -107,7 +110,11 @@ pub async fn run_standalone_restore(
                 println!("   Would restore config: config.yaml");
             }
             for secret in &app_state.secret_snapshots {
-                println!("   Would restore secret: {} → {}", secret.filename, secret.original_path.display());
+                println!(
+                    "   Would restore secret: {} → {}",
+                    secret.filename,
+                    secret.original_path.display()
+                );
             }
         }
         return Ok(());
@@ -133,7 +140,10 @@ pub async fn run_standalone_restore(
         println!("   🔐 Secrets restored: {}", result.secrets_restored);
     }
     if result.secrets_skipped > 0 {
-        println!("   ⏭️  Secrets skipped (already exist): {}", result.secrets_skipped);
+        println!(
+            "   ⏭️  Secrets skipped (already exist): {}",
+            result.secrets_skipped
+        );
     }
 
     println!("\n💡 Next steps:");
@@ -194,8 +204,12 @@ fn secret_restore_target_allowed(config_dir: &Path, target: &Path) -> bool {
 fn ensure_parent_dir(path: &Path, what: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create parent directory for {what}: {}", parent.display()))?;
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "Failed to create parent directory for {what}: {}",
+                    parent.display()
+                )
+            })?;
         }
     }
     Ok(())
@@ -227,14 +241,21 @@ fn restore_app_state_standalone(
         return Ok(result);
     }
 
-    std::fs::create_dir_all(config_dir)
-        .with_context(|| format!("Failed to create config directory: {}", config_dir.display()))?;
+    std::fs::create_dir_all(config_dir).with_context(|| {
+        format!(
+            "Failed to create config directory: {}",
+            config_dir.display()
+        )
+    })?;
 
     // Restore config.yaml
     if let Some(ref app_state) = manifest.app_state {
         if let Some(ref cfg_snapshot) = app_state.config_snapshot {
             if config_path.exists() {
-                warn!("Config already exists at {}, skipping", config_path.display());
+                warn!(
+                    "Config already exists at {}, skipping",
+                    config_path.display()
+                );
                 println!(
                     "   ⏭️  Config already exists at {}, skipping",
                     config_path.display()
@@ -292,7 +313,10 @@ fn restore_app_state_standalone(
             }
             if target.exists() {
                 warn!("Secret already exists at {}, skipping", target.display());
-                println!("   ⏭️  Secret already exists at {}, skipping", target.display());
+                println!(
+                    "   ⏭️  Secret already exists at {}, skipping",
+                    target.display()
+                );
                 result.secrets_skipped += 1;
                 continue;
             }
@@ -318,13 +342,20 @@ fn restore_app_state_standalone(
     if let Some(ref db_snap) = manifest.database_snapshot {
         let source_path = bm.resolve_restore_path(Path::new(&db_snap.filename))?;
         if db_target.exists() {
-            warn!("Database already exists at {}, skipping", db_target.display());
-            println!("   ⏭️  Database already exists at {}, skipping", db_target.display());
+            warn!(
+                "Database already exists at {}, skipping",
+                db_target.display()
+            );
+            println!(
+                "   ⏭️  Database already exists at {}, skipping",
+                db_target.display()
+            );
             result.db_already_existed = true;
         } else {
             ensure_parent_dir(&db_target, "database restore target")?;
-            std::fs::copy(&source_path, &db_target)
-                .with_context(|| format!("Failed to restore database to {}", db_target.display()))?;
+            std::fs::copy(&source_path, &db_target).with_context(|| {
+                format!("Failed to restore database to {}", db_target.display())
+            })?;
             info!("Restored database snapshot to {}", db_target.display());
             println!("   🗄️  Database restored to {}", db_target.display());
             result.db_snapshot_restored = Some(db_target);
@@ -347,14 +378,19 @@ pub fn restore_app_state_auto(
     };
     let config_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
 
-    std::fs::create_dir_all(config_dir)
-        .with_context(|| format!("Failed to create config directory: {}", config_dir.display()))?;
+    std::fs::create_dir_all(config_dir).with_context(|| {
+        format!(
+            "Failed to create config directory: {}",
+            config_dir.display()
+        )
+    })?;
 
     if let Some(ref cfg_snapshot) = app_state.config_snapshot {
         if !config_path.exists() {
             let source_path = bm.resolve_restore_path(Path::new(&cfg_snapshot.filename))?;
-            std::fs::copy(&source_path, config_path)
-                .with_context(|| format!("Failed to restore config to {}", config_path.display()))?;
+            std::fs::copy(&source_path, config_path).with_context(|| {
+                format!("Failed to restore config to {}", config_path.display())
+            })?;
             info!("Auto-restored config to {}", config_path.display());
         }
     }
@@ -394,7 +430,11 @@ pub fn restore_app_state_auto(
         }
         if let Ok(source_path) = bm.resolve_restore_path(Path::new(&secret.filename)) {
             if let Err(e) = std::fs::copy(&source_path, target) {
-                warn!("Auto-restore: failed to restore secret to {}: {}", target.display(), e);
+                warn!(
+                    "Auto-restore: failed to restore secret to {}: {}",
+                    target.display(),
+                    e
+                );
             }
         }
     }

@@ -51,15 +51,13 @@ web:
 /// Creates required directories and a starter config.yaml with guidance comments.
 /// If `target_dir` is None, defaults to /app/config (Docker) or current directory.
 pub fn run_bootstrap(target_dir: Option<&Path>, list_only: bool) -> Result<()> {
-    let config_dir = target_dir
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| {
-            if Path::new("/app/config").is_dir() {
-                PathBuf::from("/app/config")
-            } else {
-                std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-            }
-        });
+    let config_dir = target_dir.map(|p| p.to_path_buf()).unwrap_or_else(|| {
+        if Path::new("/app/config").is_dir() {
+            PathBuf::from("/app/config")
+        } else {
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+        }
+    });
 
     let config_path = config_dir.join("config.yaml");
     let db_path = config_dir.join("symlinkarr.db");
@@ -101,22 +99,33 @@ pub fn run_bootstrap(target_dir: Option<&Path>, list_only: bool) -> Result<()> {
 
     // ── Create directories ─────────────────────────────────────────
     if !config_dir.exists() {
-        std::fs::create_dir_all(&config_dir)
-            .with_context(|| format!("Failed to create config directory: {}", config_dir.display()))?;
+        std::fs::create_dir_all(&config_dir).with_context(|| {
+            format!(
+                "Failed to create config directory: {}",
+                config_dir.display()
+            )
+        })?;
         info!("Created config directory: {}", config_dir.display());
         println!("📁 Created directory: {}", config_dir.display());
     }
 
     if !backup_dir.exists() {
-        std::fs::create_dir_all(&backup_dir)
-            .with_context(|| format!("Failed to create backup directory: {}", backup_dir.display()))?;
+        std::fs::create_dir_all(&backup_dir).with_context(|| {
+            format!(
+                "Failed to create backup directory: {}",
+                backup_dir.display()
+            )
+        })?;
         info!("Created backup directory: {}", backup_dir.display());
         println!("📁 Created directory: {}", backup_dir.display());
     }
 
     // ── Create starter config.yaml ─────────────────────────────────
     if config_path.exists() {
-        println!("⏭️  config.yaml already exists at {}, skipping", config_path.display());
+        println!(
+            "⏭️  config.yaml already exists at {}, skipping",
+            config_path.display()
+        );
         println!("\n💡 Edit your existing config.yaml, then run:");
         println!("   symlinkarr doctor    # validate configuration");
         println!("   symlinkarr scan      # first scan");

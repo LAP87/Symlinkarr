@@ -574,7 +574,8 @@ fn build_skip_reason_json(
     dead_summary: &crate::linker::DeadLinkSummary,
     auto_acquire_summary: &AutoAcquireBatchSummary,
 ) -> Result<Option<String>> {
-    let reasons = aggregate_skip_reasons(telemetry, link_summary, dead_summary, auto_acquire_summary);
+    let reasons =
+        aggregate_skip_reasons(telemetry, link_summary, dead_summary, auto_acquire_summary);
     if reasons.is_empty() {
         Ok(None)
     } else {
@@ -909,8 +910,12 @@ mod tests {
             ..AutoAcquireBatchSummary::default()
         };
 
-        let reasons =
-            aggregate_skip_reasons(&telemetry, &link_summary, &dead_summary, &auto_acquire_summary);
+        let reasons = aggregate_skip_reasons(
+            &telemetry,
+            &link_summary,
+            &dead_summary,
+            &auto_acquire_summary,
+        );
 
         assert_eq!(reasons.get("ambiguous_match"), Some(&2));
         assert_eq!(reasons.get("matcher_metadata_mismatch"), Some(&3));

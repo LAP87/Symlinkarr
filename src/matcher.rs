@@ -1245,8 +1245,7 @@ fn match_source_slice(
                     resolve_source_for_library_item(item, parsed, metadata, anime_identity);
                 if let Some(parsed) = parsed {
                     diagnostics.any_resolved_candidate = true;
-                    if !source_shape_matches_media_type(item, &parsed)
-                    {
+                    if !source_shape_matches_media_type(item, &parsed) {
                         diagnostics.exact_id_incompatible = true;
                         continue;
                     }
@@ -2047,7 +2046,9 @@ mod tests {
     #[test]
     fn test_match_source_slice_records_no_library_candidates_reason() {
         let library_items = vec![anime_item("Example Anime", 1234)];
-        let source_items = vec![parsed_standard_source("/rd/Completely.Different.S01E01.mkv")];
+        let source_items = vec![parsed_standard_source(
+            "/rd/Completely.Different.S01E01.mkv",
+        )];
 
         let mut alias_map = HashMap::new();
         alias_map.insert(0usize, vec!["example anime".to_string()]);
@@ -2077,8 +2078,9 @@ mod tests {
     #[test]
     fn test_match_source_slice_records_metadata_mismatch_reason() {
         let library_items = vec![movie_item("The Thing (1982)", 1982)];
-        let source_items =
-            vec![parsed_movie_source("/rd/The.Thing.2011.1080p.BluRay.x264-GROUP.mkv")];
+        let source_items = vec![parsed_movie_source(
+            "/rd/The.Thing.2011.1080p.BluRay.x264-GROUP.mkv",
+        )];
 
         let mut alias_map = HashMap::new();
         alias_map.insert(0usize, vec!["the thing".to_string()]);
@@ -2130,7 +2132,9 @@ mod tests {
 
         assert!(chunk.best_per_source.is_empty());
         assert_eq!(
-            chunk.skip_reasons.get("matcher_alias_score_below_threshold"),
+            chunk
+                .skip_reasons
+                .get("matcher_alias_score_below_threshold"),
             Some(&1)
         );
     }
