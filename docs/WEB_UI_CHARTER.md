@@ -81,10 +81,10 @@ What not to borrow blindly:
 Use these URLs for contextual help until feature-specific wiki pages exist:
 
 - `Scan`: `https://github.com/LAP87/Symlinkarr/wiki/Operations-and-Safety`
-- `Discover`: `https://github.com/LAP87/Symlinkarr/wiki/Operations-and-Safety`
+- `Discover`: `https://github.com/LAP87/Symlinkarr/wiki/User-Guide`
 - `Cleanup`: `https://github.com/LAP87/Symlinkarr/wiki/Operations-and-Safety`
 - `Dead Links / Repair`: `https://github.com/LAP87/Symlinkarr/wiki/Operations-and-Safety`
-- `Doctor`: `https://github.com/LAP87/Symlinkarr/wiki/Operations-and-Safety`
+- `Doctor`: `https://github.com/LAP87/Symlinkarr/wiki/Troubleshooting`
 - `Config`: `https://github.com/LAP87/Symlinkarr/wiki/Getting-Started`
 - `Status / Media Refresh`: `https://github.com/LAP87/Symlinkarr/wiki/Media-Servers`
 

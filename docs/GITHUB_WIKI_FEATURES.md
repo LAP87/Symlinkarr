@@ -2,6 +2,20 @@
 
 This page is written as a wiki-ready explainer for what Symlinkarr does and why each feature exists.
 
+## Current Wiki Structure
+
+The live GitHub wiki is now organized to feel closer to `*arr` expectations:
+
+- `Home`: product overview and operator flow
+- `Getting Started`: install, config, and first-run commands
+- `User Guide`: page-by-page web UI orientation
+- `Operations and Safety`: review-first mutation posture
+- `Media Servers`: Plex / Emby / Jellyfin expectations
+- `Troubleshooting`: shortest path to trustworthy diagnosis
+- `Roadmap and Remaining Work`: current hardening and limits
+
+Use the wiki for operator help and workflow explanation. Keep the README shorter and more install-oriented.
+
 ## What Symlinkarr Is
 
 Symlinkarr is a local-first daemon and operator tool that keeps a Real-Debrid-backed media library usable without hand-sorting files.
