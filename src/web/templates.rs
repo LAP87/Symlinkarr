@@ -572,6 +572,10 @@ pub(crate) fn skip_reason_group_label(reason: &str) -> String {
     skip_reason_presentation(reason).group.label().to_string()
 }
 
+pub(crate) fn skip_reason_help(reason: &str) -> String {
+    skip_reason_presentation(reason).help
+}
+
 impl SkipReasonView {
     fn from_reason(reason: String, count: i64) -> Self {
         let presentation = skip_reason_presentation(&reason);

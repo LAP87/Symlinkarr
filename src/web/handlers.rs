@@ -2122,7 +2122,10 @@ mod tests {
             links_removed: 0,
             links_skipped: 7,
             ambiguous_skipped: 1,
-            skip_reason_json: None,
+            skip_reason_json: Some(
+                r#"{"already_correct":6200,"source_missing_before_link":3044,"ambiguous_match":70}"#
+                    .to_string(),
+            ),
             runtime_checks_ms: 10,
             library_scan_ms: 20,
             source_inventory_ms: 30,
@@ -2262,6 +2265,9 @@ mod tests {
         assert!(body.contains("Queue 1"));
         assert!(body.contains("Cache Hit"));
         assert!(body.contains("Media refresh protections activated"));
+        assert!(body.contains("Top Why-Not Signals"));
+        assert!(body.contains("Already correct 6200"));
+        assert!(body.contains("Source missing before link 3044"));
         assert!(body.contains("Plex guard abort"));
         assert!(body.contains("Emby 1/1"));
     }

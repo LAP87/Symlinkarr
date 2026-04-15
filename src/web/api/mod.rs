@@ -33,7 +33,9 @@ use crate::media_servers::{
 
 use super::{
     clamp_link_list_limit, latest_cleanup_report_created_at, resolve_cleanup_report_path,
-    should_surface_cleanup_audit_outcome, should_surface_scan_outcome, WebState,
+    should_surface_cleanup_audit_outcome, should_surface_scan_outcome,
+    templates::{skip_reason_group_label, skip_reason_help, skip_reason_label},
+    WebState,
 };
 
 /// Create the API router
@@ -252,6 +254,9 @@ pub struct ApiMediaServerRefreshServer {
 #[derive(Serialize, Deserialize)]
 pub struct ApiSkipReasonCount {
     pub reason: String,
+    pub label: String,
+    pub group: String,
+    pub help: String,
     pub count: i64,
 }
 
@@ -260,6 +265,9 @@ pub struct ApiSkipEventSample {
     pub event_at: String,
     pub action: String,
     pub reason: String,
+    pub reason_label: String,
+    pub reason_group: String,
+    pub reason_help: String,
     pub target_path: String,
     pub source_path: Option<String>,
     pub media_id: Option<String>,
@@ -278,6 +286,7 @@ pub struct ApiScanHistoryEntry {
     pub links_updated: i64,
     pub cache_hit_ratio: Option<f64>,
     pub dead_count: i64,
+    pub skip_reasons: Vec<ApiSkipReasonCount>,
     pub plex_refresh: ApiPlexRefreshSummary,
     pub media_server_refresh: Vec<ApiMediaServerRefreshServer>,
     pub auto_acquire: ApiScanAutoAcquireSummary,
@@ -1029,10 +1038,16 @@ fn skip_reasons_from_record(record: &ScanHistoryRecord) -> Vec<ApiSkipReasonCoun
         .and_then(|json| serde_json::from_str::<std::collections::BTreeMap<String, i64>>(json).ok())
         .unwrap_or_default()
         .into_iter()
-        .map(|(reason, count)| ApiSkipReasonCount { reason, count })
+        .map(|(reason, count)| ApiSkipReasonCount {
+            label: skip_reason_label(&reason),
+            group: skip_reason_group_label(&reason),
+            help: skip_reason_help(&reason),
+            reason,
+            count,
+        })
         .collect::<Vec<_>>();
 
-    entries.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.reason.cmp(&b.reason)));
+    entries.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.label.cmp(&b.label)));
     entries
 }
 
@@ -1041,13 +1056,19 @@ fn api_skip_event_samples(
 ) -> Vec<ApiSkipEventSample> {
     events
         .into_iter()
-        .map(|event| ApiSkipEventSample {
-            event_at: event.event_at,
-            action: event.action,
-            reason: event.note.unwrap_or_else(|| "unknown".to_string()),
-            target_path: event.target_path.display().to_string(),
-            source_path: event.source_path.map(|path| path.display().to_string()),
-            media_id: event.media_id,
+        .map(|event| {
+            let reason = event.note.unwrap_or_else(|| "unknown".to_string());
+            ApiSkipEventSample {
+                event_at: event.event_at,
+                action: event.action,
+                reason_label: skip_reason_label(&reason),
+                reason_group: skip_reason_group_label(&reason),
+                reason_help: skip_reason_help(&reason),
+                reason,
+                target_path: event.target_path.display().to_string(),
+                source_path: event.source_path.map(|path| path.display().to_string()),
+                media_id: event.media_id,
+            }
         })
         .collect()
 }
@@ -1060,6 +1081,7 @@ fn scan_history_entry_from_record(record: ScanHistoryRecord) -> ApiScanHistoryEn
     let started_at = record.started_at.clone();
     let plex_refresh = plex_refresh_summary_from_record(&record);
     let media_server_refresh = media_server_refresh_from_record(&record);
+    let skip_reasons = skip_reasons_from_record(&record);
 
     ApiScanHistoryEntry {
         id: record.id,
@@ -1073,6 +1095,7 @@ fn scan_history_entry_from_record(record: ScanHistoryRecord) -> ApiScanHistoryEn
         links_updated: record.links_updated,
         cache_hit_ratio: record.cache_hit_ratio,
         dead_count,
+        skip_reasons,
         plex_refresh,
         media_server_refresh,
         auto_acquire: ApiScanAutoAcquireSummary {
@@ -2246,16 +2269,29 @@ mod tests {
         assert!(json.plex_refresh.deferred_due_to_lock);
         assert_eq!(json.skip_reasons.len(), 3);
         assert_eq!(json.skip_reasons[0].reason, "already_correct");
+        assert_eq!(json.skip_reasons[0].label, "Already correct");
+        assert_eq!(json.skip_reasons[0].group, "Linking");
         assert_eq!(json.skip_reasons[0].count, 6200);
         assert_eq!(json.skip_reasons[1].reason, "source_missing_before_link");
+        assert_eq!(
+            json.skip_reasons[1].label,
+            "Source missing before link"
+        );
         assert_eq!(json.skip_reasons[1].count, 3044);
         assert_eq!(json.skip_reasons[2].reason, "ambiguous_match");
+        assert_eq!(json.skip_reasons[2].group, "Matcher");
         assert_eq!(json.skip_reasons[2].count, 70);
         assert_eq!(json.skip_event_samples.len(), 1);
         assert_eq!(
             json.skip_event_samples[0].reason,
             "source_missing_before_link"
         );
+        assert_eq!(
+            json.skip_event_samples[0].reason_label,
+            "Source missing before link"
+        );
+        assert_eq!(json.skip_event_samples[0].reason_group, "Linking");
+        assert!(json.skip_event_samples[0].reason_help.contains("source"));
         assert_eq!(json.skip_event_samples[0].action, "skipped");
         assert!(json.skip_event_samples[0]
             .target_path
@@ -2351,6 +2387,9 @@ mod tests {
         assert_eq!(run.total_runtime_ms, 288_200);
         assert_eq!(run.dead_count, 17);
         assert_eq!(run.cache_hit_ratio, Some(0.94));
+        assert_eq!(run.skip_reasons.len(), 3);
+        assert_eq!(run.skip_reasons[0].label, "Already correct");
+        assert_eq!(run.skip_reasons[1].group, "Linking");
         assert_eq!(run.plex_refresh.planned_batches, 5);
         assert_eq!(run.plex_refresh.refreshed_batches, 4);
         assert_eq!(run.plex_refresh.capped_batches, 1);
@@ -2400,6 +2439,7 @@ mod tests {
         assert_eq!(json[0].scope_label, "Movies");
         assert!(!json[0].dry_run);
         assert!(!json[0].search_missing);
+        assert!(json[0].skip_reasons.is_empty());
     }
 
     #[tokio::test]

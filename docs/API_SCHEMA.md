@@ -390,6 +390,22 @@ Response element schema:
   "links_updated": 164,
   "cache_hit_ratio": 0.94,
   "dead_count": 17,
+  "skip_reasons": [
+    {
+      "reason": "already_correct",
+      "label": "Already correct",
+      "group": "Linking",
+      "help": "The target already pointed at the intended source, so no update was needed.",
+      "count": 6200
+    },
+    {
+      "reason": "source_missing_before_link",
+      "label": "Source missing before link",
+      "group": "Linking",
+      "help": "The source disappeared before Symlinkarr could create or update the symlink.",
+      "count": 3044
+    }
+  ],
   "plex_refresh": {
     "runtime_ms": 3100,
     "requested_paths": 12,
@@ -468,6 +484,7 @@ Notes:
 
 - `plex_refresh` remains the aggregate compatibility view for scan history tables and older consumers.
 - `media_server_refresh` exposes the per-backend breakdown for the same run, so Plex, Emby, and Jellyfin can be inspected separately when more than one backend is active.
+- `skip_reasons` is sorted descending by count and now includes a human label, pipeline group, and short explanation in addition to the raw machine code.
 
 ## `GET /api/v1/scan/:id`
 
@@ -493,15 +510,36 @@ Response schema:
   "links_skipped": 9314,
   "ambiguous_skipped": 70,
   "skip_reasons": [
-    { "reason": "already_correct", "count": 6200 },
-    { "reason": "source_missing_before_link", "count": 3044 },
-    { "reason": "ambiguous_match", "count": 70 }
+    {
+      "reason": "already_correct",
+      "label": "Already correct",
+      "group": "Linking",
+      "help": "The target already pointed at the intended source, so no update was needed.",
+      "count": 6200
+    },
+    {
+      "reason": "source_missing_before_link",
+      "label": "Source missing before link",
+      "group": "Linking",
+      "help": "The source disappeared before Symlinkarr could create or update the symlink.",
+      "count": 3044
+    },
+    {
+      "reason": "ambiguous_match",
+      "label": "Ambiguous match",
+      "group": "Matcher",
+      "help": "Multiple candidates scored too closely, so Symlinkarr refused to guess.",
+      "count": 70
+    }
   ],
   "skip_event_samples": [
     {
       "event_at": "2026-03-21 21:12:01",
       "action": "skipped",
       "reason": "source_missing_before_link",
+      "reason_label": "Source missing before link",
+      "reason_group": "Linking",
+      "reason_help": "The source disappeared before Symlinkarr could create or update the symlink.",
       "target_path": "/mnt/storage/plex/anime/Show A (2024) {tvdb-1}/Season 01/Show A - S01E01.mkv",
       "source_path": "/mnt/storage/rd/Show.A.S01E01.mkv",
       "media_id": "tvdb-1"
