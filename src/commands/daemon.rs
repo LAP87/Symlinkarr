@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use chrono::{Local, NaiveDate, Timelike};
+use chrono::{Local, NaiveDate, Timelike, Utc};
 use tracing::info;
 
 use crate::config::Config;
@@ -76,6 +76,28 @@ pub(crate) async fn run_daemon(cfg: &Config, db: &Database) -> Result<()> {
 
     loop {
         run_housekeeping(cfg, db, &mut last_vacuum_date).await;
+
+        if cfg.backup.enabled && cfg.backup.interval_hours > 0 {
+            let bm = crate::backup::BackupManager::new(&cfg.backup);
+            let should_create_backup = match bm.latest_scheduled_backup_timestamp() {
+                Ok(Some(last_backup)) => {
+                    Utc::now().signed_duration_since(last_backup).num_hours()
+                        >= cfg.backup.interval_hours as i64
+                }
+                Ok(None) => true,
+                Err(e) => {
+                    tracing::warn!("Backup schedule check failed (non-fatal): {}", e);
+                    false
+                }
+            };
+
+            if should_create_backup {
+                match bm.create_backup(cfg, db, "daily").await {
+                    Ok(path) => info!("Scheduled Symlinkarr backup created: {}", path.display()),
+                    Err(e) => tracing::warn!("Scheduled Symlinkarr backup failed: {}", e),
+                }
+            }
+        }
 
         if cfg.backup.enabled {
             let bm = crate::backup::BackupManager::new(&cfg.backup);

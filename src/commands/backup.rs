@@ -26,17 +26,41 @@ pub(crate) async fn run_backup(
     match action {
         crate::BackupAction::Create => {
             info!("=== Symlinkarr Backup ===");
-            let path = bm.create_backup(db, "Manual backup").await?;
+            let path = bm.create_backup(cfg, db, "Manual backup").await?;
             let database_snapshot = path.with_extension("sqlite3");
             if output == OutputFormat::Json {
+                let app_state = bm
+                    .list()?
+                    .into_iter()
+                    .find(|backup| backup.path == path)
+                    .and_then(|backup| backup.app_state);
                 print_json(&serde_json::json!({
                     "created": true,
                     "file": path,
                     "database_snapshot": database_snapshot,
+                    "config_snapshot": app_state
+                        .as_ref()
+                        .and_then(|state| state.config_snapshot.as_ref().map(|file| cfg.backup.path.join(&file.filename))),
+                    "secret_snapshot_count": app_state
+                        .as_ref()
+                        .map(|state| state.secret_snapshots.len())
+                        .unwrap_or(0),
                 }));
             } else {
                 println!("✅ Backup created: {}", path.display());
                 println!("🗄️  SQLite snapshot: {}", database_snapshot.display());
+                let backup_summary = bm.list()?.into_iter().find(|backup| backup.path == path);
+                if let Some(app_state) = backup_summary.and_then(|backup| backup.app_state) {
+                    if let Some(config_snapshot) = app_state.config_snapshot {
+                        println!(
+                            "⚙️  Config snapshot: {}",
+                            cfg.backup.path.join(config_snapshot.filename).display()
+                        );
+                    }
+                    if !app_state.secret_snapshots.is_empty() {
+                        println!("🔐 Secret snapshots: {}", app_state.secret_snapshots.len());
+                    }
+                }
             }
         }
         crate::BackupAction::List => {
@@ -54,6 +78,17 @@ pub(crate) async fn run_backup(
                             },
                             "symlink_count": b.symlink_count,
                             "file_size": b.file_size,
+                            "has_app_state": b.app_state.is_some(),
+                            "config_snapshot": b
+                                .app_state
+                                .as_ref()
+                                .and_then(|state| state.config_snapshot.as_ref().map(|_| true))
+                                .unwrap_or(false),
+                            "secret_snapshot_count": b
+                                .app_state
+                                .as_ref()
+                                .map(|state| state.secret_snapshots.len())
+                                .unwrap_or(0),
                         })
                     })
                     .collect();
@@ -88,6 +123,7 @@ pub(crate) async fn run_backup(
                     cfg.security.enforce_roots,
                 )
                 .await?;
+            let app_state_summary = bm.restore_app_state(cfg, &path, dry_run)?;
 
             if output == OutputFormat::Json {
                 print_json(&serde_json::json!({
@@ -95,6 +131,10 @@ pub(crate) async fn run_backup(
                     "skipped": skipped,
                     "errors": errors,
                     "dry_run": dry_run,
+                    "app_state_present": app_state_summary.present,
+                    "config_restored": app_state_summary.config_restored,
+                    "secrets_restored": app_state_summary.secrets_restored,
+                    "secrets_skipped": app_state_summary.secrets_skipped,
                 }));
             } else {
                 println!("\n📋 Restore Results:");
@@ -102,6 +142,22 @@ pub(crate) async fn run_backup(
                 println!("   ⏭️  Skipped: {}", skipped);
                 if errors > 0 {
                     println!("   ❌ Errors: {}", errors);
+                }
+                if app_state_summary.present {
+                    println!(
+                        "   ⚙️  Config restored: {}",
+                        if app_state_summary.config_restored {
+                            "yes"
+                        } else if app_state_summary.config_included {
+                            "skipped"
+                        } else {
+                            "not included"
+                        }
+                    );
+                    println!(
+                        "   🔐 Secret files restored: {} ({} skipped)",
+                        app_state_summary.secrets_restored, app_state_summary.secrets_skipped
+                    );
                 }
             }
         }

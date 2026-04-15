@@ -59,7 +59,10 @@
             <strong>Restore is destructive.</strong> A restore overwrites current tracked link state with the selected snapshot.
         </div>
         <div class="alert alert-info mt-2">
-            <strong>Not a full app backup.</strong> Backups include tracked links plus an optional SQLite snapshot. Config and secret files still live outside the backup set.
+            <strong>App-state coverage depends on your setup.</strong> Symlinkarr backups now capture tracked links, SQLite state, the active config file, and any <code class="mono">secretfile:</code> secrets they can see.
+        </div>
+        <div class="alert alert-info mt-2">
+            <strong>Still not identical to Sonarr/Radarr.</strong> Secrets loaded only from environment variables still live outside the backup set, and a true fresh-install restore still needs you to place config/secrets before first start.
         </div>
         <div class="alert alert-info mt-2">
             <strong>Use the names as intended.</strong> <em>Symlinkarr Backup</em> is the main backup to keep. <em>Restore Point</em> is a lighter rollback point created around risky runs.
@@ -117,6 +120,18 @@
                     <br>
                     <small class="text-muted">No SQLite snapshot</small>
                     {% endmatch %}
+                    <br>
+                    {% if backup.config_snapshot_present %}
+                    <small class="text-muted">Config snapshot included</small>
+                    {% else %}
+                    <small class="text-muted">No config snapshot</small>
+                    {% endif %}
+                    <br>
+                    {% if backup.secret_snapshot_count > 0 %}
+                    <small class="text-muted">{{ backup.secret_snapshot_count }} secret snapshots included</small>
+                    {% else %}
+                    <small class="text-muted">No secret snapshots</small>
+                    {% endif %}
                 </td>
                 <td>
                     <button
@@ -133,6 +148,8 @@
                         data-link-delta-label="{{ backup.link_delta_label }}"
                         data-manifest-size-bytes="{{ backup.manifest_size_bytes }}"
                         data-snapshot-size-bytes="{% match backup.database_snapshot_size_bytes %}{% when Some with (size) %}{{ size }}{% when None %}{% endmatch %}"
+                        data-config-snapshot-present="{% if backup.config_snapshot_present %}yes{% else %}no{% endif %}"
+                        data-secret-snapshot-count="{{ backup.secret_snapshot_count }}"
                     >
                         Restore
                     </button>
@@ -194,10 +211,21 @@
                 <div class="key-value-label">SQLite snapshot</div>
                 <div id="restore-confirm-snapshot-size"></div>
             </div>
+            <div class="key-value-row">
+                <div class="key-value-label">Config snapshot</div>
+                <div id="restore-confirm-config-snapshot"></div>
+            </div>
+            <div class="key-value-row">
+                <div class="key-value-label">Secret snapshots</div>
+                <div id="restore-confirm-secret-snapshots"></div>
+            </div>
         </div>
 
         <div class="alert alert-error mb-1">
             <strong>Are you sure?</strong> Restore replaces the current tracked links with this backup.
+        </div>
+        <div class="alert alert-warning mb-1">
+            <strong>App-state note.</strong> When this backup includes config or secret snapshots, restore also writes them back to the current installation paths that Symlinkarr knows about.
         </div>
 
         <div class="actions">
@@ -238,6 +266,8 @@
                     'Recorded links: ' + trigger.dataset.recordedLinks + ' (' + trigger.dataset.linkDeltaLabel + ')',
                     'Manifest size: ' + trigger.dataset.manifestSizeBytes + ' bytes',
                     'SQLite snapshot: ' + (snapshotSize ? snapshotSize + ' bytes' : 'not included'),
+                    'Config snapshot: ' + (trigger.dataset.configSnapshotPresent === 'yes' ? 'included' : 'not included'),
+                    'Secret snapshots: ' + trigger.dataset.secretSnapshotCount,
                 ].join('\n');
 
                 restoreInput.value = trigger.dataset.backupFile;
@@ -250,6 +280,8 @@
                 setText('restore-confirm-link-delta', trigger.dataset.linkDeltaLabel);
                 setText('restore-confirm-manifest-size', trigger.dataset.manifestSizeBytes + ' bytes');
                 setText('restore-confirm-snapshot-size', snapshotSize ? snapshotSize + ' bytes' : 'Not included');
+                setText('restore-confirm-config-snapshot', trigger.dataset.configSnapshotPresent === 'yes' ? 'Included' : 'Not included');
+                setText('restore-confirm-secret-snapshots', trigger.dataset.secretSnapshotCount);
 
                 if (dialog && typeof dialog.showModal === 'function') {
                     dialog.showModal();

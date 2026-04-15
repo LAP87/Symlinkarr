@@ -7,14 +7,14 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 
-use crate::config::BackupConfig;
+use crate::config::{BackupConfig, Config};
 use crate::db::Database;
 use crate::models::{LinkRecord, LinkStatus, MediaType};
 use crate::utils::{cached_source_health, PathHealth};
 
 // ─── Backup data structures ─────────────────────────────────────────
 
-const BACKUP_MANIFEST_VERSION: u32 = 2;
+const BACKUP_MANIFEST_VERSION: u32 = 3;
 
 /// A single symlink entry in a backup
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,6 +47,22 @@ pub struct BackupDatabaseSnapshot {
     pub size_bytes: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BackupManagedFile {
+    pub filename: String,
+    pub sha256: String,
+    pub size_bytes: u64,
+    pub original_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct BackupAppState {
+    #[serde(default)]
+    pub config_snapshot: Option<BackupManagedFile>,
+    #[serde(default)]
+    pub secret_snapshots: Vec<BackupManagedFile>,
+}
+
 /// Complete backup manifest
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackupManifest {
@@ -65,6 +81,9 @@ pub struct BackupManifest {
     /// Optional SQLite snapshot captured alongside the manifest.
     #[serde(default)]
     pub database_snapshot: Option<BackupDatabaseSnapshot>,
+    /// Optional config + secretfile snapshots for this install.
+    #[serde(default)]
+    pub app_state: Option<BackupAppState>,
     /// Integrity hash for the manifest content, excluding this field.
     #[serde(default)]
     pub content_sha256: Option<String>,
@@ -88,10 +107,22 @@ struct BackupManifestChecksumPayload<'a> {
     database_snapshot: &'a Option<BackupDatabaseSnapshot>,
 }
 
+#[derive(Serialize)]
+struct BackupManifestChecksumPayloadV3<'a> {
+    version: u32,
+    timestamp: DateTime<Utc>,
+    backup_type: &'a BackupType,
+    label: &'a str,
+    symlinks: &'a [BackupEntry],
+    total_count: usize,
+    database_snapshot: &'a Option<BackupDatabaseSnapshot>,
+    app_state: &'a Option<BackupAppState>,
+}
+
 fn validate_backup_manifest(manifest: &BackupManifest, source: &Path) -> Result<()> {
     match manifest.version {
         1 => return Ok(()),
-        BACKUP_MANIFEST_VERSION => {}
+        2 | BACKUP_MANIFEST_VERSION => {}
         other => {
             anyhow::bail!(
                 "Unsupported backup manifest version {} in {:?}. Supported versions: 1-{}",
@@ -117,16 +148,31 @@ fn validate_backup_manifest(manifest: &BackupManifest, source: &Path) -> Result<
 }
 
 fn compute_manifest_checksum(manifest: &BackupManifest) -> Result<String> {
-    let payload = BackupManifestChecksumPayload {
-        version: manifest.version,
-        timestamp: manifest.timestamp,
-        backup_type: &manifest.backup_type,
-        label: &manifest.label,
-        symlinks: &manifest.symlinks,
-        total_count: manifest.total_count,
-        database_snapshot: &manifest.database_snapshot,
+    let json = match manifest.version {
+        2 => serde_json::to_vec(&BackupManifestChecksumPayload {
+            version: manifest.version,
+            timestamp: manifest.timestamp,
+            backup_type: &manifest.backup_type,
+            label: &manifest.label,
+            symlinks: &manifest.symlinks,
+            total_count: manifest.total_count,
+            database_snapshot: &manifest.database_snapshot,
+        })?,
+        BACKUP_MANIFEST_VERSION => serde_json::to_vec(&BackupManifestChecksumPayloadV3 {
+            version: manifest.version,
+            timestamp: manifest.timestamp,
+            backup_type: &manifest.backup_type,
+            label: &manifest.label,
+            symlinks: &manifest.symlinks,
+            total_count: manifest.total_count,
+            database_snapshot: &manifest.database_snapshot,
+            app_state: &manifest.app_state,
+        })?,
+        other => anyhow::bail!(
+            "Cannot compute checksum for unsupported backup manifest version {}",
+            other
+        ),
     };
-    let json = serde_json::to_vec(&payload)?;
     let mut hasher = Sha256::new();
     hasher.update(&json);
     Ok(format!("{:x}", hasher.finalize()))
@@ -224,6 +270,33 @@ fn slugify_backup_name_part(value: &str) -> Option<String> {
     }
 }
 
+fn sanitize_backup_file_name_component(value: &str, fallback: &str) -> String {
+    let mut sanitized = String::new();
+    let mut last_was_dash = false;
+
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() {
+            sanitized.push(ch.to_ascii_lowercase());
+            last_was_dash = false;
+        } else if matches!(ch, '.' | '_' | '-') {
+            sanitized.push(ch);
+            last_was_dash = false;
+        } else if !last_was_dash {
+            sanitized.push('-');
+            last_was_dash = true;
+        }
+    }
+
+    let sanitized = sanitized
+        .trim_matches(|ch: char| ch == '-' || ch == '.')
+        .to_string();
+    if sanitized.is_empty() {
+        fallback.to_string()
+    } else {
+        sanitized
+    }
+}
+
 fn scheduled_backup_base_name(timestamp: DateTime<Utc>, label: &str) -> String {
     let ts = timestamp.format("%Y%m%d-%H%M%S");
     match slugify_backup_name_part(label) {
@@ -318,6 +391,19 @@ impl BackupManager {
     }
 
     fn write_secure_json(&self, path: &Path, json: &str) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+                if self.enforce_secure_permissions {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let perm = std::fs::Permissions::from_mode(0o700);
+                        let _ = std::fs::set_permissions(parent, perm);
+                    }
+                }
+            }
+        }
         std::fs::write(path, json)?;
         if self.enforce_secure_permissions {
             #[cfg(unix)]
@@ -330,8 +416,97 @@ impl BackupManager {
         Ok(())
     }
 
-    /// Create a full backup of all active symlinks.
-    pub async fn create_backup(&self, db: &Database, label: &str) -> Result<PathBuf> {
+    fn copy_secure_file(
+        &self,
+        source_path: &Path,
+        relative_output_path: &str,
+    ) -> Result<BackupManagedFile> {
+        let output_path = self.resolve_managed_output_path(relative_output_path)?;
+        if let Some(parent) = output_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+                if self.enforce_secure_permissions {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let perm = std::fs::Permissions::from_mode(0o700);
+                        let _ = std::fs::set_permissions(parent, perm);
+                    }
+                }
+            }
+        }
+
+        std::fs::copy(source_path, &output_path).with_context(|| {
+            format!(
+                "Failed to copy app-state file {} into backup",
+                source_path.display()
+            )
+        })?;
+
+        if self.enforce_secure_permissions {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let perm = std::fs::Permissions::from_mode(0o600);
+                let _ = std::fs::set_permissions(&output_path, perm);
+            }
+        }
+
+        Ok(BackupManagedFile {
+            filename: relative_output_path.to_string(),
+            sha256: sha256_file(&output_path)?,
+            size_bytes: std::fs::metadata(&output_path)?.len(),
+            original_path: source_path.to_path_buf(),
+        })
+    }
+
+    fn capture_app_state(&self, cfg: &Config, base_name: &str) -> Result<Option<BackupAppState>> {
+        let bundle_dir = format!("{base_name}.app-state");
+        let config_snapshot = cfg
+            .loaded_from
+            .as_ref()
+            .filter(|path| path.exists() && path.is_file())
+            .map(|config_path| {
+                let config_name = config_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(|name| sanitize_backup_file_name_component(name, "config.yaml"))
+                    .unwrap_or_else(|| "config.yaml".to_string());
+                self.copy_secure_file(config_path, &format!("{bundle_dir}/config/{config_name}"))
+            })
+            .transpose()?;
+
+        let mut secret_snapshots = Vec::new();
+        for (index, secret_path) in cfg.secret_files.iter().enumerate() {
+            if !secret_path.exists() || !secret_path.is_file() {
+                warn!(
+                    "Skipping secretfile snapshot for {}: file missing or not a file",
+                    secret_path.display()
+                );
+                continue;
+            }
+
+            let secret_name = secret_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| sanitize_backup_file_name_component(name, "secret"))
+                .unwrap_or_else(|| "secret".to_string());
+            let relative_path = format!("{bundle_dir}/secrets/{:02}-{}", index + 1, secret_name);
+            secret_snapshots.push(self.copy_secure_file(secret_path, &relative_path)?);
+        }
+
+        if config_snapshot.is_none() && secret_snapshots.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(BackupAppState {
+                config_snapshot,
+                secret_snapshots,
+            }))
+        }
+    }
+
+    /// Create a full backup of active links, SQLite state, and restorable app-state files.
+    pub async fn create_backup(&self, cfg: &Config, db: &Database, label: &str) -> Result<PathBuf> {
         self.ensure_dir()?;
 
         let active_links = db.get_links_by_status(LinkStatus::Active).await?;
@@ -355,6 +530,7 @@ impl BackupManager {
             label.trim()
         };
         let base_name = scheduled_backup_base_name(timestamp, label);
+        let app_state = self.capture_app_state(cfg, &base_name)?;
         let snapshot_filename = format!("{base_name}.sqlite3");
         let snapshot_path = self.resolve_managed_output_path(&snapshot_filename)?;
         db.export_snapshot(&snapshot_path)
@@ -373,6 +549,7 @@ impl BackupManager {
                 sha256: sha256_file(&snapshot_path)?,
                 size_bytes: std::fs::metadata(&snapshot_path)?.len(),
             }),
+            app_state,
             content_sha256: None,
         };
         manifest.content_sha256 = Some(compute_manifest_checksum(&manifest)?);
@@ -472,6 +649,7 @@ impl BackupManager {
             symlinks: entries,
             total_count,
             database_snapshot: None,
+            app_state: None,
             content_sha256: None,
         };
         manifest.content_sha256 = Some(compute_manifest_checksum(&manifest)?);
@@ -810,6 +988,7 @@ impl BackupManager {
                             symlink_count: manifest.total_count,
                             file_size,
                             database_snapshot: manifest.database_snapshot,
+                            app_state: manifest.app_state,
                         });
                     }
                     Err(e) => {
@@ -826,6 +1005,77 @@ impl BackupManager {
         summaries.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
 
         Ok(summaries)
+    }
+
+    pub fn latest_scheduled_backup_timestamp(&self) -> Result<Option<DateTime<Utc>>> {
+        Ok(self
+            .list()?
+            .into_iter()
+            .filter(|summary| matches!(summary.backup_type, BackupType::Scheduled))
+            .map(|summary| summary.timestamp)
+            .max())
+    }
+
+    pub fn restore_app_state(
+        &self,
+        cfg: &Config,
+        backup_path: &Path,
+        dry_run: bool,
+    ) -> Result<BackupAppStateRestoreSummary> {
+        let backup_root = self.canonical_backup_root()?;
+        let backup_path = if backup_path.is_absolute() {
+            let canonical = backup_path.canonicalize().with_context(|| {
+                format!("Backup restore file not found: {}", backup_path.display())
+            })?;
+            if !canonical.starts_with(&backup_root) {
+                anyhow::bail!("Backup restore path escapes the configured backup directory");
+            }
+            canonical
+        } else {
+            self.resolve_restore_path(backup_path)?
+        };
+        let json = std::fs::read_to_string(&backup_path)?;
+        let manifest = parse_backup_manifest(&json, &backup_path)?;
+
+        let Some(app_state) = manifest.app_state else {
+            return Ok(BackupAppStateRestoreSummary::default());
+        };
+
+        let mut summary = BackupAppStateRestoreSummary {
+            present: true,
+            config_included: app_state.config_snapshot.is_some(),
+            config_restored: false,
+            secrets_included: app_state.secret_snapshots.len(),
+            secrets_restored: 0,
+            secrets_skipped: 0,
+        };
+
+        if let Some(config_snapshot) = app_state.config_snapshot.as_ref() {
+            if let Some(current_config_path) = cfg.loaded_from.as_ref() {
+                if !dry_run {
+                    restore_managed_file_from_backup(self, current_config_path, config_snapshot)?;
+                }
+                summary.config_restored = true;
+            }
+        }
+
+        for secret_snapshot in &app_state.secret_snapshots {
+            let Some(current_secret_path) = cfg
+                .secret_files
+                .iter()
+                .find(|candidate| **candidate == secret_snapshot.original_path)
+            else {
+                summary.secrets_skipped += 1;
+                continue;
+            };
+
+            if !dry_run {
+                restore_managed_file_from_backup(self, current_secret_path, secret_snapshot)?;
+            }
+            summary.secrets_restored += 1;
+        }
+
+        Ok(summary)
     }
 }
 
@@ -844,6 +1094,7 @@ fn rollback_created_restore_symlinks(paths: &[PathBuf]) {
 
 fn remove_backup_artifacts(manifest_path: &Path) -> Result<()> {
     let mut companion_paths = Vec::new();
+    let mut companion_dirs = Vec::new();
 
     if let Ok(json) = std::fs::read_to_string(manifest_path) {
         if let Ok(manifest) = serde_json::from_str::<BackupManifest>(&json) {
@@ -853,6 +1104,30 @@ fn remove_backup_artifacts(manifest_path: &Path) -> Result<()> {
                     .unwrap_or_else(|| Path::new("."))
                     .join(&snapshot.filename);
                 companion_paths.push(path);
+            }
+            if let Some(app_state) = manifest.app_state.as_ref() {
+                for artifact in app_state
+                    .config_snapshot
+                    .iter()
+                    .chain(app_state.secret_snapshots.iter())
+                {
+                    let artifact_path = manifest_path
+                        .parent()
+                        .unwrap_or_else(|| Path::new("."))
+                        .join(&artifact.filename);
+                    companion_paths.push(artifact_path.clone());
+                    if let Some(Component::Normal(first_component)) =
+                        Path::new(&artifact.filename).components().next()
+                    {
+                        let bundle_dir = manifest_path
+                            .parent()
+                            .unwrap_or_else(|| Path::new("."))
+                            .join(first_component);
+                        if !companion_dirs.contains(&bundle_dir) {
+                            companion_dirs.push(bundle_dir);
+                        }
+                    }
+                }
             }
         }
     }
@@ -868,6 +1143,85 @@ fn remove_backup_artifacts(manifest_path: &Path) -> Result<()> {
             std::fs::remove_file(companion)?;
         }
     }
+    for companion_dir in companion_dirs {
+        if companion_dir.exists() {
+            std::fs::remove_dir_all(companion_dir)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn restore_managed_file_from_backup(
+    manager: &BackupManager,
+    destination_path: &Path,
+    artifact: &BackupManagedFile,
+) -> Result<()> {
+    let source_path = manager.resolve_restore_path(Path::new(&artifact.filename))?;
+    let actual_sha = sha256_file(&source_path)?;
+    if actual_sha != artifact.sha256 {
+        anyhow::bail!(
+            "Backup app-state integrity check failed for {}",
+            artifact.filename
+        );
+    }
+
+    if let Some(parent) = destination_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+            if manager.enforce_secure_permissions {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let perm = std::fs::Permissions::from_mode(0o700);
+                    let _ = std::fs::set_permissions(parent, perm);
+                }
+            }
+        }
+    }
+
+    if destination_path.exists() && destination_path.is_dir() {
+        anyhow::bail!(
+            "Refusing to overwrite directory during app-state restore: {}",
+            destination_path.display()
+        );
+    }
+
+    let file_name = destination_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("restored");
+    let temp_name = format!(".{file_name}.symlinkarr-restore.tmp");
+    let temp_path = destination_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(temp_name);
+
+    if temp_path.exists() {
+        let _ = std::fs::remove_file(&temp_path);
+    }
+
+    std::fs::copy(&source_path, &temp_path).with_context(|| {
+        format!(
+            "Failed to restore app-state file {} to {}",
+            source_path.display(),
+            destination_path.display()
+        )
+    })?;
+
+    if manager.enforce_secure_permissions {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perm = std::fs::Permissions::from_mode(0o600);
+            let _ = std::fs::set_permissions(&temp_path, perm);
+        }
+    }
+
+    if destination_path.exists() {
+        std::fs::remove_file(destination_path)?;
+    }
+    std::fs::rename(&temp_path, destination_path)?;
 
     Ok(())
 }
@@ -900,6 +1254,17 @@ pub struct BackupSummary {
     pub symlink_count: usize,
     pub file_size: u64,
     pub database_snapshot: Option<BackupDatabaseSnapshot>,
+    pub app_state: Option<BackupAppState>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BackupAppStateRestoreSummary {
+    pub present: bool,
+    pub config_included: bool,
+    pub config_restored: bool,
+    pub secrets_included: usize,
+    pub secrets_restored: usize,
+    pub secrets_skipped: usize,
 }
 
 impl std::fmt::Display for BackupSummary {
@@ -1045,6 +1410,12 @@ fn normalize_path_for_root_check(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{
+        ApiConfig, BackupConfig, BazarrConfig, CleanupPolicyConfig, Config, DaemonConfig,
+        DecypharrConfig, DmmConfig, FeaturesConfig, MatchingConfig, MediaBrowserConfig, PlexConfig,
+        ProwlarrConfig, RadarrConfig, RealDebridConfig, SecurityConfig, SonarrConfig,
+        SymlinkConfig, TautulliConfig, WebConfig,
+    };
     use crate::db::Database;
 
     fn test_config(dir: &Path) -> BackupConfig {
@@ -1054,6 +1425,38 @@ mod tests {
             interval_hours: 24,
             max_backups: 3,
             max_safety_backups: 0, // keep all safety snapshots by default
+        }
+    }
+
+    fn test_runtime_config(root: &Path, backup_dir: &Path) -> Config {
+        Config {
+            libraries: Vec::new(),
+            sources: Vec::new(),
+            api: ApiConfig::default(),
+            realdebrid: RealDebridConfig::default(),
+            decypharr: DecypharrConfig::default(),
+            dmm: DmmConfig::default(),
+            backup: test_config(backup_dir),
+            db_path: root.join("symlinkarr.db").display().to_string(),
+            log_level: "info".to_string(),
+            daemon: DaemonConfig::default(),
+            symlink: SymlinkConfig::default(),
+            matching: MatchingConfig::default(),
+            prowlarr: ProwlarrConfig::default(),
+            bazarr: BazarrConfig::default(),
+            tautulli: TautulliConfig::default(),
+            plex: PlexConfig::default(),
+            emby: MediaBrowserConfig::default(),
+            jellyfin: MediaBrowserConfig::default(),
+            radarr: RadarrConfig::default(),
+            sonarr: SonarrConfig::default(),
+            sonarr_anime: SonarrConfig::default(),
+            features: FeaturesConfig::default(),
+            security: SecurityConfig::default(),
+            cleanup: CleanupPolicyConfig::default(),
+            web: WebConfig::default(),
+            loaded_from: None,
+            secret_files: Vec::new(),
         }
     }
 
@@ -1092,6 +1495,7 @@ mod tests {
             ],
             total_count: 2,
             database_snapshot: None,
+            app_state: None,
             content_sha256: None,
         };
 
@@ -1141,6 +1545,7 @@ mod tests {
         let manager = BackupManager::new(&test_config(dir.path()));
         let db_path = dir.path().join("symlinkarr.db");
         let db = Database::new(db_path.to_str().unwrap()).await.unwrap();
+        let cfg = test_runtime_config(dir.path(), dir.path());
 
         let source_root = dir.path().join("rd");
         let library_root = dir.path().join("library");
@@ -1163,7 +1568,10 @@ mod tests {
         .await
         .unwrap();
 
-        let backup_path = manager.create_backup(&db, "Manual backup").await.unwrap();
+        let backup_path = manager
+            .create_backup(&cfg, &db, "Manual backup")
+            .await
+            .unwrap();
         assert!(backup_path
             .file_name()
             .and_then(|name| name.to_str())
@@ -1180,6 +1588,98 @@ mod tests {
         assert!(snapshot_path.exists());
         assert_eq!(snapshot.sha256, sha256_file(&snapshot_path).unwrap());
         assert!(manifest.content_sha256.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_create_backup_captures_app_state_snapshots() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let backup_dir = dir.path().join("backups");
+        std::fs::create_dir_all(&backup_dir).unwrap();
+        let manager = BackupManager::new(&test_config(&backup_dir));
+        let db = Database::new(dir.path().join("symlinkarr.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        let config_path = dir.path().join("config.yaml");
+        let secret_path = dir.path().join("rd.token");
+        std::fs::write(&config_path, "db_path: ./data/symlinkarr.db\n").unwrap();
+        std::fs::write(&secret_path, "super-secret-token\n").unwrap();
+
+        let mut cfg = test_runtime_config(dir.path(), &backup_dir);
+        cfg.loaded_from = Some(config_path.clone());
+        cfg.secret_files = vec![secret_path.clone()];
+
+        let backup_path = manager
+            .create_backup(&cfg, &db, "Manual backup")
+            .await
+            .unwrap();
+        let manifest = parse_backup_manifest(
+            &std::fs::read_to_string(&backup_path).unwrap(),
+            &backup_path,
+        )
+        .unwrap();
+
+        let app_state = manifest.app_state.expect("app_state should be captured");
+        let config_snapshot = app_state
+            .config_snapshot
+            .as_ref()
+            .expect("config snapshot should be present");
+        assert_eq!(app_state.secret_snapshots.len(), 1);
+        assert_eq!(config_snapshot.original_path, config_path);
+        assert_eq!(app_state.secret_snapshots[0].original_path, secret_path);
+        assert!(backup_dir.join(&config_snapshot.filename).exists());
+        assert!(backup_dir
+            .join(&app_state.secret_snapshots[0].filename)
+            .exists());
+        assert_eq!(
+            config_snapshot.sha256,
+            sha256_file(&backup_dir.join(&config_snapshot.filename)).unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_restore_app_state_restores_current_install_paths() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let backup_dir = dir.path().join("backups");
+        std::fs::create_dir_all(&backup_dir).unwrap();
+        let manager = BackupManager::new(&test_config(&backup_dir));
+        let db = Database::new(dir.path().join("symlinkarr.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        let config_path = dir.path().join("config.yaml");
+        let secret_path = dir.path().join("rd.token");
+        std::fs::write(&config_path, "original-config\n").unwrap();
+        std::fs::write(&secret_path, "original-secret\n").unwrap();
+
+        let mut cfg = test_runtime_config(dir.path(), &backup_dir);
+        cfg.loaded_from = Some(config_path.clone());
+        cfg.secret_files = vec![secret_path.clone()];
+
+        let backup_path = manager
+            .create_backup(&cfg, &db, "Manual backup")
+            .await
+            .unwrap();
+
+        std::fs::write(&config_path, "modified-config\n").unwrap();
+        std::fs::write(&secret_path, "modified-secret\n").unwrap();
+
+        let summary = manager
+            .restore_app_state(&cfg, &backup_path, false)
+            .unwrap();
+
+        assert!(summary.present);
+        assert!(summary.config_restored);
+        assert_eq!(summary.secrets_restored, 1);
+        assert_eq!(summary.secrets_skipped, 0);
+        assert_eq!(
+            std::fs::read_to_string(&config_path).unwrap(),
+            "original-config\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&secret_path).unwrap(),
+            "original-secret\n"
+        );
     }
 
     #[test]
@@ -1243,6 +1743,7 @@ mod tests {
             }],
             total_count: 1,
             database_snapshot: None,
+            app_state: None,
             content_sha256: None,
         };
         let backup_path = dir.path().join("existing-symlink.json");
@@ -1332,6 +1833,7 @@ mod tests {
             }],
             total_count: 1,
             database_snapshot: None,
+            app_state: None,
             content_sha256: None,
         };
         let backup_path = dir.path().join("disk-only-backup.json");
@@ -1389,6 +1891,7 @@ mod tests {
             }],
             total_count: 1,
             database_snapshot: None,
+            app_state: None,
             content_sha256: None,
         };
         let backup_path = dir.path().join("disk-only-relative-backup.json");
@@ -1436,6 +1939,7 @@ mod tests {
                 symlinks: vec![],
                 total_count: 0,
                 database_snapshot: None,
+                app_state: None,
                 content_sha256: None,
             };
             let json = serde_json::to_string_pretty(&manifest).unwrap();
@@ -1453,6 +1957,7 @@ mod tests {
             symlinks: vec![],
             total_count: 0,
             database_snapshot: None,
+            app_state: None,
             content_sha256: None,
         };
         let json = serde_json::to_string_pretty(&safety_manifest).unwrap();
@@ -1508,6 +2013,7 @@ mod tests {
                     sha256: "deadbeef".to_string(),
                     size_bytes: 4,
                 }),
+                app_state: None,
                 content_sha256: Some("checksum".to_string()),
             };
             std::fs::write(
@@ -1574,6 +2080,7 @@ mod tests {
             }],
             total_count: 1,
             database_snapshot: None,
+            app_state: None,
             content_sha256: None,
         };
         let json = serde_json::to_string_pretty(&manifest).unwrap();
@@ -1731,6 +2238,7 @@ mod tests {
             }],
             total_count: 1,
             database_snapshot: None,
+            app_state: None,
             content_sha256: None,
         };
 
@@ -1787,6 +2295,7 @@ mod tests {
             }],
             total_count: 1,
             database_snapshot: None,
+            app_state: None,
             content_sha256: None,
         };
 
@@ -1828,6 +2337,7 @@ mod tests {
             symlinks: vec![],
             total_count: 0,
             database_snapshot: None,
+            app_state: None,
             content_sha256: None,
         };
         std::fs::write(
@@ -1857,6 +2367,7 @@ mod tests {
             symlinks: vec![],
             total_count: 0,
             database_snapshot: None,
+            app_state: None,
             content_sha256: None,
         };
         std::fs::write(
@@ -1892,6 +2403,7 @@ mod tests {
             symlinks: vec![],
             total_count: 0,
             database_snapshot: None,
+            app_state: None,
             content_sha256: None,
         };
         manifest.content_sha256 = Some(compute_manifest_checksum(&manifest).unwrap());

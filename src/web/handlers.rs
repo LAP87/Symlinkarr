@@ -1652,6 +1652,16 @@ pub async fn get_backup(State(state): State<WebState>) -> impl IntoResponse {
                 database_snapshot_size_bytes: backup
                     .database_snapshot
                     .map(|snapshot| snapshot.size_bytes),
+                config_snapshot_present: backup
+                    .app_state
+                    .as_ref()
+                    .and_then(|state| state.config_snapshot.as_ref())
+                    .is_some(),
+                secret_snapshot_count: backup
+                    .app_state
+                    .as_ref()
+                    .map(|state| state.secret_snapshots.len())
+                    .unwrap_or(0),
             }
         })
         .collect();
@@ -1678,7 +1688,7 @@ pub async fn post_backup_create(
     let backup_manager = BackupManager::new(&state.config.backup);
 
     let result = match backup_manager
-        .create_backup(&state.database, &form.label)
+        .create_backup(&state.config, &state.database, &form.label)
         .await
     {
         Ok(path) => Some(path),
@@ -1688,6 +1698,12 @@ pub async fn post_backup_create(
         }
     };
 
+    let created_summary = result.as_ref().and_then(|path| {
+        backup_manager
+            .list()
+            .ok()
+            .and_then(|items| items.into_iter().find(|backup| &backup.path == path))
+    });
     let database_snapshot_path = result.as_ref().map(|path| path.with_extension("sqlite3"));
     let template = BackupResultTemplate {
         success: result.is_some(),
@@ -1698,6 +1714,17 @@ pub async fn post_backup_create(
         },
         backup_path: result,
         database_snapshot_path,
+        config_snapshot_path: created_summary
+            .as_ref()
+            .and_then(|backup| backup.app_state.as_ref())
+            .and_then(|state| state.config_snapshot.as_ref())
+            .map(|file| state.config.backup.path.join(&file.filename)),
+        secret_snapshot_count: created_summary
+            .as_ref()
+            .and_then(|backup| backup.app_state.as_ref())
+            .map(|state| state.secret_snapshots.len())
+            .unwrap_or(0),
+        app_state_restore_summary: None,
     };
 
     Html(template.render().unwrap_or_else(|e| e.to_string())).into_response()
@@ -1724,6 +1751,9 @@ pub async fn post_backup_restore(
                 message: format!("Restore failed: {}", e),
                 backup_path: None,
                 database_snapshot_path: None,
+                config_snapshot_path: None,
+                secret_snapshot_count: 0,
+                app_state_restore_summary: None,
             };
             return Html(
                 template
@@ -1740,6 +1770,9 @@ pub async fn post_backup_restore(
             message: format!("Restore failed: {}", e),
             backup_path: Some(backup_path),
             database_snapshot_path: None,
+            config_snapshot_path: None,
+            secret_snapshot_count: 0,
+            app_state_restore_summary: None,
         };
         return Html(
             template
@@ -1770,12 +1803,66 @@ pub async fn post_backup_restore(
             &allowed_source_roots,
             true,
         )
-        .await
-        .map(|_| ());
+        .await;
+    let app_state_restore_result = match &result {
+        Ok(_) => Some(backup_manager.restore_app_state(&state.config, &backup_path, false)),
+        Err(_) => None,
+    };
 
-    let (success, message) = match result {
-        Ok(()) => (true, "Backup restored successfully".to_string()),
-        Err(e) => (false, format!("Restore failed: {}", e)),
+    let (success, message, app_state_restore_summary) = match result {
+        Ok((restored, skipped, errors)) => {
+            let summary = match app_state_restore_result {
+                Some(Ok(summary)) => Some(summary),
+                Some(Err(err)) => {
+                    return Html(
+                        BackupResultTemplate {
+                            success: false,
+                            message: format!(
+                                "Links were restored, but app state restore failed: {}",
+                                err
+                            ),
+                            backup_path: Some(backup_path),
+                            database_snapshot_path: None,
+                            config_snapshot_path: None,
+                            secret_snapshot_count: 0,
+                            app_state_restore_summary: None,
+                        }
+                        .render()
+                        .unwrap_or_else(|render_err| render_err.to_string()),
+                    )
+                    .into_response();
+                }
+                None => None,
+            };
+            let app_state_message = summary
+                .as_ref()
+                .filter(|summary| summary.present)
+                .map(|summary| {
+                    format!(
+                        " Links restored: {restored}, skipped: {skipped}, errors: {errors}. App state: config {}, secrets restored {}, secrets skipped {}.",
+                        if summary.config_restored {
+                            "restored"
+                        } else if summary.config_included {
+                            "skipped"
+                        } else {
+                            "not included"
+                        },
+                        summary.secrets_restored,
+                        summary.secrets_skipped
+                    )
+                })
+                .unwrap_or_else(|| {
+                    format!(
+                        " Links restored: {restored}, skipped: {skipped}, errors: {errors}."
+                    )
+                });
+            (
+                true,
+                format!("Backup restored successfully.{app_state_message}"),
+                summary,
+            )
+        }
+        Err(e) => (false, format!("Restore failed: {}", e), None),
     };
 
     let template = BackupResultTemplate {
@@ -1783,6 +1870,9 @@ pub async fn post_backup_restore(
         message,
         backup_path: Some(backup_path),
         database_snapshot_path: None,
+        config_snapshot_path: None,
+        secret_snapshot_count: 0,
+        app_state_restore_summary,
     };
 
     Html(template.render().unwrap_or_else(|e| e.to_string())).into_response()

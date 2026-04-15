@@ -292,9 +292,10 @@ Notes:
 - `backup restore` now uses the same runtime safety gate as scan/repair/cleanup apply: if configured library roots or source mounts are unhealthy, the restore is refused before any symlink or DB mutation happens.
 - `backup restore` only accepts manifests that resolve inside the configured `backup.path`; symlink escapes and arbitrary absolute paths are rejected in both CLI and web flows.
 - restore failures now include the backup file path in the top-level error context so operators can tell which snapshot aborted.
-- `backup create` now writes both `symlinkarr-backup-...json` and a sibling `symlinkarr-backup-....sqlite3` snapshot. The JSON manifest drives restore; the SQLite snapshot is the full-database recovery artifact.
+- `backup create` now writes `symlinkarr-backup-...json`, a sibling `symlinkarr-backup-....sqlite3` snapshot, and an app-state bundle for the current `config.yaml` plus any `secretfile:` secrets the install can see.
 - treat `Symlinkarr Backup` as the main backup to keep. `Restore Point` is the lighter rollback snapshot created around risky runs.
-- this is still not a full app backup in the Sonarr/Radarr sense. Config and secret files remain outside the backup set.
+- `backup restore` now restores app-state too when that bundle is present and the current install paths match.
+- environment-only secrets still remain outside the backup set, and a truly fresh install still needs config/secrets placed before first startup.
 - `backup list` and `backup restore` validate manifest integrity for current-format backups before trusting them.
 
 ### `cache`

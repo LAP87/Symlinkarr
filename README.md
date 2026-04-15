@@ -184,17 +184,22 @@ Symlinkarr backups preserve two layers on purpose:
 
 - a JSON manifest of active symlinks for normal restore flows
 - a sibling SQLite snapshot from `backup create`, so operators also have a real database recovery artifact
+- app-state snapshots for the active `config.yaml` and any `secretfile:`-backed secrets the current install can see
 
 Use the backup names deliberately:
 
 - `Symlinkarr Backup`: the main backup to keep for day-to-day recovery
 - `Restore Point`: a lighter rollback point created around repair, cleanup, or daemon work
 
-This is not a full app backup in the Sonarr/Radarr sense. Symlinkarr config and secret files still live outside the backup set.
+This is closer to a real app backup now, but not identical to Sonarr/Radarr yet:
+
+- restoring a `Symlinkarr Backup` can write link state, SQLite state, config, and `secretfile:` secrets back to the current install
+- secrets that only exist as environment variables still live outside the backup set
+- a truly fresh install still needs its config/secrets placed before first startup
 
 Current-format manifests are integrity-checked during `backup list` and `backup restore`, so corrupted or tampered backups fail loudly instead of half-restoring.
 Restore also stays confined to the configured `backup.path`, so a mistyped absolute path or symlink escape cannot make the restore flow read arbitrary files outside the backup directory.
-When old scheduled backups rotate out, their paired `.sqlite3` snapshots are removed with them so retention limits still bound disk usage.
+When old scheduled backups rotate out, their paired `.sqlite3` snapshots and app-state bundles are removed with them so retention limits still bound disk usage.
 
 ## Common Commands
 

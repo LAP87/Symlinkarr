@@ -15,6 +15,7 @@ use super::{
     ActiveCleanupAuditJob, ActiveRepairJob, ActiveScanJob, LastCleanupAuditOutcome,
     LastRepairOutcome, LastScanOutcome,
 };
+use crate::backup::BackupAppStateRestoreSummary;
 use crate::cleanup_audit::{CleanupFinding, PrunePathAction};
 use crate::cleanup_audit::{CleanupReport, CleanupScope};
 use crate::commands::cleanup::{AnimeRemediationBlockedReasonSummary, AnimeRemediationPlanGroup};
@@ -975,6 +976,8 @@ pub struct BackupInfo {
     pub link_delta_label: String,
     pub manifest_size_bytes: u64,
     pub database_snapshot_size_bytes: Option<u64>,
+    pub config_snapshot_present: bool,
+    pub secret_snapshot_count: usize,
 }
 
 #[derive(Template)]
@@ -992,6 +995,9 @@ pub struct BackupResultTemplate {
     pub message: String,
     pub backup_path: Option<PathBuf>,
     pub database_snapshot_path: Option<PathBuf>,
+    pub config_snapshot_path: Option<PathBuf>,
+    pub secret_snapshot_count: usize,
+    pub app_state_restore_summary: Option<BackupAppStateRestoreSummary>,
 }
 
 impl_template_into_response!(
