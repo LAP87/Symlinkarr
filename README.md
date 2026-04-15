@@ -75,6 +75,9 @@ Minimum:
 - a writable SQLite `db_path`
 - TMDB and TVDB credentials if you want full metadata matching
 
+For a fresh local install, run `symlinkarr bootstrap` to create a starter config and directories. Docker users can skip this — compose already mounts config and data.
+To restore from an existing backup into a fresh install: `symlinkarr restore <path-to-backup.json>`. Works without a config file — useful for both local and Docker fresh installs (e.g. `docker exec symlinkarr symlinkarr restore /app/backups/<file>.json`).
+
 From source:
 
 ```bash
@@ -193,7 +196,8 @@ Use the backup names deliberately:
 
 This is closer to a real app backup now, but not identical to Sonarr/Radarr yet:
 
-- restoring a `Symlinkarr Backup` can write link state, SQLite state, config, and `secretfile:` secrets back to the current install
+- restoring a `Symlinkarr Backup` from an already configured install can write link state, SQLite state, config, and `secretfile:` secrets back to the current install
+- standalone/no-config restore only recreates secrets inside the config tree or the standard Docker `/app/secrets` layout; other external secret paths still need to be recreated manually
 - secrets that only exist as environment variables still live outside the backup set
 - a truly fresh install still needs its config/secrets placed before first startup
 
@@ -241,7 +245,5 @@ Discover note: `discover list` now previews concrete source-to-target placements
 - [Product scope](docs/PRODUCT_SCOPE.md)
 - [CLI manual](docs/CLI_MANUAL.md)
 - [API schema](docs/API_SCHEMA.md)
-- [RC roadmap](docs/RC_ROADMAP.md)
-- [Web UI charter](docs/WEB_UI_CHARTER.md)
 - [Changelog](docs/CHANGELOG.md)
-- [WSL development setup](docs/DEV_SETUP_WSL.md)
+- [Engineering notes](docs/dev-notes/)
