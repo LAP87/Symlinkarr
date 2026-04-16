@@ -1,4 +1,4 @@
-/* Symlinkarr Web UI - Legacy Dark Alias */
+/* Symlinkarr Web UI - Readarr Dark */
 
 :root {
   color-scheme: dark;
@@ -7,10 +7,10 @@
   --bg-tertiary: #2e2e2e;
   --card-bg: #333333;
   --card-bg-elevated: #383838;
-  --brand-primary: #35c5f4;
-  --brand-primary-rgb: 53, 197, 244;
+  --brand-primary: #ca302d;
+  --brand-primary-rgb: 202, 48, 45;
   --accent-primary: #5d9cec;
-  --accent-secondary: #2193b5;
+  --accent-secondary: #a41726;
   --text-primary: #cccccc;
   --text-secondary: #b3b3b3;
   --text-faint: #8f8f8f;

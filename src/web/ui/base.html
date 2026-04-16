@@ -5,6 +5,43 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Symlinkarr{% endblock %}</title>
     <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" id="theme-stylesheet">
+    <script src="/static/themes/theme-manifest.js"></script>
+    <script>
+        (function () {
+            var manifest = window.SYMLINKARR_THEME_MANIFEST || { themes: [], aliases: {} };
+            var themeFiles = {};
+            (manifest.themes || []).forEach(function (theme) {
+                if (theme.file) {
+                    themeFiles[theme.id] = theme.file;
+                }
+            });
+            var aliases = manifest.aliases || {};
+
+            function prefersDark() {
+                return !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+            }
+
+            var storedTheme = null;
+            try {
+                storedTheme = localStorage.getItem("symlinkarr-theme");
+            } catch (e) {}
+
+            var selection = aliases[storedTheme] || storedTheme || "auto";
+            var resolved = selection === "auto"
+                ? (prefersDark() ? "sonarr-dark" : "sonarr-light")
+                : selection;
+            var file = themeFiles[resolved] || themeFiles["sonarr-dark"];
+            var link = document.getElementById("theme-stylesheet");
+
+            if (link) {
+                link.href = "/static/themes/" + file;
+            }
+
+            document.documentElement.setAttribute("data-theme-selection", selection);
+            document.documentElement.setAttribute("data-theme", resolved);
+        }());
+    </script>
     <script>
         (function () {
             try {
@@ -117,6 +154,8 @@
                             id="theme-picker-toggle"
                             type="button"
                             class="theme-picker-button"
+                            aria-haspopup="true"
+                            aria-expanded="false"
                             aria-label="Choose theme"
                             title="Choose theme"
                         >

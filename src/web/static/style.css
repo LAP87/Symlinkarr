@@ -1,56 +1,69 @@
 /* Symlinkarr Web UI - *arr-inspired dark theme */
 
 :root {
-  --bg-primary: #1a1d23;
-  --bg-secondary: #21252b;
-  --bg-tertiary: #282d36;
-  --card-bg: #21252b;
-  --card-bg-elevated: #282d36;
-  --accent-primary: #35c5f4;
-  --accent-secondary: #8e99a7;
+  color-scheme: dark;
+  --bg-primary: #202020;
+  --bg-secondary: #262626;
+  --bg-tertiary: #2e2e2e;
+  --card-bg: #333333;
+  --card-bg-elevated: #383838;
+  --brand-primary: #35c5f4;
+  --brand-primary-rgb: 53, 197, 244;
+  --accent-primary: #5d9cec;
+  --accent-secondary: #2193b5;
   --text-primary: #cccccc;
-  --text-secondary: #8e99a7;
-  --text-faint: #5d6a7e;
+  --text-secondary: #b3b3b3;
+  --text-faint: #8f8f8f;
   --success: #27c24c;
-  --warning: #ff902b;
+  --warning: #ffa500;
   --error: #f05050;
-  --info: #35c5f4;
-  --border-color: #2b3038;
-  --border-strong: #3b4452;
-  --shadow-subtle: 0 1px 3px rgba(0, 0, 0, 0.3);
-  --surface-muted: rgba(0, 0, 0, 0.08);
-  --logo-mark-bg-start: rgba(53, 197, 244, 0.18);
-  --logo-mark-bg-end: rgba(53, 197, 244, 0.08);
-  --logo-mark-border: rgba(53, 197, 244, 0.28);
+  --info: #5d9cec;
+  --border-color: #444444;
+  --border-strong: #5c5c5c;
+  --shadow-subtle: 0 12px 32px rgba(0, 0, 0, 0.32);
+  --surface-muted: rgba(255, 255, 255, 0.04);
+  --shell-bg: #494949;
+  --shell-hover-bg: #595959;
+  --shell-panel-bg: rgba(0, 0, 0, 0.16);
+  --shell-panel-border: rgba(255, 255, 255, 0.08);
+  --shell-dropdown-bg: #595959;
+  --shell-border-color: rgba(255, 255, 255, 0.08);
+  --shell-border-strong: rgba(255, 255, 255, 0.16);
+  --shell-text-primary: #ffffff;
+  --shell-text-secondary: rgba(255, 255, 255, 0.82);
+  --shell-text-faint: rgba(255, 255, 255, 0.58);
+  --logo-mark-bg-start: rgba(var(--brand-primary-rgb), 0.18);
+  --logo-mark-bg-end: rgba(var(--brand-primary-rgb), 0.08);
+  --logo-mark-border: rgba(var(--brand-primary-rgb), 0.28);
   --nav-icon-bg: rgba(255, 255, 255, 0.04);
   --nav-icon-border: rgba(255, 255, 255, 0.06);
-  --nav-icon-active-bg: rgba(53, 197, 244, 0.08);
-  --nav-icon-active-border: rgba(53, 197, 244, 0.2);
-  --badge-success-bg: rgba(83, 179, 107, 0.14);
-  --badge-success-border: rgba(83, 179, 107, 0.28);
-  --badge-warning-bg: rgba(217, 164, 65, 0.14);
-  --badge-warning-border: rgba(217, 164, 65, 0.28);
-  --badge-danger-bg: rgba(211, 93, 110, 0.14);
-  --badge-danger-border: rgba(211, 93, 110, 0.28);
-  --badge-info-bg: rgba(76, 143, 232, 0.14);
-  --badge-info-border: rgba(76, 143, 232, 0.28);
-  --badge-secondary-bg: rgba(142, 153, 167, 0.12);
-  --badge-secondary-border: rgba(142, 153, 167, 0.24);
-  --btn-primary-hover: #5b9cf0;
-  --btn-secondary-hover: #273142;
+  --nav-icon-active-bg: rgba(var(--brand-primary-rgb), 0.08);
+  --nav-icon-active-border: rgba(var(--brand-primary-rgb), 0.2);
+  --badge-success-bg: rgba(39, 194, 76, 0.14);
+  --badge-success-border: rgba(39, 194, 76, 0.28);
+  --badge-warning-bg: rgba(255, 165, 0, 0.14);
+  --badge-warning-border: rgba(255, 165, 0, 0.28);
+  --badge-danger-bg: rgba(240, 80, 80, 0.14);
+  --badge-danger-border: rgba(240, 80, 80, 0.28);
+  --badge-info-bg: rgba(93, 156, 236, 0.14);
+  --badge-info-border: rgba(93, 156, 236, 0.28);
+  --badge-secondary-bg: rgba(179, 179, 179, 0.12);
+  --badge-secondary-border: rgba(179, 179, 179, 0.24);
+  --btn-primary-hover: #4a89dc;
+  --btn-secondary-hover: #3c3c3c;
   --btn-danger-hover: #de6d7c;
   --text-on-accent: #ffffff;
-  --focus-ring: rgba(76, 143, 232, 0.15);
-  --alert-success-bg: rgba(76, 175, 80, 0.2);
-  --alert-error-bg: rgba(244, 67, 54, 0.2);
-  --alert-warning-bg: rgba(255, 154, 0, 0.2);
-  --dropdown-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-  --theme-swatch-border: rgba(255, 255, 255, 0.1);
-  --toggle-track-bg: var(--bg-tertiary);
-  --toggle-track-border: var(--border-strong);
-  --toggle-thumb-bg: var(--text-primary);
-  --toggle-track-active-bg: rgba(53, 197, 244, 0.18);
-  --toggle-track-active-border: rgba(53, 197, 244, 0.28);
+  --focus-ring: rgba(93, 156, 236, 0.18);
+  --alert-success-bg: rgba(39, 194, 76, 0.18);
+  --alert-error-bg: rgba(240, 80, 80, 0.18);
+  --alert-warning-bg: rgba(255, 165, 0, 0.18);
+  --dropdown-shadow: 0 20px 48px rgba(0, 0, 0, 0.42);
+  --theme-swatch-border: rgba(255, 255, 255, 0.12);
+  --toggle-track-bg: #404040;
+  --toggle-track-border: #5a5a5a;
+  --toggle-thumb-bg: #ffffff;
+  --toggle-track-active-bg: rgba(93, 156, 236, 0.18);
+  --toggle-track-active-border: rgba(93, 156, 236, 0.28);
   --radius-sm: 4px;
   --radius-md: 6px;
   --radius-lg: 8px;
@@ -83,9 +96,9 @@ body {
 
 .sidebar {
   width: auto;
-  background-color: var(--bg-secondary);
+  background-color: var(--shell-bg);
   padding: 1.1rem 1rem 1rem;
-  border-right: 1px solid var(--border-color);
+  border-right: 1px solid var(--shell-border-color);
   position: sticky;
   top: 0;
   align-self: start;
@@ -135,7 +148,7 @@ body {
   justify-content: center;
   background: linear-gradient(180deg, var(--logo-mark-bg-start), var(--logo-mark-bg-end));
   border: 1px solid var(--logo-mark-border);
-  color: var(--accent-primary);
+  color: var(--brand-primary);
   font-size: 0.82rem;
   font-weight: 800;
   letter-spacing: 0.08em;
@@ -149,13 +162,13 @@ body {
 }
 
 .logo-title {
-  color: var(--text-primary);
+  color: var(--shell-text-primary);
   font-size: 1.05rem;
   font-weight: 700;
 }
 
 .logo-subtitle {
-  color: var(--text-faint);
+  color: var(--shell-text-faint);
   font-size: 0.75rem;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -168,9 +181,9 @@ body {
 }
 
 .sidebar-tools {
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--shell-panel-border);
   border-radius: var(--radius-lg);
-  background: var(--surface-muted);
+  background: var(--shell-panel-bg);
   padding: 0.85rem;
 }
 
@@ -189,9 +202,9 @@ body {
 .sidebar-meta {
   margin-top: auto;
   padding: 0.85rem;
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--shell-panel-border);
   border-radius: var(--radius-lg);
-  background: var(--surface-muted);
+  background: var(--shell-panel-bg);
 }
 
 /* Navigation */
@@ -208,7 +221,7 @@ body {
   list-style: none;
   margin: 1rem 0 0.55rem;
   padding: 0 0.85rem;
-  color: var(--text-faint);
+  color: var(--shell-text-faint);
   font-size: 0.72rem;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -226,7 +239,7 @@ body {
   gap: 0.75rem;
   min-height: 40px;
   padding: 0.6rem 0.85rem;
-  color: var(--text-secondary);
+  color: var(--shell-text-secondary);
   text-decoration: none;
   border: 1px solid transparent;
   border-left-width: 2px;
@@ -236,13 +249,13 @@ body {
 
 .nav-link:hover,
 .nav-link.active {
-  background-color: var(--bg-tertiary);
-  border-color: var(--border-color);
-  color: var(--text-primary);
+  background-color: var(--shell-hover-bg);
+  border-color: var(--shell-border-color);
+  color: var(--shell-text-primary);
 }
 
 .nav-link.active {
-  border-left-color: var(--accent-primary);
+  border-left-color: var(--brand-primary);
 }
 
 .nav-link__icon {
@@ -254,7 +267,7 @@ body {
   justify-content: center;
   background-color: var(--nav-icon-bg);
   border: 1px solid var(--nav-icon-border);
-  color: var(--text-faint);
+  color: var(--shell-text-faint);
   font-size: 0.68rem;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -263,7 +276,7 @@ body {
 
 .nav-link.active .nav-link__icon,
 .nav-link:hover .nav-link__icon {
-  color: var(--accent-primary);
+  color: var(--brand-primary);
   border-color: var(--nav-icon-active-border);
   background-color: var(--nav-icon-active-bg);
 }
@@ -277,7 +290,7 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 0.55rem;
-  color: var(--text-secondary);
+  color: var(--shell-text-secondary);
   font-size: 0.82rem;
 }
 
@@ -837,7 +850,7 @@ select.form-control {
 }
 
 .hero-card--accent {
-  border-top: 3px solid var(--accent-primary);
+  border-top: 3px solid var(--brand-primary);
 }
 
 .hero-label,
@@ -1106,10 +1119,10 @@ select.form-control {
   justify-content: space-between;
   gap: 0.85rem;
   padding: 0.7rem 0.85rem;
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--shell-panel-border);
   border-radius: 999px;
-  background: var(--card-bg);
-  color: var(--text-primary);
+  background: var(--shell-panel-bg);
+  color: var(--shell-text-primary);
   cursor: pointer;
 }
 
@@ -1125,7 +1138,7 @@ select.form-control {
 }
 
 .sidebar-toggle .pref-toggle__label {
-  color: var(--text-secondary);
+  color: var(--shell-text-secondary);
   font-size: 0.74rem;
   font-weight: 600;
   text-transform: uppercase;
@@ -1214,15 +1227,15 @@ select.form-control {
   justify-content: center;
   gap: 0.1rem;
   border-radius: 999px;
-  border: 1px solid var(--border-color);
-  background: var(--card-bg);
-  color: var(--text-primary);
+  border: 1px solid var(--shell-panel-border);
+  background: var(--shell-panel-bg);
+  color: var(--shell-text-primary);
   cursor: pointer;
 }
 
 .theme-picker-button:hover {
-  background: var(--bg-tertiary);
-  border-color: var(--border-strong);
+  background: var(--shell-hover-bg);
+  border-color: var(--shell-border-strong);
 }
 
 .theme-picker-button__glyph {
@@ -1232,7 +1245,7 @@ select.form-control {
 
 .theme-picker-button__glyph--moon {
   margin-left: -0.18rem;
-  color: var(--text-secondary);
+  color: var(--shell-text-secondary);
 }
 
 .theme-picker-dropdown {
@@ -1240,11 +1253,13 @@ select.form-control {
   bottom: calc(100% + 0.5rem);
   right: 0;
   left: auto;
-  background: var(--card-bg-elevated);
-  border: 1px solid var(--border-strong);
+  background: var(--shell-dropdown-bg);
+  border: 1px solid var(--shell-border-strong);
   border-radius: var(--radius-lg);
   padding: 0.5rem;
-  min-width: 220px;
+  min-width: 240px;
+  max-height: min(70vh, 34rem);
+  overflow-y: auto;
   box-shadow: var(--dropdown-shadow);
   z-index: 100;
 }
@@ -1258,7 +1273,7 @@ select.form-control {
   background: none;
   border: 1px solid transparent;
   border-radius: var(--radius-md);
-  color: var(--text-secondary);
+  color: var(--shell-text-secondary);
   cursor: pointer;
   font-size: 0.8125rem;
   text-align: left;
@@ -1266,13 +1281,13 @@ select.form-control {
 }
 
 .theme-option:hover {
-  background: var(--bg-tertiary);
-  color: var(--text-primary);
+  background: var(--shell-hover-bg);
+  color: var(--shell-text-primary);
 }
 
 .theme-option.active {
-  border-color: var(--accent-primary);
-  color: var(--text-primary);
+  border-color: var(--brand-primary);
+  color: var(--shell-text-primary);
 }
 
 .theme-swatches {

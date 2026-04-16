@@ -1,4 +1,4 @@
-/* Symlinkarr Web UI - Legacy Dark Alias */
+/* Symlinkarr Web UI - Prowlarr Dark */
 
 :root {
   color-scheme: dark;
@@ -7,10 +7,10 @@
   --bg-tertiary: #2e2e2e;
   --card-bg: #333333;
   --card-bg-elevated: #383838;
-  --brand-primary: #35c5f4;
-  --brand-primary-rgb: 53, 197, 244;
+  --brand-primary: #e66000;
+  --brand-primary-rgb: 230, 96, 0;
   --accent-primary: #5d9cec;
-  --accent-secondary: #2193b5;
+  --accent-secondary: #e66000;
   --text-primary: #cccccc;
   --text-secondary: #b3b3b3;
   --text-faint: #8f8f8f;
@@ -22,16 +22,16 @@
   --border-strong: #5c5c5c;
   --shadow-subtle: 0 12px 32px rgba(0, 0, 0, 0.32);
   --surface-muted: rgba(255, 255, 255, 0.04);
-  --shell-bg: #494949;
-  --shell-hover-bg: #595959;
+  --shell-bg: #595959;
+  --shell-hover-bg: #e66000;
   --shell-panel-bg: rgba(0, 0, 0, 0.16);
   --shell-panel-border: rgba(255, 255, 255, 0.08);
-  --shell-dropdown-bg: #494949;
+  --shell-dropdown-bg: #595959;
   --shell-border-color: rgba(255, 255, 255, 0.08);
   --shell-border-strong: rgba(255, 255, 255, 0.16);
   --shell-text-primary: #ffffff;
-  --shell-text-secondary: rgba(255, 255, 255, 0.82);
-  --shell-text-faint: rgba(255, 255, 255, 0.58);
+  --shell-text-secondary: rgba(255, 255, 255, 0.84);
+  --shell-text-faint: rgba(255, 255, 255, 0.62);
   --btn-primary-hover: #4a89dc;
   --btn-secondary-hover: #3c3c3c;
   --btn-danger-hover: #de6d7c;

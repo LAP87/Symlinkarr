@@ -1,4 +1,4 @@
-/* Symlinkarr Web UI - Legacy Light Alias */
+/* Symlinkarr Web UI - Readarr Light */
 
 :root {
   color-scheme: light;
@@ -7,10 +7,10 @@
   --bg-tertiary: #e9edf2;
   --card-bg: #ffffff;
   --card-bg-elevated: #ffffff;
-  --brand-primary: #35c5f4;
-  --brand-primary-rgb: 53, 197, 244;
+  --brand-primary: #ca302d;
+  --brand-primary-rgb: 202, 48, 45;
   --accent-primary: #5d9cec;
-  --accent-secondary: #2193b5;
+  --accent-secondary: #a41726;
   --text-primary: #515253;
   --text-secondary: #67686a;
   --text-faint: #8a8b8d;
@@ -22,11 +22,11 @@
   --border-strong: #c4cbd4;
   --shadow-subtle: 0 20px 48px rgba(15, 23, 42, 0.08);
   --surface-muted: rgba(81, 82, 83, 0.04);
-  --shell-bg: #3a3f51;
-  --shell-hover-bg: #4f566f;
+  --shell-bg: #353535;
+  --shell-hover-bg: #810020;
   --shell-panel-bg: rgba(255, 255, 255, 0.06);
   --shell-panel-border: rgba(255, 255, 255, 0.1);
-  --shell-dropdown-bg: #3a3f51;
+  --shell-dropdown-bg: #353535;
   --shell-border-color: rgba(255, 255, 255, 0.08);
   --shell-border-strong: rgba(255, 255, 255, 0.18);
   --shell-text-primary: #ffffff;
