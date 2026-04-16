@@ -98,7 +98,7 @@ impl LibraryScanner {
         }
 
         // Sort alphabetically by title so that the logs and processing order are predictable.
-        all_items.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+        all_items.sort_by_key(|item| item.title.to_lowercase());
 
         info!(
             "Total {} identified folders across all libraries",

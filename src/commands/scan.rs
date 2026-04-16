@@ -102,7 +102,7 @@ pub(crate) async fn run_scan(
     for lib in &selected_libraries {
         library_items.extend(lib_scanner.scan_library(lib));
     }
-    library_items.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+    library_items.sort_by_key(|item| item.title.to_lowercase());
     telemetry.library_scan = library_scan_started.elapsed();
     info!(
         "Step 1/4: {} library items identified in {}",

@@ -213,7 +213,7 @@ pub(crate) async fn load_discovery_snapshot(
     for lib in &selected {
         library_items.extend(lib_scanner.scan_library(lib));
     }
-    library_items.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+    library_items.sort_by_key(|item| item.title.to_lowercase());
     let library_scan_elapsed = library_scan_started.elapsed();
 
     let source_collect_started = Instant::now();

@@ -167,7 +167,7 @@ impl Discovery {
         let mut folders: BTreeMap<PathBuf, FolderAccumulator> = BTreeMap::new();
         let mut placements = Vec::new();
 
-        for (m, target_path) in matches.iter().zip(target_paths.into_iter()) {
+        for (m, target_path) in matches.iter().zip(target_paths) {
             let action = classify_target_path(
                 &target_path,
                 &m.source_item.path,
