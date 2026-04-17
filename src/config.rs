@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::models::MediaType;
 use crate::utils::{fast_path_health, PathHealth};
+use defaults::*;
 use load::{
     apply_legacy_aliases, collect_secret_file_paths, load_dotenv_chain, resolve_secret,
     warn_for_plaintext_secrets,
@@ -116,20 +117,6 @@ pub struct MatchingConfig {
     pub metadata_concurrency: usize,
 }
 
-fn default_metadata_concurrency() -> usize {
-    8
-}
-
-impl Default for MatchingConfig {
-    fn default() -> Self {
-        Self {
-            mode: MatchingMode::Strict,
-            metadata_mode: MetadataMode::Full,
-            metadata_concurrency: default_metadata_concurrency(),
-        }
-    }
-}
-
 /// Web UI configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebConfig {
@@ -147,28 +134,6 @@ pub struct WebConfig {
     pub password: String,
     #[serde(default)]
     pub api_key: String,
-}
-
-fn default_web_bind_address() -> String {
-    "127.0.0.1".to_string()
-}
-
-fn default_web_port() -> u16 {
-    8726
-}
-
-impl Default for WebConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            bind_address: default_web_bind_address(),
-            allow_remote: false,
-            port: default_web_port(),
-            username: String::new(),
-            password: String::new(),
-            api_key: String::new(),
-        }
-    }
 }
 
 impl WebConfig {
@@ -356,17 +321,6 @@ pub struct ApiConfig {
     pub cache_ttl_hours: u64,
 }
 
-impl Default for ApiConfig {
-    fn default() -> Self {
-        Self {
-            tmdb_api_key: String::new(),
-            tmdb_read_access_token: String::new(),
-            tvdb_api_key: String::new(),
-            cache_ttl_hours: default_cache_ttl(),
-        }
-    }
-}
-
 fn is_valid_source_media_type(value: &str) -> bool {
     matches!(value.trim(), "auto" | "anime" | "tv" | "movie")
 }
@@ -391,18 +345,6 @@ pub struct DaemonConfig {
     pub vacuum_hour_local: u8,
 }
 
-impl Default for DaemonConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            interval_minutes: default_interval(),
-            search_missing: false,
-            vacuum_enabled: false,
-            vacuum_hour_local: default_vacuum_hour_local(),
-        }
-    }
-}
-
 /// Symlink creation settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SymlinkConfig {
@@ -420,17 +362,6 @@ pub struct SymlinkConfig {
     pub source_probe_timeout_ms: u64,
 }
 
-impl Default for SymlinkConfig {
-    fn default() -> Self {
-        Self {
-            dry_run: false,
-            naming_template: default_naming_template(),
-            verify_source_readability: default_true(),
-            source_probe_timeout_ms: default_source_probe_timeout_ms(),
-        }
-    }
-}
-
 /// Real-Debrid API configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RealDebridConfig {
@@ -446,17 +377,6 @@ pub struct RealDebridConfig {
     /// Safety cap for maximum RD pagination pages per sync
     #[serde(default = "default_realdebrid_max_pages")]
     pub max_pages: u32,
-}
-
-impl Default for RealDebridConfig {
-    fn default() -> Self {
-        Self {
-            api_token: String::new(),
-            torrents_page_limit: default_realdebrid_torrents_page_limit(),
-            pagination_delay_ms: default_realdebrid_pagination_delay_ms(),
-            max_pages: default_realdebrid_max_pages(),
-        }
-    }
 }
 
 /// Decypharr integration configuration
@@ -497,24 +417,6 @@ pub struct DecypharrConfig {
     pub arr_name_anime: String,
 }
 
-impl Default for DecypharrConfig {
-    fn default() -> Self {
-        Self {
-            url: default_decypharr_url(),
-            api_token: None,
-            poll_interval_seconds: default_decypharr_poll_interval_seconds(),
-            completion_timeout_minutes: default_decypharr_completion_timeout_minutes(),
-            relink_timeout_minutes: default_decypharr_relink_timeout_minutes(),
-            max_in_flight: default_decypharr_max_in_flight(),
-            max_requests_per_run: default_decypharr_max_requests_per_run(),
-            queue_page_size: default_decypharr_queue_page_size(),
-            arr_name_movie: default_arr_name_movie(),
-            arr_name_tv: default_arr_name_tv(),
-            arr_name_anime: default_arr_name_anime(),
-        }
-    }
-}
-
 /// Debrid Media Manager integration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DmmConfig {
@@ -533,18 +435,6 @@ pub struct DmmConfig {
     /// Max cached torrent candidates to inspect per media lookup
     #[serde(default = "default_dmm_max_torrent_results")]
     pub max_torrent_results: usize,
-}
-
-impl Default for DmmConfig {
-    fn default() -> Self {
-        Self {
-            url: String::new(),
-            auth_salt: None,
-            only_trusted: default_dmm_only_trusted(),
-            max_search_results: default_dmm_max_search_results(),
-            max_torrent_results: default_dmm_max_torrent_results(),
-        }
-    }
 }
 
 /// Prowlarr indexer integration
@@ -606,40 +496,6 @@ pub struct PlexConfig {
     pub abort_refresh_when_capped: bool,
 }
 
-fn default_plex_refresh_enabled() -> bool {
-    true
-}
-
-fn default_plex_refresh_delay_ms() -> u64 {
-    250
-}
-
-fn default_plex_refresh_coalesce_threshold() -> usize {
-    8
-}
-
-fn default_plex_max_refresh_batches_per_run() -> usize {
-    12
-}
-
-fn default_plex_abort_refresh_when_capped() -> bool {
-    true
-}
-
-impl Default for PlexConfig {
-    fn default() -> Self {
-        Self {
-            url: String::new(),
-            token: String::new(),
-            refresh_enabled: default_plex_refresh_enabled(),
-            refresh_delay_ms: default_plex_refresh_delay_ms(),
-            refresh_coalesce_threshold: default_plex_refresh_coalesce_threshold(),
-            max_refresh_batches_per_run: default_plex_max_refresh_batches_per_run(),
-            abort_refresh_when_capped: default_plex_abort_refresh_when_capped(),
-        }
-    }
-}
-
 /// Emby/Jellyfin-style integration for targeted library invalidation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MediaBrowserConfig {
@@ -667,46 +523,6 @@ pub struct MediaBrowserConfig {
     /// Fall back to library-root invalidation when targeted paths would exceed the cap
     #[serde(default = "default_media_browser_fallback_to_library_roots_when_capped")]
     pub fallback_to_library_roots_when_capped: bool,
-}
-
-fn default_media_browser_refresh_enabled() -> bool {
-    true
-}
-
-fn default_media_browser_refresh_delay_ms() -> u64 {
-    250
-}
-
-fn default_media_browser_refresh_batch_size() -> usize {
-    64
-}
-
-fn default_media_browser_max_refresh_batches_per_run() -> usize {
-    12
-}
-
-fn default_media_browser_abort_refresh_when_capped() -> bool {
-    true
-}
-
-fn default_media_browser_fallback_to_library_roots_when_capped() -> bool {
-    true
-}
-
-impl Default for MediaBrowserConfig {
-    fn default() -> Self {
-        Self {
-            url: String::new(),
-            api_key: String::new(),
-            refresh_enabled: default_media_browser_refresh_enabled(),
-            refresh_delay_ms: default_media_browser_refresh_delay_ms(),
-            refresh_batch_size: default_media_browser_refresh_batch_size(),
-            max_refresh_batches_per_run: default_media_browser_max_refresh_batches_per_run(),
-            abort_refresh_when_capped: default_media_browser_abort_refresh_when_capped(),
-            fallback_to_library_roots_when_capped:
-                default_media_browser_fallback_to_library_roots_when_capped(),
-        }
-    }
 }
 
 /// Radarr integration
@@ -751,18 +567,6 @@ pub struct BackupConfig {
     pub max_safety_backups: usize,
 }
 
-impl Default for BackupConfig {
-    fn default() -> Self {
-        Self {
-            enabled: default_backup_enabled(),
-            path: default_backup_path(),
-            interval_hours: default_backup_interval(),
-            max_backups: default_max_backups(),
-            max_safety_backups: default_max_safety_backups(),
-        }
-    }
-}
-
 impl BackupConfig {
     /// Create a BackupConfig suitable for standalone restore (no config.yaml needed).
     /// Uses the given directory as the backup directory with safe defaults.
@@ -777,40 +581,12 @@ impl BackupConfig {
     }
 }
 
-fn default_backup_enabled() -> bool {
-    true
-}
-
-fn default_backup_path() -> PathBuf {
-    PathBuf::from("backups")
-}
-
-fn default_backup_interval() -> u64 {
-    24
-}
-
-fn default_max_backups() -> usize {
-    10
-}
-
-fn default_max_safety_backups() -> usize {
-    25
-}
-
 /// Feature flags controlling rollout behavior.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeaturesConfig {
     /// Enable anti-churn reconciliation path in scan/link lifecycle
     #[serde(default = "default_true")]
     pub reconcile_links: bool,
-}
-
-impl Default for FeaturesConfig {
-    fn default() -> Self {
-        Self {
-            reconcile_links: default_true(),
-        }
-    }
 }
 
 /// Security policy controls for destructive operations and secret handling.
@@ -825,16 +601,6 @@ pub struct SecurityConfig {
     /// Enforce secure file permissions for artifacts written by Symlinkarr
     #[serde(default = "default_true")]
     pub enforce_secure_permissions: bool,
-}
-
-impl Default for SecurityConfig {
-    fn default() -> Self {
-        Self {
-            enforce_roots: default_true(),
-            require_secret_provider: false,
-            enforce_secure_permissions: default_true(),
-        }
-    }
 }
 
 /// Cleanup policy configuration.
@@ -862,140 +628,6 @@ pub struct PrunePolicyConfig {
     /// Directory used to stash quarantined symlinks for later inspection/recovery.
     #[serde(default = "default_prune_quarantine_path")]
     pub quarantine_path: PathBuf,
-}
-
-impl Default for PrunePolicyConfig {
-    fn default() -> Self {
-        Self {
-            enforce_policy: default_true(),
-            max_report_age_hours: default_prune_max_report_age_hours(),
-            default_max_delete: default_prune_default_max_delete(),
-            quarantine_foreign: default_true(),
-            quarantine_path: default_prune_quarantine_path(),
-        }
-    }
-}
-
-fn default_true() -> bool {
-    true
-}
-
-fn default_prune_max_report_age_hours() -> u64 {
-    72
-}
-
-fn default_prune_default_max_delete() -> usize {
-    5000
-}
-
-fn default_prune_quarantine_path() -> PathBuf {
-    PathBuf::from("quarantine")
-}
-
-// --- Default value functions ---
-
-fn default_db_path() -> String {
-    "symlinkarr.db".to_string()
-}
-
-fn default_log_level() -> String {
-    "info".to_string()
-}
-
-fn default_media_type() -> MediaType {
-    MediaType::Tv
-}
-
-fn default_source_media_type() -> String {
-    "auto".to_string()
-}
-
-fn default_depth() -> usize {
-    1
-}
-
-fn default_cache_ttl() -> u64 {
-    87600 // ~10 years — metadata is intentionally sticky; freshness should come from targeted refresh signals
-}
-
-fn default_interval() -> u64 {
-    30
-}
-
-fn default_vacuum_hour_local() -> u8 {
-    4
-}
-
-fn default_realdebrid_torrents_page_limit() -> u32 {
-    5000
-}
-
-fn default_realdebrid_pagination_delay_ms() -> u64 {
-    200
-}
-
-fn default_realdebrid_max_pages() -> u32 {
-    5000
-}
-
-fn default_naming_template() -> String {
-    "{title} - S{season:02}E{episode:02} - {episode_title}".to_string()
-}
-
-fn default_source_probe_timeout_ms() -> u64 {
-    2500
-}
-
-fn default_decypharr_url() -> String {
-    "http://localhost:8282".to_string()
-}
-
-fn default_decypharr_poll_interval_seconds() -> u64 {
-    30
-}
-
-fn default_decypharr_completion_timeout_minutes() -> u64 {
-    180
-}
-
-fn default_decypharr_relink_timeout_minutes() -> u64 {
-    15
-}
-
-fn default_decypharr_max_in_flight() -> usize {
-    3
-}
-
-fn default_decypharr_max_requests_per_run() -> usize {
-    10
-}
-
-fn default_decypharr_queue_page_size() -> usize {
-    100
-}
-
-fn default_arr_name_movie() -> String {
-    "radarr".to_string()
-}
-
-fn default_arr_name_tv() -> String {
-    "sonarr".to_string()
-}
-
-fn default_arr_name_anime() -> String {
-    "sonarr-anime".to_string()
-}
-
-fn default_dmm_only_trusted() -> bool {
-    true
-}
-
-fn default_dmm_max_search_results() -> usize {
-    3
-}
-
-fn default_dmm_max_torrent_results() -> usize {
-    10
 }
 
 impl Config {
@@ -1598,6 +1230,7 @@ fn cfg_has_url_without_key(url: &str, api_key: &str) -> bool {
     !url.trim().is_empty() && api_key.trim().is_empty()
 }
 
+mod defaults;
 mod load;
 mod validation;
 
