@@ -1,6 +1,6 @@
 [package]
 name = "symlinkarr"
-version = "1.0.0-rc.10"
+version = "1.0.0-rc.11"
 edition = "2021"
 authors = ["Lenny", "Gemini CLI", "Antigravity"]
 description = "Intelligent symlink manager for Real-Debrid-backed media libraries"
