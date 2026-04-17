@@ -20,6 +20,7 @@ mod media_servers;
 mod models;
 mod repair;
 mod source_scanner;
+mod startup;
 mod utils;
 mod web;
 
@@ -435,6 +436,12 @@ fn missing_config_target_path(cli: &Cli) -> std::path::PathBuf {
     }
 }
 
+fn resolved_config_path(cli: &Cli) -> Option<std::path::PathBuf> {
+    config::candidate_config_paths(cli.config.clone())
+        .into_iter()
+        .find(|path| path.exists())
+}
+
 /// When config.yaml is missing, try to auto-restore from the latest backup.
 /// Guard: only runs if config.yaml genuinely does not exist anywhere on the search path.
 /// Returns Some(Config) if restore succeeded, None if no backup was found.
@@ -623,6 +630,7 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .try_init();
     let db = db::Database::new(&cfg.db_path).await?;
+    let config_path = resolved_config_path(&cli);
 
     match cli.command {
         Commands::Scan {
@@ -670,9 +678,23 @@ async fn main() -> Result<()> {
         Commands::Queue { action, output } => {
             commands::queue::run_queue(&db, action, output).await?
         }
-        Commands::Daemon => commands::daemon::run_daemon(&cfg, &db).await?,
+        Commands::Daemon => {
+            startup::emit_runtime_banner(
+                &cfg,
+                startup::RuntimeMode::Daemon,
+                config_path.as_deref(),
+                None,
+            );
+            commands::daemon::run_daemon(&cfg, &db).await?
+        }
         Commands::Web { port } => {
             let port = port.unwrap_or(cfg.web.port);
+            startup::emit_runtime_banner(
+                &cfg,
+                startup::RuntimeMode::Web,
+                config_path.as_deref(),
+                Some(port),
+            );
             crate::web::serve(cfg, db, port).await?
         }
         Commands::Cleanup {

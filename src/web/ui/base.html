@@ -5,18 +5,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Symlinkarr{% endblock %}</title>
     <link rel="stylesheet" href="/static/style.css">
-    <link rel="stylesheet" id="theme-stylesheet">
+    <style id="theme-vars"></style>
     <script src="/static/themes/theme-manifest.js"></script>
     <script>
         (function () {
-            var manifest = window.SYMLINKARR_THEME_MANIFEST || { themes: [], aliases: {} };
-            var themeFiles = {};
-            (manifest.themes || []).forEach(function (theme) {
-                if (theme.file) {
-                    themeFiles[theme.id] = theme.file;
-                }
-            });
-            var aliases = manifest.aliases || {};
+            var manifest = window.SYMLINKARR_THEME_MANIFEST || null;
+
+            if (!manifest || !manifest.resolveSelection || !manifest.buildThemeCss) {
+                return;
+            }
 
             function prefersDark() {
                 return !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
@@ -27,19 +24,15 @@
                 storedTheme = localStorage.getItem("symlinkarr-theme");
             } catch (e) {}
 
-            var selection = aliases[storedTheme] || storedTheme || "auto";
-            var resolved = selection === "auto"
-                ? (prefersDark() ? "sonarr-dark" : "sonarr-light")
-                : selection;
-            var file = themeFiles[resolved] || themeFiles["sonarr-dark"];
-            var link = document.getElementById("theme-stylesheet");
+            var resolved = manifest.resolveSelection(storedTheme, prefersDark());
+            var style = document.getElementById("theme-vars");
 
-            if (link) {
-                link.href = "/static/themes/" + file;
+            if (style && resolved.actual) {
+                style.textContent = manifest.buildThemeCss(resolved.actual);
             }
 
-            document.documentElement.setAttribute("data-theme-selection", selection);
-            document.documentElement.setAttribute("data-theme", resolved);
+            document.documentElement.setAttribute("data-theme-selection", resolved.selectionId);
+            document.documentElement.setAttribute("data-theme", resolved.actual ? resolved.actual.id : "");
         }());
     </script>
     <script>

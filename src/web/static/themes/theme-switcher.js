@@ -1,12 +1,21 @@
-/* Symlinkarr - Theme Switcher with built-in *arr portfolio */
+/* Symlinkarr - Token-based theme switcher */
 
 class ThemeManager {
     constructor() {
-        var manifest = window.SYMLINKARR_THEME_MANIFEST || { themes: [], aliases: {} };
-        this.themes = manifest.themes || [];
-        this.aliases = manifest.aliases || {};
+        this.manifest = window.SYMLINKARR_THEME_MANIFEST || {
+            themes: [],
+            aliases: {},
+            defaults: { dark: 'symlinkarr-dark', light: 'symlinkarr-light' },
+            resolveSelection: function () {
+                return { selectionId: 'auto', selection: null, actual: null };
+            },
+            buildThemeCss: function () {
+                return '';
+            },
+        };
+        this.themes = this.manifest.themes || [];
         this.currentTheme = this.normalizeThemeId(this.loadTheme()) || 'auto';
-        this.themeLink = null;
+        this.themeStyle = null;
         this.colorSchemeQuery = null;
         this.init();
     }
@@ -15,13 +24,7 @@ class ThemeManager {
         if (!themeId) {
             return null;
         }
-        return this.aliases[themeId] || themeId;
-    }
-
-    getTheme(themeId) {
-        return this.themes.find(function(theme) {
-            return theme.id === themeId;
-        }) || null;
+        return this.manifest.aliases[themeId] || themeId;
     }
 
     prefersDarkMode() {
@@ -29,35 +32,27 @@ class ThemeManager {
     }
 
     resolveTheme(themeId) {
-        var selectionId = this.normalizeThemeId(themeId) || 'auto';
-        var actualId = selectionId === 'auto'
-            ? (this.prefersDarkMode() ? 'sonarr-dark' : 'sonarr-light')
-            : selectionId;
-        var selection = this.getTheme(selectionId) || this.getTheme('auto');
-        var actual = this.getTheme(actualId) || this.getTheme('sonarr-dark');
+        return this.manifest.resolveSelection(themeId, this.prefersDarkMode());
+    }
 
-        return {
-            selectionId: selection.id,
-            selection: selection,
-            actual: actual,
-        };
+    ensureThemeStyle() {
+        this.themeStyle = document.getElementById('theme-vars');
+        if (!this.themeStyle) {
+            this.themeStyle = document.createElement('style');
+            this.themeStyle.id = 'theme-vars';
+            document.head.appendChild(this.themeStyle);
+        }
     }
 
     init() {
-        this.themeLink = document.getElementById('theme-stylesheet');
-        if (!this.themeLink) {
-            this.themeLink = document.createElement('link');
-            this.themeLink.rel = 'stylesheet';
-            this.themeLink.id = 'theme-stylesheet';
-            document.head.appendChild(this.themeLink);
-        }
+        this.ensureThemeStyle();
 
         this.colorSchemeQuery = window.matchMedia
             ? window.matchMedia('(prefers-color-scheme: dark)')
             : null;
         if (this.colorSchemeQuery) {
             var self = this;
-            var handleChange = function() {
+            var handleChange = function () {
                 if (self.currentTheme === 'auto') {
                     self.applyTheme('auto');
                 }
@@ -74,12 +69,16 @@ class ThemeManager {
 
     applyTheme(themeId) {
         var resolved = this.resolveTheme(themeId);
+        if (!resolved.actual) {
+            return;
+        }
+
         var displayName = resolved.selectionId === 'auto'
             ? resolved.selection.name + ' (' + resolved.actual.name + ')'
             : resolved.actual.name;
 
         this.currentTheme = resolved.selectionId;
-        this.themeLink.href = '/static/themes/' + resolved.actual.file;
+        this.themeStyle.textContent = this.manifest.buildThemeCss(resolved.actual);
         document.documentElement.setAttribute('data-theme', resolved.actual.id);
         document.documentElement.setAttribute('data-theme-selection', resolved.selectionId);
         this.saveTheme(resolved.selectionId);
@@ -95,7 +94,7 @@ class ThemeManager {
     loadTheme() {
         try {
             return localStorage.getItem('symlinkarr-theme');
-        } catch(e) {
+        } catch (e) {
             return null;
         }
     }
@@ -103,13 +102,23 @@ class ThemeManager {
     saveTheme(themeId) {
         try {
             localStorage.setItem('symlinkarr-theme', themeId);
-        } catch(e) {}
+        } catch (e) {}
     }
 
     buildPicker(container) {
         var self = this;
+        var currentGroup = null;
+
         container.innerHTML = '';
-        this.themes.forEach(function(theme) {
+        this.themes.forEach(function (theme) {
+            if (theme.group && theme.group !== currentGroup) {
+                currentGroup = theme.group;
+                var groupLabel = document.createElement('div');
+                groupLabel.className = 'theme-group-label';
+                groupLabel.textContent = theme.group;
+                container.appendChild(groupLabel);
+            }
+
             var btn = document.createElement('button');
             btn.type = 'button';
             btn.className = 'theme-option' + (self.currentTheme === theme.id ? ' active' : '');
@@ -118,18 +127,27 @@ class ThemeManager {
 
             var swatchWrap = document.createElement('span');
             swatchWrap.className = 'theme-swatches';
-            theme.swatches.forEach(function(color) {
+            (theme.swatches || []).forEach(function (color) {
                 var swatch = document.createElement('span');
                 swatch.style.background = color;
                 swatchWrap.appendChild(swatch);
             });
 
             var label = document.createElement('span');
+            label.className = 'theme-option__label';
             label.textContent = theme.name;
 
             btn.appendChild(swatchWrap);
             btn.appendChild(label);
-            btn.addEventListener('click', function() {
+
+            if (theme.mode === 'dark' || theme.mode === 'light') {
+                var meta = document.createElement('span');
+                meta.className = 'theme-option__meta';
+                meta.textContent = theme.mode;
+                btn.appendChild(meta);
+            }
+
+            btn.addEventListener('click', function () {
                 self.applyTheme(theme.id);
                 self.setDropdownOpen(false);
             });
@@ -156,7 +174,7 @@ class ThemeManager {
     }
 }
 
-document.addEventListener('DOMContentLoaded', function() {
+document.addEventListener('DOMContentLoaded', function () {
     window.themeManager = new ThemeManager();
 
     var dropdown = document.getElementById('theme-picker-dropdown');
@@ -165,13 +183,13 @@ document.addEventListener('DOMContentLoaded', function() {
     if (dropdown && toggle) {
         window.themeManager.buildPicker(dropdown);
 
-        toggle.addEventListener('click', function(e) {
+        toggle.addEventListener('click', function (e) {
             e.stopPropagation();
             var isOpen = dropdown.style.display !== 'none';
             window.themeManager.setDropdownOpen(!isOpen);
         });
 
-        document.addEventListener('click', function(e) {
+        document.addEventListener('click', function (e) {
             if (!e.target.closest('.theme-picker')) {
                 window.themeManager.setDropdownOpen(false);
             }

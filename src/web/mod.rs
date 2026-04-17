@@ -1364,11 +1364,8 @@ pub async fn serve_noconfig(port: u16) -> Result<()> {
         .route("/", get(handlers::get_noconfig))
         .nest_service("/static", ServeDir::new(static_dir()));
 
+    crate::startup::emit_noconfig_banner(port);
     info!("Symlinkarr web UI (no-config mode) on {}", addr);
-    println!(
-        "⚙️  No config.yaml found. Open http://{} for setup instructions.",
-        addr
-    );
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, router)
