@@ -1270,15 +1270,6 @@ select.form-control {
   z-index: 100;
 }
 
-.theme-group-label {
-  padding: 0.45rem 0.625rem 0.3rem;
-  color: var(--shell-text-faint);
-  font-size: 0.68rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
 .theme-option {
   display: flex;
   align-items: center;

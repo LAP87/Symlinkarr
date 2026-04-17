@@ -107,18 +107,9 @@ class ThemeManager {
 
     buildPicker(container) {
         var self = this;
-        var currentGroup = null;
 
         container.innerHTML = '';
         this.themes.forEach(function (theme) {
-            if (theme.group && theme.group !== currentGroup) {
-                currentGroup = theme.group;
-                var groupLabel = document.createElement('div');
-                groupLabel.className = 'theme-group-label';
-                groupLabel.textContent = theme.group;
-                container.appendChild(groupLabel);
-            }
-
             var btn = document.createElement('button');
             btn.type = 'button';
             btn.className = 'theme-option' + (self.currentTheme === theme.id ? ' active' : '');
