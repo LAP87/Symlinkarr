@@ -1,5 +1,6 @@
-
 use super::*;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::sync::{Mutex, OnceLock};
 
 fn env_lock() -> &'static Mutex<()> {
