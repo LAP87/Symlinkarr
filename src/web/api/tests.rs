@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::config::{
     ApiConfig, BackupConfig, BazarrConfig, CleanupPolicyConfig, Config, ContentType, DaemonConfig,
