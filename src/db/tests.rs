@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::models::{LinkRecord, LinkStatus, MediaType};
 use chrono::Utc;
