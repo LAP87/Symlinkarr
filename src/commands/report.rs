@@ -17,6 +17,10 @@ use crate::models::MediaType;
 use crate::utils::normalize;
 use crate::OutputFormat;
 
+use self::path_compare::{build_path_compare, PathCompareOutput, PATH_SAMPLE_LIMIT};
+#[cfg(test)]
+use self::path_compare::{sample_difference, sample_intersection, symlink_source_missing};
+
 #[derive(Serialize, Debug, Default, PartialEq, Eq)]
 struct Summary {
     total_library_items: i64,
@@ -49,28 +53,6 @@ struct ReportOutput {
     path_compare: PathCompareOutput,
     #[serde(skip_serializing_if = "Option::is_none")]
     anime_duplicates: Option<AnimeDuplicateAuditOutput>,
-}
-
-#[derive(Serialize, Debug, Default, PartialEq, Eq)]
-struct PathSample {
-    count: usize,
-    samples: Vec<PathBuf>,
-}
-
-#[derive(Serialize, Debug, Default, PartialEq, Eq)]
-struct PathCompareOutput {
-    filesystem_symlinks: usize,
-    db_active_links: usize,
-    plex_indexed_files: Option<usize>,
-    plex_deleted_paths: Option<usize>,
-    fs_not_in_db: PathSample,
-    db_not_on_fs: PathSample,
-    fs_not_in_plex: Option<PathSample>,
-    db_not_in_plex: Option<PathSample>,
-    plex_not_on_fs: Option<PathSample>,
-    plex_deleted_and_known_missing_source: Option<PathSample>,
-    plex_deleted_without_known_missing_source: Option<PathSample>,
-    all_three: Option<usize>,
 }
 
 #[derive(Serialize, Debug, Default, Clone, PartialEq, Eq)]
@@ -456,91 +438,6 @@ fn media_type_key(media_type: MediaType) -> &'static str {
     }
 }
 
-async fn build_path_compare(
-    libraries: &[&LibraryConfig],
-    roots: &[PathBuf],
-    link_records: &[crate::models::LinkRecord],
-    plex_db_path: Option<&Path>,
-) -> Result<PathCompareOutput> {
-    // Build db_active_links first (needed regardless)
-    let mut db_active_links: HashSet<PathBuf> = HashSet::new();
-    let mut known_missing_source_paths: HashSet<PathBuf> = HashSet::new();
-    for link in link_records
-        .iter()
-        .filter(|link| link.status == crate::models::LinkStatus::Active)
-    {
-        db_active_links.insert(link.target_path.clone());
-        if !link.source_path.exists() {
-            known_missing_source_paths.insert(link.target_path.clone());
-        }
-    }
-
-    // Fast path without Plex DB: still compute filesystem vs DB drift, but skip Plex lookups.
-    if plex_db_path.is_none() {
-        let filesystem_scan = collect_filesystem_symlink_paths(libraries);
-        let filesystem_symlinks = filesystem_scan.paths;
-        known_missing_source_paths.extend(filesystem_scan.missing_source_paths);
-
-        return Ok(PathCompareOutput {
-            filesystem_symlinks: filesystem_symlinks.len(),
-            db_active_links: db_active_links.len(),
-            plex_indexed_files: None,
-            plex_deleted_paths: None,
-            fs_not_in_db: sample_difference(&filesystem_symlinks, &db_active_links),
-            db_not_on_fs: sample_difference(&db_active_links, &filesystem_symlinks),
-            fs_not_in_plex: None,
-            db_not_in_plex: None,
-            plex_not_on_fs: None,
-            plex_deleted_and_known_missing_source: None,
-            plex_deleted_without_known_missing_source: None,
-            all_three: None,
-        });
-    }
-
-    let plex_path_records = plex_db::load_path_records(plex_db_path.unwrap(), roots).await?;
-    let filesystem_scan = collect_filesystem_symlink_paths(libraries);
-    let filesystem_symlinks = filesystem_scan.paths;
-    known_missing_source_paths.extend(filesystem_scan.missing_source_paths);
-
-    let plex_indexed_files = plex_path_records
-        .iter()
-        .map(|record| record.path.clone())
-        .collect::<HashSet<_>>();
-    let plex_deleted_paths: HashSet<PathBuf> = plex_path_records
-        .iter()
-        .filter(|record| record.deleted_only)
-        .map(|record| record.path.clone())
-        .collect();
-
-    let all_three = Some(
-        filesystem_symlinks
-            .iter()
-            .filter(|path| db_active_links.contains(*path) && plex_indexed_files.contains(*path))
-            .count(),
-    );
-
-    Ok(PathCompareOutput {
-        filesystem_symlinks: filesystem_symlinks.len(),
-        db_active_links: db_active_links.len(),
-        plex_indexed_files: Some(plex_indexed_files.len()),
-        plex_deleted_paths: Some(plex_deleted_paths.len()),
-        fs_not_in_db: sample_difference(&filesystem_symlinks, &db_active_links),
-        db_not_on_fs: sample_difference(&db_active_links, &filesystem_symlinks),
-        fs_not_in_plex: Some(sample_difference(&filesystem_symlinks, &plex_indexed_files)),
-        db_not_in_plex: Some(sample_difference(&db_active_links, &plex_indexed_files)),
-        plex_not_on_fs: Some(sample_difference(&plex_indexed_files, &filesystem_symlinks)),
-        plex_deleted_and_known_missing_source: Some(sample_intersection(
-            &plex_deleted_paths,
-            &known_missing_source_paths,
-        )),
-        plex_deleted_without_known_missing_source: Some(sample_difference(
-            &plex_deleted_paths,
-            &known_missing_source_paths,
-        )),
-        all_three,
-    })
-}
-
 async fn build_anime_duplicate_audit(
     libraries: &[&LibraryConfig],
     link_records: &[crate::models::LinkRecord],
@@ -895,88 +792,6 @@ fn remediation_impact(sample: &AnimeRemediationSample) -> (usize, usize, usize) 
     (legacy_fs, legacy_db, sample.plex_live_rows)
 }
 
-struct FilesystemSymlinkScan {
-    paths: HashSet<PathBuf>,
-    missing_source_paths: HashSet<PathBuf>,
-}
-
-fn collect_filesystem_symlink_paths(libraries: &[&LibraryConfig]) -> FilesystemSymlinkScan {
-    let results: Vec<_> = libraries
-        .par_iter()
-        .map(|lib| {
-            let mut paths = HashSet::new();
-            let mut missing_source_paths = HashSet::new();
-            for entry in WalkDir::new(&lib.path).follow_links(false) {
-                let Ok(entry) = entry else {
-                    continue;
-                };
-                if entry.file_type().is_symlink() {
-                    let path = entry.path().to_path_buf();
-                    if symlink_source_missing(&path) {
-                        missing_source_paths.insert(path.clone());
-                    }
-                    paths.insert(path);
-                }
-            }
-            (paths, missing_source_paths)
-        })
-        .collect();
-
-    let mut all_paths = HashSet::new();
-    let mut all_missing = HashSet::new();
-    for (paths, missing) in results {
-        all_paths.extend(paths);
-        all_missing.extend(missing);
-    }
-
-    FilesystemSymlinkScan {
-        paths: all_paths,
-        missing_source_paths: all_missing,
-    }
-}
-
-const PATH_SAMPLE_LIMIT: usize = 10;
-
-fn sample_difference(left: &HashSet<PathBuf>, right: &HashSet<PathBuf>) -> PathSample {
-    let mut diff: Vec<PathBuf> = left
-        .iter()
-        .filter(|path| !right.contains(*path))
-        .cloned()
-        .collect();
-    diff.sort();
-    PathSample {
-        count: diff.len(),
-        samples: diff.into_iter().take(PATH_SAMPLE_LIMIT).collect(),
-    }
-}
-
-fn sample_intersection(left: &HashSet<PathBuf>, right: &HashSet<PathBuf>) -> PathSample {
-    let mut paths: Vec<PathBuf> = left
-        .iter()
-        .filter(|path| right.contains(*path))
-        .cloned()
-        .collect();
-    paths.sort();
-    PathSample {
-        count: paths.len(),
-        samples: paths.into_iter().take(PATH_SAMPLE_LIMIT).collect(),
-    }
-}
-
-fn symlink_source_missing(path: &Path) -> bool {
-    let Ok(target) = std::fs::read_link(path) else {
-        return false;
-    };
-    let resolved = if target.is_absolute() {
-        target
-    } else {
-        path.parent()
-            .map(|parent| parent.join(&target))
-            .unwrap_or(target)
-    };
-    !resolved.exists()
-}
-
 fn write_anime_remediation_tsv(path: &Path, report: &ReportOutput) -> Result<()> {
     let Some(anime_duplicates) = &report.anime_duplicates else {
         anyhow::bail!("Anime remediation TSV export requires an anime library selection");
@@ -1260,5 +1075,6 @@ fn capitalize(s: &str) -> String {
     }
 }
 
+mod path_compare;
 #[cfg(test)]
 mod tests;
