@@ -1,5 +1,11 @@
 use super::*;
 
+use super::anime::{
+    anime_pack_score, anime_parsed_variant_score, build_anime_request_context,
+    contains_complete_marker, episode_ranges, is_numbering_token, query_has_specific_numbering,
+    season_token_matches,
+};
+
 pub(super) async fn search_dmm_candidates(
     cfg: &Config,
     dmm: &DmmClient,
