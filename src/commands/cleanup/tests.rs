@@ -4,7 +4,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::Executor;
 use std::str::FromStr;
 
-use crate::commands::report::AnimeRootUsageSample;
+use crate::commands::report::{AnimeRemediationSample, AnimeRootUsageSample};
 use crate::config::{
     ApiConfig, BackupConfig, BazarrConfig, CleanupPolicyConfig, Config, ContentType, DaemonConfig,
     DecypharrConfig, DmmConfig, FeaturesConfig, LibraryConfig, MatchingConfig, MediaBrowserConfig,
