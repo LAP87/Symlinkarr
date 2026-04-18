@@ -2,6 +2,7 @@ use super::*;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
+use crate::anime_roots::collect_anime_root_duplicate_groups;
 use crate::config::{
     ApiConfig, BackupConfig, BazarrConfig, CleanupPolicyConfig, ContentType, DaemonConfig,
     DecypharrConfig, DmmConfig, FeaturesConfig, MatchingConfig, MediaBrowserConfig, PlexConfig,
@@ -9,6 +10,7 @@ use crate::config::{
     SymlinkConfig, TautulliConfig, WebConfig,
 };
 use crate::db::Database;
+use crate::media_servers::plex_db;
 use crate::models::{LinkRecord, LinkStatus, MediaType};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
