@@ -1,5 +1,4 @@
-use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -20,6 +19,14 @@ use crate::source_scanner::{ParserKind, SourceScanner};
 use crate::utils::{normalize, user_println, ProgressLine};
 
 pub(crate) use self::metadata::fetch_metadata_static;
+pub(crate) use self::scoring::best_alias_score;
+use self::scoring::{
+    build_alias_token_index, candidate_library_indices, destination_key, expand_episode_slots,
+    insert_or_replace, is_better_candidate, select_top_two, should_reject_ambiguous_scores,
+    source_path_contains_media_id,
+};
+#[cfg(test)]
+use self::scoring::{should_reject_ambiguous, should_replace_destination};
 
 #[derive(Debug, Clone)]
 struct MatchCandidate {
@@ -592,6 +599,219 @@ fn parser_kind_for_content(content_type: ContentType) -> ParserKind {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn match_source_slice(
+    start_idx: usize,
+    source_items: &[SourceItem],
+    library_items: &[LibraryItem],
+    alias_map: &HashMap<usize, Vec<String>>,
+    metadata_map: &HashMap<usize, Option<ContentMetadata>>,
+    alias_token_index: &HashMap<String, Vec<usize>>,
+    mode: MatchingMode,
+    allow_global_fallback: bool,
+    anime_identity: Option<&AnimeIdentityGraph>,
+) -> MatchChunkResult {
+    let parser = SourceScanner::new();
+    let mut best_per_source = Vec::new();
+    let mut ambiguous_skipped = 0usize;
+    let mut prefiltered_library_candidates = 0usize;
+    let mut scored_candidates = 0usize;
+    let mut exact_id_hits = 0usize;
+    let mut skip_reasons = BTreeMap::new();
+
+    for (offset, source) in source_items.iter().enumerate() {
+        let source_idx = start_idx + offset;
+        let mut variants: HashMap<ParserKind, SourceItem> = HashMap::new();
+        for (kind, parsed) in parser.parse_dual_variants(&source.path) {
+            variants.insert(kind, parsed);
+        }
+        if variants.is_empty() {
+            variants.insert(ParserKind::Standard, source.clone());
+        }
+
+        let mut diagnostics = MatchSkipDiagnostics::default();
+        let mut candidates_by_media: HashMap<String, MatchCandidate> = HashMap::new();
+        let candidate_library_indices = candidate_library_indices(
+            &variants,
+            alias_token_index,
+            library_items.len(),
+            allow_global_fallback,
+        );
+        let candidate_count = candidate_library_indices.len();
+        prefiltered_library_candidates += candidate_count;
+
+        // Early-exit: if the source file path contains a library item's exact media ID
+        // (e.g. "tvdb-81189" embedded in the RD path), skip scoring and use it directly.
+        let source_path_str = source.path.to_string_lossy();
+        if let Some(exact_idx) = candidate_library_indices.iter().copied().find(|&lib_idx| {
+            let id_str = library_items[lib_idx].id.to_string();
+            source_path_contains_media_id(source_path_str.as_ref(), id_str.as_str())
+        }) {
+            let item = &library_items[exact_idx];
+            let parser_kind = parser_kind_for_content(item.content_type);
+            let metadata = metadata_map.get(&exact_idx).and_then(|meta| meta.as_ref());
+            let parsed = variants
+                .get(&parser_kind)
+                .or_else(|| variants.get(&ParserKind::Standard))
+                .or_else(|| variants.values().next());
+            if let Some(parsed) = parsed {
+                let parsed =
+                    resolve_source_for_library_item(item, parsed, metadata, anime_identity);
+                if let Some(parsed) = parsed {
+                    diagnostics.any_resolved_candidate = true;
+                    if !source_shape_matches_media_type(item, &parsed) {
+                        diagnostics.exact_id_incompatible = true;
+                        continue;
+                    }
+                    diagnostics.any_shape_compatible = true;
+                    if !candidate_metadata_compatible(item, &parsed, metadata) {
+                        diagnostics.exact_id_incompatible = true;
+                        continue;
+                    }
+                    diagnostics.any_metadata_compatible = true;
+                    let media_id = item.id.to_string();
+                    let aliases = alias_map
+                        .get(&exact_idx)
+                        .map(|v| v.as_slice())
+                        .unwrap_or(&[]);
+                    let normalized_source = normalize(&parsed.parsed_title);
+                    if !normalized_source.is_empty() {
+                        diagnostics.any_non_empty_title = true;
+                    }
+                    if !aliases.is_empty() {
+                        diagnostics.any_aliases_available = true;
+                    }
+                    let matched_alias = aliases
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| item.title.clone());
+                    let score = if normalized_source.is_empty() {
+                        1.0
+                    } else {
+                        best_alias_score(mode, aliases, &normalized_source)
+                            .map(|(s, _)| s)
+                            .unwrap_or(1.0)
+                    };
+                    diagnostics.any_alias_score = true;
+                    best_per_source.push(MatchCandidate {
+                        source_idx,
+                        library_idx: exact_idx,
+                        media_id,
+                        score,
+                        alias: matched_alias,
+                        source_item: parsed,
+                    });
+                    exact_id_hits += 1;
+                    continue;
+                }
+            }
+        }
+
+        for library_idx in candidate_library_indices {
+            let item = &library_items[library_idx];
+            let parser_kind = parser_kind_for_content(item.content_type);
+            let parsed = variants
+                .get(&parser_kind)
+                .or_else(|| variants.get(&ParserKind::Standard))
+                .or_else(|| variants.values().next());
+
+            let Some(parsed) = parsed else {
+                continue;
+            };
+            let metadata = metadata_map
+                .get(&library_idx)
+                .and_then(|meta| meta.as_ref());
+            let parsed = resolve_source_for_library_item(item, parsed, metadata, anime_identity);
+            let Some(parsed) = parsed else {
+                continue;
+            };
+            diagnostics.any_resolved_candidate = true;
+
+            if !source_shape_matches_media_type(item, &parsed) {
+                continue;
+            }
+            diagnostics.any_shape_compatible = true;
+            if !candidate_metadata_compatible(item, &parsed, metadata) {
+                continue;
+            }
+            diagnostics.any_metadata_compatible = true;
+
+            let normalized_source = normalize(&parsed.parsed_title);
+            if normalized_source.is_empty() {
+                continue;
+            }
+            diagnostics.any_non_empty_title = true;
+
+            let Some(aliases) = alias_map.get(&library_idx) else {
+                continue;
+            };
+            if !aliases.is_empty() {
+                diagnostics.any_aliases_available = true;
+            }
+
+            let Some((score, matched_alias)) = best_alias_score(mode, aliases, &normalized_source)
+            else {
+                continue;
+            };
+            diagnostics.any_alias_score = true;
+            scored_candidates += 1;
+
+            let candidate = MatchCandidate {
+                source_idx,
+                library_idx,
+                media_id: item.id.to_string(),
+                score,
+                alias: matched_alias,
+                source_item: parsed,
+            };
+
+            match candidates_by_media.get(&candidate.media_id) {
+                Some(existing) if !is_better_candidate(&candidate, existing) => {}
+                _ => {
+                    candidates_by_media.insert(candidate.media_id.clone(), candidate);
+                }
+            }
+        }
+
+        let candidates: Vec<MatchCandidate> = candidates_by_media.into_values().collect();
+        if candidates.is_empty() {
+            increment_skip_reason(
+                &mut skip_reasons,
+                dominant_match_skip_reason(&diagnostics, candidate_count),
+            );
+            continue;
+        }
+
+        let (best, second) = select_top_two(&candidates);
+        let Some(best) = best else {
+            continue;
+        };
+        if let Some(second) = second {
+            if should_reject_ambiguous_scores(mode, best.score, second.score) {
+                debug!(
+                    "Ambiguous source skipped: {:?} (top={:.3}, second={:.3})",
+                    source.path, best.score, second.score
+                );
+                ambiguous_skipped += 1;
+                increment_skip_reason(&mut skip_reasons, "ambiguous_match");
+                continue;
+            }
+        }
+
+        best_per_source.push(best);
+    }
+
+    MatchChunkResult {
+        processed: source_items.len(),
+        ambiguous_skipped,
+        prefiltered_library_candidates,
+        scored_candidates,
+        exact_id_hits,
+        skip_reasons,
+        best_per_source,
+    }
+}
+
 fn resolve_source_for_library_item(
     item: &LibraryItem,
     parsed: &SourceItem,
@@ -828,543 +1048,7 @@ fn resolve_cumulative_anime_episode(
     None
 }
 
-fn insert_or_replace(
-    by_destination: &mut HashMap<DestinationKey, MatchCandidate>,
-    key: DestinationKey,
-    candidate: MatchCandidate,
-) {
-    match by_destination.get(&key) {
-        None => {
-            by_destination.insert(key, candidate);
-        }
-        Some(existing) => {
-            if should_replace_destination(existing, &candidate) {
-                by_destination.insert(key, candidate);
-            }
-        }
-    }
-}
-
-/// Expand a source item into its covered episode numbers.
-/// Single-episode files return `[episode]`; multi-episode files return `[start..=end]`.
-/// Returns an empty vec for movies or items without episode info.
-/// Capped at 24 episodes per file to prevent pathological expansion from parser bugs.
-fn expand_episode_slots(source: &SourceItem) -> Vec<u32> {
-    const MAX_MULTI_EPISODE_SPAN: u32 = 24;
-
-    match (source.episode, source.episode_end) {
-        (Some(start), Some(end)) if end > start && (end - start) < MAX_MULTI_EPISODE_SPAN => {
-            (start..=end).collect()
-        }
-        (Some(start), Some(end)) if end > start => {
-            warn!(
-                "Multi-episode span too large ({}-{}); capping at first episode only: {:?}",
-                start, end, source.path
-            );
-            vec![start]
-        }
-        (Some(ep), _) => vec![ep],
-        _ => vec![], // Movies or items without episode info
-    }
-}
-
-fn destination_key(item: &LibraryItem, source: &SourceItem) -> Option<DestinationKey> {
-    let media_id = item.id.to_string();
-    match item.media_type {
-        MediaType::Movie => Some(DestinationKey::Movie { media_id }),
-        MediaType::Tv => Some(DestinationKey::Tv {
-            media_id,
-            season: source.season?,
-            episode: source.episode?,
-        }),
-    }
-}
-
-fn should_replace_destination(existing: &MatchCandidate, challenger: &MatchCandidate) -> bool {
-    candidate_cmp(challenger, existing).is_gt()
-}
-
-pub(crate) fn best_alias_score(
-    mode: MatchingMode,
-    aliases: &[String],
-    normalized_source: &str,
-) -> Option<(f64, String)> {
-    let mut best: Option<(f64, String)> = None;
-
-    for alias in aliases {
-        if alias.is_empty() {
-            continue;
-        }
-
-        let score = if alias == normalized_source {
-            1.0
-        } else {
-            match mode {
-                MatchingMode::Strict => prefix_word_boundary_score(alias, normalized_source, 0.70),
-                MatchingMode::Balanced => {
-                    prefix_word_boundary_score(alias, normalized_source, 0.60)
-                        .max(prefix_any_score(alias, normalized_source, 0.70) * 0.9)
-                }
-                MatchingMode::Aggressive => {
-                    let s1 = prefix_any_score(alias, normalized_source, 0.55);
-                    let s2 = contains_score(alias, normalized_source, 0.55);
-                    s1.max(s2 * 0.8)
-                }
-            }
-        };
-
-        if score <= 0.0 {
-            continue;
-        }
-
-        match &best {
-            None => best = Some((score, alias.clone())),
-            Some((current, current_alias)) => {
-                let better = score > *current
-                    || (score == *current && alias.len() > current_alias.len())
-                    || (score == *current
-                        && alias.len() == current_alias.len()
-                        && alias < current_alias);
-                if better {
-                    best = Some((score, alias.clone()));
-                }
-            }
-        }
-    }
-
-    best
-}
-
-fn prefix_word_boundary_score(alias: &str, source: &str, min_ratio: f64) -> f64 {
-    if let Some(rest) = source.strip_prefix(alias) {
-        if rest.starts_with(' ') {
-            let ratio = alias.len() as f64 / source.len() as f64;
-            if ratio >= min_ratio {
-                return ratio;
-            }
-        }
-    }
-    0.0
-}
-
-fn prefix_any_score(alias: &str, source: &str, min_ratio: f64) -> f64 {
-    if source.starts_with(alias) {
-        let ratio = alias.len() as f64 / source.len() as f64;
-        if ratio >= min_ratio {
-            return ratio;
-        }
-    }
-    0.0
-}
-
-fn contains_score(alias: &str, source: &str, min_ratio: f64) -> f64 {
-    if source.contains(alias) {
-        let ratio = alias.len() as f64 / source.len() as f64;
-        if ratio >= min_ratio {
-            return ratio;
-        }
-    }
-    0.0
-}
-
-fn build_alias_token_index(alias_map: &HashMap<usize, Vec<String>>) -> HashMap<String, Vec<usize>> {
-    let mut index: HashMap<String, Vec<usize>> = HashMap::new();
-
-    for (library_idx, aliases) in alias_map {
-        for alias in aliases {
-            for token in alias_lookup_tokens(alias) {
-                index.entry(token).or_default().push(*library_idx);
-            }
-        }
-    }
-
-    for indices in index.values_mut() {
-        indices.sort_unstable();
-        indices.dedup();
-    }
-
-    index
-}
-
-fn alias_lookup_tokens(title: &str) -> Vec<String> {
-    title
-        .split_whitespace()
-        .filter(|token| token.len() >= 2)
-        .map(|token| token.to_string())
-        .collect()
-}
-
-fn source_lookup_tokens(variants: &HashMap<ParserKind, SourceItem>) -> Vec<String> {
-    let mut tokens = HashSet::new();
-
-    for parsed in variants.values() {
-        let normalized = normalize(&parsed.parsed_title);
-        if normalized.is_empty() {
-            continue;
-        }
-        for token in alias_lookup_tokens(&normalized) {
-            tokens.insert(token);
-        }
-    }
-
-    let mut sorted: Vec<String> = tokens.into_iter().collect();
-    sorted.sort();
-    sorted
-}
-
-/// Maximum number of library candidates passed to the scoring phase per source item.
-/// Prevents O(n²) blowup when many library items share common tokens like "the" or "a".
-const MAX_CANDIDATES_PER_SOURCE: usize = 50;
-
-fn candidate_library_indices(
-    variants: &HashMap<ParserKind, SourceItem>,
-    alias_token_index: &HashMap<String, Vec<usize>>,
-    library_count: usize,
-    allow_global_fallback: bool,
-) -> Vec<usize> {
-    let tokens = source_lookup_tokens(variants);
-    if tokens.is_empty() {
-        return if allow_global_fallback {
-            (0..library_count).collect()
-        } else {
-            Vec::new()
-        };
-    }
-
-    // Count token overlaps per library index.
-    let mut overlap_counts: HashMap<usize, usize> = HashMap::new();
-    for token in &tokens {
-        if let Some(indices) = alias_token_index.get(token) {
-            for idx in indices {
-                *overlap_counts.entry(*idx).or_insert(0) += 1;
-            }
-        }
-    }
-
-    if overlap_counts.is_empty() {
-        return if allow_global_fallback {
-            (0..library_count).collect()
-        } else {
-            Vec::new()
-        };
-    }
-
-    // Sort by overlap count descending, then by index for determinism, and cap.
-    let mut ranked: Vec<(usize, usize)> = overlap_counts.into_iter().collect();
-    ranked.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    ranked.truncate(MAX_CANDIDATES_PER_SOURCE);
-
-    let mut indices: Vec<usize> = ranked.into_iter().map(|(idx, _)| idx).collect();
-    indices.sort_unstable();
-    indices
-}
-
-fn source_path_contains_media_id(source_path: &str, media_id: &str) -> bool {
-    source_path.match_indices(media_id).any(|(idx, _)| {
-        let before = source_path[..idx].chars().next_back();
-        let after = source_path[idx + media_id.len()..].chars().next();
-        let before_ok = before.is_none_or(|ch| !ch.is_ascii_alphanumeric());
-        let after_ok = after.is_none_or(|ch| !ch.is_ascii_alphanumeric());
-        before_ok && after_ok
-    })
-}
-
-#[allow(clippy::too_many_arguments)]
-fn match_source_slice(
-    start_idx: usize,
-    source_items: &[SourceItem],
-    library_items: &[LibraryItem],
-    alias_map: &HashMap<usize, Vec<String>>,
-    metadata_map: &HashMap<usize, Option<ContentMetadata>>,
-    alias_token_index: &HashMap<String, Vec<usize>>,
-    mode: MatchingMode,
-    allow_global_fallback: bool,
-    anime_identity: Option<&AnimeIdentityGraph>,
-) -> MatchChunkResult {
-    let parser = SourceScanner::new();
-    let mut best_per_source = Vec::new();
-    let mut ambiguous_skipped = 0usize;
-    let mut prefiltered_library_candidates = 0usize;
-    let mut scored_candidates = 0usize;
-    let mut exact_id_hits = 0usize;
-    let mut skip_reasons = BTreeMap::new();
-
-    for (offset, source) in source_items.iter().enumerate() {
-        let source_idx = start_idx + offset;
-        let mut variants: HashMap<ParserKind, SourceItem> = HashMap::new();
-        for (kind, parsed) in parser.parse_dual_variants(&source.path) {
-            variants.insert(kind, parsed);
-        }
-        if variants.is_empty() {
-            variants.insert(ParserKind::Standard, source.clone());
-        }
-
-        let mut diagnostics = MatchSkipDiagnostics::default();
-        let mut candidates_by_media: HashMap<String, MatchCandidate> = HashMap::new();
-        let candidate_library_indices = candidate_library_indices(
-            &variants,
-            alias_token_index,
-            library_items.len(),
-            allow_global_fallback,
-        );
-        let candidate_count = candidate_library_indices.len();
-        prefiltered_library_candidates += candidate_count;
-
-        // Early-exit: if the source file path contains a library item's exact media ID
-        // (e.g. "tvdb-81189" embedded in the RD path), skip scoring and use it directly.
-        let source_path_str = source.path.to_string_lossy();
-        if let Some(exact_idx) = candidate_library_indices.iter().copied().find(|&lib_idx| {
-            let id_str = library_items[lib_idx].id.to_string();
-            source_path_contains_media_id(source_path_str.as_ref(), id_str.as_str())
-        }) {
-            let item = &library_items[exact_idx];
-            let parser_kind = parser_kind_for_content(item.content_type);
-            let metadata = metadata_map.get(&exact_idx).and_then(|meta| meta.as_ref());
-            let parsed = variants
-                .get(&parser_kind)
-                .or_else(|| variants.get(&ParserKind::Standard))
-                .or_else(|| variants.values().next());
-            if let Some(parsed) = parsed {
-                let parsed =
-                    resolve_source_for_library_item(item, parsed, metadata, anime_identity);
-                if let Some(parsed) = parsed {
-                    diagnostics.any_resolved_candidate = true;
-                    if !source_shape_matches_media_type(item, &parsed) {
-                        diagnostics.exact_id_incompatible = true;
-                        continue;
-                    }
-                    diagnostics.any_shape_compatible = true;
-                    if !candidate_metadata_compatible(item, &parsed, metadata) {
-                        diagnostics.exact_id_incompatible = true;
-                        continue;
-                    }
-                    diagnostics.any_metadata_compatible = true;
-                    let media_id = item.id.to_string();
-                    let aliases = alias_map
-                        .get(&exact_idx)
-                        .map(|v| v.as_slice())
-                        .unwrap_or(&[]);
-                    let normalized_source = normalize(&parsed.parsed_title);
-                    if !normalized_source.is_empty() {
-                        diagnostics.any_non_empty_title = true;
-                    }
-                    if !aliases.is_empty() {
-                        diagnostics.any_aliases_available = true;
-                    }
-                    let matched_alias = aliases
-                        .first()
-                        .cloned()
-                        .unwrap_or_else(|| item.title.clone());
-                    let score = if normalized_source.is_empty() {
-                        1.0
-                    } else {
-                        best_alias_score(mode, aliases, &normalized_source)
-                            .map(|(s, _)| s)
-                            .unwrap_or(1.0)
-                    };
-                    diagnostics.any_alias_score = true;
-                    best_per_source.push(MatchCandidate {
-                        source_idx,
-                        library_idx: exact_idx,
-                        media_id,
-                        score,
-                        alias: matched_alias,
-                        source_item: parsed,
-                    });
-                    exact_id_hits += 1;
-                    continue;
-                }
-            }
-        }
-
-        for library_idx in candidate_library_indices {
-            let item = &library_items[library_idx];
-            let parser_kind = parser_kind_for_content(item.content_type);
-            let parsed = variants
-                .get(&parser_kind)
-                .or_else(|| variants.get(&ParserKind::Standard))
-                .or_else(|| variants.values().next());
-
-            let Some(parsed) = parsed else {
-                continue;
-            };
-            let metadata = metadata_map
-                .get(&library_idx)
-                .and_then(|meta| meta.as_ref());
-            let parsed = resolve_source_for_library_item(item, parsed, metadata, anime_identity);
-            let Some(parsed) = parsed else {
-                continue;
-            };
-            diagnostics.any_resolved_candidate = true;
-
-            if !source_shape_matches_media_type(item, &parsed) {
-                continue;
-            }
-            diagnostics.any_shape_compatible = true;
-            if !candidate_metadata_compatible(item, &parsed, metadata) {
-                continue;
-            }
-            diagnostics.any_metadata_compatible = true;
-
-            let normalized_source = normalize(&parsed.parsed_title);
-            if normalized_source.is_empty() {
-                continue;
-            }
-            diagnostics.any_non_empty_title = true;
-
-            let Some(aliases) = alias_map.get(&library_idx) else {
-                continue;
-            };
-            if !aliases.is_empty() {
-                diagnostics.any_aliases_available = true;
-            }
-
-            let Some((score, matched_alias)) = best_alias_score(mode, aliases, &normalized_source)
-            else {
-                continue;
-            };
-            diagnostics.any_alias_score = true;
-            scored_candidates += 1;
-
-            let candidate = MatchCandidate {
-                source_idx,
-                library_idx,
-                media_id: item.id.to_string(),
-                score,
-                alias: matched_alias,
-                source_item: parsed,
-            };
-
-            match candidates_by_media.get(&candidate.media_id) {
-                Some(existing) if !is_better_candidate(&candidate, existing) => {}
-                _ => {
-                    candidates_by_media.insert(candidate.media_id.clone(), candidate);
-                }
-            }
-        }
-
-        let candidates: Vec<MatchCandidate> = candidates_by_media.into_values().collect();
-        if candidates.is_empty() {
-            increment_skip_reason(
-                &mut skip_reasons,
-                dominant_match_skip_reason(&diagnostics, candidate_count),
-            );
-            continue;
-        }
-
-        let (best, second) = select_top_two(&candidates);
-        let Some(best) = best else {
-            continue;
-        };
-        if let Some(second) = second {
-            if should_reject_ambiguous_scores(mode, best.score, second.score) {
-                debug!(
-                    "Ambiguous source skipped: {:?} (top={:.3}, second={:.3})",
-                    source.path, best.score, second.score
-                );
-                ambiguous_skipped += 1;
-                increment_skip_reason(&mut skip_reasons, "ambiguous_match");
-                continue;
-            }
-        }
-
-        best_per_source.push(best);
-    }
-
-    MatchChunkResult {
-        processed: source_items.len(),
-        ambiguous_skipped,
-        prefiltered_library_candidates,
-        scored_candidates,
-        exact_id_hits,
-        skip_reasons,
-        best_per_source,
-    }
-}
-
-fn candidate_cmp(a: &MatchCandidate, b: &MatchCandidate) -> Ordering {
-    a.score
-        .partial_cmp(&b.score)
-        .unwrap_or(Ordering::Equal)
-        .then_with(|| {
-            quality_rank(a.source_item.quality.as_deref())
-                .cmp(&quality_rank(b.source_item.quality.as_deref()))
-        })
-        .then_with(|| a.alias.len().cmp(&b.alias.len()))
-        .then_with(|| {
-            let a_path = a.source_item.path.to_string_lossy();
-            let b_path = b.source_item.path.to_string_lossy();
-            b_path.cmp(&a_path)
-        })
-}
-
-fn quality_rank(quality: Option<&str>) -> u8 {
-    match quality.map(|value| value.to_ascii_lowercase()) {
-        Some(value) if value == "2160p" || value == "4k" => 4,
-        Some(value) if value == "1080p" => 3,
-        Some(value) if value == "720p" => 2,
-        Some(value) if value == "480p" => 1,
-        Some(_) => 1,
-        None => 0,
-    }
-}
-
-fn is_better_candidate(challenger: &MatchCandidate, existing: &MatchCandidate) -> bool {
-    candidate_cmp(challenger, existing).is_gt()
-}
-
-fn select_top_two(
-    candidates: &[MatchCandidate],
-) -> (Option<MatchCandidate>, Option<MatchCandidate>) {
-    let mut best: Option<&MatchCandidate> = None;
-    let mut second: Option<&MatchCandidate> = None;
-
-    for candidate in candidates {
-        match best {
-            None => {
-                best = Some(candidate);
-            }
-            Some(current_best) if is_better_candidate(candidate, current_best) => {
-                second = best;
-                best = Some(candidate);
-            }
-            _ => match second {
-                None => second = Some(candidate),
-                Some(current_second) if is_better_candidate(candidate, current_second) => {
-                    second = Some(candidate);
-                }
-                _ => {}
-            },
-        }
-    }
-
-    (best.cloned(), second.cloned())
-}
-
-fn should_reject_ambiguous_scores(mode: MatchingMode, best: f64, second: f64) -> bool {
-    let threshold = match mode {
-        MatchingMode::Strict => Some(0.08),
-        MatchingMode::Balanced => Some(0.04),
-        MatchingMode::Aggressive => None,
-    };
-
-    let Some(threshold) = threshold else {
-        return false;
-    };
-
-    (best - second) < threshold
-}
-
-#[allow(dead_code)] // Covered via unit tests and kept for diagnostic reuse
-fn should_reject_ambiguous(mode: MatchingMode, candidates: &[MatchCandidate]) -> bool {
-    let (best, second) = select_top_two(candidates);
-    let (Some(best), Some(second)) = (best, second) else {
-        return false;
-    };
-
-    should_reject_ambiguous_scores(mode, best.score, second.score)
-}
-
 mod metadata;
+mod scoring;
 #[cfg(test)]
 mod tests;
