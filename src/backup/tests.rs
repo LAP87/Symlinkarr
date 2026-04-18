@@ -6,6 +6,8 @@ use crate::config::{
     TautulliConfig, WebConfig,
 };
 use crate::db::Database;
+use crate::models::LinkRecord;
+use crate::utils::PathHealth;
 
 fn test_config(dir: &Path) -> BackupConfig {
     BackupConfig {
