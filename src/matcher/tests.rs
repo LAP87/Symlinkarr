@@ -1,11 +1,10 @@
-
 use super::*;
 use std::path::{Path, PathBuf};
 use tempfile::tempdir;
 
 use crate::anime_identity::AnimeIdentityGraph;
 use crate::db::Database;
-use crate::models::{EpisodeInfo, SeasonInfo};
+use crate::models::{EpisodeInfo, MediaId, SeasonInfo};
 
 fn metadata_with_seasons(seasons: &[(u32, u32)]) -> ContentMetadata {
     ContentMetadata {
