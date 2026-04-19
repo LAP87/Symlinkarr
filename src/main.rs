@@ -1217,4 +1217,43 @@ mod tests {
         assert!(!config_path.parent().unwrap().join("data/restored.db").exists());
         assert!(!config_path.parent().unwrap().join("secrets/restored-token").exists());
     }
+
+    #[tokio::test]
+    async fn auto_restore_surfaces_config_load_failures_after_writing_files() {
+        let _lock = startup_fs_lock().lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let _cwd = CurrentDirGuard::enter(dir.path());
+        let backup_dir = dir.path().join("backups");
+        let config_path = dir.path().join("install").join("config.yaml");
+        std::fs::create_dir_all(&backup_dir).unwrap();
+
+        write_backup_fixture(
+            &backup_dir,
+            "scheduled",
+            Utc.with_ymd_and_hms(2026, 4, 16, 12, 0, 0).unwrap(),
+            backup::BackupType::Scheduled,
+            "db_path: [unterminated\n",
+            "restored-secret\n",
+            "restored-db",
+        );
+
+        let cli = Cli::try_parse_from([
+            "symlinkarr",
+            "--config",
+            config_path.to_str().unwrap(),
+            "doctor",
+        ])
+        .unwrap();
+        let err = try_auto_restore(&cli).await.unwrap_err();
+
+        assert!(!err.to_string().is_empty());
+        assert_eq!(
+            std::fs::read_to_string(&config_path).unwrap(),
+            "db_path: [unterminated\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(config_path.parent().unwrap().join("symlinkarr.db")).unwrap(),
+            "restored-db"
+        );
+    }
 }
