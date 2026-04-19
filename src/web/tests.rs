@@ -199,6 +199,10 @@ async fn remote_guarded_router() -> (Router, String, String) {
     (create_router(WebState::new(cfg, db)), username, password)
 }
 
+fn noconfig_router() -> Router {
+    Router::new().route("/", axum::routing::get(handlers::get_noconfig))
+}
+
 async fn get_html(router: &Router, path: &str) -> (u16, String) {
     let response = router
         .clone()
@@ -375,6 +379,21 @@ async fn cleanup_page_exposes_audit_form_and_dead_link_entrypoint() {
     assert!(cleanup_page.contains("action=\"/cleanup/audit\""));
     assert!(cleanup_page.contains("name=\"libraries\""));
     assert!(cleanup_page.contains("href=\"/links/dead\""));
+}
+
+#[tokio::test]
+async fn noconfig_page_exposes_restore_and_bootstrap_paths() {
+    let router = noconfig_router();
+    let (status, page) = get_html(&router, "/").await;
+
+    assert_eq!(status, 200);
+    assert!(page.contains("Setup required"));
+    assert!(page.contains("Restore from backup"));
+    assert!(page.contains("Create new installation"));
+    assert!(page.contains("symlinkarr restore &lt;path-to-backup.json&gt;"));
+    assert!(page.contains("symlinkarr bootstrap"));
+    assert!(page.contains("/wiki/Getting-Started"));
+    assert!(page.contains("Auto-restore:"));
 }
 
 #[tokio::test]
