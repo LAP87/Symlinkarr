@@ -15,7 +15,10 @@ use crate::config::{
 };
 use crate::db::{AcquisitionJobSeed, AcquisitionRelinkKind, Database, ScanRunRecord};
 use crate::models::{LinkRecord, LinkStatus, MediaType};
-use crate::web::{ActiveCleanupAuditJob, ActiveScanJob, LastCleanupAuditOutcome, LastScanOutcome};
+use crate::web::{
+    ActiveCleanupAuditJob, ActiveRepairJob, ActiveScanJob, LastCleanupAuditOutcome,
+    LastRepairOutcome, LastScanOutcome,
+};
 
 struct TestWebContext {
     _dir: TempDir,
@@ -284,6 +287,90 @@ async fn dashboard_renders_deferred_refresh_backlog() {
     assert!(body.contains("Media Refresh Backlog"));
     assert!(body.contains("Plex"));
     assert!(body.contains("Jellyfin"));
+}
+
+#[tokio::test]
+async fn dashboard_renders_live_activity_feed() {
+    let ctx = test_context().await;
+    ctx.state
+        .set_active_scan_for_test(Some(ActiveScanJob {
+            started_at: "2026-04-19 21:15:00 UTC".to_string(),
+            scope_label: "Anime".to_string(),
+            dry_run: true,
+            search_missing: true,
+        }))
+        .await;
+    ctx.state
+        .set_last_cleanup_audit_outcome_for_test(Some(LastCleanupAuditOutcome {
+            finished_at: "2026-04-19 21:18:00 UTC".to_string(),
+            scope_label: "Anime".to_string(),
+            libraries_label: "Anime".to_string(),
+            success: true,
+            message: "Cleanup report saved.".to_string(),
+            report_path: Some("/tmp/cleanup-audit-anime.json".to_string()),
+        }))
+        .await;
+    ctx.state
+        .set_last_repair_outcome_for_test(Some(LastRepairOutcome {
+            finished_at: "2026-04-19 21:19:00 UTC".to_string(),
+            scope_label: "All Libraries".to_string(),
+            success: true,
+            message: "Repair queue drained.".to_string(),
+            repaired: 3,
+            failed: 0,
+            skipped: 1,
+            stale: 0,
+        }))
+        .await;
+
+    let body = render_body(get_dashboard(State(ctx.state.clone())).await).await;
+
+    assert!(body.contains("Live Activity"));
+    assert!(body.contains("Running now"));
+    assert!(body.contains("Latest outcomes"));
+    assert!(body.contains("Background scan is in progress."));
+    assert!(body.contains("Cleanup report saved."));
+    assert!(body.contains("Repair queue drained."));
+    assert!(body.contains("hx-get=\"/dashboard/activity-feed\""));
+    assert!(body.contains("Open Dead Links"));
+}
+
+#[tokio::test]
+async fn dashboard_activity_feed_fragment_renders_running_and_recent_work() {
+    let ctx = test_context().await;
+    ctx.state
+        .set_active_cleanup_audit_for_test(Some(ActiveCleanupAuditJob {
+            started_at: "2026-04-19 21:16:00 UTC".to_string(),
+            scope_label: "Anime".to_string(),
+            libraries_label: "Anime".to_string(),
+        }))
+        .await;
+    ctx.state
+        .set_active_repair_for_test(Some(ActiveRepairJob {
+            started_at: "2026-04-19 21:17:00 UTC".to_string(),
+            scope_label: "All Libraries".to_string(),
+        }))
+        .await;
+    ctx.state
+        .set_last_scan_outcome_for_test(Some(LastScanOutcome {
+            finished_at: "2026-04-19 21:18:00 UTC".to_string(),
+            scope_label: "Anime".to_string(),
+            dry_run: false,
+            search_missing: true,
+            success: false,
+            message: "RD cache sync failed".to_string(),
+        }))
+        .await;
+
+    let body = render_body(get_dashboard_activity_feed(State(ctx.state.clone())).await).await;
+
+    assert!(body.contains("Cleanup Audit"));
+    assert!(body.contains("Repair"));
+    assert!(body.contains("Audit is building a new cleanup report."));
+    assert!(body.contains("Repair is checking tracked dead links."));
+    assert!(body.contains("RD cache sync failed"));
+    assert!(body.contains("Open Cleanup"));
+    assert!(body.contains("Open Dead Links"));
 }
 
 #[tokio::test]

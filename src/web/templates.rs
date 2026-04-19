@@ -508,10 +508,49 @@ fn cleanup_scope_label(scope: CleanupScope) -> &'static str {
 #[template(path = "web/ui/dashboard.html")]
 pub struct DashboardTemplate {
     pub stats: DashboardStats,
+    pub activity_feed: DashboardActivityFeedView,
     pub latest_run: Option<ScanRunView>,
     pub recent_runs: Vec<ScanRunView>,
     pub queue: QueueOverview,
     pub deferred_refresh: DeferredRefreshSummaryView,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DashboardActivityFeedView {
+    pub active_items: Vec<ActivityFeedItemView>,
+    pub recent_items: Vec<ActivityFeedItemView>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ActivityFeedItemView {
+    pub kind_label: String,
+    pub status_label: String,
+    pub status_badge_class: &'static str,
+    pub scope_label: String,
+    pub timestamp_label: String,
+    pub timestamp: String,
+    pub context: Option<String>,
+    pub message: String,
+    pub badges: Vec<ActivityFeedBadgeView>,
+    pub link: Option<ActivityFeedLinkView>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ActivityFeedBadgeView {
+    pub label: String,
+    pub badge_class: &'static str,
+}
+
+#[derive(Debug, Clone)]
+pub struct ActivityFeedLinkView {
+    pub href: String,
+    pub label: String,
+}
+
+#[derive(Template)]
+#[template(path = "web/ui/partials/activity_feed.html")]
+pub struct DashboardActivityFeedTemplate {
+    pub activity_feed: DashboardActivityFeedView,
 }
 
 // ─── Status ─────────────────────────────────────────────────────────
@@ -1032,6 +1071,7 @@ pub struct BackupResultTemplate {
 
 impl_template_into_response!(
     DashboardTemplate,
+    DashboardActivityFeedTemplate,
     StatusTemplate,
     ScanTemplate,
     ScanResultTemplate,

@@ -93,6 +93,50 @@ fn sample_scan_run_view() -> ScanRunView {
     }
 }
 
+fn sample_activity_feed_view() -> DashboardActivityFeedView {
+    DashboardActivityFeedView {
+        active_items: vec![ActivityFeedItemView {
+            kind_label: "Scan".to_string(),
+            status_label: "Running".to_string(),
+            status_badge_class: "badge-warning",
+            scope_label: "Anime".to_string(),
+            timestamp_label: "Started".to_string(),
+            timestamp: "2026-04-19 21:15:00 UTC".to_string(),
+            context: None,
+            message: "Background scan is in progress.".to_string(),
+            badges: vec![
+                ActivityFeedBadgeView {
+                    label: "Dry Run".to_string(),
+                    badge_class: "badge-info",
+                },
+                ActivityFeedBadgeView {
+                    label: "Search Missing".to_string(),
+                    badge_class: "badge-warning",
+                },
+            ],
+            link: Some(ActivityFeedLinkView {
+                href: "/scan".to_string(),
+                label: "Open Scan".to_string(),
+            }),
+        }],
+        recent_items: vec![ActivityFeedItemView {
+            kind_label: "Cleanup Audit".to_string(),
+            status_label: "Completed".to_string(),
+            status_badge_class: "badge-success",
+            scope_label: "Anime".to_string(),
+            timestamp_label: "Finished".to_string(),
+            timestamp: "2026-04-19 21:18:00 UTC".to_string(),
+            context: Some("Libraries: Anime".to_string()),
+            message: "Cleanup report saved.".to_string(),
+            badges: Vec::new(),
+            link: Some(ActivityFeedLinkView {
+                href: "/cleanup".to_string(),
+                label: "Open Cleanup".to_string(),
+            }),
+        }],
+    }
+}
+
 #[test]
 fn dead_links_template_renders_summary_and_actions() {
     let template = DeadLinksTemplate {
@@ -221,6 +265,24 @@ fn scan_template_renders_top_skip_reason_summary() {
     assert!(html.contains("Top Skip Reasons"));
     assert!(html.contains("Matcher: Ambiguous match 70"));
     assert!(html.contains("Open the detail view for grouped counts and raw reason codes."));
+}
+
+#[test]
+fn dashboard_activity_feed_template_renders_active_and_recent_items() {
+    let template = DashboardActivityFeedTemplate {
+        activity_feed: sample_activity_feed_view(),
+    };
+
+    let html = template.render().unwrap();
+    assert!(html.contains("Live Activity"));
+    assert!(html.contains("Running now"));
+    assert!(html.contains("Latest outcomes"));
+    assert!(html.contains("Background scan is in progress."));
+    assert!(html.contains("Cleanup report saved."));
+    assert!(html.contains("Refresh 5s"));
+    assert!(html.contains("hx-get=\"/dashboard/activity-feed\""));
+    assert!(html.contains("Open Scan"));
+    assert!(html.contains("Open Cleanup"));
 }
 
 #[test]

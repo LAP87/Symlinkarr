@@ -57,7 +57,7 @@ fn resolve_plex_db_path(query_path: Option<&str>) -> Option<PathBuf> {
         .find_map(canonical_plex_db_path)
 }
 
-async fn visible_last_cleanup_audit_outcome(
+pub(super) async fn visible_last_cleanup_audit_outcome(
     state: &WebState,
 ) -> Option<BackgroundCleanupAuditOutcomeView> {
     let latest_report_created_at = latest_cleanup_report_path(&state.config.backup.path)

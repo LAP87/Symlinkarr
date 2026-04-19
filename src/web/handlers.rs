@@ -65,6 +65,177 @@ fn dashboard_stats_from_web_stats(stats: crate::db::WebStats) -> DashboardStats 
     }
 }
 
+fn activity_badge(label: impl Into<String>, badge_class: &'static str) -> ActivityFeedBadgeView {
+    ActivityFeedBadgeView {
+        label: label.into(),
+        badge_class,
+    }
+}
+
+fn activity_link(href: impl Into<String>, label: impl Into<String>) -> ActivityFeedLinkView {
+    ActivityFeedLinkView {
+        href: href.into(),
+        label: label.into(),
+    }
+}
+
+fn scan_activity_badges(dry_run: bool, search_missing: bool) -> Vec<ActivityFeedBadgeView> {
+    let mut badges = Vec::new();
+    badges.push(activity_badge(
+        if dry_run { "Dry Run" } else { "Live" },
+        if dry_run {
+            "badge-info"
+        } else {
+            "badge-success"
+        },
+    ));
+    if search_missing {
+        badges.push(activity_badge("Search Missing", "badge-warning"));
+    }
+    badges
+}
+
+fn activity_timestamp_rank(timestamp: &str) -> String {
+    timestamp.replace(" UTC", "")
+}
+
+async fn dashboard_activity_feed(state: &WebState) -> DashboardActivityFeedView {
+    let mut active_items = Vec::new();
+
+    if let Some(job) = state.active_scan().await {
+        active_items.push(ActivityFeedItemView {
+            kind_label: "Scan".to_string(),
+            status_label: "Running".to_string(),
+            status_badge_class: "badge-warning",
+            scope_label: job.scope_label,
+            timestamp_label: "Started".to_string(),
+            timestamp: job.started_at,
+            context: None,
+            message: "Background scan is in progress.".to_string(),
+            badges: scan_activity_badges(job.dry_run, job.search_missing),
+            link: Some(activity_link("/scan", "Open Scan")),
+        });
+    }
+
+    if let Some(job) = state.active_cleanup_audit().await {
+        active_items.push(ActivityFeedItemView {
+            kind_label: "Cleanup Audit".to_string(),
+            status_label: "Running".to_string(),
+            status_badge_class: "badge-warning",
+            scope_label: job.scope_label,
+            timestamp_label: "Started".to_string(),
+            timestamp: job.started_at,
+            context: Some(format!("Libraries: {}", job.libraries_label)),
+            message: "Audit is building a new cleanup report.".to_string(),
+            badges: Vec::new(),
+            link: Some(activity_link("/cleanup", "Open Cleanup")),
+        });
+    }
+
+    if let Some(job) = state.active_repair().await {
+        active_items.push(ActivityFeedItemView {
+            kind_label: "Repair".to_string(),
+            status_label: "Running".to_string(),
+            status_badge_class: "badge-warning",
+            scope_label: job.scope_label,
+            timestamp_label: "Started".to_string(),
+            timestamp: job.started_at,
+            context: None,
+            message: "Repair is checking tracked dead links.".to_string(),
+            badges: Vec::new(),
+            link: Some(activity_link("/links/dead", "Open Dead Links")),
+        });
+    }
+
+    let mut recent_items = Vec::new();
+
+    if let Some(outcome) = scan::visible_last_scan_outcome(state).await {
+        recent_items.push(ActivityFeedItemView {
+            kind_label: "Scan".to_string(),
+            status_label: if outcome.success {
+                "Completed".to_string()
+            } else {
+                "Failed".to_string()
+            },
+            status_badge_class: if outcome.success {
+                "badge-success"
+            } else {
+                "badge-danger"
+            },
+            scope_label: outcome.scope_label,
+            timestamp_label: "Finished".to_string(),
+            timestamp: outcome.finished_at,
+            context: None,
+            message: outcome.message,
+            badges: scan_activity_badges(outcome.dry_run, outcome.search_missing),
+            link: Some(activity_link("/scan", "Open Scan")),
+        });
+    }
+
+    if let Some(outcome) = cleanup::visible_last_cleanup_audit_outcome(state).await {
+        recent_items.push(ActivityFeedItemView {
+            kind_label: "Cleanup Audit".to_string(),
+            status_label: if outcome.success {
+                "Completed".to_string()
+            } else {
+                "Failed".to_string()
+            },
+            status_badge_class: if outcome.success {
+                "badge-success"
+            } else {
+                "badge-danger"
+            },
+            scope_label: outcome.scope_label,
+            timestamp_label: "Finished".to_string(),
+            timestamp: outcome.finished_at,
+            context: Some(format!("Libraries: {}", outcome.libraries_label)),
+            message: outcome.message,
+            badges: Vec::new(),
+            link: Some(match outcome.report_path {
+                Some(path) => activity_link(format!("/cleanup/prune?report={path}"), "Open Report"),
+                None => activity_link("/cleanup", "Open Cleanup"),
+            }),
+        });
+    }
+
+    if let Some(outcome) = state.last_repair_outcome().await {
+        recent_items.push(ActivityFeedItemView {
+            kind_label: "Repair".to_string(),
+            status_label: if outcome.success {
+                "Completed".to_string()
+            } else {
+                "Failed".to_string()
+            },
+            status_badge_class: if outcome.success {
+                "badge-success"
+            } else {
+                "badge-danger"
+            },
+            scope_label: outcome.scope_label,
+            timestamp_label: "Finished".to_string(),
+            timestamp: outcome.finished_at,
+            context: Some(format!(
+                "Repaired {} | Failed {} | Skipped {} | Stale {}",
+                outcome.repaired, outcome.failed, outcome.skipped, outcome.stale
+            )),
+            message: outcome.message,
+            badges: Vec::new(),
+            link: Some(activity_link("/links/dead", "Open Dead Links")),
+        });
+    }
+
+    recent_items.sort_by(|left, right| {
+        activity_timestamp_rank(&right.timestamp)
+            .cmp(&activity_timestamp_rank(&left.timestamp))
+            .then_with(|| left.kind_label.cmp(&right.kind_label))
+    });
+
+    DashboardActivityFeedView {
+        active_items,
+        recent_items,
+    }
+}
+
 // ─── No-config setup page ──────────────────────────────────────────
 
 pub async fn get_noconfig() -> impl IntoResponse {
@@ -189,12 +360,20 @@ pub async fn get_dashboard(State(state): State<WebState>) -> impl IntoResponse {
 
     let template = DashboardTemplate {
         stats,
+        activity_feed: dashboard_activity_feed(&state).await,
         latest_run,
         recent_runs,
         queue,
         deferred_refresh,
     };
     Html(template.render().unwrap_or_else(|e| e.to_string())).into_response()
+}
+
+/// GET /dashboard/activity-feed - HTMX fragment for live operator activity
+pub async fn get_dashboard_activity_feed(State(state): State<WebState>) -> impl IntoResponse {
+    DashboardActivityFeedTemplate {
+        activity_feed: dashboard_activity_feed(&state).await,
+    }
 }
 
 /// GET /status - Detailed status page

@@ -583,6 +583,16 @@ impl WebState {
     ) {
         self.background_jobs.lock().await.last_cleanup_audit_outcome = outcome;
     }
+
+    #[cfg(test)]
+    pub(crate) async fn set_active_repair_for_test(&self, job: Option<ActiveRepairJob>) {
+        self.background_jobs.lock().await.active_repair = job;
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn set_last_repair_outcome_for_test(&self, outcome: Option<LastRepairOutcome>) {
+        self.background_jobs.lock().await.last_repair_outcome = outcome;
+    }
 }
 
 async fn tracked_dead_link_suffix(database: &Database) -> String {
@@ -667,6 +677,7 @@ fn create_router(state: WebState) -> Router {
     let app_routes = Router::new()
         // Dashboard
         .route("/", get(handlers::get_dashboard))
+        .route("/dashboard/activity-feed", get(handlers::get_dashboard_activity_feed))
         // Status & Health
         .route("/status", get(handlers::get_status))
         .route("/health", get(handlers::get_health))

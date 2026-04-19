@@ -1,0 +1,100 @@
+<section
+    id="dashboard-activity-feed"
+    class="card"
+    hx-get="/dashboard/activity-feed"
+    hx-trigger="every 5s"
+    hx-swap="outerHTML"
+>
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Live Activity</p>
+            <h2 class="section-title">Operator feed <span class="htmx-indicator">&#8987;</span></h2>
+            <p class="text-muted">Tracks active web-triggered work and the latest finished outcomes.</p>
+        </div>
+        <div class="header-badges">
+            <span class="badge badge-info">Refresh 5s</span>
+        </div>
+    </div>
+
+    <div class="activity-feed-grid">
+        <div class="activity-feed-column">
+            <h3 class="subsection-title">Running now</h3>
+            {% if activity_feed.active_items|length == 0 %}
+            <p class="text-muted">No background work is currently running.</p>
+            {% else %}
+            <div class="activity-feed-stack">
+                {% for item in activity_feed.active_items %}
+                <article class="activity-item activity-item--active">
+                    <div class="activity-item__header">
+                        <div>
+                            <p class="section-kicker">{{ item.kind_label }}</p>
+                            <h4 class="activity-item__title">{{ item.scope_label }}</h4>
+                        </div>
+                        <span class="badge {{ item.status_badge_class }}">{{ item.status_label }}</span>
+                    </div>
+                    <p class="text-muted">{{ item.timestamp_label }} {{ item.timestamp }}</p>
+                    {% match item.context %}
+                    {% when Some with (context) %}
+                    <p class="text-muted">{{ context }}</p>
+                    {% when None %}{% endmatch %}
+                    <p>{{ item.message }}</p>
+                    {% if item.badges|length > 0 %}
+                    <div class="activity-item__badges">
+                        {% for badge in item.badges %}
+                        <span class="badge {{ badge.badge_class }}">{{ badge.label }}</span>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+                    {% match item.link %}
+                    {% when Some with (link) %}
+                    <div class="actions">
+                        <a href="{{ link.href }}" class="btn btn-secondary btn-secondary--subtle">{{ link.label }}</a>
+                    </div>
+                    {% when None %}{% endmatch %}
+                </article>
+                {% endfor %}
+            </div>
+            {% endif %}
+        </div>
+
+        <div class="activity-feed-column">
+            <h3 class="subsection-title">Latest outcomes</h3>
+            {% if activity_feed.recent_items|length == 0 %}
+            <p class="text-muted">Finished web-triggered outcomes will appear here after scan, cleanup, or repair jobs complete.</p>
+            {% else %}
+            <div class="activity-feed-stack">
+                {% for item in activity_feed.recent_items %}
+                <article class="activity-item">
+                    <div class="activity-item__header">
+                        <div>
+                            <p class="section-kicker">{{ item.kind_label }}</p>
+                            <h4 class="activity-item__title">{{ item.scope_label }}</h4>
+                        </div>
+                        <span class="badge {{ item.status_badge_class }}">{{ item.status_label }}</span>
+                    </div>
+                    <p class="text-muted">{{ item.timestamp_label }} {{ item.timestamp }}</p>
+                    {% match item.context %}
+                    {% when Some with (context) %}
+                    <p class="text-muted">{{ context }}</p>
+                    {% when None %}{% endmatch %}
+                    <p>{{ item.message }}</p>
+                    {% if item.badges|length > 0 %}
+                    <div class="activity-item__badges">
+                        {% for badge in item.badges %}
+                        <span class="badge {{ badge.badge_class }}">{{ badge.label }}</span>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+                    {% match item.link %}
+                    {% when Some with (link) %}
+                    <div class="actions">
+                        <a href="{{ link.href }}" class="btn btn-secondary btn-secondary--subtle">{{ link.label }}</a>
+                    </div>
+                    {% when None %}{% endmatch %}
+                </article>
+                {% endfor %}
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</section>

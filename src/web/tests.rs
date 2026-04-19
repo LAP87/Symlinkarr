@@ -339,10 +339,24 @@ async fn dashboard_page_exposes_primary_operator_actions() {
 
     assert_eq!(status, 200);
     assert!(dashboard.contains("Dashboard"));
+    assert!(dashboard.contains("Live Activity"));
     assert!(dashboard.contains("href=\"/scan\""));
     assert!(dashboard.contains("href=\"/status\""));
+    assert!(dashboard.contains("hx-get=\"/dashboard/activity-feed\""));
     assert!(dashboard.contains("href=\"/scan/history/"));
     assert!(dashboard.contains("Queue 1"));
+}
+
+#[tokio::test]
+async fn dashboard_activity_feed_route_renders_fragment() {
+    let router = test_router().await;
+    let (status, fragment) = get_html(&router, "/dashboard/activity-feed").await;
+
+    assert_eq!(status, 200);
+    assert!(fragment.contains("Live Activity"));
+    assert!(fragment.contains("Running now"));
+    assert!(fragment.contains("Latest outcomes"));
+    assert!(fragment.contains("hx-get=\"/dashboard/activity-feed\""));
 }
 
 #[tokio::test]
