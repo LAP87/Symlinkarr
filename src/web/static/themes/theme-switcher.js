@@ -181,6 +181,7 @@ class ThemeManager {
         dropdown.style.maxWidth = maxWidth + 'px';
         dropdown.style.left = margin + 'px';
         dropdown.style.top = margin + 'px';
+        dropdown.style.maxHeight = '';
 
         var toggleRect = toggle.getBoundingClientRect();
         var dropdownRect = dropdown.getBoundingClientRect();
@@ -190,21 +191,32 @@ class ThemeManager {
             viewportWidth - dropdownWidth - margin
         );
 
-        var availableHeight = Math.max(0, viewportHeight - (margin * 2));
-        var maxHeight = Math.min(544, availableHeight);
-        if (maxHeight < 180) {
-            maxHeight = Math.max(120, availableHeight);
+        var spaceAbove = Math.max(0, toggleRect.top - margin - gap);
+        var spaceBelow = Math.max(0, viewportHeight - toggleRect.bottom - margin - gap);
+        var placeAbove = spaceAbove >= spaceBelow;
+        var chosenSpace = placeAbove ? spaceAbove : spaceBelow;
+        if (chosenSpace <= 0) {
+            placeAbove = false;
+            chosenSpace = Math.max(spaceAbove, spaceBelow, 0);
         }
-        maxHeight = Math.min(maxHeight, availableHeight || 544);
-        dropdown.style.maxHeight = maxHeight + 'px';
-        dropdownRect = dropdown.getBoundingClientRect();
-        var dropdownHeight = Math.min(dropdownRect.height || dropdown.offsetHeight || maxHeight, maxHeight);
-        var spaceAbove = toggleRect.top - margin - gap;
-        var spaceBelow = viewportHeight - toggleRect.bottom - margin - gap;
-        var preferAbove = spaceAbove >= Math.min(dropdownHeight, 240) || spaceAbove >= spaceBelow;
-        var top = preferAbove
-            ? Math.max(margin, toggleRect.top - dropdownHeight - gap)
-            : Math.min(viewportHeight - dropdownHeight - margin, toggleRect.bottom + gap);
+
+        var maxHeight = Math.min(544, chosenSpace);
+        if (maxHeight <= 0) {
+            maxHeight = Math.max(120, viewportHeight - (margin * 2));
+        }
+
+        dropdown.style.maxHeight = Math.round(maxHeight) + 'px';
+
+        var naturalHeight = dropdown.scrollHeight || maxHeight;
+        var dropdownHeight = Math.min(naturalHeight, maxHeight);
+        var top = placeAbove
+            ? toggleRect.top - dropdownHeight - gap
+            : toggleRect.bottom + gap;
+
+        top = Math.max(
+            margin,
+            Math.min(top, viewportHeight - dropdownHeight - margin)
+        );
 
         dropdown.style.left = Math.round(left) + 'px';
         dropdown.style.top = Math.round(top) + 'px';
