@@ -445,6 +445,59 @@ pub fn restore_app_state_auto(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
+    use tempfile::TempDir;
+
+    fn write_managed_file_artifact(
+        backup_dir: &Path,
+        filename: &str,
+        contents: &str,
+        original_path: PathBuf,
+    ) -> backup::BackupManagedFile {
+        let path = backup_dir.join(filename);
+        std::fs::write(&path, contents).unwrap();
+        backup::BackupManagedFile {
+            filename: filename.to_string(),
+            sha256: "test-sha256".to_string(),
+            size_bytes: contents.len() as u64,
+            original_path,
+        }
+    }
+
+    fn write_database_artifact(
+        backup_dir: &Path,
+        filename: &str,
+        contents: &str,
+    ) -> backup::BackupDatabaseSnapshot {
+        let path = backup_dir.join(filename);
+        std::fs::write(&path, contents).unwrap();
+        backup::BackupDatabaseSnapshot {
+            filename: filename.to_string(),
+            sha256: "test-db-sha256".to_string(),
+            size_bytes: contents.len() as u64,
+        }
+    }
+
+    fn manifest_with_app_state(
+        config_snapshot: backup::BackupManagedFile,
+        secret_snapshot: backup::BackupManagedFile,
+        database_snapshot: backup::BackupDatabaseSnapshot,
+    ) -> backup::BackupManifest {
+        backup::BackupManifest {
+            version: 3,
+            timestamp: Utc::now(),
+            backup_type: backup::BackupType::Scheduled,
+            label: "restore-test".to_string(),
+            symlinks: Vec::new(),
+            total_count: 0,
+            database_snapshot: Some(database_snapshot),
+            app_state: Some(backup::BackupAppState {
+                config_snapshot: Some(config_snapshot),
+                secret_snapshots: vec![secret_snapshot],
+            }),
+            content_sha256: None,
+        }
+    }
 
     #[test]
     fn secret_restore_target_allowed_accepts_config_tree() {
@@ -472,5 +525,141 @@ mod tests {
             Path::new("/app/config"),
             Path::new("/etc/symlinkarr/rd-token")
         ));
+    }
+
+    #[test]
+    fn standalone_restore_uses_targets_from_restored_config() {
+        let dir = TempDir::new().unwrap();
+        let backup_dir = dir.path().join("backups");
+        let config_dir = dir.path().join("install");
+        let external_original_secret = dir.path().join("old-install").join("rd-token");
+        std::fs::create_dir_all(&backup_dir).unwrap();
+
+        let bm = backup::BackupManager::new(&BackupConfig::standalone(backup_dir.clone()));
+        let config_snapshot = write_managed_file_artifact(
+            &backup_dir,
+            "config.snapshot.yaml",
+            "db_path: ./data/symlinkarr.db\nrealdebrid:\n  api_token: \"secretfile:./secrets/rd-token\"\n",
+            dir.path().join("old-install").join("config.yaml"),
+        );
+        let secret_snapshot = write_managed_file_artifact(
+            &backup_dir,
+            "rd-token.secret",
+            "restored-secret\n",
+            external_original_secret.clone(),
+        );
+        let db_snapshot = write_database_artifact(&backup_dir, "symlinkarr.sqlite3", "sqlite-data");
+        let manifest = manifest_with_app_state(config_snapshot, secret_snapshot, db_snapshot);
+
+        let result = restore_app_state_standalone(&bm, &manifest, &config_dir).unwrap();
+
+        assert_eq!(
+            result.config_snapshot_restored,
+            Some(config_dir.join("config.yaml"))
+        );
+        assert_eq!(
+            result.db_snapshot_restored,
+            Some(config_dir.join("data").join("symlinkarr.db"))
+        );
+        assert_eq!(result.secrets_restored, 1);
+        assert_eq!(result.secrets_skipped, 0);
+        assert_eq!(
+            std::fs::read_to_string(config_dir.join("config.yaml")).unwrap(),
+            "db_path: ./data/symlinkarr.db\nrealdebrid:\n  api_token: \"secretfile:./secrets/rd-token\"\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(config_dir.join("secrets").join("rd-token")).unwrap(),
+            "restored-secret\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(config_dir.join("data").join("symlinkarr.db")).unwrap(),
+            "sqlite-data"
+        );
+        assert!(!external_original_secret.exists());
+    }
+
+    #[test]
+    fn standalone_restore_allows_docker_style_sibling_secrets() {
+        let dir = TempDir::new().unwrap();
+        let backup_dir = dir.path().join("backups");
+        let config_dir = dir.path().join("app").join("config");
+        std::fs::create_dir_all(&backup_dir).unwrap();
+
+        let bm = backup::BackupManager::new(&BackupConfig::standalone(backup_dir.clone()));
+        let config_snapshot = write_managed_file_artifact(
+            &backup_dir,
+            "config.snapshot.yaml",
+            "db_path: ./data/symlinkarr.db\nrealdebrid:\n  api_token: \"secretfile:../secrets/rd-token\"\n",
+            dir.path().join("legacy").join("config.yaml"),
+        );
+        let secret_snapshot = write_managed_file_artifact(
+            &backup_dir,
+            "rd-token.secret",
+            "docker-secret\n",
+            dir.path().join("legacy").join("rd-token"),
+        );
+        let db_snapshot = write_database_artifact(&backup_dir, "symlinkarr.sqlite3", "sqlite-data");
+        let manifest = manifest_with_app_state(config_snapshot, secret_snapshot, db_snapshot);
+
+        let result = restore_app_state_standalone(&bm, &manifest, &config_dir).unwrap();
+
+        assert_eq!(result.secrets_restored, 1);
+        assert_eq!(result.secrets_skipped, 0);
+        assert_eq!(
+            std::fs::read_to_string(
+                config_dir
+                    .parent()
+                    .unwrap()
+                    .join("secrets")
+                    .join("rd-token")
+            )
+            .unwrap(),
+            "docker-secret\n"
+        );
+    }
+
+    #[test]
+    fn auto_restore_uses_restored_config_targets_not_manifest_original_paths() {
+        let dir = TempDir::new().unwrap();
+        let backup_dir = dir.path().join("backups");
+        let config_path = dir.path().join("install").join("config.yaml");
+        let external_original_secret = dir.path().join("outside").join("rd-token");
+        std::fs::create_dir_all(&backup_dir).unwrap();
+
+        let bm = backup::BackupManager::new(&BackupConfig::standalone(backup_dir.clone()));
+        let config_snapshot = write_managed_file_artifact(
+            &backup_dir,
+            "config.snapshot.yaml",
+            "db_path: ./data/symlinkarr.db\nrealdebrid:\n  api_token: \"secretfile:./secrets/rd-token\"\n",
+            dir.path().join("legacy").join("config.yaml"),
+        );
+        let secret_snapshot = write_managed_file_artifact(
+            &backup_dir,
+            "rd-token.secret",
+            "auto-secret\n",
+            external_original_secret.clone(),
+        );
+        let db_snapshot =
+            write_database_artifact(&backup_dir, "symlinkarr.sqlite3", "unused-in-auto-restore");
+        let manifest = manifest_with_app_state(config_snapshot, secret_snapshot, db_snapshot);
+
+        restore_app_state_auto(&bm, &manifest, &config_path).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&config_path).unwrap(),
+            "db_path: ./data/symlinkarr.db\nrealdebrid:\n  api_token: \"secretfile:./secrets/rd-token\"\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(
+                config_path
+                    .parent()
+                    .unwrap()
+                    .join("secrets")
+                    .join("rd-token")
+            )
+            .unwrap(),
+            "auto-secret\n"
+        );
+        assert!(!external_original_secret.exists());
     }
 }
