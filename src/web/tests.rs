@@ -461,7 +461,8 @@ async fn html_requests_require_basic_auth_when_configured() {
     )
     .await;
     assert_eq!(status, 200);
-    assert!(body.contains("Dashboard"));
+    assert!(body.contains("href=\"/scan\""));
+    assert!(body.contains("href=\"/status\""));
 }
 
 #[tokio::test]
@@ -548,7 +549,8 @@ async fn local_only_ui_mutations_are_open_without_session_or_csrf() {
     let (status, body) = post_form_with_headers(&router, "/config/validate", "", &[]).await;
 
     assert_eq!(status, 200);
-    assert!(body.contains("Configuration"));
+    assert!(body.contains("action=\"/config/validate\""));
+    assert!(body.contains("Validate Config"));
 }
 
 #[tokio::test]
@@ -665,7 +667,8 @@ async fn ui_mutations_accept_valid_csrf_token_with_issued_session_when_remote_ex
     .await;
 
     assert_eq!(status, 200);
-    assert!(body.contains("Configuration"));
+    assert!(body.contains("action=\"/config/validate\""));
+    assert!(body.contains("Validate Config"));
 }
 
 #[tokio::test]
@@ -674,7 +677,7 @@ async fn dashboard_get_sets_browser_session_cookie() {
     let (status, headers, body) = get_html_with_headers(&router, "/", &[]).await;
 
     assert_eq!(status, 200);
-    assert!(body.contains("Dashboard"));
+    assert!(body.contains("href=\"/scan\""));
     let cookie = browser_session_cookie(&headers);
     assert!(cookie.starts_with("symlinkarr_browser_session="));
     let set_cookie = headers
