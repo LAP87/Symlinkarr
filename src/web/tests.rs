@@ -339,6 +339,7 @@ async fn dashboard_page_exposes_primary_operator_actions() {
 
     assert_eq!(status, 200);
     assert!(dashboard.contains("Dashboard"));
+    assert!(dashboard.contains("Needs Attention"));
     assert!(dashboard.contains("Live Activity"));
     assert!(dashboard.contains("href=\"/scan\""));
     assert!(dashboard.contains("href=\"/status\""));

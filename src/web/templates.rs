@@ -508,11 +508,26 @@ fn cleanup_scope_label(scope: CleanupScope) -> &'static str {
 #[template(path = "web/ui/dashboard.html")]
 pub struct DashboardTemplate {
     pub stats: DashboardStats,
+    pub needs_attention: DashboardNeedsAttentionView,
     pub activity_feed: DashboardActivityFeedView,
     pub latest_run: Option<ScanRunView>,
     pub recent_runs: Vec<ScanRunView>,
     pub queue: QueueOverview,
     pub deferred_refresh: DeferredRefreshSummaryView,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DashboardNeedsAttentionView {
+    pub items: Vec<NeedsAttentionItemView>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NeedsAttentionItemView {
+    pub severity_label: String,
+    pub severity_badge_class: &'static str,
+    pub title: String,
+    pub message: String,
+    pub link: Option<ActivityFeedLinkView>,
 }
 
 #[derive(Debug, Clone, Default)]

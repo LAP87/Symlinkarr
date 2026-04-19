@@ -13,7 +13,10 @@ use crate::config::{
     PlexConfig, ProwlarrConfig, RadarrConfig, RealDebridConfig, SecurityConfig, SonarrConfig,
     SourceConfig, SymlinkConfig, TautulliConfig, WebConfig,
 };
-use crate::db::{AcquisitionJobSeed, AcquisitionRelinkKind, Database, ScanRunRecord};
+use crate::db::{
+    AcquisitionJobSeed, AcquisitionJobStatus, AcquisitionJobUpdate, AcquisitionRelinkKind,
+    Database, ScanRunRecord,
+};
 use crate::models::{LinkRecord, LinkStatus, MediaType};
 use crate::web::{
     ActiveCleanupAuditJob, ActiveRepairJob, ActiveScanJob, LastCleanupAuditOutcome,
@@ -371,6 +374,87 @@ async fn dashboard_activity_feed_fragment_renders_running_and_recent_work() {
     assert!(body.contains("RD cache sync failed"));
     assert!(body.contains("Open Cleanup"));
     assert!(body.contains("Open Dead Links"));
+}
+
+#[tokio::test]
+async fn dashboard_renders_needs_attention_priorities() {
+    let ctx = test_context().await;
+    ctx.state
+        .database
+        .insert_link(&LinkRecord {
+            id: None,
+            source_path: ctx.state.config.sources[0].path.join("Missing.Show.S01E02.mkv"),
+            target_path: ctx
+                .state
+                .config
+                .libraries[0]
+                .path
+                .join("Missing Show")
+                .join("Season 01")
+                .join("S01E02.mkv"),
+            media_id: "tvdb-missing".to_string(),
+            media_type: MediaType::Tv,
+            status: LinkStatus::Dead,
+            created_at: None,
+            updated_at: None,
+        })
+        .await
+        .unwrap();
+    let jobs = ctx.state.database.get_manageable_acquisition_jobs().await.unwrap();
+    let blocked_id = jobs
+        .iter()
+        .find(|job| job.request_key == "anime-queued-1")
+        .unwrap()
+        .id;
+    ctx.state
+        .database
+        .update_acquisition_job_state(
+            blocked_id,
+            &AcquisitionJobUpdate {
+                status: AcquisitionJobStatus::Blocked,
+                release_title: None,
+                info_hash: None,
+                error: Some("blocked".to_string()),
+                next_retry_at: None,
+                submitted_at: None,
+                completed_at: None,
+                increment_attempts: false,
+            },
+        )
+        .await
+        .unwrap();
+    std::fs::write(
+        ctx.state
+            .config
+            .backup
+            .path
+            .join(".media-server-refresh.queue.json"),
+        r#"{
+              "servers": [
+                { "server": "plex", "paths": ["/library/anime", "/library/anime-2"] }
+              ]
+            }"#,
+    )
+    .unwrap();
+    ctx.state
+        .set_last_scan_outcome_for_test(Some(LastScanOutcome {
+            finished_at: "2026-04-19 21:18:00 UTC".to_string(),
+            scope_label: "Anime".to_string(),
+            dry_run: false,
+            search_missing: true,
+            success: false,
+            message: "RD cache sync failed".to_string(),
+        }))
+        .await;
+
+    let body = render_body(get_dashboard(State(ctx.state.clone())).await).await;
+
+    assert!(body.contains("Needs Attention"));
+    assert!(body.contains("Latest background scan failed"));
+    assert!(body.contains("Dead links need cleanup or repair"));
+    assert!(body.contains("Auto-acquire queue is blocked"));
+    assert!(body.contains("Media refresh backlog is accumulating"));
+    assert!(body.contains("Open Latest Run"));
 }
 
 #[tokio::test]

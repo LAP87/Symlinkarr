@@ -901,6 +901,34 @@ select.form-control {
   gap: 1rem;
 }
 
+.attention-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.85rem;
+}
+
+.attention-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  padding: 1rem;
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+}
+
+.attention-item__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.attention-item__title {
+  font-size: 1rem;
+  line-height: 1.25;
+}
+
 .activity-feed-column {
   display: flex;
   flex-direction: column;

@@ -137,6 +137,35 @@ fn sample_activity_feed_view() -> DashboardActivityFeedView {
     }
 }
 
+fn sample_needs_attention_view() -> DashboardNeedsAttentionView {
+    DashboardNeedsAttentionView {
+        items: vec![
+            NeedsAttentionItemView {
+                severity_label: "Critical".to_string(),
+                severity_badge_class: "badge-danger",
+                title: "Latest background scan failed".to_string(),
+                message: "Anime finished 2026-04-19 21:20:00 UTC and reported: RD cache sync failed"
+                    .to_string(),
+                link: Some(ActivityFeedLinkView {
+                    href: "/scan".to_string(),
+                    label: "Open Scan".to_string(),
+                }),
+            },
+            NeedsAttentionItemView {
+                severity_label: "High".to_string(),
+                severity_badge_class: "badge-warning",
+                title: "Dead links need cleanup or repair".to_string(),
+                message: "12 dead link(s) are currently tracked and can surface stale media paths to users."
+                    .to_string(),
+                link: Some(ActivityFeedLinkView {
+                    href: "/links/dead".to_string(),
+                    label: "Review Dead Links".to_string(),
+                }),
+            },
+        ],
+    }
+}
+
 #[test]
 fn dead_links_template_renders_summary_and_actions() {
     let template = DeadLinksTemplate {
@@ -283,6 +312,25 @@ fn dashboard_activity_feed_template_renders_active_and_recent_items() {
     assert!(html.contains("hx-get=\"/dashboard/activity-feed\""));
     assert!(html.contains("Open Scan"));
     assert!(html.contains("Open Cleanup"));
+}
+
+#[test]
+fn dashboard_template_renders_needs_attention_section() {
+    let template = DashboardTemplate {
+        stats: DashboardStats::default(),
+        needs_attention: sample_needs_attention_view(),
+        activity_feed: sample_activity_feed_view(),
+        latest_run: Some(sample_scan_run_view()),
+        recent_runs: vec![sample_scan_run_view()],
+        queue: QueueOverview::default(),
+        deferred_refresh: DeferredRefreshSummaryView::default(),
+    };
+
+    let html = template.render().unwrap();
+    assert!(html.contains("Needs Attention"));
+    assert!(html.contains("Latest background scan failed"));
+    assert!(html.contains("Dead links need cleanup or repair"));
+    assert!(html.contains("Review Dead Links"));
 }
 
 #[test]

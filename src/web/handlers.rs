@@ -99,6 +99,148 @@ fn activity_timestamp_rank(timestamp: &str) -> String {
     timestamp.replace(" UTC", "")
 }
 
+fn needs_attention_item(
+    severity_label: impl Into<String>,
+    severity_badge_class: &'static str,
+    title: impl Into<String>,
+    message: impl Into<String>,
+    link: Option<ActivityFeedLinkView>,
+) -> NeedsAttentionItemView {
+    NeedsAttentionItemView {
+        severity_label: severity_label.into(),
+        severity_badge_class,
+        title: title.into(),
+        message: message.into(),
+        link,
+    }
+}
+
+fn dashboard_needs_attention(
+    stats: &DashboardStats,
+    queue: &QueueOverview,
+    deferred_refresh: &DeferredRefreshSummaryView,
+    latest_run: Option<&ScanRunView>,
+    last_scan_outcome: Option<&BackgroundScanOutcomeView>,
+    last_cleanup_outcome: Option<&BackgroundCleanupAuditOutcomeView>,
+    last_repair_outcome: Option<&BackgroundRepairOutcomeView>,
+) -> DashboardNeedsAttentionView {
+    let mut items = Vec::new();
+
+    if let Some(outcome) = last_scan_outcome.filter(|outcome| !outcome.success) {
+        items.push(needs_attention_item(
+            "Critical",
+            "badge-danger",
+            "Latest background scan failed",
+            format!(
+                "{} finished {} and reported: {}",
+                outcome.scope_label, outcome.finished_at, outcome.message
+            ),
+            Some(activity_link("/scan", "Open Scan")),
+        ));
+    }
+
+    if let Some(outcome) = last_cleanup_outcome.filter(|outcome| !outcome.success) {
+        items.push(needs_attention_item(
+            "High",
+            "badge-danger",
+            "Latest cleanup audit failed",
+            format!(
+                "{} across {} finished {} and reported: {}",
+                outcome.scope_label, outcome.libraries_label, outcome.finished_at, outcome.message
+            ),
+            Some(activity_link("/cleanup", "Open Cleanup")),
+        ));
+    }
+
+    if let Some(outcome) = last_repair_outcome.filter(|outcome| !outcome.success) {
+        items.push(needs_attention_item(
+            "High",
+            "badge-danger",
+            "Latest repair failed",
+            format!(
+                "Finished {} and reported: {}",
+                outcome.finished_at, outcome.message
+            ),
+            Some(activity_link("/links/dead", "Open Dead Links")),
+        ));
+    }
+
+    if stats.dead_links > 0 {
+        items.push(needs_attention_item(
+            "High",
+            "badge-warning",
+            "Dead links need cleanup or repair",
+            format!(
+                "{} dead link(s) are currently tracked and can surface stale media paths to users.",
+                stats.dead_links
+            ),
+            Some(activity_link("/links/dead", "Review Dead Links")),
+        ));
+    }
+
+    if queue.blocked > 0 || queue.failed > 0 {
+        items.push(needs_attention_item(
+            "High",
+            "badge-warning",
+            "Auto-acquire queue is blocked",
+            format!(
+                "{} blocked and {} failed job(s) need operator review before the backlog silently grows.",
+                queue.blocked, queue.failed
+            ),
+            Some(activity_link("/status", "Open Status")),
+        ));
+    } else if queue.no_result > 0 {
+        items.push(needs_attention_item(
+            "Medium",
+            "badge-info",
+            "Auto-acquire is finding no results",
+            format!(
+                "{} job(s) ended with no result. Check matcher scope, provider health, or query quality.",
+                queue.no_result
+            ),
+            Some(activity_link("/status", "Open Status")),
+        ));
+    }
+
+    if deferred_refresh.pending_targets > 0 {
+        let server_label = deferred_refresh
+            .servers
+            .first()
+            .map(|server| server.server.clone())
+            .unwrap_or_else(|| "media servers".to_string());
+        items.push(needs_attention_item(
+            "Medium",
+            "badge-warning",
+            "Media refresh backlog is accumulating",
+            format!(
+                "{} deferred target(s) are still queued. {} is already waiting on refresh work.",
+                deferred_refresh.pending_targets, server_label
+            ),
+            Some(activity_link("/status", "Open Status")),
+        ));
+    }
+
+    if let Some(run) = latest_run {
+        if run.plex_refresh_capped_batches > 0 || run.plex_refresh_failed_batches > 0 {
+            items.push(needs_attention_item(
+                "Medium",
+                "badge-info",
+                "Latest run hit refresh guardrails",
+                format!(
+                    "{} capped batch(es) and {} failed batch(es) were recorded on the latest run.",
+                    run.plex_refresh_capped_batches, run.plex_refresh_failed_batches
+                ),
+                Some(activity_link(
+                    format!("/scan/history/{}", run.id),
+                    "Open Latest Run",
+                )),
+            ));
+        }
+    }
+
+    DashboardNeedsAttentionView { items }
+}
+
 async fn dashboard_activity_feed(state: &WebState) -> DashboardActivityFeedView {
     let mut active_items = Vec::new();
 
@@ -342,6 +484,9 @@ pub async fn get_dashboard(State(state): State<WebState>) -> impl IntoResponse {
         }
     };
     let latest_run = recent_runs.first().cloned();
+    let last_scan_outcome = scan::visible_last_scan_outcome(&state).await;
+    let last_cleanup_audit_outcome = cleanup::visible_last_cleanup_audit_outcome(&state).await;
+    let last_repair_outcome = state.last_repair_outcome().await.map(Into::into);
 
     let queue = match state.database.get_acquisition_job_counts().await {
         Ok(counts) => queue_overview_from_counts(counts),
@@ -357,9 +502,19 @@ pub async fn get_dashboard(State(state): State<WebState>) -> impl IntoResponse {
             DeferredRefreshSummaryView::default()
         }
     };
+    let needs_attention = dashboard_needs_attention(
+        &stats,
+        &queue,
+        &deferred_refresh,
+        latest_run.as_ref(),
+        last_scan_outcome.as_ref(),
+        last_cleanup_audit_outcome.as_ref(),
+        last_repair_outcome.as_ref(),
+    );
 
     let template = DashboardTemplate {
         stats,
+        needs_attention,
         activity_feed: dashboard_activity_feed(&state).await,
         latest_run,
         recent_runs,
