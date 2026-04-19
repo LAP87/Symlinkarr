@@ -1,4 +1,4 @@
-use super::telemetry::aggregate_skip_reasons;
+use super::telemetry::{aggregate_skip_reasons, format_scan_details_line};
 use super::*;
 
 use std::collections::BTreeMap;
@@ -85,7 +85,7 @@ fn aggregate_skip_reasons_merges_match_link_dead_and_auto_acquire_counts() {
 }
 
 #[test]
-fn scan_telemetry_summary_marks_aborted_refreshes() {
+fn scan_details_line_marks_aborted_refreshes() {
     let telemetry = ScanTelemetry {
         plex_refresh_stats: LibraryRefreshTelemetry {
             planned_batches: 4,
@@ -97,24 +97,13 @@ fn scan_telemetry_summary_marks_aborted_refreshes() {
         },
         ..ScanTelemetry::default()
     };
-    let summary = format!(
-        "refresh={}/{} skipped={} capped={}{}",
-        telemetry.plex_refresh_stats.refreshed_batches,
-        telemetry.plex_refresh_stats.planned_batches,
-        telemetry.plex_refresh_stats.skipped_batches,
-        telemetry.plex_refresh_stats.capped_batches,
-        if telemetry.plex_refresh_stats.aborted_due_to_cap {
-            " aborted"
-        } else {
-            ""
-        }
-    );
+    let summary = format_scan_details_line(&telemetry, 0, &LinkProcessSummary::default());
 
-    assert!(summary.ends_with("capped=2 aborted"));
+    assert!(summary.contains("refresh=0/4 skipped=4 capped=2 aborted"));
 }
 
 #[test]
-fn scan_telemetry_summary_marks_deferred_refreshes() {
+fn scan_details_line_marks_deferred_refreshes() {
     let telemetry = ScanTelemetry {
         plex_refresh_stats: LibraryRefreshTelemetry {
             planned_batches: 1,
@@ -123,23 +112,7 @@ fn scan_telemetry_summary_marks_deferred_refreshes() {
         },
         ..ScanTelemetry::default()
     };
-    let summary = format!(
-        "refresh={}/{} skipped={} capped={}{}{}",
-        telemetry.plex_refresh_stats.refreshed_batches,
-        telemetry.plex_refresh_stats.planned_batches,
-        telemetry.plex_refresh_stats.skipped_batches,
-        telemetry.plex_refresh_stats.capped_batches,
-        if telemetry.plex_refresh_stats.aborted_due_to_cap {
-            " aborted"
-        } else {
-            ""
-        },
-        if telemetry.plex_refresh_stats.deferred_due_to_lock {
-            " deferred"
-        } else {
-            ""
-        }
-    );
+    let summary = format_scan_details_line(&telemetry, 0, &LinkProcessSummary::default());
 
-    assert!(summary.ends_with("capped=0 deferred"));
+    assert!(summary.contains("refresh=0/1 skipped=0 capped=0 deferred"));
 }

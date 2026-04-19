@@ -5,6 +5,7 @@ use tracing::info;
 
 use super::{AutoAcquireBatchSummary, LinkProcessSummary, MatchResult, ScanTelemetry};
 use crate::linker::DeadLinkSummary;
+use crate::media_servers::LibraryRefreshTelemetry;
 use crate::utils::user_println;
 
 pub(crate) fn build_skip_reason_json(
@@ -106,9 +107,32 @@ pub(crate) fn log_scan_telemetry(
         fmt_duration(telemetry.plex_refresh),
         fmt_duration(telemetry.dead_link_sweep),
     ));
-    user_println(format!(
-        "   📊 Scan details: matches={} created={} updated={} skipped={} ambiguous={} candidates={} scored={} exact-id={} cache-hit={} refresh={}/{} skipped={} capped={}{}{}",
+    user_println(format_scan_details_line(
+        telemetry,
         matches.len(),
+        link_summary,
+    ));
+}
+
+fn refresh_status_suffix(refresh: &LibraryRefreshTelemetry) -> String {
+    let mut suffix = String::new();
+    if refresh.aborted_due_to_cap {
+        suffix.push_str(" aborted");
+    }
+    if refresh.deferred_due_to_lock {
+        suffix.push_str(" deferred");
+    }
+    suffix
+}
+
+pub(crate) fn format_scan_details_line(
+    telemetry: &ScanTelemetry,
+    matches_len: usize,
+    link_summary: &LinkProcessSummary,
+) -> String {
+    format!(
+        "   📊 Scan details: matches={} created={} updated={} skipped={} ambiguous={} candidates={} scored={} exact-id={} cache-hit={} refresh={}/{} skipped={} capped={}{}{}",
+        matches_len,
         link_summary.created,
         link_summary.updated,
         link_summary.skipped,
@@ -125,17 +149,9 @@ pub(crate) fn log_scan_telemetry(
         telemetry.plex_refresh_stats.planned_batches,
         telemetry.plex_refresh_stats.skipped_batches,
         telemetry.plex_refresh_stats.capped_batches,
-        if telemetry.plex_refresh_stats.aborted_due_to_cap {
-            " aborted"
-        } else {
-            ""
-        },
-        if telemetry.plex_refresh_stats.deferred_due_to_lock {
-            " deferred"
-        } else {
-            ""
-        },
-    ));
+        refresh_status_suffix(&telemetry.plex_refresh_stats),
+        "",
+    )
 }
 
 pub(crate) fn fmt_duration(duration: Duration) -> String {
