@@ -54,30 +54,6 @@ fn test_normalize_title() {
     assert_eq!(normalize_title("Game-of-Thrones"), "game of thrones");
 }
 
-#[test]
-fn test_title_tokens_filters_noise() {
-    let tokens = title_tokens("breaking bad s01 1080p");
-    assert!(tokens.contains(&"breaking".to_string()));
-    assert!(tokens.contains(&"bad".to_string()));
-    assert!(!tokens.contains(&"s01".to_string()));
-    assert!(!tokens.contains(&"1080p".to_string()));
-}
-
-// ── Quality extraction ──
-
-#[test]
-fn test_extract_quality() {
-    assert_eq!(
-        extract_quality("Movie.2160p.BluRay"),
-        Some("2160p".to_string())
-    );
-    assert_eq!(
-        extract_quality("Show.S01E01.720p.HDTV"),
-        Some("720p".to_string())
-    );
-    assert_eq!(extract_quality("no quality here"), None);
-}
-
 // ── Scoring tests ──
 
 #[test]
@@ -681,7 +657,7 @@ fn test_normalize_title_trims_whitespace() {
 }
 
 #[test]
-fn test_extract_quality_more_formats() {
+fn test_extract_quality_handles_common_formats_and_missing_values() {
     assert_eq!(
         extract_quality("Movie.2160p.WEB-DL"),
         Some("2160p".to_string())
@@ -692,10 +668,10 @@ fn test_extract_quality_more_formats() {
     );
     assert_eq!(extract_quality("Video.720p.x264"), Some("720p".to_string()));
     assert_eq!(extract_quality("Video.480p.XviD"), Some("480p".to_string()));
-}
-
-#[test]
-fn test_extract_quality_none_for_no_quality() {
+    assert_eq!(
+        extract_quality("Show.S01E01.720p.HDTV"),
+        Some("720p".to_string())
+    );
     assert_eq!(extract_quality("Movie.NoQualityTag"), None);
 }
 
@@ -713,9 +689,10 @@ fn test_extract_year_none_for_invalid() {
 #[test]
 fn test_title_tokens_filters_all_noise_tokens() {
     // More comprehensive noise token filtering
-    let tokens = title_tokens("breaking bad x264 webrip bluray bdrip hdrip hdtv 720p");
+    let tokens = title_tokens("breaking bad s01 x264 webrip bluray bdrip hdrip hdtv 720p");
     assert!(tokens.contains(&"breaking".to_string()));
     assert!(tokens.contains(&"bad".to_string()));
+    assert!(!tokens.contains(&"s01".to_string()));
     assert!(!tokens.contains(&"x264".to_string()));
     assert!(!tokens.contains(&"webrip".to_string()));
     assert!(!tokens.contains(&"bluray".to_string()));
