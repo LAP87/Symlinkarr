@@ -446,7 +446,32 @@ pub fn restore_app_state_auto(
 mod tests {
     use super::*;
     use chrono::Utc;
+    use std::sync::OnceLock;
     use tempfile::TempDir;
+    use tokio::sync::Mutex;
+
+    fn restore_fs_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct CurrentDirGuard {
+        original: PathBuf,
+    }
+
+    impl CurrentDirGuard {
+        fn enter(path: &Path) -> Self {
+            let original = std::env::current_dir().unwrap();
+            std::env::set_current_dir(path).unwrap();
+            Self { original }
+        }
+    }
+
+    impl Drop for CurrentDirGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.original);
+        }
+    }
 
     fn write_managed_file_artifact(
         backup_dir: &Path,
@@ -497,6 +522,18 @@ mod tests {
             }),
             content_sha256: None,
         }
+    }
+
+    fn write_manifest_file(
+        backup_dir: &Path,
+        filename: &str,
+        mut manifest: backup::BackupManifest,
+    ) -> PathBuf {
+        manifest.version = 1;
+        manifest.content_sha256 = None;
+        let path = backup_dir.join(filename);
+        std::fs::write(&path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+        path
     }
 
     #[test]
@@ -661,5 +698,79 @@ mod tests {
             "auto-secret\n"
         );
         assert!(!external_original_secret.exists());
+    }
+
+    #[tokio::test]
+    async fn standalone_restore_dry_run_does_not_create_target_files() {
+        let _lock = restore_fs_lock().lock().await;
+        let dir = TempDir::new().unwrap();
+        let _cwd = CurrentDirGuard::enter(dir.path());
+        let backup_dir = dir.path().join("backups");
+        let config_dir = dir.path().join("install");
+        std::fs::create_dir_all(&backup_dir).unwrap();
+
+        let config_snapshot = write_managed_file_artifact(
+            &backup_dir,
+            "config.snapshot.yaml",
+            "db_path: ./data/symlinkarr.db\nrealdebrid:\n  api_token: \"secretfile:./secrets/rd-token\"\n",
+            dir.path().join("legacy").join("config.yaml"),
+        );
+        let secret_snapshot = write_managed_file_artifact(
+            &backup_dir,
+            "rd-token.secret",
+            "restored-secret\n",
+            dir.path().join("legacy").join("rd-token"),
+        );
+        let db_snapshot = write_database_artifact(&backup_dir, "symlinkarr.sqlite3", "sqlite-data");
+        let manifest = manifest_with_app_state(config_snapshot, secret_snapshot, db_snapshot);
+        write_manifest_file(&backup_dir, "standalone-backup.json", manifest);
+
+        run_standalone_restore(
+            Path::new("backups/standalone-backup.json"),
+            Some(&config_dir),
+            true,
+            false,
+        )
+            .await
+            .unwrap();
+
+        assert!(!config_dir.exists());
+    }
+
+    #[tokio::test]
+    async fn standalone_restore_list_only_does_not_create_target_files() {
+        let _lock = restore_fs_lock().lock().await;
+        let dir = TempDir::new().unwrap();
+        let _cwd = CurrentDirGuard::enter(dir.path());
+        let backup_dir = dir.path().join("backups");
+        let config_dir = dir.path().join("install");
+        std::fs::create_dir_all(&backup_dir).unwrap();
+
+        let config_snapshot = write_managed_file_artifact(
+            &backup_dir,
+            "config.snapshot.yaml",
+            "db_path: ./data/symlinkarr.db\nrealdebrid:\n  api_token: \"secretfile:./secrets/rd-token\"\n",
+            dir.path().join("legacy").join("config.yaml"),
+        );
+        let secret_snapshot = write_managed_file_artifact(
+            &backup_dir,
+            "rd-token.secret",
+            "restored-secret\n",
+            dir.path().join("legacy").join("rd-token"),
+        );
+        let db_snapshot = write_database_artifact(&backup_dir, "symlinkarr.sqlite3", "sqlite-data");
+        let manifest = manifest_with_app_state(config_snapshot, secret_snapshot, db_snapshot);
+        write_manifest_file(&backup_dir, "standalone-backup.json", manifest);
+
+        run_standalone_restore(
+            Path::new("backups/standalone-backup.json"),
+            Some(&config_dir),
+            false,
+            true,
+        )
+            .await
+            .unwrap();
+
+        assert!(!config_dir.exists());
     }
 }
