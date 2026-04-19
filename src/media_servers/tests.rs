@@ -1,3 +1,7 @@
+use super::deferred::{
+    load_deferred_refresh_queue, media_refresh_lock_path, media_refresh_queue_path,
+    store_deferred_refresh_queue, DeferredRefreshQueue,
+};
 use super::*;
 use crate::config::{
     ApiConfig, BackupConfig, BazarrConfig, CleanupPolicyConfig, Config, ContentType, DaemonConfig,
@@ -7,6 +11,9 @@ use crate::config::{
 };
 use crate::models::MediaType;
 use axum::{extract::State, routing::get, Router};
+use std::fs::OpenOptions;
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc,
