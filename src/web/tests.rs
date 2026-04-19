@@ -329,30 +329,52 @@ async fn post_form_with_headers(
 }
 
 #[tokio::test]
-async fn dashboard_status_and_scan_render_successfully() {
+async fn dashboard_page_exposes_primary_operator_actions() {
     let router = test_router().await;
     let (status, dashboard) = get_html(&router, "/").await;
+
     assert_eq!(status, 200);
     assert!(dashboard.contains("Dashboard"));
-    assert!(dashboard.contains("Current baseline"));
+    assert!(dashboard.contains("href=\"/scan\""));
+    assert!(dashboard.contains("href=\"/status\""));
+    assert!(dashboard.contains("href=\"/scan/history/"));
     assert!(dashboard.contains("Queue 1"));
+}
 
+#[tokio::test]
+async fn status_page_exposes_link_health_actions_and_seeded_rows() {
+    let router = test_router().await;
     let (status, status_page) = get_html(&router, "/status").await;
-    assert_eq!(status, 200);
-    assert!(status_page.contains("Queue pressure"));
-    assert!(status_page.contains("Service connectivity"));
-    assert!(status_page.contains("Recent Links"));
-    assert!(status_page.contains("Active Links"));
 
+    assert_eq!(status, 200);
+    assert!(status_page.contains("href=\"/scan\""));
+    assert!(status_page.contains("tvdb-1"));
+    assert!(status_page.contains("S01E01.mkv"));
+    assert!(status_page.contains("No persistent dead links are currently tracked."));
+}
+
+#[tokio::test]
+async fn scan_page_exposes_trigger_form_and_history_controls() {
+    let router = test_router().await;
     let (status, scan_page) = get_html(&router, "/scan").await;
-    assert_eq!(status, 200);
-    assert!(scan_page.contains("Start Scan"));
-    assert!(scan_page.contains("Search Missing"));
-    assert!(scan_page.contains("Latest Run"));
 
-    let (status, cleanup_page) = get_html(&router, "/cleanup").await;
     assert_eq!(status, 200);
-    assert!(cleanup_page.contains("How Cleanup Works"));
+    assert!(scan_page.contains("action=\"/scan/trigger\""));
+    assert!(scan_page.contains("name=\"dry_run\""));
+    assert!(scan_page.contains("name=\"search_missing\""));
+    assert!(scan_page.contains("action=\"/scan\""));
+    assert!(scan_page.contains("href=\"/scan/history\""));
+}
+
+#[tokio::test]
+async fn cleanup_page_exposes_audit_form_and_dead_link_entrypoint() {
+    let router = test_router().await;
+    let (status, cleanup_page) = get_html(&router, "/cleanup").await;
+
+    assert_eq!(status, 200);
+    assert!(cleanup_page.contains("action=\"/cleanup/audit\""));
+    assert!(cleanup_page.contains("name=\"libraries\""));
+    assert!(cleanup_page.contains("href=\"/links/dead\""));
 }
 
 #[tokio::test]
