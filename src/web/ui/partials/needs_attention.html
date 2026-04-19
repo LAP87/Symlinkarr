@@ -24,6 +24,9 @@
                 <span class="badge {{ item.severity_badge_class }}">{{ item.severity_label }}</span>
             </div>
             <p>{{ item.message }}</p>
+            <p class="attention-item__hint">
+                <strong>Next step:</strong> {{ item.next_step }}
+            </p>
             {% match item.link %}
             {% when Some with (link) %}
             <div class="actions">

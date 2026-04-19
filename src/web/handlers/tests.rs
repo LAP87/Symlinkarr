@@ -454,6 +454,9 @@ async fn dashboard_renders_needs_attention_priorities() {
     assert!(body.contains("Dead links need cleanup or repair"));
     assert!(body.contains("Auto-acquire queue is blocked"));
     assert!(body.contains("Media refresh backlog is accumulating"));
+    assert!(body.contains("Next step:"));
+    assert!(body.contains("verify provider or path health before retrying another background pass"));
+    assert!(body.contains("Review Dead Links, then decide whether the safest next move is repair or cleanup"));
     assert!(body.contains("Open Latest Run"));
 }
 

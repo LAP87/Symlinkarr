@@ -929,6 +929,11 @@ select.form-control {
   line-height: 1.25;
 }
 
+.attention-item__hint {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
 .activity-feed-column {
   display: flex;
   flex-direction: column;

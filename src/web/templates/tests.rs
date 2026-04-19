@@ -146,6 +146,7 @@ fn sample_needs_attention_view() -> DashboardNeedsAttentionView {
                 title: "Latest background scan failed".to_string(),
                 message: "Anime finished 2026-04-19 21:20:00 UTC and reported: RD cache sync failed"
                     .to_string(),
+                next_step: "Open Scan, compare the failure against the latest run detail, and verify provider or path health before retrying another background pass.".to_string(),
                 link: Some(ActivityFeedLinkView {
                     href: "/scan".to_string(),
                     label: "Open Scan".to_string(),
@@ -157,6 +158,7 @@ fn sample_needs_attention_view() -> DashboardNeedsAttentionView {
                 title: "Dead links need cleanup or repair".to_string(),
                 message: "12 dead link(s) are currently tracked and can surface stale media paths to users."
                     .to_string(),
+                next_step: "Review Dead Links, then decide whether the safest next move is repair or cleanup before the next media refresh.".to_string(),
                 link: Some(ActivityFeedLinkView {
                     href: "/links/dead".to_string(),
                     label: "Review Dead Links".to_string(),
@@ -330,6 +332,8 @@ fn dashboard_template_renders_needs_attention_section() {
     assert!(html.contains("Needs Attention"));
     assert!(html.contains("Latest background scan failed"));
     assert!(html.contains("Dead links need cleanup or repair"));
+    assert!(html.contains("Next step:"));
+    assert!(html.contains("compare the failure against the latest run detail"));
     assert!(html.contains("Review Dead Links"));
 }
 

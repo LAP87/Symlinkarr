@@ -104,6 +104,7 @@ fn needs_attention_item(
     severity_badge_class: &'static str,
     title: impl Into<String>,
     message: impl Into<String>,
+    next_step: impl Into<String>,
     link: Option<ActivityFeedLinkView>,
 ) -> NeedsAttentionItemView {
     NeedsAttentionItemView {
@@ -111,6 +112,7 @@ fn needs_attention_item(
         severity_badge_class,
         title: title.into(),
         message: message.into(),
+        next_step: next_step.into(),
         link,
     }
 }
@@ -135,11 +137,22 @@ fn dashboard_needs_attention(
                 "{} finished {} and reported: {}",
                 outcome.scope_label, outcome.finished_at, outcome.message
             ),
+            "Open Scan, compare the failure against the latest run detail, and verify provider or path health before retrying another background pass.",
             Some(activity_link("/scan", "Open Scan")),
         ));
     }
 
     if let Some(outcome) = last_cleanup_outcome.filter(|outcome| !outcome.success) {
+        let link = outcome
+            .report_path
+            .as_ref()
+            .map(|path| {
+                activity_link(
+                    format!("/cleanup/prune?report={}", path),
+                    "Open Prune Preview",
+                )
+            })
+            .or_else(|| Some(activity_link("/cleanup", "Open Cleanup")));
         items.push(needs_attention_item(
             "High",
             "badge-danger",
@@ -148,7 +161,8 @@ fn dashboard_needs_attention(
                 "{} across {} finished {} and reported: {}",
                 outcome.scope_label, outcome.libraries_label, outcome.finished_at, outcome.message
             ),
-            Some(activity_link("/cleanup", "Open Cleanup")),
+            "Open Cleanup and inspect the latest audit output before rerunning the audit or pruning anything.",
+            link,
         ));
     }
 
@@ -161,6 +175,7 @@ fn dashboard_needs_attention(
                 "Finished {} and reported: {}",
                 outcome.finished_at, outcome.message
             ),
+            "Open Dead Links, confirm the source is really gone, then retry repair only after the replacement path is visible again.",
             Some(activity_link("/links/dead", "Open Dead Links")),
         ));
     }
@@ -174,6 +189,7 @@ fn dashboard_needs_attention(
                 "{} dead link(s) are currently tracked and can surface stale media paths to users.",
                 stats.dead_links
             ),
+            "Review Dead Links, then decide whether the safest next move is repair or cleanup before the next media refresh.",
             Some(activity_link("/links/dead", "Review Dead Links")),
         ));
     }
@@ -187,6 +203,7 @@ fn dashboard_needs_attention(
                 "{} blocked and {} failed job(s) need operator review before the backlog silently grows.",
                 queue.blocked, queue.failed
             ),
+            "Open Status to confirm queue pressure and provider health, then rerun a targeted scan if the backlog should move again.",
             Some(activity_link("/status", "Open Status")),
         ));
     } else if queue.no_result > 0 {
@@ -198,6 +215,7 @@ fn dashboard_needs_attention(
                 "{} job(s) ended with no result. Check matcher scope, provider health, or query quality.",
                 queue.no_result
             ),
+            "Open Status and Scan, then compare search scope, provider availability, and query quality before assuming acquisition is broken.",
             Some(activity_link("/status", "Open Status")),
         ));
     }
@@ -216,6 +234,7 @@ fn dashboard_needs_attention(
                 "{} deferred target(s) are still queued. {} is already waiting on refresh work.",
                 deferred_refresh.pending_targets, server_label
             ),
+            "Open Status and let the current media-server backlog clear before assuming fresh links are already visible to users.",
             Some(activity_link("/status", "Open Status")),
         ));
     }
@@ -230,6 +249,7 @@ fn dashboard_needs_attention(
                     "{} capped batch(es) and {} failed batch(es) were recorded on the latest run.",
                     run.plex_refresh_capped_batches, run.plex_refresh_failed_batches
                 ),
+                "Open the latest run detail and inspect refresh caps, skips, or failures before you rerun another large scan.",
                 Some(activity_link(
                     format!("/scan/history/{}", run.id),
                     "Open Latest Run",

@@ -527,6 +527,7 @@ pub struct NeedsAttentionItemView {
     pub severity_badge_class: &'static str,
     pub title: String,
     pub message: String,
+    pub next_step: String,
     pub link: Option<ActivityFeedLinkView>,
 }
 
