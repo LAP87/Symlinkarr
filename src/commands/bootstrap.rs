@@ -145,3 +145,46 @@ pub fn run_bootstrap(target_dir: Option<&Path>, list_only: bool) -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bootstrap_creates_starter_config_and_backup_dir_in_target_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("config-root");
+
+        run_bootstrap(Some(&target), false).unwrap();
+
+        assert_eq!(std::fs::read_to_string(target.join("config.yaml")).unwrap(), STARTER_CONFIG);
+        assert!(target.join("backups").is_dir());
+        assert!(!target.join("symlinkarr.db").exists());
+    }
+
+    #[test]
+    fn bootstrap_list_only_does_not_create_files_or_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("config-root");
+
+        run_bootstrap(Some(&target), true).unwrap();
+
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn bootstrap_preserves_existing_config_while_creating_backup_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("config-root");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("config.yaml"), "db_path: ./existing.db\n").unwrap();
+
+        run_bootstrap(Some(&target), false).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(target.join("config.yaml")).unwrap(),
+            "db_path: ./existing.db\n"
+        );
+        assert!(target.join("backups").is_dir());
+    }
+}
