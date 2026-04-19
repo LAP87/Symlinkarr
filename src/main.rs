@@ -768,6 +768,10 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::{TimeZone, Utc};
+    use std::path::{Path, PathBuf};
+    use std::sync::OnceLock;
+    use tokio::sync::Mutex;
 
     #[test]
     fn cli_uses_config_search_paths_when_flag_is_omitted() {
@@ -968,5 +972,249 @@ mod tests {
             AcquisitionJobStatus::CompletedUnlinked.as_str(),
             "completed_unlinked"
         );
+    }
+
+    fn startup_fs_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct CurrentDirGuard {
+        original: PathBuf,
+    }
+
+    impl CurrentDirGuard {
+        fn enter(path: &Path) -> Self {
+            let original = std::env::current_dir().unwrap();
+            std::env::set_current_dir(path).unwrap();
+            Self { original }
+        }
+    }
+
+    impl Drop for CurrentDirGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.original);
+        }
+    }
+
+    fn restore_config_yaml(db_rel: &str, secret_rel: &str) -> String {
+        format!(
+            "libraries:\n  - name: Movies\n    path: \"/tmp/library\"\n    media_type: movie\nsources:\n  - name: RD\n    path: \"/tmp/source\"\n    media_type: auto\ndb_path: \"{db_rel}\"\nrealdebrid:\n  api_token: \"secretfile:{secret_rel}\"\n"
+        )
+    }
+
+    fn write_managed_file_artifact(
+        backup_dir: &Path,
+        filename: &str,
+        contents: &str,
+        original_path: PathBuf,
+    ) -> backup::BackupManagedFile {
+        let path = backup_dir.join(filename);
+        std::fs::write(&path, contents).unwrap();
+        backup::BackupManagedFile {
+            filename: filename.to_string(),
+            sha256: "test-sha256".to_string(),
+            size_bytes: contents.len() as u64,
+            original_path,
+        }
+    }
+
+    fn write_database_artifact(
+        backup_dir: &Path,
+        filename: &str,
+        contents: &str,
+    ) -> backup::BackupDatabaseSnapshot {
+        let path = backup_dir.join(filename);
+        std::fs::write(&path, contents).unwrap();
+        backup::BackupDatabaseSnapshot {
+            filename: filename.to_string(),
+            sha256: "test-db-sha256".to_string(),
+            size_bytes: contents.len() as u64,
+        }
+    }
+
+    fn write_backup_fixture(
+        backup_dir: &Path,
+        name: &str,
+        timestamp: chrono::DateTime<Utc>,
+        backup_type: backup::BackupType,
+        config_contents: &str,
+        secret_contents: &str,
+        db_contents: &str,
+    ) {
+        let config_snapshot = write_managed_file_artifact(
+            backup_dir,
+            &format!("{name}.config.yaml"),
+            config_contents,
+            backup_dir.join("legacy").join(format!("{name}.config.yaml")),
+        );
+        let secret_snapshot = write_managed_file_artifact(
+            backup_dir,
+            &format!("{name}.secret"),
+            secret_contents,
+            backup_dir.join("legacy").join(format!("{name}.secret")),
+        );
+        let database_snapshot = write_database_artifact(
+            backup_dir,
+            &format!("{name}.sqlite3"),
+            db_contents,
+        );
+        let manifest = backup::BackupManifest {
+            version: 1,
+            timestamp,
+            backup_type,
+            label: name.to_string(),
+            symlinks: Vec::new(),
+            total_count: 0,
+            database_snapshot: Some(database_snapshot),
+            app_state: Some(backup::BackupAppState {
+                config_snapshot: Some(config_snapshot),
+                secret_snapshots: vec![secret_snapshot],
+            }),
+            content_sha256: None,
+        };
+        std::fs::write(
+            backup_dir.join(format!("{name}.json")),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn auto_restore_prefers_latest_scheduled_backup_over_newer_safety_snapshot() {
+        let _lock = startup_fs_lock().lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let _cwd = CurrentDirGuard::enter(dir.path());
+        let backup_dir = dir.path().join("backups");
+        let config_path = dir.path().join("install").join("config.yaml");
+        std::fs::create_dir_all(&backup_dir).unwrap();
+
+        write_backup_fixture(
+            &backup_dir,
+            "scheduled",
+            Utc.with_ymd_and_hms(2026, 4, 16, 12, 0, 0).unwrap(),
+            backup::BackupType::Scheduled,
+            &restore_config_yaml("./data/scheduled.db", "./secrets/scheduled-token"),
+            "scheduled-secret\n",
+            "scheduled-db",
+        );
+        write_backup_fixture(
+            &backup_dir,
+            "newer-safety",
+            Utc.with_ymd_and_hms(2026, 4, 17, 12, 0, 0).unwrap(),
+            backup::BackupType::Safety {
+                operation: "cleanup".to_string(),
+            },
+            &restore_config_yaml("./data/safety.db", "./secrets/safety-token"),
+            "safety-secret\n",
+            "safety-db",
+        );
+
+        let cli = Cli::try_parse_from([
+            "symlinkarr",
+            "--config",
+            config_path.to_str().unwrap(),
+            "doctor",
+        ])
+        .unwrap();
+        let restored = try_auto_restore(&cli).await.unwrap().unwrap();
+
+        assert_eq!(restored.db_path, "./data/scheduled.db");
+        assert_eq!(restored.realdebrid.api_token, "scheduled-secret");
+        assert_eq!(
+            std::fs::read_to_string(config_path.parent().unwrap().join("data/scheduled.db"))
+                .unwrap(),
+            "scheduled-db"
+        );
+        assert!(!config_path.parent().unwrap().join("data/safety.db").exists());
+    }
+
+    #[tokio::test]
+    async fn auto_restore_falls_back_to_latest_overall_backup_when_no_scheduled_exists() {
+        let _lock = startup_fs_lock().lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let _cwd = CurrentDirGuard::enter(dir.path());
+        let backup_dir = dir.path().join("backups");
+        let config_path = dir.path().join("install").join("config.yaml");
+        std::fs::create_dir_all(&backup_dir).unwrap();
+
+        write_backup_fixture(
+            &backup_dir,
+            "older-safety",
+            Utc.with_ymd_and_hms(2026, 4, 16, 12, 0, 0).unwrap(),
+            backup::BackupType::Safety {
+                operation: "repair".to_string(),
+            },
+            &restore_config_yaml("./data/older.db", "./secrets/older-token"),
+            "older-secret\n",
+            "older-db",
+        );
+        write_backup_fixture(
+            &backup_dir,
+            "newer-safety",
+            Utc.with_ymd_and_hms(2026, 4, 17, 12, 0, 0).unwrap(),
+            backup::BackupType::Safety {
+                operation: "repair".to_string(),
+            },
+            &restore_config_yaml("./data/newer.db", "./secrets/newer-token"),
+            "newer-secret\n",
+            "newer-db",
+        );
+
+        let cli = Cli::try_parse_from([
+            "symlinkarr",
+            "--config",
+            config_path.to_str().unwrap(),
+            "doctor",
+        ])
+        .unwrap();
+        let restored = try_auto_restore(&cli).await.unwrap().unwrap();
+
+        assert_eq!(restored.db_path, "./data/newer.db");
+        assert_eq!(restored.realdebrid.api_token, "newer-secret");
+        assert_eq!(
+            std::fs::read_to_string(config_path.parent().unwrap().join("data/newer.db")).unwrap(),
+            "newer-db"
+        );
+        assert!(!config_path.parent().unwrap().join("data/older.db").exists());
+    }
+
+    #[tokio::test]
+    async fn auto_restore_skips_when_explicit_config_already_exists() {
+        let _lock = startup_fs_lock().lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let _cwd = CurrentDirGuard::enter(dir.path());
+        let backup_dir = dir.path().join("backups");
+        let config_path = dir.path().join("install").join("config.yaml");
+        std::fs::create_dir_all(&backup_dir).unwrap();
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        std::fs::write(&config_path, "db_path: ./data/existing.db\n").unwrap();
+
+        write_backup_fixture(
+            &backup_dir,
+            "scheduled",
+            Utc.with_ymd_and_hms(2026, 4, 16, 12, 0, 0).unwrap(),
+            backup::BackupType::Scheduled,
+            &restore_config_yaml("./data/restored.db", "./secrets/restored-token"),
+            "restored-secret\n",
+            "restored-db",
+        );
+
+        let cli = Cli::try_parse_from([
+            "symlinkarr",
+            "--config",
+            config_path.to_str().unwrap(),
+            "doctor",
+        ])
+        .unwrap();
+        let restored = try_auto_restore(&cli).await.unwrap();
+
+        assert!(restored.is_none());
+        assert_eq!(
+            std::fs::read_to_string(&config_path).unwrap(),
+            "db_path: ./data/existing.db\n"
+        );
+        assert!(!config_path.parent().unwrap().join("data/restored.db").exists());
+        assert!(!config_path.parent().unwrap().join("secrets/restored-token").exists());
     }
 }
