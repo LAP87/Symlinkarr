@@ -1328,25 +1328,24 @@ select.form-control {
 }
 
 .theme-picker-dropdown {
-  position: absolute;
-  bottom: calc(100% + 0.5rem);
-  right: 0;
-  left: auto;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: auto;
+  bottom: auto;
   background: var(--shell-dropdown-bg);
   border: 1px solid var(--shell-border-strong);
   border-radius: var(--radius-lg);
   padding: 0.5rem;
-  width: min(18rem, calc(100vw - 1.5rem));
-  width: min(18rem, calc(100dvw - 1.5rem));
-  min-width: min(18rem, calc(100vw - 1.5rem));
-  min-width: min(18rem, calc(100dvw - 1.5rem));
+  width: 18rem;
   max-width: calc(100vw - 1.5rem);
   max-width: calc(100dvw - 1.5rem);
   max-height: min(70vh, 34rem);
   overflow-y: auto;
   overflow-x: hidden;
+  overscroll-behavior: contain;
   box-shadow: var(--dropdown-shadow);
-  z-index: 100;
+  z-index: 1200;
 }
 
 .theme-option {

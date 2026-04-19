@@ -17,6 +17,8 @@ class ThemeManager {
         this.currentTheme = this.normalizeThemeId(this.loadTheme()) || 'auto';
         this.themeStyle = null;
         this.colorSchemeQuery = null;
+        this.boundPositionDropdown = this.positionDropdown.bind(this);
+        this.dropdownListenersBound = false;
         this.init();
     }
 
@@ -150,7 +152,80 @@ class ThemeManager {
         var dropdown = document.getElementById('theme-picker-dropdown');
         if (dropdown) {
             this.buildPicker(dropdown);
+            if (dropdown.style.display !== 'none') {
+                this.positionDropdown();
+            }
         }
+    }
+
+    positionDropdown() {
+        var dropdown = document.getElementById('theme-picker-dropdown');
+        var toggle = document.getElementById('theme-picker-toggle');
+        if (!dropdown || !toggle || dropdown.style.display === 'none') {
+            return;
+        }
+
+        var viewportWidth = window.innerWidth || document.documentElement.clientWidth;
+        var viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+        var margin = 12;
+        var gap = 8;
+        var preferredWidth = 288;
+        var availableWidth = Math.max(0, viewportWidth - (margin * 2));
+        var maxWidth = availableWidth;
+        if (maxWidth < 220) {
+            maxWidth = Math.max(120, availableWidth);
+        }
+        maxWidth = Math.min(maxWidth, availableWidth || preferredWidth);
+
+        dropdown.style.width = Math.min(preferredWidth, maxWidth) + 'px';
+        dropdown.style.maxWidth = maxWidth + 'px';
+        dropdown.style.left = margin + 'px';
+        dropdown.style.top = margin + 'px';
+
+        var toggleRect = toggle.getBoundingClientRect();
+        var dropdownRect = dropdown.getBoundingClientRect();
+        var dropdownWidth = Math.min(dropdownRect.width || dropdown.offsetWidth || preferredWidth, maxWidth);
+        var left = Math.min(
+            Math.max(margin, toggleRect.right - dropdownWidth),
+            viewportWidth - dropdownWidth - margin
+        );
+
+        var availableHeight = Math.max(0, viewportHeight - (margin * 2));
+        var maxHeight = Math.min(544, availableHeight);
+        if (maxHeight < 180) {
+            maxHeight = Math.max(120, availableHeight);
+        }
+        maxHeight = Math.min(maxHeight, availableHeight || 544);
+        dropdown.style.maxHeight = maxHeight + 'px';
+        dropdownRect = dropdown.getBoundingClientRect();
+        var dropdownHeight = Math.min(dropdownRect.height || dropdown.offsetHeight || maxHeight, maxHeight);
+        var spaceAbove = toggleRect.top - margin - gap;
+        var spaceBelow = viewportHeight - toggleRect.bottom - margin - gap;
+        var preferAbove = spaceAbove >= Math.min(dropdownHeight, 240) || spaceAbove >= spaceBelow;
+        var top = preferAbove
+            ? Math.max(margin, toggleRect.top - dropdownHeight - gap)
+            : Math.min(viewportHeight - dropdownHeight - margin, toggleRect.bottom + gap);
+
+        dropdown.style.left = Math.round(left) + 'px';
+        dropdown.style.top = Math.round(top) + 'px';
+    }
+
+    bindDropdownListeners() {
+        if (this.dropdownListenersBound) {
+            return;
+        }
+        window.addEventListener('resize', this.boundPositionDropdown);
+        window.addEventListener('scroll', this.boundPositionDropdown, true);
+        this.dropdownListenersBound = true;
+    }
+
+    unbindDropdownListeners() {
+        if (!this.dropdownListenersBound) {
+            return;
+        }
+        window.removeEventListener('resize', this.boundPositionDropdown);
+        window.removeEventListener('scroll', this.boundPositionDropdown, true);
+        this.dropdownListenersBound = false;
     }
 
     setDropdownOpen(isOpen) {
@@ -158,6 +233,17 @@ class ThemeManager {
         var toggle = document.getElementById('theme-picker-toggle');
         if (dropdown) {
             dropdown.style.display = isOpen ? 'block' : 'none';
+            if (isOpen) {
+                this.positionDropdown();
+                this.bindDropdownListeners();
+            } else {
+                this.unbindDropdownListeners();
+                dropdown.style.left = '';
+                dropdown.style.top = '';
+                dropdown.style.width = '';
+                dropdown.style.maxWidth = '';
+                dropdown.style.maxHeight = '';
+            }
         }
         if (toggle) {
             toggle.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
