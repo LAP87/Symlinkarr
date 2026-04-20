@@ -311,6 +311,85 @@ html:not(.show-advanced) body:not(.page-requires-advanced) .advanced-only {
   gap: var(--space-2);
 }
 
+.disclosure-card {
+  padding: 0;
+  gap: 0;
+  overflow: hidden;
+}
+
+.disclosure-card__summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  padding: 1.1rem 1.25rem;
+}
+
+.disclosure-card__summary::-webkit-details-marker {
+  display: none;
+}
+
+.disclosure-card__summary::marker {
+  display: none;
+  content: "";
+}
+
+.disclosure-card__copy {
+  min-width: 0;
+}
+
+.disclosure-card__eyebrow {
+  display: block;
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.3rem;
+}
+
+.disclosure-card__title {
+  font-size: 1rem;
+  line-height: 1.25;
+}
+
+.disclosure-card__hint {
+  margin-top: 0.35rem;
+  color: var(--text-secondary);
+  font-size: 0.92rem;
+}
+
+.disclosure-card__meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.disclosure-card__chevron {
+  color: var(--text-faint);
+  font-size: 0.85rem;
+  transform: rotate(0deg);
+  transition: transform 0.18s ease;
+}
+
+.disclosure-card[open] .disclosure-card__chevron {
+  transform: rotate(180deg);
+}
+
+.disclosure-card[open] .disclosure-card__summary {
+  border-bottom: 1px solid var(--border-color);
+}
+
+.disclosure-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: 1.1rem 1.25rem 1.25rem;
+}
+
 .card-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));

@@ -9,7 +9,7 @@
         <p class="page-kicker">Maintenance</p>
         <h1>Cleanup</h1>
         <p class="page-lead">Audit first, preview second, prune last.</p>
-        <div class="page-help-links">
+        <div class="page-help-links advanced-only">
             <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Operations-and-Safety" target="_blank" rel="noreferrer noopener">
                 <span class="help-link__eyebrow">Learn more</span>
                 <span class="help-link__title">How cleanup works</span>
@@ -121,24 +121,30 @@
     </section>
 </div>
 
-<div class="card">
-        <div class="section-head">
-            <div>
-                <p class="section-kicker">Apply Gate</p>
-                <h2 class="section-title">Apply from the preview page</h2>
-                <p class="text-muted">If you rerun the audit, the preview changes too. Open prune preview from the button below and apply only from that page.</p>
-            </div>
+<details class="card disclosure-card advanced-only">
+    <summary class="disclosure-card__summary">
+        <div class="disclosure-card__copy">
+            <span class="disclosure-card__eyebrow">Apply Gate</span>
+            <h2 class="disclosure-card__title">Exact report path and apply safety</h2>
+            <p class="disclosure-card__hint">Operational detail for when you want to verify that preview and apply are using the same report artifact.</p>
         </div>
-    <p class="mb-1">Report file: <code class="mono">{{ report.path.display() }}</code></p>
-    <div class="actions mt-2">
-        <a href="/cleanup/prune?report={{ report.path.display() }}" class="btn btn-secondary">
-            Preview Prune Actions
-        </a>
+        <div class="disclosure-card__meta">
+            <span class="badge badge-info">Advanced</span>
+            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
+        </div>
+    </summary>
+    <div class="disclosure-card__body">
+        <p>Report file: <code class="mono">{{ report.path.display() }}</code></p>
+        <div class="actions">
+            <a href="/cleanup/prune?report={{ report.path.display() }}" class="btn btn-secondary">
+                Preview Prune Actions
+            </a>
+        </div>
+        <small class="text-muted">
+            Prune is permanent. Review the preview before applying it.
+        </small>
     </div>
-    <small class="text-muted mt-1">
-        Prune is permanent. Review the preview before applying it.
-    </small>
-</div>
+</details>
 {% when None %}
     {% match last_report_path %}
     {% when Some with (path) %}
@@ -161,24 +167,30 @@
     {% endmatch %}
 {% endmatch %}
 
-<div class="card">
-    <div class="section-head">
-        <div>
-            <p class="section-kicker">Guide</p>
-            <h2 class="section-title">How Cleanup Works</h2>
+<details class="card disclosure-card">
+    <summary class="disclosure-card__summary">
+        <div class="disclosure-card__copy">
+            <span class="disclosure-card__eyebrow">Guide</span>
+            <h2 class="disclosure-card__title">How cleanup works</h2>
+            <p class="disclosure-card__hint">Keep this collapsed unless you need the slower, step-by-step safety reminder.</p>
         </div>
-    </div>
-    <ol class="steps-list">
-        <li><strong>Audit:</strong> Scan the selected libraries and write a report with candidate findings.</li>
-        <li><strong>Preview:</strong> Open prune preview to review that report and inspect the exact rows that would be removed.</li>
-        <li><strong>Apply:</strong> Confirm the preview and apply from that same page when it matches what you expect.</li>
-    </ol>
+        <div class="disclosure-card__meta">
+            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
+        </div>
+    </summary>
+    <div class="disclosure-card__body">
+        <ol class="steps-list">
+            <li><strong>Audit:</strong> Scan the selected libraries and write a report with candidate findings.</li>
+            <li><strong>Preview:</strong> Open prune preview to review that report and inspect the exact rows that would be removed.</li>
+            <li><strong>Apply:</strong> Confirm the preview and apply from that same page when it matches what you expect.</li>
+        </ol>
 
-    <h3 class="subsection-title mt-2">Finding severities</h3>
-    <ul class="severity-list">
-        <li><span class="badge badge-danger">Critical</span> Definitely problematic links, such as broken sources or out-of-range episodes.</li>
-        <li><span class="badge badge-warning">High</span> Likely problematic links that should be reviewed closely before pruning.</li>
-        <li><span class="badge badge-info">Warning</span> Context-only anomalies that may be worth checking, but are not automatic prune targets.</li>
-    </ul>
-</div>
+        <h3 class="subsection-title mt-2">Finding severities</h3>
+        <ul class="severity-list">
+            <li><span class="badge badge-danger">Critical</span> Definitely problematic links, such as broken sources or out-of-range episodes.</li>
+            <li><span class="badge badge-warning">High</span> Likely problematic links that should be reviewed closely before pruning.</li>
+            <li><span class="badge badge-info">Warning</span> Context-only anomalies that may be worth checking, but are not automatic prune targets.</li>
+        </ul>
+    </div>
+</details>
 {% endblock %}

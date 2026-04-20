@@ -356,7 +356,7 @@ async fn dashboard_activity_feed_fragment_renders_running_and_recent_work() {
         .await;
     ctx.state
         .set_last_scan_outcome_for_test(Some(LastScanOutcome {
-            finished_at: "2026-04-19 21:18:00 UTC".to_string(),
+            finished_at: "2099-04-19 21:18:00 UTC".to_string(),
             scope_label: "Anime".to_string(),
             dry_run: false,
             search_missing: true,
@@ -438,7 +438,7 @@ async fn dashboard_renders_needs_attention_priorities() {
     .unwrap();
     ctx.state
         .set_last_scan_outcome_for_test(Some(LastScanOutcome {
-            finished_at: "2026-04-19 21:18:00 UTC".to_string(),
+            finished_at: "2099-04-19 21:18:00 UTC".to_string(),
             scope_label: "Anime".to_string(),
             dry_run: false,
             search_missing: true,
@@ -1207,7 +1207,7 @@ async fn cleanup_page_renders_latest_report_summary() {
     assert!(body.contains("12"));
     assert!(body.contains("Open Prune Preview"));
     assert!(!body.contains("Apply Cleanup"));
-    assert!(body.contains("Apply from the preview page"));
+    assert!(body.contains("Exact report path and apply safety"));
 }
 
 #[test]

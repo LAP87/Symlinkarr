@@ -182,72 +182,87 @@
         {% endmatch %}
     </section>
 
-    <section class="card">
-        <div class="section-head">
-            <div>
-                <p class="section-kicker">Queue Pressure</p>
-                <h2 class="section-title">Acquisition backlog</h2>
+    <details class="card disclosure-card">
+        <summary class="disclosure-card__summary">
+            <div class="disclosure-card__copy">
+                <span class="disclosure-card__eyebrow">Queue Pressure</span>
+                <h2 class="disclosure-card__title">Acquisition backlog and recovery tools</h2>
+                <p class="disclosure-card__hint">Open this only when you need the full queue breakdown or maintenance shortcuts.</p>
             </div>
-        <div class="actions">
-            <a href="/status" class="btn btn-secondary">Status</a>
-        </div>
-        </div>
+            <div class="disclosure-card__meta">
+                <span class="badge {% if queue.active_total > 0 %}badge-warning{% else %}badge-success{% endif %}">
+                    Queue {{ queue.active_total }}
+                </span>
+                {% if queue.blocked > 0 || queue.failed > 0 %}
+                <span class="badge badge-danger">Needs review</span>
+                {% endif %}
+                <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
+            </div>
+        </summary>
+        <div class="disclosure-card__body">
+            <div class="metric-grid metric-grid--compact">
+                <div class="metric-card">
+                    <span class="metric-label">Queued</span>
+                    <strong>{{ queue.queued }}</strong>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-label">Downloading</span>
+                    <strong>{{ queue.downloading }}</strong>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-label">Relinking</span>
+                    <strong>{{ queue.relinking }}</strong>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-label">No Result</span>
+                    <strong>{{ queue.no_result }}</strong>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-label">Blocked</span>
+                    <strong>{{ queue.blocked }}</strong>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-label">Failed</span>
+                    <strong>{{ queue.failed }}</strong>
+                </div>
+            </div>
 
-        <div class="metric-grid metric-grid--compact">
-            <div class="metric-card">
-                <span class="metric-label">Queued</span>
-                <strong>{{ queue.queued }}</strong>
+            {% if stats.dead_links > 0 %}
+            <div class="alert alert-warning">
+                <strong>Cleanup still matters.</strong>
+                {{ stats.dead_links }} dead links are tracked right now.
             </div>
-            <div class="metric-card">
-                <span class="metric-label">Downloading</span>
-                <strong>{{ queue.downloading }}</strong>
+            {% else %}
+            <div class="alert alert-success">
+                <strong>No dead links are currently tracked.</strong>
             </div>
-            <div class="metric-card">
-                <span class="metric-label">Relinking</span>
-                <strong>{{ queue.relinking }}</strong>
-            </div>
-            <div class="metric-card">
-                <span class="metric-label">No Result</span>
-                <strong>{{ queue.no_result }}</strong>
-            </div>
-            <div class="metric-card">
-                <span class="metric-label">Blocked</span>
-                <strong>{{ queue.blocked }}</strong>
-            </div>
-            <div class="metric-card">
-                <span class="metric-label">Failed</span>
-                <strong>{{ queue.failed }}</strong>
-            </div>
-        </div>
+            {% endif %}
 
-        {% if stats.dead_links > 0 %}
-        <div class="alert alert-warning mt-2">
-            <strong>Cleanup still matters.</strong>
-            {{ stats.dead_links }} dead links are tracked right now.
+            <div class="actions">
+                <a href="/status" class="btn btn-secondary">Status</a>
+                <a href="/links/dead" class="btn btn-secondary">Dead Links</a>
+                <a href="/cleanup" class="btn btn-secondary">Cleanup</a>
+                <a href="/doctor" class="btn btn-secondary">Doctor</a>
+            </div>
         </div>
-        {% else %}
-        <div class="alert alert-success mt-2">
-            <strong>No dead links are currently tracked.</strong>
-        </div>
-        {% endif %}
-
-        <div class="actions mt-2">
-            <a href="/links/dead" class="btn btn-secondary">Dead Links</a>
-            <a href="/cleanup" class="btn btn-secondary">Cleanup</a>
-            <a href="/doctor" class="btn btn-secondary">Doctor</a>
-        </div>
-    </section>
+    </details>
 </div>
 
-<section class="card">
-    <div class="section-head">
-        <div>
-            <p class="section-kicker">Recent Runs</p>
-            <h2 class="section-title">Trend snapshot</h2>
+<details class="card disclosure-card">
+    <summary class="disclosure-card__summary">
+        <div class="disclosure-card__copy">
+            <span class="disclosure-card__eyebrow">Recent Runs</span>
+            <h2 class="disclosure-card__title">Trend snapshot and run history</h2>
+            <p class="disclosure-card__hint">Keep this collapsed unless you are comparing runs or looking for historical regressions.</p>
         </div>
-        <div class="actions">
-            <a href="/scan/history" class="btn btn-secondary">Full History</a>
+        <div class="disclosure-card__meta">
+            <span class="badge badge-info">Recent {{ recent_runs|length }}</span>
+            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
         </div>
+    </summary>
+    <div class="disclosure-card__body">
+    <div class="actions">
+        <a href="/scan/history" class="btn btn-secondary">Full History</a>
     </div>
 
     {% if recent_runs|length > 0 %}
@@ -348,5 +363,6 @@
     {% else %}
     <p class="text-muted">No scan history yet.</p>
     {% endif %}
-</section>
+    </div>
+</details>
 {% endblock %}

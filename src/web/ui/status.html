@@ -9,7 +9,7 @@
         <p class="page-kicker">Operations</p>
         <h1>Service Status</h1>
         <p class="page-lead">Check live link health, queue pressure, and service state.</p>
-        <div class="page-help-links">
+        <div class="page-help-links advanced-only">
             <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Media-Servers" target="_blank" rel="noreferrer noopener">
                 <span class="help-link__eyebrow">Learn more</span>
                 <span class="help-link__title">Media server refresh</span>
@@ -102,26 +102,41 @@
         </div>
 
         {% if tracked_dead_links|length > 0 %}
-        <div class="table-wrap">
-            <table class="data-table dense-table">
-                <thead>
-                    <tr>
-                        <th>Media ID</th>
-                        <th>Target Path</th>
-                        <th>Missing Source</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for link in tracked_dead_links %}
-                    <tr>
-                        <td><strong>{{ link.media_id }}</strong></td>
-                        <td><code class="mono">{{ link.target_path.display() }}</code></td>
-                        <td><code class="mono">{{ link.source_path.display() }}</code></td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
+        <details class="disclosure-card">
+            <summary class="disclosure-card__summary">
+                <div class="disclosure-card__copy">
+                    <span class="disclosure-card__eyebrow">Tracked dead links</span>
+                    <h3 class="disclosure-card__title">Inspect the unresolved rows</h3>
+                    <p class="disclosure-card__hint">Expand only when you need exact paths and media IDs.</p>
+                </div>
+                <div class="disclosure-card__meta">
+                    <span class="badge badge-warning">{{ tracked_dead_links|length }} shown</span>
+                    <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
+                </div>
+            </summary>
+            <div class="disclosure-card__body">
+                <div class="table-wrap">
+                    <table class="data-table dense-table">
+                        <thead>
+                            <tr>
+                                <th>Media ID</th>
+                                <th>Target Path</th>
+                                <th>Missing Source</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for link in tracked_dead_links %}
+                            <tr>
+                                <td><strong>{{ link.media_id }}</strong></td>
+                                <td><code class="mono">{{ link.target_path.display() }}</code></td>
+                                <td><code class="mono">{{ link.source_path.display() }}</code></td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </details>
         {% endif %}
 
         <div class="actions mt-2">

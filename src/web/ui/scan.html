@@ -9,7 +9,7 @@
         <p class="page-kicker">Pipeline</p>
         <h1>Scan</h1>
         <p class="page-lead">Run scans, review timings, and inspect queue impact.</p>
-        <div class="page-help-links">
+        <div class="page-help-links advanced-only">
             <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Operations-and-Safety" target="_blank" rel="noreferrer noopener">
                 <span class="help-link__eyebrow">Learn more</span>
                 <span class="help-link__title">Recommended workflow</span>
@@ -95,23 +95,31 @@
         </form>
     </section>
 
-    <section class="card">
-        <div class="section-head">
-            <div>
-                <p class="section-kicker">Queue Snapshot</p>
-                <h2 class="section-title">Auto-acquire pressure</h2>
+    <details class="card disclosure-card">
+        <summary class="disclosure-card__summary">
+            <div class="disclosure-card__copy">
+                <span class="disclosure-card__eyebrow">Queue Snapshot</span>
+                <h2 class="disclosure-card__title">Auto-acquire pressure</h2>
+                <p class="disclosure-card__hint">Open when you want the full backlog shape before or after a scan.</p>
+            </div>
+            <div class="disclosure-card__meta">
+                <span class="badge {% if queue.active_total > 0 %}badge-warning{% else %}badge-success{% endif %}">
+                    Queue {{ queue.active_total }}
+                </span>
+                <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
+            </div>
+        </summary>
+        <div class="disclosure-card__body">
+            <div class="metric-grid metric-grid--compact">
+                <div class="metric-card"><span class="metric-label">Queued</span><strong>{{ queue.queued }}</strong></div>
+                <div class="metric-card"><span class="metric-label">Downloading</span><strong>{{ queue.downloading }}</strong></div>
+                <div class="metric-card"><span class="metric-label">Relinking</span><strong>{{ queue.relinking }}</strong></div>
+                <div class="metric-card"><span class="metric-label">Blocked</span><strong>{{ queue.blocked }}</strong></div>
+                <div class="metric-card"><span class="metric-label">No Result</span><strong>{{ queue.no_result }}</strong></div>
+                <div class="metric-card"><span class="metric-label">Failed</span><strong>{{ queue.failed }}</strong></div>
             </div>
         </div>
-
-        <div class="metric-grid metric-grid--compact">
-            <div class="metric-card"><span class="metric-label">Queued</span><strong>{{ queue.queued }}</strong></div>
-            <div class="metric-card"><span class="metric-label">Downloading</span><strong>{{ queue.downloading }}</strong></div>
-            <div class="metric-card"><span class="metric-label">Relinking</span><strong>{{ queue.relinking }}</strong></div>
-            <div class="metric-card"><span class="metric-label">Blocked</span><strong>{{ queue.blocked }}</strong></div>
-            <div class="metric-card"><span class="metric-label">No Result</span><strong>{{ queue.no_result }}</strong></div>
-            <div class="metric-card"><span class="metric-label">Failed</span><strong>{{ queue.failed }}</strong></div>
-        </div>
-    </section>
+    </details>
 </div>
 
 {% match latest_run %}
