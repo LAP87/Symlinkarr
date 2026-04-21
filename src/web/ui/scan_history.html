@@ -10,61 +10,70 @@
     <p class="page-lead">Every recorded run, including phase timings and acquisition outcomes.</p>
 </div>
 
-<section class="card">
-    <div class="section-head">
-        <div>
-            <p class="section-kicker">Filters</p>
-            <h2 class="section-title">Find the run you want</h2>
+<details class="card disclosure-card" {% if !filters.library.is_empty() || filters.mode != "any" || filters.search_missing != "any" || filters.limit != 25 %}open{% endif %}>
+    <summary class="disclosure-card__summary">
+        <div class="disclosure-card__copy">
+            <span class="disclosure-card__eyebrow">Filters</span>
+            <h2 class="disclosure-card__title">History filters and row limit</h2>
+            <p class="disclosure-card__hint">Open this when you need to narrow the run list. Leave it closed when you just want the latest operator signal.</p>
         </div>
+        <div class="disclosure-card__meta">
+            <span class="badge badge-info">{{ filters.limit }} rows</span>
+            {% if !filters.library.is_empty() || filters.mode != "any" || filters.search_missing != "any" %}
+            <span class="badge badge-warning">filtered</span>
+            {% endif %}
+            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
+        </div>
+    </summary>
+    <div class="disclosure-card__body">
+        <form action="/scan/history" method="get" class="stack-form">
+            <div class="split-grid split-grid--tight">
+                <div class="form-group">
+                    <label class="form-label" for="library">Library</label>
+                    <select id="library" name="library" class="form-control">
+                        <option value="">All libraries</option>
+                        {% for lib in libraries %}
+                        <option value="{{ lib.name }}" {% if filters.library == lib.name %}selected{% endif %}>{{ lib.name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label" for="mode">Mode</label>
+                    <select id="mode" name="mode" class="form-control">
+                        <option value="any" {% if filters.mode == "any" %}selected{% endif %}>Any</option>
+                        <option value="live" {% if filters.mode == "live" %}selected{% endif %}>Live only</option>
+                        <option value="dry" {% if filters.mode == "dry" %}selected{% endif %}>Dry run only</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label" for="search_missing">Missing Search</label>
+                    <select id="search_missing" name="search_missing" class="form-control">
+                        <option value="any" {% if filters.search_missing == "any" %}selected{% endif %}>Any</option>
+                        <option value="only" {% if filters.search_missing == "only" %}selected{% endif %}>Only with search-missing</option>
+                        <option value="exclude" {% if filters.search_missing == "exclude" %}selected{% endif %}>Exclude search-missing</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label" for="limit">Rows</label>
+                    <select id="limit" name="limit" class="form-control">
+                        <option value="10" {% if filters.limit == 10 %}selected{% endif %}>10</option>
+                        <option value="25" {% if filters.limit == 25 %}selected{% endif %}>25</option>
+                        <option value="50" {% if filters.limit == 50 %}selected{% endif %}>50</option>
+                        <option value="100" {% if filters.limit == 100 %}selected{% endif %}>100</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="actions">
+                <button type="submit" class="btn btn-primary">&#128269; Apply Filters</button>
+                <a href="/scan/history" class="btn btn-secondary">Reset</a>
+            </div>
+        </form>
     </div>
-
-    <form action="/scan/history" method="get" class="stack-form">
-        <div class="split-grid split-grid--tight">
-            <div class="form-group">
-                <label class="form-label" for="library">Library</label>
-                <select id="library" name="library" class="form-control">
-                    <option value="">All libraries</option>
-                    {% for lib in libraries %}
-                    <option value="{{ lib.name }}" {% if filters.library == lib.name %}selected{% endif %}>{{ lib.name }}</option>
-                    {% endfor %}
-                </select>
-            </div>
-
-            <div class="form-group">
-                <label class="form-label" for="mode">Mode</label>
-                <select id="mode" name="mode" class="form-control">
-                    <option value="any" {% if filters.mode == "any" %}selected{% endif %}>Any</option>
-                    <option value="live" {% if filters.mode == "live" %}selected{% endif %}>Live only</option>
-                    <option value="dry" {% if filters.mode == "dry" %}selected{% endif %}>Dry run only</option>
-                </select>
-            </div>
-
-            <div class="form-group">
-                <label class="form-label" for="search_missing">Missing Search</label>
-                <select id="search_missing" name="search_missing" class="form-control">
-                    <option value="any" {% if filters.search_missing == "any" %}selected{% endif %}>Any</option>
-                    <option value="only" {% if filters.search_missing == "only" %}selected{% endif %}>Only with search-missing</option>
-                    <option value="exclude" {% if filters.search_missing == "exclude" %}selected{% endif %}>Exclude search-missing</option>
-                </select>
-            </div>
-
-            <div class="form-group">
-                <label class="form-label" for="limit">Rows</label>
-                <select id="limit" name="limit" class="form-control">
-                    <option value="10" {% if filters.limit == 10 %}selected{% endif %}>10</option>
-                    <option value="25" {% if filters.limit == 25 %}selected{% endif %}>25</option>
-                    <option value="50" {% if filters.limit == 50 %}selected{% endif %}>50</option>
-                    <option value="100" {% if filters.limit == 100 %}selected{% endif %}>100</option>
-                </select>
-            </div>
-        </div>
-
-        <div class="actions">
-            <button type="submit" class="btn btn-primary">&#128269; Apply Filters</button>
-            <a href="/scan/history" class="btn btn-secondary">Reset</a>
-        </div>
-    </form>
-</section>
+</details>
 
 <section class="card">
     {% if history|length > 0 %}

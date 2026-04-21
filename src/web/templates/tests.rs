@@ -323,6 +323,7 @@ fn scan_history_template_renders_humanized_skip_reason_highlights() {
     };
 
     let html = template.render().unwrap();
+    assert!(html.contains("History filters and row limit"));
     assert!(html.contains("Why Not"));
     assert!(html.contains("Already correct 6200"));
     assert!(html.contains("Source missing before link 3044"));
@@ -581,6 +582,7 @@ fn prune_preview_template_renders_alternate_match_context() {
     };
 
     let html = template.render().unwrap();
+    assert!(html.contains("Row-level reasons and exact paths"));
     assert!(html.contains("Better Match"));
     assert!(html.contains("Chucky (2021)"));
     assert!(html.contains("tvdb-2"));
@@ -644,7 +646,7 @@ fn prune_preview_template_renders_legacy_anime_root_context() {
     };
 
     let html = template.render().unwrap();
-    assert!(html.contains("Legacy Anime Root Groups"));
+    assert!(html.contains("Legacy anime root groups"));
     assert!(html.contains("/plex/Show (2024) {tvdb-123}"));
     assert!(html.contains("legacy root"));
 }
@@ -701,7 +703,7 @@ fn prune_preview_template_renders_blocked_reason_summary() {
     let html = template.render().unwrap();
     assert!(html.contains("duplicate slots without a tracked anchor are blocked"));
     assert!(html.contains("Keep scanning until one canonical tracked link owns the slot"));
-    assert!(html.contains("Apply blocked"));
+    assert!(html.contains("Apply blockers and trust gates"));
     assert!(!html.contains("Apply Prune"));
 }
 

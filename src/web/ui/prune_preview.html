@@ -72,49 +72,61 @@
 </div>
 
 {% if blocked_reason_summary|length > 0 %}
-<section class="card">
-    <div class="section-head">
-        <div>
-            <p class="section-kicker">Blocked</p>
-            <h2 class="section-title">Apply blocked</h2>
-            <p class="section-copy">Some rows are intentionally held back until trust and ownership gates are satisfied.</p>
+<details class="card disclosure-card">
+    <summary class="disclosure-card__summary">
+        <div class="disclosure-card__copy">
+            <span class="disclosure-card__eyebrow">Blocked</span>
+            <h2 class="disclosure-card__title">Apply blockers and trust gates</h2>
+            <p class="disclosure-card__hint">Open when you need to understand why some rows stayed out of the apply set.</p>
+        </div>
+        <div class="disclosure-card__meta">
+            <span class="badge badge-warning">{{ blocked_reason_summary|length }} blocker groups</span>
+            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
+        </div>
+    </summary>
+    <div class="disclosure-card__body">
+        <div class="stack-list">
+            {% for blocked in blocked_reason_summary %}
+            <div class="kv-row">
+                <strong>{{ blocked.label }}</strong>
+                <span class="text-muted">{{ blocked.candidates }} candidate(s)</span>
+            </div>
+            <p class="text-muted mb-1">{{ blocked.recommended_action }}</p>
+            {% endfor %}
         </div>
     </div>
-    <div class="stack-list">
-        {% for blocked in blocked_reason_summary %}
-        <div class="kv-row">
-            <strong>{{ blocked.label }}</strong>
-            <span class="text-muted">{{ blocked.candidates }} candidate(s)</span>
-        </div>
-        <p class="text-muted mb-1">{{ blocked.recommended_action }}</p>
-        {% endfor %}
-    </div>
-</section>
+</details>
 {% endif %}
 
 {% if legacy_anime_root_groups|length > 0 %}
-<section class="card">
-    <div class="section-head">
-        <div>
-            <p class="section-kicker">Anime</p>
-            <h2 class="section-title">Legacy Anime Root Groups</h2>
-            <p class="section-copy">These groups still have duplicate legacy root layouts that should be reviewed before auto-pruning.</p>
+<details class="card disclosure-card">
+    <summary class="disclosure-card__summary">
+        <div class="disclosure-card__copy">
+            <span class="disclosure-card__eyebrow">Anime</span>
+            <h2 class="disclosure-card__title">Legacy anime root groups</h2>
+            <p class="disclosure-card__hint">Open when duplicate anime roots are driving the cleanup plan or blocking auto-prune trust.</p>
         </div>
-    </div>
-    <div class="stack-list">
-        {% for group in legacy_anime_root_groups %}
-        <div class="kv-row">
-            <strong>{{ group.normalized_title }}</strong>
-            <span class="text-muted">{{ group.total }} group(s)</span>
+        <div class="disclosure-card__meta">
+            <span class="badge badge-info">{{ legacy_anime_root_groups|length }} groups</span>
+            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
         </div>
-        <div class="badge-stack mb-1">
-            {% for root in group.tagged_roots %}
-            <span class="badge badge-info mono">{{ root.display() }}</span>
+    </summary>
+    <div class="disclosure-card__body">
+        <div class="stack-list">
+            {% for group in legacy_anime_root_groups %}
+            <div class="kv-row">
+                <strong>{{ group.normalized_title }}</strong>
+                <span class="text-muted">{{ group.total }} group(s)</span>
+            </div>
+            <div class="badge-stack mb-1">
+                {% for root in group.tagged_roots %}
+                <span class="badge badge-info mono">{{ root.display() }}</span>
+                {% endfor %}
+            </div>
             {% endfor %}
         </div>
-        {% endfor %}
     </div>
-</section>
+</details>
 {% endif %}
 
 {% match confirmation_token %}
@@ -122,72 +134,79 @@
 {% match report_path %}
 {% when Some with (path) %}
 
-<div class="card">
-    <div class="section-head" style="cursor:pointer;" onclick="document.getElementById('findings-table').style.display = document.getElementById('findings-table').style.display === 'none' ? '' : 'none'; this.querySelector('.toggle-arrow').textContent = document.getElementById('findings-table').style.display === 'none' ? '\u25B6' : '\u25BC';">
-        <div>
-            <h2 class="section-title"><span class="toggle-arrow">&#9654;</span> Details ({{ total }} items)</h2>
-            <p class="text-muted">Click to expand the full list of findings.</p>
+<details class="card disclosure-card">
+    <summary class="disclosure-card__summary">
+        <div class="disclosure-card__copy">
+            <span class="disclosure-card__eyebrow">Detailed findings</span>
+            <h2 class="disclosure-card__title">Row-level reasons and exact paths</h2>
+            <p class="disclosure-card__hint">Open when the summary is not enough and you need the exact symlink path, action, and blocker context for each row.</p>
+        </div>
+        <div class="disclosure-card__meta">
+            <span class="badge badge-info">{{ total }} items</span>
+            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
+        </div>
+    </summary>
+    <div class="disclosure-card__body">
+        <div class="table-wrap">
+        <table class="data-table dense-table">
+            <thead>
+                <tr>
+                    <th>Severity</th>
+                    <th>Path</th>
+                    <th>Action</th>
+                    <th>Reasons</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for finding in findings %}
+                <tr>
+                    <td>
+                        {% match finding.finding.severity %}
+                        {% when crate::cleanup_audit::FindingSeverity::Critical %}
+                        <span class="badge badge-danger">Critical</span>
+                        {% when crate::cleanup_audit::FindingSeverity::High %}
+                        <span class="badge badge-warning">High</span>
+                        {% when crate::cleanup_audit::FindingSeverity::Warning %}
+                        <span class="badge badge-info">Info</span>
+                        {% endmatch %}
+                    </td>
+                    <td><code class="mono">{{ finding.finding.symlink_path.display() }}</code></td>
+                    <td><span class="badge {{ finding.action_badge_class }}">{{ finding.action_label }}</span></td>
+                    <td>
+                        <span class="badge-stack">
+                            {% for reason in finding.finding.reasons %}
+                            <span class="badge badge-info">{{ reason }}</span>
+                            {% endfor %}
+                        </span>
+                        {% match finding.alternate_match_summary %}
+                        {% when Some with (summary) %}
+                        <p class="text-muted mt-1">{{ summary }}</p>
+                        {% when None %}{% endmatch %}
+                        {% match finding.legacy_anime_root_summary %}
+                        {% when Some with (summary) %}
+                        <p class="text-muted mt-1">{{ summary }}</p>
+                        <div class="badge-stack">
+                            {% for root in finding.legacy_anime_tagged_roots %}
+                            <span class="badge badge-secondary mono">{{ root.display() }}</span>
+                            {% endfor %}
+                        </div>
+                        {% when None %}{% endmatch %}
+                        {% match finding.blocked_reason_label %}
+                        {% when Some with (label) %}
+                        <p class="text-muted mt-1"><strong>{{ label }}</strong></p>
+                        {% when None %}{% endmatch %}
+                        {% match finding.blocked_reason_recommended_action %}
+                        {% when Some with (action) %}
+                        <p class="text-muted">{{ action }}</p>
+                        {% when None %}{% endmatch %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
         </div>
     </div>
-    <div id="findings-table" style="display:none;">
-    <table class="data-table dense-table">
-        <thead>
-            <tr>
-                <th>Severity</th>
-                <th>Path</th>
-                <th>Action</th>
-                <th>Reasons</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for finding in findings %}
-            <tr>
-                <td>
-                    {% match finding.finding.severity %}
-                    {% when crate::cleanup_audit::FindingSeverity::Critical %}
-                    <span class="badge badge-danger">Critical</span>
-                    {% when crate::cleanup_audit::FindingSeverity::High %}
-                    <span class="badge badge-warning">High</span>
-                    {% when crate::cleanup_audit::FindingSeverity::Warning %}
-                    <span class="badge badge-info">Info</span>
-                    {% endmatch %}
-                </td>
-                <td><code class="mono">{{ finding.finding.symlink_path.display() }}</code></td>
-                <td><span class="badge {{ finding.action_badge_class }}">{{ finding.action_label }}</span></td>
-                <td>
-                    <span class="badge-stack">
-                        {% for reason in finding.finding.reasons %}
-                        <span class="badge badge-info">{{ reason }}</span>
-                        {% endfor %}
-                    </span>
-                    {% match finding.alternate_match_summary %}
-                    {% when Some with (summary) %}
-                    <p class="text-muted mt-1">{{ summary }}</p>
-                    {% when None %}{% endmatch %}
-                    {% match finding.legacy_anime_root_summary %}
-                    {% when Some with (summary) %}
-                    <p class="text-muted mt-1">{{ summary }}</p>
-                    <div class="badge-stack">
-                        {% for root in finding.legacy_anime_tagged_roots %}
-                        <span class="badge badge-secondary mono">{{ root.display() }}</span>
-                        {% endfor %}
-                    </div>
-                    {% when None %}{% endmatch %}
-                    {% match finding.blocked_reason_label %}
-                    {% when Some with (label) %}
-                    <p class="text-muted mt-1"><strong>{{ label }}</strong></p>
-                    {% when None %}{% endmatch %}
-                    {% match finding.blocked_reason_recommended_action %}
-                    {% when Some with (action) %}
-                    <p class="text-muted">{{ action }}</p>
-                    {% when None %}{% endmatch %}
-                </td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-    </div>
-</div>
+</details>
 
 <div class="card">
     {% if already_applied %}
