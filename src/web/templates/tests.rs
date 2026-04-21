@@ -429,12 +429,33 @@ fn config_template_renders_topology_and_defaults_disclosures() {
 
     let html = template.render().unwrap();
     assert!(html.contains("Check current configuration"));
+    assert!(html.contains("Docs and recommended workflow"));
     assert!(html.contains("Libraries and ingestion roots"));
     assert!(html.contains("Low-level runtime defaults"));
     assert!(html.contains("1 libraries"));
     assert!(html.contains("1 sources"));
     assert!(html.contains("/library/anime"));
     assert!(html.contains("/backups"));
+}
+
+#[test]
+fn discover_template_renders_guide_disclosure() {
+    let template = DiscoverTemplate {
+        libraries: vec![LibraryConfig {
+            name: "Anime".to_string(),
+            path: PathBuf::from("/library/anime"),
+            media_type: MediaType::Tv,
+            content_type: Some(ContentType::Anime),
+            depth: 1,
+        }],
+        selected_library: String::new(),
+        refresh_cache: false,
+    };
+
+    let html = template.render().unwrap();
+    assert!(html.contains("Discover preview rules"));
+    assert!(html.contains("Target library"));
+    assert!(html.contains("Refresh RD cache first"));
 }
 
 #[test]
