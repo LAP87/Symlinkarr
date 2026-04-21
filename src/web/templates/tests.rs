@@ -253,13 +253,39 @@ fn dead_links_template_renders_summary_and_actions() {
     };
 
     let html = template.render().unwrap();
-    assert!(html.contains("Operational summary"));
+    assert!(html.contains("Triage baseline and recovery order"));
     assert!(html.contains("2 dead"));
     assert!(html.contains("Auto-Repair All"));
     assert!(html.contains("Cleanup"));
     assert!(html.contains("Background repair running"));
     assert!(html.contains("tv / movie"));
     assert!(html.contains("badge badge-info"));
+}
+
+#[test]
+fn doctor_template_renders_results_without_redundant_metric_summary() {
+    let template = DoctorTemplate {
+        checks: vec![
+            DoctorCheck {
+                check: "db_schema".to_string(),
+                passed: true,
+                message: "database schema is current".to_string(),
+            },
+            DoctorCheck {
+                check: "backup_dir".to_string(),
+                passed: false,
+                message: "backup directory is not writable".to_string(),
+            },
+        ],
+        all_passed: false,
+    };
+
+    let html = template.render().unwrap();
+    assert!(html.contains("Inspection checklist"));
+    assert!(html.contains("Needs review"));
+    assert!(html.contains("backup directory is not writable"));
+    assert!(html.contains("Re-run Checks"));
+    assert!(!html.contains("metric-label\">Checks"));
 }
 
 #[test]

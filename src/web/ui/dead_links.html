@@ -9,7 +9,7 @@
         <p class="page-kicker">Recovery</p>
         <h1>&#128683; Dead Links</h1>
         <p class="page-lead">Review missing-source symlinks and repair them before pruning.</p>
-        <div class="page-help-links">
+        <div class="page-help-links advanced-only">
             <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Operations-and-Safety" target="_blank" rel="noreferrer noopener">
                 <span class="help-link__eyebrow">Learn more</span>
                 <span class="help-link__title">Repair workflow</span>
@@ -43,36 +43,42 @@
 
 {% if links|length > 0 %}
 <div class="split-grid">
-    <section class="card">
-        <div class="section-head">
-            <div>
-                <p class="section-kicker">Snapshot</p>
-                <h2 class="section-title">Operational summary</h2>
+    <details class="card disclosure-card">
+        <summary class="disclosure-card__summary">
+            <div class="disclosure-card__copy">
+                <span class="disclosure-card__eyebrow">Snapshot</span>
+                <h2 class="disclosure-card__title">Triage baseline and recovery order</h2>
+                <p class="disclosure-card__hint">Open when you need the condensed recovery plan and operator reminder before touching the queue.</p>
             </div>
-        </div>
+            <div class="disclosure-card__meta">
+                <span class="badge badge-danger">{{ links|length }} dead</span>
+                <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
+            </div>
+        </summary>
+        <div class="disclosure-card__body">
+            <div class="metric-grid metric-grid--compact">
+                <div class="metric-card">
+                    <span class="metric-label">Total Dead Links</span>
+                    <strong>{{ links|length }}</strong>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-label">Affected Media Types</span>
+                    <strong>tv / movie</strong>
+                    <span class="text-muted">Exact type is shown on each row.</span>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-label">Triage Order</span>
+                    <strong>Repair first</strong>
+                    <span class="text-muted">Only prune once no replacement exists.</span>
+                </div>
+            </div>
 
-        <div class="metric-grid metric-grid--compact">
-            <div class="metric-card">
-                <span class="metric-label">Total Dead Links</span>
-                <strong>{{ links|length }}</strong>
-            </div>
-            <div class="metric-card">
-                <span class="metric-label">Affected Media Types</span>
-                <strong>tv / movie</strong>
-                <span class="text-muted">Exact type is shown on each row.</span>
-            </div>
-            <div class="metric-card">
-                <span class="metric-label">Triage Order</span>
-                <strong>Repair first</strong>
-                <span class="text-muted">Only prune once no replacement exists.</span>
+            <div class="alert alert-warning mt-2">
+                <strong>&#9888;&#65039; {{ links|length }} dead link(s) detected.</strong>
+                Use auto-repair to attempt replacement, or run cleanup to prune unrepairable links.
             </div>
         </div>
-
-        <div class="alert alert-warning mt-2">
-            <strong>&#9888;&#65039; {{ links|length }} dead link(s) detected.</strong>
-            Use auto-repair to attempt replacement, or run cleanup to prune unrepairable links.
-        </div>
-    </section>
+    </details>
 
     <section class="card">
         <div class="section-head">
