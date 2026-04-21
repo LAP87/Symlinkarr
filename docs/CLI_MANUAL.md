@@ -10,7 +10,7 @@ symlinkarr <command> --help
 symlinkarr <command> <subcommand> --help
 ```
 
-For a wiki-style feature guide, see [GITHUB_WIKI_FEATURES.md](GITHUB_WIKI_FEATURES.md).
+For the wiki source index and page drafts, see [GITHUB_WIKI_FEATURES.md](GITHUB_WIKI_FEATURES.md) and [wiki/Home.md](wiki/Home.md).
 
 ## Global Usage
 

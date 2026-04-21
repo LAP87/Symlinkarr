@@ -241,7 +241,8 @@ Discover note: `discover list` now previews concrete source-to-target placements
 ## Docs
 
 - [GitHub Wiki](https://github.com/LAP87/Symlinkarr/wiki)
-- [Wiki source: feature guide](docs/GITHUB_WIKI_FEATURES.md)
+- [Wiki source index](docs/GITHUB_WIKI_FEATURES.md)
+- [Wiki source pages](docs/wiki/Home.md)
 - [Product scope](docs/PRODUCT_SCOPE.md)
 - [CLI manual](docs/CLI_MANUAL.md)
 - [API schema](docs/API_SCHEMA.md)

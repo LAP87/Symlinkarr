@@ -76,17 +76,19 @@ What not to borrow blindly:
 - Dangerous flows should stay review-first.
 - Background work should be explicit and easy to understand from status surfaces.
 
-## Current Wiki Targets
+## Preferred Wiki Targets
 
-Use these URLs for contextual help until feature-specific wiki pages exist:
+Use these page intents once the GitHub wiki mirrors the new source pages under `docs/wiki/`:
 
-- `Scan`: `https://github.com/LAP87/Symlinkarr/wiki/Operations-and-Safety`
-- `Discover`: `https://github.com/LAP87/Symlinkarr/wiki/User-Guide`
-- `Cleanup`: `https://github.com/LAP87/Symlinkarr/wiki/Operations-and-Safety`
-- `Dead Links / Repair`: `https://github.com/LAP87/Symlinkarr/wiki/Operations-and-Safety`
-- `Doctor`: `https://github.com/LAP87/Symlinkarr/wiki/Troubleshooting`
-- `Config`: `https://github.com/LAP87/Symlinkarr/wiki/Getting-Started`
-- `Status / Media Refresh`: `https://github.com/LAP87/Symlinkarr/wiki/Media-Servers`
+- `Dashboard`: `Dashboard and Daily Operations`
+- `Scan / Scan History / Scan Run`: `Scan, History, and Why-Not Signals`
+- `Discover / Queue`: `Discover and Queue`
+- `Cleanup / Prune Preview`: `Cleanup, Audit, and Prune Preview`
+- `Dead Links / Repair / Links`: `Repair and Dead Links`
+- `Backup / Restore / Bootstrap / No-config`: `Backup and Restore`
+- `Doctor / Config`: `Configuration and Doctor`
+- `Status / Media Refresh`: `Media Server Refresh and Deferred Work`
+- `Anime remediation`: `Anime Remediation`
 
 ## Stitch Prompt Seed
 
