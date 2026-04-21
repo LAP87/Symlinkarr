@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use tracing::info;
 
 const STARTER_CONFIG: &str = r#"# Symlinkarr configuration
-# See docs at https://github.com/LAP87/Symlinkarr/wiki/User-Guide
+# See docs at https://github.com/LAP87/Symlinkarr/wiki/Configuration-and-Doctor
 
 # Libraries: directories where Plex/Jellyfin/Emby expect media
 libraries:

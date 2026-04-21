@@ -260,6 +260,7 @@ fn dead_links_template_renders_summary_and_actions() {
     assert!(html.contains("Background repair running"));
     assert!(html.contains("tv / movie"));
     assert!(html.contains("badge badge-info"));
+    assert!(html.contains("/wiki/Repair-and-Dead-Links"));
 }
 
 #[test]
@@ -285,6 +286,8 @@ fn doctor_template_renders_results_without_redundant_metric_summary() {
     assert!(html.contains("Needs review"));
     assert!(html.contains("backup directory is not writable"));
     assert!(html.contains("Re-run Checks"));
+    assert!(html.contains("/wiki/Configuration-and-Doctor"));
+    assert!(html.contains("/wiki/Backup-and-Restore"));
     assert!(!html.contains("metric-label\">Checks"));
 }
 
@@ -324,6 +327,7 @@ fn scan_run_detail_template_renders_full_run_summary() {
     assert!(html.contains("/library/Show A/Season 01/Show A - S01E01.mkv"));
     assert!(html.contains("Back to Scan History"));
     assert!(html.contains("77624480"));
+    assert!(html.contains("/wiki/Scan-History-and-Why-Not-Signals"));
 }
 
 #[test]
@@ -354,6 +358,7 @@ fn scan_history_template_renders_humanized_skip_reason_highlights() {
     assert!(html.contains("Already correct 6200"));
     assert!(html.contains("Source missing before link 3044"));
     assert!(html.contains("+1 more bucket(s)"));
+    assert!(html.contains("/wiki/Scan-History-and-Why-Not-Signals"));
 }
 
 #[test]
@@ -374,6 +379,7 @@ fn scan_template_renders_top_skip_reason_summary() {
     assert!(html.contains("Top Skip Reasons"));
     assert!(html.contains("Matcher: Ambiguous match 70"));
     assert!(html.contains("Open the detail view for grouped counts and raw reason codes."));
+    assert!(html.contains("/wiki/Scan-History-and-Why-Not-Signals"));
 }
 
 #[test]
@@ -413,6 +419,7 @@ fn dashboard_template_renders_needs_attention_section() {
     assert!(html.contains("Next step:"));
     assert!(html.contains("compare the failure against the latest run detail"));
     assert!(html.contains("Review Dead Links"));
+    assert!(html.contains("/wiki/Dashboard-and-Daily-Operations"));
 }
 
 #[test]
@@ -436,6 +443,8 @@ fn config_template_renders_topology_and_defaults_disclosures() {
     assert!(html.contains("1 sources"));
     assert!(html.contains("/library/anime"));
     assert!(html.contains("/backups"));
+    assert!(html.contains("/wiki/Configuration-and-Doctor"));
+    assert!(html.contains("/wiki/Backup-and-Restore"));
 }
 
 #[test]
@@ -456,6 +465,7 @@ fn discover_template_renders_guide_disclosure() {
     assert!(html.contains("Discover preview rules"));
     assert!(html.contains("Target library"));
     assert!(html.contains("Refresh RD cache first"));
+    assert!(html.contains("/wiki/Discover-and-Queue"));
 }
 
 #[test]
@@ -486,6 +496,28 @@ fn backup_template_renders_storage_disclosure_and_restore_history() {
     assert!(html.contains("Existing backups"));
     assert!(html.contains("Confirm backup restore"));
     assert!(html.contains("symlinkarr-backup-before-cleanup-20260415-220000.json"));
+    assert!(html.contains("/wiki/Backup-and-Restore"));
+}
+
+#[test]
+fn links_template_renders_dead_link_wiki_entrypoint() {
+    let template = LinksTemplate {
+        links: vec![LinkRecord {
+            id: None,
+            source_path: PathBuf::from("/mnt/rd/show-a.mkv"),
+            target_path: PathBuf::from("/plex/Show A/S01E01.mkv"),
+            media_id: "tvdb-1".to_string(),
+            media_type: MediaType::Tv,
+            status: LinkStatus::Active,
+            created_at: Some("2026-03-21 10:00:00".to_string()),
+            updated_at: Some("2026-03-21 11:00:00".to_string()),
+        }],
+        filter: "all".to_string(),
+    };
+
+    let html = template.render().unwrap();
+    assert!(html.contains("Browse and manage symlinks in the database."));
+    assert!(html.contains("/wiki/Repair-and-Dead-Links"));
 }
 
 #[test]
@@ -634,6 +666,7 @@ fn prune_preview_template_renders_alternate_match_context() {
     assert!(html.contains("Chucky (2021)"));
     assert!(html.contains("tvdb-2"));
     assert!(html.contains("score 1.00"));
+    assert!(html.contains("/wiki/Cleanup-Audit-and-Prune-Preview"));
 }
 
 #[test]
@@ -839,6 +872,7 @@ fn anime_remediation_template_renders_backlog_summary() {
     assert!(html.contains("Broken legacy symlinks"));
     assert!(html.contains("Real media files blocking automatic cleanup"));
     assert!(html.contains("Most users can ignore this page."));
+    assert!(html.contains("/wiki/Anime-Remediation"));
 }
 
 #[test]
