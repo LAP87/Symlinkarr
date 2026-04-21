@@ -4,6 +4,12 @@ use crate::cleanup_audit::{
     AlternateMatchContext, CleanupFinding, CleanupOwnership, FindingReason, FindingSeverity,
     ParsedContext, PruneReasonCount,
 };
+use crate::config::{
+    ApiConfig, BackupConfig, BazarrConfig, CleanupPolicyConfig, Config, ContentType, DaemonConfig,
+    DecypharrConfig, DmmConfig, FeaturesConfig, LibraryConfig, MatchingConfig, MediaBrowserConfig,
+    PlexConfig, ProwlarrConfig, RadarrConfig, RealDebridConfig, SecurityConfig, SonarrConfig,
+    SourceConfig, SymlinkConfig, TautulliConfig, WebConfig,
+};
 use crate::models::{LinkStatus, MediaType};
 
 fn sample_skip_reasons() -> Vec<SkipReasonView> {
@@ -165,6 +171,51 @@ fn sample_needs_attention_view() -> DashboardNeedsAttentionView {
                 }),
             },
         ],
+    }
+}
+
+fn sample_config() -> Config {
+    Config {
+        libraries: vec![LibraryConfig {
+            name: "Anime".to_string(),
+            path: PathBuf::from("/library/anime"),
+            media_type: MediaType::Tv,
+            content_type: Some(ContentType::Anime),
+            depth: 1,
+        }],
+        sources: vec![SourceConfig {
+            name: "RD".to_string(),
+            path: PathBuf::from("/source/rd"),
+            media_type: "auto".to_string(),
+        }],
+        api: ApiConfig::default(),
+        realdebrid: RealDebridConfig::default(),
+        decypharr: DecypharrConfig::default(),
+        dmm: DmmConfig::default(),
+        backup: BackupConfig {
+            path: PathBuf::from("/backups"),
+            ..BackupConfig::default()
+        },
+        db_path: "/data/symlinkarr.db".to_string(),
+        log_level: "info".to_string(),
+        daemon: DaemonConfig::default(),
+        symlink: SymlinkConfig::default(),
+        matching: MatchingConfig::default(),
+        prowlarr: ProwlarrConfig::default(),
+        bazarr: BazarrConfig::default(),
+        tautulli: TautulliConfig::default(),
+        plex: PlexConfig::default(),
+        emby: MediaBrowserConfig::default(),
+        jellyfin: MediaBrowserConfig::default(),
+        radarr: RadarrConfig::default(),
+        sonarr: SonarrConfig::default(),
+        sonarr_anime: SonarrConfig::default(),
+        features: FeaturesConfig::default(),
+        security: SecurityConfig::default(),
+        cleanup: CleanupPolicyConfig::default(),
+        web: WebConfig::default(),
+        loaded_from: None,
+        secret_files: Vec::new(),
     }
 }
 
@@ -335,6 +386,58 @@ fn dashboard_template_renders_needs_attention_section() {
     assert!(html.contains("Next step:"));
     assert!(html.contains("compare the failure against the latest run detail"));
     assert!(html.contains("Review Dead Links"));
+}
+
+#[test]
+fn config_template_renders_topology_and_defaults_disclosures() {
+    let template = ConfigTemplate {
+        config: sample_config(),
+        validation_result: Some(ValidationResult {
+            valid: true,
+            errors: Vec::new(),
+            warnings: vec!["Backup path is on a slow disk".to_string()],
+        }),
+        csrf_token: "csrf-test-token".to_string(),
+    };
+
+    let html = template.render().unwrap();
+    assert!(html.contains("Check current configuration"));
+    assert!(html.contains("Libraries and ingestion roots"));
+    assert!(html.contains("Low-level runtime defaults"));
+    assert!(html.contains("1 libraries"));
+    assert!(html.contains("1 sources"));
+    assert!(html.contains("/library/anime"));
+    assert!(html.contains("/backups"));
+}
+
+#[test]
+fn backup_template_renders_storage_disclosure_and_restore_history() {
+    let template = BackupTemplate {
+        backups: vec![BackupInfo {
+            filename: "symlinkarr-backup-before-cleanup-20260415-220000.json".to_string(),
+            label: "before-cleanup".to_string(),
+            kind_label: "Symlinkarr Backup".to_string(),
+            kind_badge_class: "badge-info",
+            created_at: "2026-04-15 22:00:00 UTC".to_string(),
+            age_label: "6 days ago".to_string(),
+            recorded_links: 420,
+            link_delta_label: "+12 vs current".to_string(),
+            manifest_size_bytes: 1337,
+            database_snapshot_size_bytes: Some(8192),
+            config_snapshot_present: true,
+            secret_snapshot_count: 2,
+        }],
+        backup_dir: PathBuf::from("/backups"),
+        csrf_token: "csrf-test-token".to_string(),
+    };
+
+    let html = template.render().unwrap();
+    assert!(html.contains("Create new Symlinkarr backup"));
+    assert!(html.contains("Storage path and restore semantics"));
+    assert!(html.contains("1 snapshots"));
+    assert!(html.contains("Existing backups"));
+    assert!(html.contains("Confirm backup restore"));
+    assert!(html.contains("symlinkarr-backup-before-cleanup-20260415-220000.json"));
 }
 
 #[test]

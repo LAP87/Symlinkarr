@@ -38,36 +38,43 @@
     </form>
     </section>
 
-    <section class="card">
-        <div class="section-head">
-            <div>
-                <p class="section-kicker">Storage</p>
-                <h2 class="section-title">Backup location</h2>
+    <details class="card disclosure-card">
+        <summary class="disclosure-card__summary">
+            <div class="disclosure-card__copy">
+                <span class="disclosure-card__eyebrow">Storage</span>
+                <h2 class="disclosure-card__title">Storage path and restore semantics</h2>
+                <p class="disclosure-card__hint">Open when you need the exact backup directory or the full restore/app-state caveats for this installation.</p>
+            </div>
+            <div class="disclosure-card__meta">
+                <span class="badge badge-info">{{ backups|length }} snapshots</span>
+                <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
+            </div>
+        </summary>
+        <div class="disclosure-card__body">
+            <div class="key-value-grid">
+                <div class="key-value-row">
+                    <div class="key-value-label">Directory</div>
+                    <div><code class="mono">{{ backup_dir.display() }}</code></div>
+                </div>
+                <div class="key-value-row">
+                    <div class="key-value-label">Snapshots</div>
+                    <div>{{ backups|length }}</div>
+                </div>
+            </div>
+            <div class="alert alert-warning mt-2">
+                <strong>Restore is destructive.</strong> A restore overwrites current tracked link state with the selected snapshot.
+            </div>
+            <div class="alert alert-info mt-2">
+                <strong>App-state coverage depends on your setup.</strong> Symlinkarr backups now capture tracked links, SQLite state, the active config file, and any <code class="mono">secretfile:</code> secrets they can see.
+            </div>
+            <div class="alert alert-info mt-2">
+                <strong>Still not identical to Sonarr/Radarr.</strong> Secrets loaded only from environment variables still live outside the backup set, and a true fresh-install restore still needs you to place config/secrets before first start.
+            </div>
+            <div class="alert alert-info mt-2">
+                <strong>Use the names as intended.</strong> <em>Symlinkarr Backup</em> is the main backup to keep. <em>Restore Point</em> is a lighter rollback point created around risky runs.
             </div>
         </div>
-        <div class="key-value-grid">
-            <div class="key-value-row">
-                <div class="key-value-label">Directory</div>
-                <div><code class="mono">{{ backup_dir.display() }}</code></div>
-            </div>
-            <div class="key-value-row">
-                <div class="key-value-label">Snapshots</div>
-                <div>{{ backups|length }}</div>
-            </div>
-        </div>
-        <div class="alert alert-warning mt-2">
-            <strong>Restore is destructive.</strong> A restore overwrites current tracked link state with the selected snapshot.
-        </div>
-        <div class="alert alert-info mt-2">
-            <strong>App-state coverage depends on your setup.</strong> Symlinkarr backups now capture tracked links, SQLite state, the active config file, and any <code class="mono">secretfile:</code> secrets they can see.
-        </div>
-        <div class="alert alert-info mt-2">
-            <strong>Still not identical to Sonarr/Radarr.</strong> Secrets loaded only from environment variables still live outside the backup set, and a true fresh-install restore still needs you to place config/secrets before first start.
-        </div>
-        <div class="alert alert-info mt-2">
-            <strong>Use the names as intended.</strong> <em>Symlinkarr Backup</em> is the main backup to keep. <em>Restore Point</em> is a lighter rollback point created around risky runs.
-        </div>
-    </section>
+    </details>
 </div>
 
 <section class="card">

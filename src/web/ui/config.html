@@ -101,106 +101,129 @@
     </div>
 </section>
 
-<div class="split-grid">
-<section class="card">
-    <div class="section-head">
-        <div>
-            <p class="section-kicker">Libraries</p>
-            <h2 class="section-title">Tagged library roots</h2>
+<details class="card disclosure-card">
+    <summary class="disclosure-card__summary">
+        <div class="disclosure-card__copy">
+            <span class="disclosure-card__eyebrow">Topology</span>
+            <h2 class="disclosure-card__title">Libraries and ingestion roots</h2>
+            <p class="disclosure-card__hint">Open when you need exact paths, content typing, or depth details from the live config.</p>
         </div>
-    </div>
-    {% if config.libraries|length > 0 %}
-    <div class="table-wrap">
-    <table class="data-table dense-table">
-        <thead>
-            <tr>
-                <th>Name</th>
-                <th>Path</th>
-                <th>Media Type</th>
-                <th>Content Type</th>
-                <th>Depth</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for lib in config.libraries %}
-            <tr>
-                <td><strong>{{ lib.name }}</strong></td>
-                <td><code class="mono">{{ lib.path.display() }}</code></td>
-                <td>{{ lib.media_type }}</td>
-                <td>
-                    {% match lib.content_type %}
-                    {% when Some with (ct) %}{{ ct }}{% when None %}<span class="text-muted">auto</span>{% endmatch %}
-                </td>
-                <td>{{ lib.depth }}</td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-    </div>
-    {% else %}
-    <p class="text-muted">No libraries configured.</p>
-    {% endif %}
-</section>
+        <div class="disclosure-card__meta">
+            <span class="badge badge-info">{{ config.libraries|length }} libraries</span>
+            <span class="badge badge-info">{{ config.sources|length }} sources</span>
+            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
+        </div>
+    </summary>
+    <div class="disclosure-card__body">
+        <div class="split-grid">
+            <section class="card card--nested">
+                <div class="section-head">
+                    <div>
+                        <p class="section-kicker">Libraries</p>
+                        <h2 class="section-title">Tagged library roots</h2>
+                    </div>
+                </div>
+                {% if config.libraries|length > 0 %}
+                <div class="table-wrap">
+                <table class="data-table dense-table">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Path</th>
+                            <th>Media Type</th>
+                            <th>Content Type</th>
+                            <th>Depth</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for lib in config.libraries %}
+                        <tr>
+                            <td><strong>{{ lib.name }}</strong></td>
+                            <td><code class="mono">{{ lib.path.display() }}</code></td>
+                            <td>{{ lib.media_type }}</td>
+                            <td>
+                                {% match lib.content_type %}
+                                {% when Some with (ct) %}{{ ct }}{% when None %}<span class="text-muted">auto</span>{% endmatch %}
+                            </td>
+                            <td>{{ lib.depth }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                </div>
+                {% else %}
+                <p class="text-muted">No libraries configured.</p>
+                {% endif %}
+            </section>
 
-<section class="card">
-    <div class="section-head">
-        <div>
-            <p class="section-kicker">Sources</p>
-            <h2 class="section-title">Ingestion roots</h2>
+            <section class="card card--nested">
+                <div class="section-head">
+                    <div>
+                        <p class="section-kicker">Sources</p>
+                        <h2 class="section-title">Ingestion roots</h2>
+                    </div>
+                </div>
+                {% if config.sources|length > 0 %}
+                <div class="table-wrap">
+                <table class="data-table dense-table">
+                    <thead>
+                        <tr><th>Name</th><th>Path</th><th>Media Type</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for src in config.sources %}
+                        <tr>
+                            <td><strong>{{ src.name }}</strong></td>
+                            <td><code class="mono">{{ src.path.display() }}</code></td>
+                            <td>{{ src.media_type }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                </div>
+                {% else %}
+                <p class="text-muted">No sources configured.</p>
+                {% endif %}
+            </section>
         </div>
     </div>
-    {% if config.sources|length > 0 %}
-    <div class="table-wrap">
-    <table class="data-table dense-table">
-        <thead>
-            <tr><th>Name</th><th>Path</th><th>Media Type</th></tr>
-        </thead>
-        <tbody>
-            {% for src in config.sources %}
-            <tr>
-                <td><strong>{{ src.name }}</strong></td>
-                <td><code class="mono">{{ src.path.display() }}</code></td>
-                <td>{{ src.media_type }}</td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-    </div>
-    {% else %}
-    <p class="text-muted">No sources configured.</p>
-    {% endif %}
-</section>
-</div>
+</details>
 
-<section class="card">
-    <div class="section-head">
-        <div>
-            <p class="section-kicker">Defaults</p>
-            <h2 class="section-title">General settings</h2>
-            <p class="section-copy">These values define the current setup. Paths below are read directly from the active config rendered by the server.</p>
+<details class="card disclosure-card">
+    <summary class="disclosure-card__summary">
+        <div class="disclosure-card__copy">
+            <span class="disclosure-card__eyebrow">Defaults</span>
+            <h2 class="disclosure-card__title">Low-level runtime defaults</h2>
+            <p class="disclosure-card__hint">Open when you need database, backup, or matcher defaults exactly as the server sees them right now.</p>
+        </div>
+        <div class="disclosure-card__meta">
+            <span class="badge badge-secondary">{{ config.log_level }}</span>
+            <span class="badge badge-secondary">{{ config.matching.mode }}</span>
+            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
+        </div>
+    </summary>
+    <div class="disclosure-card__body">
+        <div class="key-value-grid">
+            <div class="key-value-row">
+                <div class="key-value-label">Database Path</div>
+                <div><code class="mono">{{ config.db_path }}</code></div>
+            </div>
+            <div class="key-value-row">
+                <div class="key-value-label">Log Level</div>
+                <div>{{ config.log_level }}</div>
+            </div>
+            <div class="key-value-row">
+                <div class="key-value-label">Matching Mode</div>
+                <div>{{ config.matching.mode }}</div>
+            </div>
+            <div class="key-value-row">
+                <div class="key-value-label">Metadata Mode</div>
+                <div>{{ config.matching.metadata_mode }}</div>
+            </div>
+            <div class="key-value-row">
+                <div class="key-value-label">Backup Path</div>
+                <div><code class="mono">{{ config.backup.path.display() }}</code></div>
+            </div>
         </div>
     </div>
-    <div class="key-value-grid">
-        <div class="key-value-row">
-            <div class="key-value-label">Database Path</div>
-            <div><code class="mono">{{ config.db_path }}</code></div>
-        </div>
-        <div class="key-value-row">
-            <div class="key-value-label">Log Level</div>
-            <div>{{ config.log_level }}</div>
-        </div>
-        <div class="key-value-row">
-            <div class="key-value-label">Matching Mode</div>
-            <div>{{ config.matching.mode }}</div>
-        </div>
-        <div class="key-value-row">
-            <div class="key-value-label">Metadata Mode</div>
-            <div>{{ config.matching.metadata_mode }}</div>
-        </div>
-        <div class="key-value-row">
-            <div class="key-value-label">Backup Path</div>
-            <div><code class="mono">{{ config.backup.path.display() }}</code></div>
-        </div>
-    </div>
-</section>
+</details>
 {% endblock %}
