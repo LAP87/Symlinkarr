@@ -66,80 +66,89 @@
     </form>
 </section>
 
-<section class="card">
-    <div class="section-head">
-        <div>
-            <p class="section-kicker">Filters</p>
-            <h2 class="section-title">Work the blocked backlog in slices</h2>
-            <p class="text-muted">Filter the ranked queue by eligibility, blocker class, or title fragment. The TSV export uses the same filters, so you can hand off exactly the subset you are reviewing.</p>
+<details class="card disclosure-card" {% if !data.reason_filter.is_empty() || !data.title_filter.is_empty() || data.state_filter != "all" %}open{% endif %}>
+    <summary class="disclosure-card__summary">
+        <div class="disclosure-card__copy">
+            <span class="disclosure-card__eyebrow">Filters</span>
+            <h2 class="disclosure-card__title">Work the blocked backlog in slices</h2>
+            <p class="disclosure-card__hint">Open this only when you want to slice the queue or export the filtered subset for review.</p>
+        </div>
+        <div class="disclosure-card__meta">
+            <span class="badge badge-info">{{ data.visible_groups }} visible</span>
+            {% if data.blocked_groups > 0 %}
+            <span class="badge badge-warning">{{ data.blocked_groups }} blocked</span>
+            {% endif %}
+            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
+        </div>
+    </summary>
+    <div class="disclosure-card__body">
+        <div class="split-grid">
+            <form action="/cleanup/anime-remediation" method="get" class="stack-form">
+                <input type="hidden" name="plex_db" value="{{ data.plex_db_path }}">
+                {% if data.full %}
+                <input type="hidden" name="full" value="true">
+                {% endif %}
+                <div class="form-group">
+                    <label class="form-label" for="anime-remediation-state">Visibility</label>
+                    <select id="anime-remediation-state" name="state" class="form-control field-max-md">
+                        <option value="all" {% if data.state_filter == "all" %}selected{% endif %}>All groups</option>
+                        <option value="eligible" {% if data.state_filter == "eligible" %}selected{% endif %}>Eligible only</option>
+                        <option value="blocked" {% if data.state_filter == "blocked" %}selected{% endif %}>Blocked only</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="anime-remediation-reason">Blocked reason</label>
+                    <select id="anime-remediation-reason" name="reason" class="form-control">
+                        <option value="">Any blocker</option>
+                        {% for item in data.available_blocked_reasons %}
+                        <option value="{{ item.code }}" {% if data.reason_filter == item.code %}selected{% endif %}>{{ item.label }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="anime-remediation-filter-title">Title contains</label>
+                    <input id="anime-remediation-filter-title" name="title" type="text" class="form-control field-max-lg" value="{{ data.title_filter }}" placeholder="e.g. Gundam">
+                </div>
+                <div class="actions">
+                    <button type="submit" class="btn btn-primary">Apply Filters</button>
+                    <a href="/cleanup/anime-remediation{% if data.full %}?full=true{% endif %}" class="btn btn-secondary">Clear Filters</a>
+                </div>
+            </form>
+
+            <form action="/api/v1/report/anime-remediation" method="get" class="stack-form">
+                <input type="hidden" name="plex_db" value="{{ data.plex_db_path }}">
+                {% if data.full %}
+                <input type="hidden" name="full" value="true">
+                {% endif %}
+                <input type="hidden" name="state" value="{{ data.state_filter }}">
+                {% if !data.reason_filter.is_empty() %}
+                <input type="hidden" name="reason" value="{{ data.reason_filter }}">
+                {% endif %}
+                {% if !data.title_filter.is_empty() %}
+                <input type="hidden" name="title" value="{{ data.title_filter }}">
+                {% endif %}
+                <input type="hidden" name="format" value="tsv">
+                <div class="metric-grid metric-grid--compact">
+                    <div class="metric-card">
+                        <span class="metric-label">Visible queue</span>
+                        <strong>{{ data.visible_groups }}</strong>
+                    </div>
+                    <div class="metric-card">
+                        <span class="metric-label">Blocked in slice</span>
+                        <strong>{{ data.blocked_groups }}</strong>
+                    </div>
+                    <div class="metric-card">
+                        <span class="metric-label">Eligible in slice</span>
+                        <strong>{{ data.eligible_groups }}</strong>
+                    </div>
+                </div>
+                <div class="actions mt-2">
+                    <button type="submit" class="btn btn-secondary">&#128190; Download Filtered TSV</button>
+                </div>
+            </form>
         </div>
     </div>
-    <div class="split-grid">
-        <form action="/cleanup/anime-remediation" method="get" class="stack-form">
-            <input type="hidden" name="plex_db" value="{{ data.plex_db_path }}">
-            {% if data.full %}
-            <input type="hidden" name="full" value="true">
-            {% endif %}
-            <div class="form-group">
-                <label class="form-label" for="anime-remediation-state">Visibility</label>
-                <select id="anime-remediation-state" name="state" class="form-control field-max-md">
-                    <option value="all" {% if data.state_filter == "all" %}selected{% endif %}>All groups</option>
-                    <option value="eligible" {% if data.state_filter == "eligible" %}selected{% endif %}>Eligible only</option>
-                    <option value="blocked" {% if data.state_filter == "blocked" %}selected{% endif %}>Blocked only</option>
-                </select>
-            </div>
-            <div class="form-group">
-                <label class="form-label" for="anime-remediation-reason">Blocked reason</label>
-                <select id="anime-remediation-reason" name="reason" class="form-control">
-                    <option value="">Any blocker</option>
-                    {% for item in data.available_blocked_reasons %}
-                    <option value="{{ item.code }}" {% if data.reason_filter == item.code %}selected{% endif %}>{{ item.label }}</option>
-                    {% endfor %}
-                </select>
-            </div>
-            <div class="form-group">
-                <label class="form-label" for="anime-remediation-filter-title">Title contains</label>
-                <input id="anime-remediation-filter-title" name="title" type="text" class="form-control field-max-lg" value="{{ data.title_filter }}" placeholder="e.g. Gundam">
-            </div>
-            <div class="actions">
-                <button type="submit" class="btn btn-primary">Apply Filters</button>
-                <a href="/cleanup/anime-remediation{% if data.full %}?full=true{% endif %}" class="btn btn-secondary">Clear Filters</a>
-            </div>
-        </form>
-
-        <form action="/api/v1/report/anime-remediation" method="get" class="stack-form">
-            <input type="hidden" name="plex_db" value="{{ data.plex_db_path }}">
-            {% if data.full %}
-            <input type="hidden" name="full" value="true">
-            {% endif %}
-            <input type="hidden" name="state" value="{{ data.state_filter }}">
-            {% if !data.reason_filter.is_empty() %}
-            <input type="hidden" name="reason" value="{{ data.reason_filter }}">
-            {% endif %}
-            {% if !data.title_filter.is_empty() %}
-            <input type="hidden" name="title" value="{{ data.title_filter }}">
-            {% endif %}
-            <input type="hidden" name="format" value="tsv">
-            <div class="metric-grid metric-grid--compact">
-                <div class="metric-card">
-                    <span class="metric-label">Visible queue</span>
-                    <strong>{{ data.visible_groups }}</strong>
-                </div>
-                <div class="metric-card">
-                    <span class="metric-label">Blocked in slice</span>
-                    <strong>{{ data.blocked_groups }}</strong>
-                </div>
-                <div class="metric-card">
-                    <span class="metric-label">Eligible in slice</span>
-                    <strong>{{ data.eligible_groups }}</strong>
-                </div>
-            </div>
-            <div class="actions mt-2">
-                <button type="submit" class="btn btn-secondary">&#128190; Download Filtered TSV</button>
-            </div>
-        </form>
-    </div>
-</section>
+</details>
 
 <div class="split-grid">
     <section class="card hero-card hero-card--accent">
@@ -153,53 +162,67 @@
         </div>
     </section>
 
-    <section class="card">
-        <div class="section-head">
-            <div>
-                <p class="section-kicker">Context</p>
-                <h2 class="section-title">When you actually need this</h2>
+    <details class="card disclosure-card">
+        <summary class="disclosure-card__summary">
+            <div class="disclosure-card__copy">
+                <span class="disclosure-card__eyebrow">Context</span>
+                <h2 class="disclosure-card__title">When you actually need this</h2>
+                <p class="disclosure-card__hint">Open only if you need the backlog source counts or want to confirm that this page is the right tool.</p>
+            </div>
+            <div class="disclosure-card__meta">
+                <span class="badge badge-info">Legacy-only</span>
+                <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
+            </div>
+        </summary>
+        <div class="disclosure-card__body">
+            <p class="text-muted">Use this only when the same anime title still exists in old legacy folders as well as tagged roots, or when Plex/Hama split one show into separate AniDB and TVDB entries. If that is not your situation, skip this page.</p>
+            <div class="metric-grid metric-grid--compact mt-2">
+                <div class="metric-card">
+                    <span class="metric-label">Mixed roots</span>
+                    <strong>{{ data.filesystem_mixed_root_groups }}</strong>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-label">Plex duplicates</span>
+                    <strong>{{ data.plex_duplicate_show_groups }}</strong>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-label">Hama splits</span>
+                    <strong>{{ data.plex_hama_anidb_tvdb_groups }}</strong>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-label">Plex DB</span>
+                    <strong class="mono">{{ data.plex_db_path }}</strong>
+                </div>
             </div>
         </div>
-        <p class="text-muted">Use this only when the same anime title still exists in old legacy folders as well as tagged roots, or when Plex/Hama split one show into separate AniDB and TVDB entries. If that is not your situation, skip this page.</p>
-        <div class="metric-grid metric-grid--compact mt-2">
-            <div class="metric-card">
-                <span class="metric-label">Mixed roots</span>
-                <strong>{{ data.filesystem_mixed_root_groups }}</strong>
-            </div>
-            <div class="metric-card">
-                <span class="metric-label">Plex duplicates</span>
-                <strong>{{ data.plex_duplicate_show_groups }}</strong>
-            </div>
-            <div class="metric-card">
-                <span class="metric-label">Hama splits</span>
-                <strong>{{ data.plex_hama_anidb_tvdb_groups }}</strong>
-            </div>
-            <div class="metric-card">
-                <span class="metric-label">Plex DB</span>
-                <strong class="mono">{{ data.plex_db_path }}</strong>
-            </div>
-        </div>
-    </section>
+    </details>
 </div>
 
 {% if !data.blocked_reason_summary.is_empty() %}
-<section class="card">
-    <div class="section-head">
-        <div>
-            <p class="section-kicker">Why Groups Stay Blocked</p>
-            <h2 class="section-title">What to do next</h2>
+<details class="card disclosure-card" open>
+    <summary class="disclosure-card__summary">
+        <div class="disclosure-card__copy">
+            <span class="disclosure-card__eyebrow">Why Groups Stay Blocked</span>
+            <h2 class="disclosure-card__title">What to do next</h2>
+            <p class="disclosure-card__hint">Keep this open while triaging blockers, then collapse it once you are working the main queue table.</p>
+        </div>
+        <div class="disclosure-card__meta">
+            <span class="badge badge-warning">{{ data.blocked_reason_summary|length }} blocker type(s)</span>
+            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
+        </div>
+    </summary>
+    <div class="disclosure-card__body">
+        <div class="metric-grid metric-grid--compact">
+            {% for item in data.blocked_reason_summary %}
+            <div class="metric-card">
+                <span class="metric-label">{{ item.label }}</span>
+                <strong>{{ item.groups }}</strong>
+                <div class="text-muted">{{ item.recommended_action }}</div>
+            </div>
+            {% endfor %}
         </div>
     </div>
-    <div class="metric-grid metric-grid--compact">
-        {% for item in data.blocked_reason_summary %}
-        <div class="metric-card">
-            <span class="metric-label">{{ item.label }}</span>
-            <strong>{{ item.groups }}</strong>
-            <div class="text-muted">{{ item.recommended_action }}</div>
-        </div>
-        {% endfor %}
-    </div>
-</section>
+</details>
 {% endif %}
 
 <div class="card">

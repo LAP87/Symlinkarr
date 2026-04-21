@@ -45,31 +45,46 @@
     </div>
 </section>
 
-<div class="split-grid">
-    <section class="card card--nested">
-        <h3 class="subsection-title">Phase Telemetry</h3>
-        <div class="telemetry-grid">
-            <div class="telemetry-item"><span>Runtime Checks</span><strong>{{ run.runtime_checks }}</strong></div>
-            <div class="telemetry-item"><span>Library Scan</span><strong>{{ run.library_scan }}</strong></div>
-            <div class="telemetry-item"><span>Source Inventory</span><strong>{{ run.source_inventory }}</strong></div>
-            <div class="telemetry-item"><span>Matching</span><strong>{{ run.matching }}</strong></div>
-            <div class="telemetry-item"><span>Title Enrichment</span><strong>{{ run.title_enrichment }}</strong></div>
-            <div class="telemetry-item"><span>Linking</span><strong>{{ run.linking }}</strong></div>
-            <div class="telemetry-item"><span>Media Refresh</span><strong>{{ run.plex_refresh }}</strong></div>
-            <div class="telemetry-item"><span>Dead Sweep</span><strong>{{ run.dead_link_sweep }}</strong></div>
+<details class="card disclosure-card">
+    <summary class="disclosure-card__summary">
+        <div class="disclosure-card__copy">
+            <span class="disclosure-card__eyebrow">Advanced telemetry</span>
+            <h2 class="disclosure-card__title">Phase Telemetry and Matcher Signals</h2>
+            <p class="disclosure-card__hint">Open when you need timings, candidate pressure, or exact-ID behavior for this specific run.</p>
         </div>
-    </section>
+        <div class="disclosure-card__meta">
+            <span class="badge badge-info">Deep detail</span>
+            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
+        </div>
+    </summary>
+    <div class="disclosure-card__body">
+        <div class="split-grid">
+            <section class="card card--nested">
+                <h3 class="subsection-title">Phase Telemetry</h3>
+                <div class="telemetry-grid">
+                    <div class="telemetry-item"><span>Runtime Checks</span><strong>{{ run.runtime_checks }}</strong></div>
+                    <div class="telemetry-item"><span>Library Scan</span><strong>{{ run.library_scan }}</strong></div>
+                    <div class="telemetry-item"><span>Source Inventory</span><strong>{{ run.source_inventory }}</strong></div>
+                    <div class="telemetry-item"><span>Matching</span><strong>{{ run.matching }}</strong></div>
+                    <div class="telemetry-item"><span>Title Enrichment</span><strong>{{ run.title_enrichment }}</strong></div>
+                    <div class="telemetry-item"><span>Linking</span><strong>{{ run.linking }}</strong></div>
+                    <div class="telemetry-item"><span>Media Refresh</span><strong>{{ run.plex_refresh }}</strong></div>
+                    <div class="telemetry-item"><span>Dead Sweep</span><strong>{{ run.dead_link_sweep }}</strong></div>
+                </div>
+            </section>
 
-    <section class="card card--nested">
-        <h3 class="subsection-title">Matcher Signals</h3>
-        <div class="metric-grid metric-grid--compact">
-            <div class="metric-card"><span class="metric-label">Candidate Slots</span><strong>{{ run.candidate_slots }}</strong></div>
-            <div class="metric-card"><span class="metric-label">Scored</span><strong>{{ run.scored_candidates }}</strong></div>
-            <div class="metric-card"><span class="metric-label">Exact ID Hits</span><strong>{{ run.exact_id_hits }}</strong></div>
-            <div class="metric-card"><span class="metric-label">Cache Hit</span><strong>{{ run.cache_hit_ratio }}</strong></div>
+            <section class="card card--nested">
+                <h3 class="subsection-title">Matcher Signals</h3>
+                <div class="metric-grid metric-grid--compact">
+                    <div class="metric-card"><span class="metric-label">Candidate Slots</span><strong>{{ run.candidate_slots }}</strong></div>
+                    <div class="metric-card"><span class="metric-label">Scored</span><strong>{{ run.scored_candidates }}</strong></div>
+                    <div class="metric-card"><span class="metric-label">Exact ID Hits</span><strong>{{ run.exact_id_hits }}</strong></div>
+                    <div class="metric-card"><span class="metric-label">Cache Hit</span><strong>{{ run.cache_hit_ratio }}</strong></div>
+                </div>
+            </section>
         </div>
-    </section>
-</div>
+    </div>
+</details>
 
 <section class="card">
     <div class="section-head">
@@ -108,14 +123,19 @@
     {% endif %}
 </section>
 
-<section class="card">
-    <div class="section-head">
-        <div>
-            <p class="section-kicker">Skip Samples</p>
-            <h2 class="section-title">Recent concrete skip events</h2>
+<details class="card disclosure-card">
+    <summary class="disclosure-card__summary">
+        <div class="disclosure-card__copy">
+            <span class="disclosure-card__eyebrow">Skip Samples</span>
+            <h2 class="disclosure-card__title">Recent concrete skip events</h2>
+            <p class="disclosure-card__hint">Open when grouped skip reasons are not enough and you need exact target/source examples.</p>
         </div>
-    </div>
-
+        <div class="disclosure-card__meta">
+            <span class="badge badge-info">{% if !skip_events.is_empty() %}{{ skip_events|length }} sample(s){% else %}No samples{% endif %}</span>
+            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
+        </div>
+    </summary>
+    <div class="disclosure-card__body">
     {% if !skip_events.is_empty() %}
     <table class="data-table dense-table">
         <thead>
@@ -162,77 +182,93 @@
     {% else %}
     <p class="text-muted">No run-scoped skip event samples were persisted for this run.</p>
     {% endif %}
-</section>
+    </div>
+</details>
 
-<section class="card">
-    <div class="section-head">
-        <div>
-            <p class="section-kicker">Media Refresh</p>
-            <h2 class="section-title">Queue and throttle signals</h2>
+<details class="card disclosure-card">
+    <summary class="disclosure-card__summary">
+        <div class="disclosure-card__copy">
+            <span class="disclosure-card__eyebrow">Sub-systems</span>
+            <h2 class="disclosure-card__title">Queue and throttle signals</h2>
+            <p class="disclosure-card__hint">Open when you need the media-refresh guardrails or the full auto-acquire breakdown for this run.</p>
         </div>
-    </div>
-
-    {% if run.plex_refresh_requested_paths > 0 || run.plex_refresh_planned_batches > 0 %}
-    <div class="metric-grid metric-grid--compact">
-        <div class="metric-card"><span class="metric-label">Requested Paths</span><strong>{{ run.plex_refresh_requested_paths }}</strong></div>
-        <div class="metric-card"><span class="metric-label">Unique Paths</span><strong>{{ run.plex_refresh_unique_paths }}</strong></div>
-        <div class="metric-card"><span class="metric-label">Planned Batches</span><strong>{{ run.plex_refresh_planned_batches }}</strong></div>
-        <div class="metric-card"><span class="metric-label">Refreshed Batches</span><strong>{{ run.plex_refresh_refreshed_batches }}</strong></div>
-        <div class="metric-card"><span class="metric-label">Coalesced</span><strong>{{ run.plex_refresh_coalesced_batches }} / {{ run.plex_refresh_coalesced_paths }}</strong></div>
-        <div class="metric-card"><span class="metric-label">Covered Paths</span><strong>{{ run.plex_refresh_refreshed_paths_covered }}</strong></div>
-        <div class="metric-card"><span class="metric-label">Skipped</span><strong class="{% if run.plex_refresh_skipped_batches > 0 %}text-error{% endif %}">{{ run.plex_refresh_skipped_batches }}</strong></div>
-        <div class="metric-card"><span class="metric-label">Capped</span><strong class="{% if run.plex_refresh_capped_batches > 0 %}text-warning{% endif %}">{{ run.plex_refresh_capped_batches }}</strong></div>
-        <div class="metric-card"><span class="metric-label">Cap Guard</span><strong class="{% if run.plex_refresh_aborted_due_to_cap %}text-error{% endif %}">{% if run.plex_refresh_aborted_due_to_cap %}aborted{% else %}clear{% endif %}</strong></div>
-        <div class="metric-card"><span class="metric-label">Failed</span><strong class="{% if run.plex_refresh_failed_batches > 0 %}text-error{% endif %}">{{ run.plex_refresh_failed_batches }}</strong></div>
-        <div class="metric-card"><span class="metric-label">Unresolved</span><strong class="{% if run.plex_refresh_unresolved_paths > 0 %}text-warning{% endif %}">{{ run.plex_refresh_unresolved_paths }}</strong></div>
-    </div>
-    {% else %}
-    <p class="text-muted">This run did not attempt any media-server refresh requests.</p>
-    {% endif %}
-
-    {% if !run.media_server_refresh.is_empty() %}
-    <div class="metric-grid metric-grid--compact mt-2">
-        {% for refresh in run.media_server_refresh %}
-        <div class="metric-card">
-            <span class="metric-label">{{ refresh.server }}</span>
-            <strong>{{ refresh.refreshed_batches }}/{{ refresh.planned_batches }}</strong>
-            <div class="text-muted">
-                targets {{ refresh.requested_targets }}
-                {% if refresh.deferred_due_to_lock %}| deferred{% endif %}
-                {% if refresh.skipped_batches > 0 %}| skip {{ refresh.skipped_batches }}{% endif %}
-                {% if refresh.failed_batches > 0 %}| fail {{ refresh.failed_batches }}{% endif %}
-                {% if refresh.aborted_due_to_cap %}| guard abort{% endif %}
+        <div class="disclosure-card__meta">
+            <span class="badge badge-info">Refresh + Acquire</span>
+            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
+        </div>
+    </summary>
+    <div class="disclosure-card__body">
+    <section class="card card--nested">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Media Refresh</p>
+                <h2 class="section-title">Queue and throttle signals</h2>
             </div>
         </div>
-        {% endfor %}
-    </div>
-    {% endif %}
-</section>
 
-<section class="card">
-    <div class="section-head">
-        <div>
-            <p class="section-kicker">Auto-Acquire</p>
-            <h2 class="section-title">Outcome summary</h2>
+        {% if run.plex_refresh_requested_paths > 0 || run.plex_refresh_planned_batches > 0 %}
+        <div class="metric-grid metric-grid--compact">
+            <div class="metric-card"><span class="metric-label">Requested Paths</span><strong>{{ run.plex_refresh_requested_paths }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Unique Paths</span><strong>{{ run.plex_refresh_unique_paths }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Planned Batches</span><strong>{{ run.plex_refresh_planned_batches }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Refreshed Batches</span><strong>{{ run.plex_refresh_refreshed_batches }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Coalesced</span><strong>{{ run.plex_refresh_coalesced_batches }} / {{ run.plex_refresh_coalesced_paths }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Covered Paths</span><strong>{{ run.plex_refresh_refreshed_paths_covered }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Skipped</span><strong class="{% if run.plex_refresh_skipped_batches > 0 %}text-error{% endif %}">{{ run.plex_refresh_skipped_batches }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Capped</span><strong class="{% if run.plex_refresh_capped_batches > 0 %}text-warning{% endif %}">{{ run.plex_refresh_capped_batches }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Cap Guard</span><strong class="{% if run.plex_refresh_aborted_due_to_cap %}text-error{% endif %}">{% if run.plex_refresh_aborted_due_to_cap %}aborted{% else %}clear{% endif %}</strong></div>
+            <div class="metric-card"><span class="metric-label">Failed</span><strong class="{% if run.plex_refresh_failed_batches > 0 %}text-error{% endif %}">{{ run.plex_refresh_failed_batches }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Unresolved</span><strong class="{% if run.plex_refresh_unresolved_paths > 0 %}text-warning{% endif %}">{{ run.plex_refresh_unresolved_paths }}</strong></div>
         </div>
-    </div>
+        {% else %}
+        <p class="text-muted">This run did not attempt any media-server refresh requests.</p>
+        {% endif %}
 
-    {% if run.auto_acquire_requests > 0 %}
-    <div class="metric-grid metric-grid--compact">
-        <div class="metric-card"><span class="metric-label">Requests</span><strong>{{ run.auto_acquire_requests }}</strong></div>
-        <div class="metric-card"><span class="metric-label">Missing</span><strong>{{ run.auto_acquire_missing_requests }}</strong></div>
-        <div class="metric-card"><span class="metric-label">Cutoff</span><strong>{{ run.auto_acquire_cutoff_requests }}</strong></div>
-        <div class="metric-card"><span class="metric-label">Dry Run Hits</span><strong>{{ run.auto_acquire_dry_run_hits }}</strong></div>
-        <div class="metric-card"><span class="metric-label">Submitted</span><strong>{{ run.auto_acquire_submitted }}</strong></div>
-        <div class="metric-card"><span class="metric-label">Successes</span><strong class="text-success">{{ run.auto_acquire_successes }}</strong></div>
-        <div class="metric-card"><span class="metric-label">No Result</span><strong>{{ run.auto_acquire_no_result }}</strong></div>
-        <div class="metric-card"><span class="metric-label">Blocked / Failed</span><strong>{{ run.auto_acquire_blocked + run.auto_acquire_failed }}</strong></div>
-        <div class="metric-card"><span class="metric-label">Linked / Unlinked</span><strong>{{ run.auto_acquire_completed_linked }} / {{ run.auto_acquire_completed_unlinked }}</strong></div>
+        {% if !run.media_server_refresh.is_empty() %}
+        <div class="metric-grid metric-grid--compact mt-2">
+            {% for refresh in run.media_server_refresh %}
+            <div class="metric-card">
+                <span class="metric-label">{{ refresh.server }}</span>
+                <strong>{{ refresh.refreshed_batches }}/{{ refresh.planned_batches }}</strong>
+                <div class="text-muted">
+                    targets {{ refresh.requested_targets }}
+                    {% if refresh.deferred_due_to_lock %}| deferred{% endif %}
+                    {% if refresh.skipped_batches > 0 %}| skip {{ refresh.skipped_batches }}{% endif %}
+                    {% if refresh.failed_batches > 0 %}| fail {{ refresh.failed_batches }}{% endif %}
+                    {% if refresh.aborted_due_to_cap %}| guard abort{% endif %}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+    </section>
+
+    <section class="card card--nested">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Auto-Acquire</p>
+                <h2 class="section-title">Outcome summary</h2>
+            </div>
+        </div>
+
+        {% if run.auto_acquire_requests > 0 %}
+        <div class="metric-grid metric-grid--compact">
+            <div class="metric-card"><span class="metric-label">Requests</span><strong>{{ run.auto_acquire_requests }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Missing</span><strong>{{ run.auto_acquire_missing_requests }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Cutoff</span><strong>{{ run.auto_acquire_cutoff_requests }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Dry Run Hits</span><strong>{{ run.auto_acquire_dry_run_hits }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Submitted</span><strong>{{ run.auto_acquire_submitted }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Successes</span><strong class="text-success">{{ run.auto_acquire_successes }}</strong></div>
+            <div class="metric-card"><span class="metric-label">No Result</span><strong>{{ run.auto_acquire_no_result }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Blocked / Failed</span><strong>{{ run.auto_acquire_blocked + run.auto_acquire_failed }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Linked / Unlinked</span><strong>{{ run.auto_acquire_completed_linked }} / {{ run.auto_acquire_completed_unlinked }}</strong></div>
+        </div>
+        {% else %}
+        <p class="text-muted">No auto-acquire requests were recorded for this run.</p>
+        {% endif %}
+    </section>
     </div>
-    {% else %}
-    <p class="text-muted">No auto-acquire requests were recorded for this run.</p>
-    {% endif %}
-</section>
+</details>
 
 <div class="actions mt-2">
     <a href="/scan/history" class="btn btn-secondary">&#8592; Back to Scan History</a>
