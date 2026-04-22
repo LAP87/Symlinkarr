@@ -119,6 +119,118 @@
     </details>
 </div>
 
+<details
+    class="card disclosure-card advanced-only"
+    {% if anime_override_panel_open %}open{% endif %}
+>
+    <summary class="disclosure-card__summary">
+        <div class="disclosure-card__copy">
+            <span class="disclosure-card__eyebrow">Anime Search Overrides</span>
+            <h2 class="disclosure-card__title">Guide stubborn anime searches manually</h2>
+            <p class="disclosure-card__hint">Open when anime auto-acquire keeps searching with the wrong title and you need a local override before queue retries.</p>
+        </div>
+        <div class="disclosure-card__meta">
+            <span class="badge badge-info">{{ anime_search_overrides|length }} saved</span>
+            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
+        </div>
+    </summary>
+    <div class="disclosure-card__body">
+        <p class="text-muted">These overrides only affect anime auto-acquire query building. Use the tagged folder suffix like <code class="mono">tvdb-12345</code> or <code class="mono">tmdb-67890</code> as the media id.</p>
+
+        {% match anime_override_feedback %}
+        {% when Some with (feedback) %}
+        <div class="alert {% if feedback.success %}alert-success{% else %}alert-error{% endif %}">
+            <strong>{% if feedback.success %}Anime override updated.{% else %}Anime override failed.{% endif %}</strong>
+            {{ feedback.message }}
+        </div>
+        {% when None %}{% endmatch %}
+
+        <div class="split-grid split-grid--tight">
+            <section class="card card--nested">
+                <div class="section-head">
+                    <div>
+                        <p class="section-kicker">Save Override</p>
+                        <h3 class="subsection-title">Preferred anime search title</h3>
+                    </div>
+                </div>
+                <form action="/scan/anime-overrides" method="post" class="stack-form">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <div class="form-group">
+                        <label class="form-label" for="anime-override-media-id">Media ID</label>
+                        <input id="anime-override-media-id" name="media_id" type="text" class="form-control field-max-md mono" placeholder="tvdb-12345">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="anime-override-preferred-title">Preferred title (optional)</label>
+                        <input id="anime-override-preferred-title" name="preferred_title" type="text" class="form-control field-max-lg" placeholder="e.g. Yofukashi no Uta">
+                        <small class="text-muted">If set, this becomes the primary anime query title before alternate titles or anime-lists hints.</small>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="anime-override-extra-hints">Extra hints (optional)</label>
+                        <textarea id="anime-override-extra-hints" name="extra_hints" rows="4" class="form-control mono" placeholder="One hint per line&#10;Call of the Night&#10;Yofukashi no Uta 2"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="anime-override-note">Operator note (optional)</label>
+                        <input id="anime-override-note" name="note" type="text" class="form-control field-max-lg" placeholder="Why this override exists">
+                    </div>
+                    <div class="actions">
+                        <button type="submit" class="btn btn-primary">Save Anime Override</button>
+                    </div>
+                </form>
+            </section>
+
+            <section class="card card--nested">
+                <div class="section-head">
+                    <div>
+                        <p class="section-kicker">Saved Overrides</p>
+                        <h3 class="subsection-title">Current local rules</h3>
+                    </div>
+                </div>
+                {% if anime_search_overrides|length > 0 %}
+                <div class="stack-list">
+                    {% for anime_override in anime_search_overrides %}
+                    <div class="card card--nested">
+                        <div class="section-head">
+                            <div>
+                                <strong class="mono">{{ anime_override.media_id }}</strong>
+                                {% match anime_override.preferred_title %}
+                                {% when Some with (preferred_title) %}
+                                <div>{{ preferred_title }}</div>
+                                {% when None %}
+                                <div class="text-muted">No preferred title, hints only.</div>
+                                {% endmatch %}
+                            </div>
+                            <form action="/scan/anime-overrides/delete" method="post">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                                <input type="hidden" name="media_id" value="{{ anime_override.media_id }}">
+                                <button type="submit" class="btn btn-danger">Delete</button>
+                            </form>
+                        </div>
+                        {% if anime_override.extra_hints|length > 0 %}
+                        <div class="badge-stack">
+                            {% for hint in anime_override.extra_hints %}
+                            <code class="mono">{{ hint }}</code>
+                            {% endfor %}
+                        </div>
+                        {% endif %}
+                        {% match anime_override.note %}
+                        {% when Some with (note) %}
+                        <p class="text-muted mt-1">{{ note }}</p>
+                        {% when None %}{% endmatch %}
+                        <p class="text-muted mt-1">Created {{ anime_override.created_at }} · Updated {{ anime_override.updated_at }}</p>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <div class="empty-state">
+                    <strong>No local anime search overrides saved.</strong>
+                    <p class="text-muted">Leave this empty unless a specific anime keeps missing because scene titles or numbering aliases disagree with the default search query.</p>
+                </div>
+                {% endif %}
+            </section>
+        </div>
+    </div>
+</details>
+
 {% match latest_run %}
 {% when Some with (run) %}
 <section class="card">

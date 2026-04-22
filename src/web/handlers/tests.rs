@@ -594,6 +594,89 @@ async fn scan_page_hides_stale_failed_background_outcome_when_newer_run_exists()
 }
 
 #[tokio::test]
+async fn scan_page_renders_anime_override_management_section() {
+    let ctx = test_context().await;
+
+    let body =
+        render_body(get_scan(State(ctx.state.clone()), Query(ScanHistoryQuery::default())).await)
+            .await;
+
+    assert!(body.contains("Anime Search Overrides"));
+    assert!(body.contains("Guide stubborn anime searches manually"));
+    assert!(body.contains("tvdb-12345"));
+}
+
+#[tokio::test]
+async fn scan_anime_override_post_persists_rule() {
+    let ctx = test_context().await;
+
+    let response = post_scan_anime_override(
+        State(ctx.state.clone()),
+        Form(scan::AnimeSearchOverrideForm {
+            media_id: "tvdb-12345".to_string(),
+            preferred_title: Some("Yofukashi no Uta".to_string()),
+            extra_hints: Some("Call of the Night\nYofukashi no Uta 2".to_string()),
+            note: Some("Prefer scene title".to_string()),
+            csrf_token: ctx.state.browser_session_token().to_string(),
+        }),
+    )
+    .await
+    .into_response();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = render_body(response).await;
+    assert!(body.contains("Saved anime search override for tvdb-12345"));
+    assert!(body.contains("Yofukashi no Uta"));
+    assert!(body.contains("Call of the Night"));
+
+    let stored = ctx
+        .state
+        .database
+        .get_anime_search_override("tvdb-12345")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.preferred_title.as_deref(), Some("Yofukashi no Uta"));
+    assert_eq!(stored.extra_hints.len(), 2);
+}
+
+#[tokio::test]
+async fn scan_anime_override_delete_removes_rule() {
+    let ctx = test_context().await;
+    ctx.state
+        .database
+        .upsert_anime_search_override(&crate::db::AnimeSearchOverrideSeed {
+            media_id: "tvdb-12345".to_string(),
+            preferred_title: Some("Yofukashi no Uta".to_string()),
+            extra_hints: vec!["Call of the Night".to_string()],
+            note: None,
+        })
+        .await
+        .unwrap();
+
+    let response = post_scan_anime_override_delete(
+        State(ctx.state.clone()),
+        Form(scan::DeleteAnimeSearchOverrideForm {
+            media_id: "tvdb-12345".to_string(),
+            csrf_token: ctx.state.browser_session_token().to_string(),
+        }),
+    )
+    .await
+    .into_response();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = render_body(response).await;
+    assert!(body.contains("Removed anime search override for tvdb-12345"));
+    assert!(ctx
+        .state
+        .database
+        .get_anime_search_override("tvdb-12345")
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
 async fn cleanup_page_renders_active_background_audit_banner() {
     let ctx = test_context().await;
     ctx.state

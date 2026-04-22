@@ -376,12 +376,14 @@ async fn test_migrations_can_move_down_and_up() {
     assert!(db.table_exists("scan_runs").await.unwrap());
     assert!(db.table_exists("link_events").await.unwrap());
     assert!(db.table_exists("acquisition_jobs").await.unwrap());
+    assert!(db.table_exists("anime_search_overrides").await.unwrap());
 
     db.migrate_to_for_tests(2).await.unwrap();
     assert_eq!(db.current_schema_version().await.unwrap(), 2);
     assert!(!db.table_exists("scan_runs").await.unwrap());
     assert!(!db.table_exists("link_events").await.unwrap());
     assert!(!db.table_exists("acquisition_jobs").await.unwrap());
+    assert!(!db.table_exists("anime_search_overrides").await.unwrap());
 
     db.migrate_to_for_tests(LATEST_SCHEMA_VERSION)
         .await
@@ -393,6 +395,7 @@ async fn test_migrations_can_move_down_and_up() {
     assert!(db.table_exists("scan_runs").await.unwrap());
     assert!(db.table_exists("link_events").await.unwrap());
     assert!(db.table_exists("acquisition_jobs").await.unwrap());
+    assert!(db.table_exists("anime_search_overrides").await.unwrap());
 }
 
 #[tokio::test]
@@ -449,6 +452,96 @@ async fn test_latest_migration_creates_skip_reason_json_column() {
         .column_exists("scan_runs", "skip_reason_json")
         .await
         .unwrap());
+}
+
+#[tokio::test]
+async fn test_latest_migration_creates_anime_search_overrides_table() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+        .await
+        .unwrap();
+
+    assert!(db.table_exists("anime_search_overrides").await.unwrap());
+}
+
+#[tokio::test]
+async fn test_anime_search_override_roundtrip_and_update() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+        .await
+        .unwrap();
+
+    db.upsert_anime_search_override(&AnimeSearchOverrideSeed {
+        media_id: "tvdb-12345".to_string(),
+        preferred_title: Some("Yofukashi no Uta".to_string()),
+        extra_hints: vec![
+            "Call of the Night".to_string(),
+            "Yofukashi no Uta 2".to_string(),
+        ],
+        note: Some("Prefer JP scene title for anime batches".to_string()),
+    })
+    .await
+    .unwrap();
+
+    let stored = db
+        .get_anime_search_override("tvdb-12345")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.media_id, "tvdb-12345");
+    assert_eq!(stored.preferred_title.as_deref(), Some("Yofukashi no Uta"));
+    assert_eq!(stored.extra_hints.len(), 2);
+    assert_eq!(
+        stored.note.as_deref(),
+        Some("Prefer JP scene title for anime batches")
+    );
+
+    db.upsert_anime_search_override(&AnimeSearchOverrideSeed {
+        media_id: "tvdb-12345".to_string(),
+        preferred_title: None,
+        extra_hints: vec!["Call of the Night".to_string()],
+        note: None,
+    })
+    .await
+    .unwrap();
+
+    let updated = db
+        .get_anime_search_override("tvdb-12345")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(updated.preferred_title.is_none());
+    assert_eq!(updated.extra_hints, vec!["Call of the Night".to_string()]);
+    assert!(updated.note.is_none());
+
+    let listed = db.list_anime_search_overrides().await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].media_id, "tvdb-12345");
+}
+
+#[tokio::test]
+async fn test_delete_anime_search_override_reports_presence() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+        .await
+        .unwrap();
+
+    db.upsert_anime_search_override(&AnimeSearchOverrideSeed {
+        media_id: "tvdb-999".to_string(),
+        preferred_title: Some("Example".to_string()),
+        extra_hints: vec![],
+        note: None,
+    })
+    .await
+    .unwrap();
+
+    assert!(db.delete_anime_search_override("tvdb-999").await.unwrap());
+    assert!(!db.delete_anime_search_override("tvdb-999").await.unwrap());
+    assert!(db
+        .get_anime_search_override("tvdb-999")
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]

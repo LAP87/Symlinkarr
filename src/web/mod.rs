@@ -590,7 +590,10 @@ impl WebState {
     }
 
     #[cfg(test)]
-    pub(crate) async fn set_last_repair_outcome_for_test(&self, outcome: Option<LastRepairOutcome>) {
+    pub(crate) async fn set_last_repair_outcome_for_test(
+        &self,
+        outcome: Option<LastRepairOutcome>,
+    ) {
         self.background_jobs.lock().await.last_repair_outcome = outcome;
     }
 }
@@ -677,13 +680,24 @@ fn create_router(state: WebState) -> Router {
     let app_routes = Router::new()
         // Dashboard
         .route("/", get(handlers::get_dashboard))
-        .route("/dashboard/activity-feed", get(handlers::get_dashboard_activity_feed))
+        .route(
+            "/dashboard/activity-feed",
+            get(handlers::get_dashboard_activity_feed),
+        )
         // Status & Health
         .route("/status", get(handlers::get_status))
         .route("/health", get(handlers::get_health))
         // Scan
         .route("/scan", get(handlers::get_scan))
         .route("/scan/trigger", post(handlers::post_scan_trigger))
+        .route(
+            "/scan/anime-overrides",
+            post(handlers::post_scan_anime_override),
+        )
+        .route(
+            "/scan/anime-overrides/delete",
+            post(handlers::post_scan_anime_override_delete),
+        )
         .route("/scan/history", get(handlers::get_scan_history))
         .route("/scan/history/{id}", get(handlers::get_scan_run_detail))
         // Cleanup

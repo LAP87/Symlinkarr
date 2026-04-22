@@ -7,6 +7,24 @@ pub(crate) struct ScanHistoryQuery {
     pub search_missing: Option<String>,
     pub limit: Option<i64>,
 }
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct AnimeSearchOverrideForm {
+    pub media_id: String,
+    pub preferred_title: Option<String>,
+    pub extra_hints: Option<String>,
+    pub note: Option<String>,
+    #[serde(default)]
+    pub csrf_token: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct DeleteAnimeSearchOverrideForm {
+    pub media_id: String,
+    #[serde(default)]
+    pub csrf_token: String,
+}
+
 pub(super) fn scan_run_views(history: Vec<ScanHistoryRecord>) -> Vec<ScanRunView> {
     history.into_iter().map(ScanRunView::from_record).collect()
 }
@@ -100,22 +118,79 @@ fn skip_event_views(events: Vec<LinkEventHistoryRecord>) -> Vec<SkipEventView> {
         })
         .collect()
 }
-/// GET /scan - Scan page
-pub(crate) async fn get_scan(
-    State(state): State<WebState>,
-    Query(query): Query<ScanHistoryQuery>,
-) -> impl IntoResponse {
-    info!("Serving scan page");
 
-    let mut scan_query = query;
+fn has_anime_library(config: &crate::config::Config) -> bool {
+    config
+        .libraries
+        .iter()
+        .any(|library| library.content_type == Some(crate::config::ContentType::Anime))
+}
+
+fn normalize_optional_form_text(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn valid_anime_override_media_id(media_id: &str) -> bool {
+    let Some((prefix, raw_id)) = media_id.trim().split_once('-') else {
+        return false;
+    };
+
+    matches!(prefix, "tvdb" | "tmdb")
+        && !raw_id.is_empty()
+        && raw_id.chars().all(|ch| ch.is_ascii_digit())
+}
+
+fn parse_anime_override_hints(raw: Option<&str>) -> Vec<String> {
+    let mut hints = Vec::<String>::new();
+
+    for line in raw.unwrap_or_default().lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let normalized = crate::utils::normalize(trimmed);
+        if normalized.is_empty()
+            || hints
+                .iter()
+                .any(|existing| crate::utils::normalize(existing) == normalized)
+        {
+            continue;
+        }
+
+        hints.push(trimmed.to_string());
+    }
+
+    hints
+}
+
+async fn load_anime_override_views(state: &WebState) -> Vec<AnimeSearchOverrideView> {
+    match state.database.list_anime_search_overrides().await {
+        Ok(entries) => entries.into_iter().map(Into::into).collect(),
+        Err(err) => {
+            error!("Failed to load anime search overrides: {}", err);
+            Vec::new()
+        }
+    }
+}
+
+async fn build_scan_template(
+    state: &WebState,
+    query: &ScanHistoryQuery,
+    anime_override_feedback: Option<FormFeedbackView>,
+) -> ScanTemplate {
+    let mut scan_query = query.clone();
     if scan_query.limit.is_none() {
         scan_query.limit = Some(10);
     }
-    let (filters, history) = filtered_scan_history(&state, &scan_query).await;
+    let (filters, history) = filtered_scan_history(state, &scan_query).await;
     let latest_run = history.first().cloned();
     let active_scan = state.active_scan().await.map(Into::into);
     let last_scan_outcome = if active_scan.is_none() {
-        visible_last_scan_outcome(&state).await
+        visible_last_scan_outcome(state).await
     } else {
         None
     };
@@ -126,18 +201,33 @@ pub(crate) async fn get_scan(
             QueueOverview::default()
         }
     };
+    let anime_search_overrides = load_anime_override_views(state).await;
+    let anime_override_panel_open =
+        anime_override_feedback.is_some() || !anime_search_overrides.is_empty();
 
-    let template = ScanTemplate {
+    ScanTemplate {
         libraries: state.config.libraries.clone(),
         active_scan,
         last_scan_outcome,
         latest_run,
         history,
         queue,
+        anime_search_overrides,
+        anime_override_feedback,
+        anime_override_panel_open,
         filters,
         default_dry_run: state.config.symlink.dry_run,
-        csrf_token: browser_csrf_token(&state),
-    };
+        csrf_token: browser_csrf_token(state),
+    }
+}
+/// GET /scan - Scan page
+pub(crate) async fn get_scan(
+    State(state): State<WebState>,
+    Query(query): Query<ScanHistoryQuery>,
+) -> impl IntoResponse {
+    info!("Serving scan page");
+
+    let template = build_scan_template(&state, &query, None).await;
     Html(template.render().unwrap_or_else(|e| e.to_string())).into_response()
 }
 
@@ -204,6 +294,155 @@ pub(crate) async fn post_scan_trigger(
                 .into_response()
         }
     }
+}
+
+/// POST /scan/anime-overrides - Save or update a manual anime search override
+pub(crate) async fn post_scan_anime_override(
+    State(state): State<WebState>,
+    Form(form): Form<AnimeSearchOverrideForm>,
+) -> impl IntoResponse {
+    if let Some(response) = require_browser_csrf_token(&state, &form.csrf_token, "/scan/anime-overrides") {
+        return response;
+    }
+
+    let media_id = form.media_id.trim().to_string();
+    let preferred_title = normalize_optional_form_text(form.preferred_title.as_deref());
+    let extra_hints = parse_anime_override_hints(form.extra_hints.as_deref());
+    let note = normalize_optional_form_text(form.note.as_deref());
+
+    let (status, feedback) = if !has_anime_library(&state.config) {
+        (
+            StatusCode::BAD_REQUEST,
+            FormFeedbackView {
+                success: false,
+                message: "Anime override requires at least one configured anime library.".to_string(),
+            },
+        )
+    } else if !valid_anime_override_media_id(&media_id) {
+        (
+            StatusCode::BAD_REQUEST,
+            FormFeedbackView {
+                success: false,
+                message: "Media ID must use a tagged anime folder id like tvdb-12345 or tmdb-67890.".to_string(),
+            },
+        )
+    } else if preferred_title.is_none() && extra_hints.is_empty() {
+        (
+            StatusCode::BAD_REQUEST,
+            FormFeedbackView {
+                success: false,
+                message: "Add either a preferred title or at least one extra hint before saving an anime override.".to_string(),
+            },
+        )
+    } else {
+        match state
+            .database
+            .upsert_anime_search_override(&crate::db::AnimeSearchOverrideSeed {
+                media_id: media_id.clone(),
+                preferred_title,
+                extra_hints,
+                note,
+            })
+            .await
+        {
+            Ok(()) => (
+                StatusCode::OK,
+                FormFeedbackView {
+                    success: true,
+                    message: format!(
+                        "Saved anime search override for {}. Future anime auto-acquire requests will prefer it before anime-lists hints.",
+                        media_id
+                    ),
+                },
+            ),
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                FormFeedbackView {
+                    success: false,
+                    message: format!("Failed to save anime override: {}", err),
+                },
+            ),
+        }
+    };
+
+    let template = build_scan_template(
+        &state,
+        &ScanHistoryQuery {
+            limit: Some(10),
+            ..ScanHistoryQuery::default()
+        },
+        Some(feedback),
+    )
+    .await;
+    (
+        status,
+        Html(template.render().unwrap_or_else(|e| e.to_string())),
+    )
+        .into_response()
+}
+
+/// POST /scan/anime-overrides/delete - Remove a manual anime search override
+pub(crate) async fn post_scan_anime_override_delete(
+    State(state): State<WebState>,
+    Form(form): Form<DeleteAnimeSearchOverrideForm>,
+) -> impl IntoResponse {
+    if let Some(response) = require_browser_csrf_token(
+        &state,
+        &form.csrf_token,
+        "/scan/anime-overrides/delete",
+    ) {
+        return response;
+    }
+
+    let media_id = form.media_id.trim().to_string();
+    let (status, feedback) = if media_id.is_empty() {
+        (
+            StatusCode::BAD_REQUEST,
+            FormFeedbackView {
+                success: false,
+                message: "Anime override delete requires a media id.".to_string(),
+            },
+        )
+    } else {
+        match state.database.delete_anime_search_override(&media_id).await {
+            Ok(true) => (
+                StatusCode::OK,
+                FormFeedbackView {
+                    success: true,
+                    message: format!("Removed anime search override for {}.", media_id),
+                },
+            ),
+            Ok(false) => (
+                StatusCode::NOT_FOUND,
+                FormFeedbackView {
+                    success: false,
+                    message: format!("No anime search override exists for {}.", media_id),
+                },
+            ),
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                FormFeedbackView {
+                    success: false,
+                    message: format!("Failed to delete anime override: {}", err),
+                },
+            ),
+        }
+    };
+
+    let template = build_scan_template(
+        &state,
+        &ScanHistoryQuery {
+            limit: Some(10),
+            ..ScanHistoryQuery::default()
+        },
+        Some(feedback),
+    )
+    .await;
+    (
+        status,
+        Html(template.render().unwrap_or_else(|e| e.to_string())),
+    )
+        .into_response()
 }
 
 /// GET /scan/history - Scan history

@@ -217,6 +217,20 @@ fn sample_daemon_schedule_view() -> DaemonScheduleView {
     }
 }
 
+fn sample_anime_search_overrides() -> Vec<AnimeSearchOverrideView> {
+    vec![AnimeSearchOverrideView {
+        media_id: "tvdb-12345".to_string(),
+        preferred_title: Some("Yofukashi no Uta".to_string()),
+        extra_hints: vec![
+            "Call of the Night".to_string(),
+            "Yofukashi no Uta 2".to_string(),
+        ],
+        note: Some("Prefer scene title".to_string()),
+        created_at: "2026-04-21 11:00:00 UTC".to_string(),
+        updated_at: "2026-04-22 12:00:00 UTC".to_string(),
+    }]
+}
+
 fn sample_config() -> Config {
     Config {
         libraries: vec![LibraryConfig {
@@ -413,6 +427,12 @@ fn scan_template_renders_top_skip_reason_summary() {
         latest_run: Some(sample_scan_run_view()),
         history: vec![sample_scan_run_view()],
         queue: QueueOverview::default(),
+        anime_search_overrides: sample_anime_search_overrides(),
+        anime_override_feedback: Some(FormFeedbackView {
+            success: true,
+            message: "Saved anime override.".to_string(),
+        }),
+        anime_override_panel_open: true,
         filters: ScanHistoryFilters::default(),
         default_dry_run: false,
         csrf_token: "csrf-test-token".to_string(),
@@ -423,6 +443,9 @@ fn scan_template_renders_top_skip_reason_summary() {
     assert!(html.contains("Matcher: Ambiguous match 70"));
     assert!(html.contains("Open the detail view for grouped counts and raw reason codes."));
     assert!(html.contains("/wiki/Scan-History-and-Why-Not-Signals"));
+    assert!(html.contains("Anime Search Overrides"));
+    assert!(html.contains("tvdb-12345"));
+    assert!(html.contains("Yofukashi no Uta"));
 }
 
 #[test]

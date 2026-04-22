@@ -30,6 +30,7 @@ use scan::scan_run_views;
 #[cfg(test)]
 use scan::ScanHistoryQuery;
 pub(crate) use scan::{get_scan, get_scan_history, get_scan_run_detail, post_scan_trigger};
+pub(crate) use scan::{post_scan_anime_override, post_scan_anime_override_delete};
 
 use crate::api::tautulli::TautulliClient;
 use crate::backup::BackupManager;

@@ -68,6 +68,24 @@ pub struct ScanRunRecord {
 }
 
 #[derive(Debug, Clone)]
+pub struct AnimeSearchOverrideSeed {
+    pub media_id: String,
+    pub preferred_title: Option<String>,
+    pub extra_hints: Vec<String>,
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AnimeSearchOverrideRecord {
+    pub media_id: String,
+    pub preferred_title: Option<String>,
+    pub extra_hints: Vec<String>,
+    pub note: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct DeadLinkSeed {
     pub source_path: PathBuf,
     pub target_path: PathBuf,

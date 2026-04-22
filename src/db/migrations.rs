@@ -59,6 +59,9 @@ impl Database {
     }
 
     async fn infer_legacy_schema_version(&self) -> Result<i64> {
+        if self.table_exists("anime_search_overrides").await? {
+            return Ok(15);
+        }
         if self.table_exists("acquisition_jobs").await? {
             if self
                 .column_exists("scan_runs", "auto_acquire_requests")
@@ -137,8 +140,9 @@ impl Database {
             12 => self.migration_v12_tx(tx).await,
             13 => self.migration_v13_tx(tx).await,
             14 => self.migration_v14_tx(tx).await,
+            15 => self.migration_v15_tx(tx).await,
             _ => anyhow::bail!(
-                "Unsupported schema migration version {}. This build only knows migrations 1 through 14",
+                "Unsupported schema migration version {}. This build only knows migrations 1 through 15",
                 version
             ),
         }
@@ -519,9 +523,41 @@ impl Database {
         Ok(())
     }
 
+    async fn migration_v15_tx(&self, tx: &mut Transaction<'_, Sqlite>) -> Result<()> {
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS anime_search_overrides (
+                media_id TEXT PRIMARY KEY,
+                preferred_title TEXT,
+                extra_hints_json TEXT NOT NULL DEFAULT '[]',
+                note TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+        )
+        .execute(&mut **tx)
+        .await?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_anime_search_overrides_updated_at
+             ON anime_search_overrides(updated_at DESC)",
+        )
+        .execute(&mut **tx)
+        .await?;
+
+        Ok(())
+    }
+
     #[cfg(test)]
     async fn migrate_down_one(&self, current_version: i64) -> Result<()> {
         match current_version {
+            15 => {
+                sqlx::query("DROP INDEX IF EXISTS idx_anime_search_overrides_updated_at")
+                    .execute(&self.pool)
+                    .await?;
+                sqlx::query("DROP TABLE IF EXISTS anime_search_overrides")
+                    .execute(&self.pool)
+                    .await?;
+            }
             14 => {
                 sqlx::query("DROP INDEX IF EXISTS idx_link_events_run_token_event_at")
                     .execute(&self.pool)

@@ -26,7 +26,7 @@ use crate::cleanup_audit::{CleanupReport, CleanupScope};
 use crate::commands::cleanup::{AnimeRemediationBlockedReasonSummary, AnimeRemediationPlanGroup};
 use crate::commands::report::AnimeRemediationSample;
 use crate::config::Config;
-use crate::db::{AcquisitionJobCounts, ScanHistoryRecord};
+use crate::db::{AcquisitionJobCounts, AnimeSearchOverrideRecord, ScanHistoryRecord};
 use crate::media_servers::{DeferredRefreshSummary, LibraryInvalidationServerOutcome};
 use crate::models::LinkRecord;
 
@@ -630,6 +630,12 @@ pub struct StreamingGuardView {
     pub error_message: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct FormFeedbackView {
+    pub success: bool,
+    pub message: String,
+}
+
 // ─── Scan ───────────────────────────────────────────────────────────
 
 use crate::config::LibraryConfig;
@@ -643,9 +649,35 @@ pub struct ScanTemplate {
     pub latest_run: Option<ScanRunView>,
     pub history: Vec<ScanRunView>,
     pub queue: QueueOverview,
+    pub anime_search_overrides: Vec<AnimeSearchOverrideView>,
+    pub anime_override_feedback: Option<FormFeedbackView>,
+    pub anime_override_panel_open: bool,
     pub filters: ScanHistoryFilters,
     pub default_dry_run: bool,
     pub csrf_token: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AnimeSearchOverrideView {
+    pub media_id: String,
+    pub preferred_title: Option<String>,
+    pub extra_hints: Vec<String>,
+    pub note: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl From<AnimeSearchOverrideRecord> for AnimeSearchOverrideView {
+    fn from(value: AnimeSearchOverrideRecord) -> Self {
+        Self {
+            media_id: value.media_id,
+            preferred_title: value.preferred_title,
+            extra_hints: value.extra_hints,
+            note: value.note,
+            created_at: value.created_at,
+            updated_at: value.updated_at,
+        }
+    }
 }
 
 #[derive(Template)]

@@ -6,6 +6,7 @@ use sqlx::SqlitePool;
 use tracing::info;
 
 mod acquisition_jobs;
+mod anime_overrides;
 mod cache;
 mod links;
 mod maintenance;
@@ -36,7 +37,7 @@ pub struct Database {
     db_path: PathBuf,
 }
 
-const LATEST_SCHEMA_VERSION: i64 = 14;
+const LATEST_SCHEMA_VERSION: i64 = 15;
 
 // SqlitePool is Clone (wraps Arc), so Database can safely be Clone
 impl Clone for Database {

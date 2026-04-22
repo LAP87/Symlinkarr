@@ -9,7 +9,7 @@ use crate::api::sonarr::{SonarrClient, SonarrSeries, SonarrWantedMissingRecord};
 use crate::api::tmdb::TmdbClient;
 use crate::auto_acquire::{AutoAcquireRequest, RelinkCheck};
 use crate::config::{Config, ContentType};
-use crate::db::Database;
+use crate::db::{AnimeSearchOverrideRecord, Database};
 use crate::models::{LibraryItem, MediaId, MediaType};
 
 pub(crate) enum AnimeEpisodeKind {
@@ -113,6 +113,12 @@ pub(crate) async fn build_anime_episode_requests(
     let mut requests = Vec::new();
     let mut queued_keys = HashSet::<String>::new();
     let mut page = 1u32;
+    let override_by_media_id = db
+        .list_anime_search_overrides()
+        .await?
+        .into_iter()
+        .map(|entry| (entry.media_id.clone(), entry))
+        .collect::<HashMap<_, _>>();
 
     while requests.len() < limit && page <= MAX_PAGES {
         let page_result = match kind {
@@ -187,9 +193,6 @@ pub(crate) async fn build_anime_episode_requests(
                 continue;
             }
 
-            let Some(query) = build_anime_missing_search_query(series, &record) else {
-                continue;
-            };
             let label = match kind {
                 AnimeEpisodeKind::Missing => {
                     if matched_media_ids.contains(&media_id) {
@@ -219,12 +222,15 @@ pub(crate) async fn build_anime_episode_requests(
                 }
             };
             let imdb_id = lookup_anime_series_imdb_id(tmdb, db, item, series).await;
+            let search_override = override_by_media_id.get(&media_id);
+            let Some(query) = build_anime_missing_search_query(series, &record, search_override)
+            else {
+                continue;
+            };
             requests.push(AutoAcquireRequest {
                 label,
                 query,
-                query_hints: anime_identity
-                    .map(|graph| graph.build_query_hints(item, &record))
-                    .unwrap_or_default(),
+                query_hints: anime_query_hints(item, &record, anime_identity, search_override),
                 imdb_id,
                 categories: vec![prowlarr::categories::TV_ANIME],
                 arr: "sonarr-anime".to_string(),
@@ -256,11 +262,38 @@ fn wanted_episode_has_supported_numbering(record: &SonarrWantedMissingRecord) ->
     record.episode_number > 0
 }
 
+fn anime_query_hints(
+    item: &LibraryItem,
+    record: &SonarrWantedMissingRecord,
+    anime_identity: Option<&AnimeIdentityGraph>,
+    search_override: Option<&AnimeSearchOverrideRecord>,
+) -> Vec<String> {
+    let mut hints = Vec::new();
+
+    if let Some(search_override) = search_override {
+        if let Some(preferred_title) = search_override.preferred_title.as_deref() {
+            push_query_hint(&mut hints, preferred_title.to_string());
+        }
+        for hint in &search_override.extra_hints {
+            push_query_hint(&mut hints, hint.clone());
+        }
+    }
+
+    if let Some(graph) = anime_identity {
+        for hint in graph.build_query_hints(item, record) {
+            push_query_hint(&mut hints, hint);
+        }
+    }
+
+    hints
+}
+
 fn build_anime_missing_search_query(
     series: &SonarrSeries,
     record: &SonarrWantedMissingRecord,
+    search_override: Option<&AnimeSearchOverrideRecord>,
 ) -> Option<String> {
-    let title = select_anime_query_title(series, record);
+    let title = select_anime_query_title(series, record, search_override);
     let query = if let (Some(scene_season), Some(scene_episode)) =
         (record.scene_season_number, record.scene_episode_number)
     {
@@ -284,7 +317,19 @@ fn build_anime_missing_search_query(
     crate::commands::is_safe_auto_acquire_query(&query).then_some(query)
 }
 
-fn select_anime_query_title(series: &SonarrSeries, record: &SonarrWantedMissingRecord) -> String {
+fn select_anime_query_title(
+    series: &SonarrSeries,
+    record: &SonarrWantedMissingRecord,
+    search_override: Option<&AnimeSearchOverrideRecord>,
+) -> String {
+    if let Some(preferred_title) = search_override
+        .and_then(|entry| entry.preferred_title.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return preferred_title.to_string();
+    }
+
     let mut best = series.title.trim().to_string();
     let mut best_score = anime_query_title_score(
         &best,
@@ -315,6 +360,24 @@ fn select_anime_query_title(series: &SonarrSeries, record: &SonarrWantedMissingR
     }
 
     best
+}
+
+fn push_query_hint(hints: &mut Vec<String>, candidate: String) {
+    let trimmed = candidate.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+
+    let normalized = crate::utils::normalize(trimmed);
+    if normalized.is_empty()
+        || hints
+            .iter()
+            .any(|existing| crate::utils::normalize(existing) == normalized)
+    {
+        return;
+    }
+
+    hints.push(trimmed.to_string());
 }
 
 fn anime_query_title_score(
@@ -380,6 +443,14 @@ mod tests {
     use super::*;
     use crate::api::sonarr::SonarrWantedMissingRecord;
 
+    const SAMPLE_XML: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<anime-list>
+  <anime anidbid="100" tvdbid="11111" defaulttvdbseason="1" episodeoffset="12">
+    <name>Example Offset Show</name>
+  </anime>
+</anime-list>
+"#;
+
     #[test]
     fn anime_missing_query_prefers_scene_numbering_and_alt_title() {
         let series = SonarrSeries {
@@ -410,7 +481,7 @@ mod tests {
         };
 
         assert_eq!(
-            build_anime_missing_search_query(&series, &record),
+            build_anime_missing_search_query(&series, &record, None),
             Some("Yuzuki-san Chi no Yonkyoudai S01E09".to_string())
         );
     }
@@ -442,7 +513,7 @@ mod tests {
         };
 
         assert_eq!(
-            build_anime_missing_search_query(&series, &record),
+            build_anime_missing_search_query(&series, &record, None),
             Some("Jujutsu Kaisen 3".to_string())
         );
     }
@@ -474,8 +545,101 @@ mod tests {
         };
 
         assert_eq!(
-            build_anime_missing_search_query(&series, &record),
+            build_anime_missing_search_query(&series, &record, None),
             Some("Attack on Titan OAD S00E02".to_string())
+        );
+    }
+
+    #[test]
+    fn anime_missing_query_uses_manual_override_title_when_present() {
+        let series = SonarrSeries {
+            id: 4,
+            title: "Call of the Night".to_string(),
+            alternate_titles: Vec::new(),
+            tvdb_id: 0,
+            tmdb_id: 0,
+            use_scene_numbering: false,
+        };
+        let record = SonarrWantedMissingRecord {
+            series_id: 4,
+            tvdb_id: 0,
+            season_number: 1,
+            episode_number: 2,
+            absolute_episode_number: Some(2),
+            scene_season_number: None,
+            scene_episode_number: None,
+            scene_absolute_episode_number: None,
+            title: "Episode 2".to_string(),
+            has_file: false,
+            episode_file_id: None,
+            air_date_utc: None,
+            monitored: true,
+        };
+        let search_override = AnimeSearchOverrideRecord {
+            media_id: "tvdb-4".to_string(),
+            preferred_title: Some("Yofukashi no Uta".to_string()),
+            extra_hints: vec!["Call of the Night".to_string()],
+            note: Some("Prefer scene title".to_string()),
+            created_at: "2026-04-22 00:00:00".to_string(),
+            updated_at: "2026-04-22 00:00:00".to_string(),
+        };
+
+        assert_eq!(
+            build_anime_missing_search_query(&series, &record, Some(&search_override)),
+            Some("Yofukashi no Uta 2".to_string())
+        );
+    }
+
+    #[test]
+    fn anime_query_hints_merge_override_and_identity_hints_without_duplicates() {
+        let item = crate::models::LibraryItem {
+            id: crate::models::MediaId::Tvdb(11111),
+            path: std::path::PathBuf::from("/library/Anime"),
+            title: "Example Offset Show".to_string(),
+            library_name: "Anime".to_string(),
+            media_type: crate::models::MediaType::Tv,
+            content_type: crate::config::ContentType::Anime,
+        };
+        let record = SonarrWantedMissingRecord {
+            series_id: 1,
+            tvdb_id: 11111,
+            season_number: 1,
+            episode_number: 15,
+            absolute_episode_number: None,
+            scene_season_number: None,
+            scene_episode_number: None,
+            scene_absolute_episode_number: None,
+            title: "Episode".to_string(),
+            has_file: false,
+            episode_file_id: None,
+            air_date_utc: None,
+            monitored: true,
+        };
+        let graph = AnimeIdentityGraph::from_xml(SAMPLE_XML).unwrap();
+        let search_override = AnimeSearchOverrideRecord {
+            media_id: "tvdb-11111".to_string(),
+            preferred_title: Some("Example Offset Show".to_string()),
+            extra_hints: vec![
+                "Example Offset Show".to_string(),
+                "Offset Alt".to_string(),
+                "Offset Alt".to_string(),
+            ],
+            note: None,
+            created_at: "2026-04-22 00:00:00".to_string(),
+            updated_at: "2026-04-22 00:00:00".to_string(),
+        };
+
+        let hints = anime_query_hints(&item, &record, Some(&graph), Some(&search_override));
+
+        assert!(hints.contains(&"Example Offset Show".to_string()));
+        assert!(hints.contains(&"Offset Alt".to_string()));
+        assert!(hints.contains(&"Example Offset Show 3".to_string()));
+        assert_eq!(
+            hints
+                .iter()
+                .filter(|hint| hint.as_str() == "Offset Alt")
+                .count(),
+            1
         );
     }
 
