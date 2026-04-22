@@ -809,6 +809,7 @@ fn prune_preview_template_renders_alternate_match_context() {
         confirmation_token: Some("abcdef1234567890".to_string()),
         already_applied: false,
         error_message: None,
+        playback_guard: None,
         csrf_token: "csrf-test-token".to_string(),
     };
 
@@ -874,6 +875,7 @@ fn prune_preview_template_renders_legacy_anime_root_context() {
         confirmation_token: Some("abcdef1234567890".to_string()),
         already_applied: false,
         error_message: None,
+        playback_guard: None,
         csrf_token: "csrf-test-token".to_string(),
     };
 
@@ -929,6 +931,7 @@ fn prune_preview_template_renders_blocked_reason_summary() {
         confirmation_token: Some("abcdef1234567890".to_string()),
         already_applied: false,
         error_message: None,
+        playback_guard: None,
         csrf_token: "csrf-test-token".to_string(),
     };
 
@@ -1075,10 +1078,17 @@ fn anime_remediation_result_template_renders_review_samples() {
             }],
         }),
         apply: None,
+        playback_guard: Some(MutationStreamingGuardView {
+            protected_count: 1,
+            protected_paths: vec![
+                "/plex/anime/Horimiya/Season 01/Horimiya - S01E01.mkv".to_string()
+            ],
+        }),
         csrf_token: "csrf-test-token".to_string(),
     };
 
     let html = template.render().unwrap();
+    assert!(html.contains("Active playback overlaps this legacy cleanup plan"));
     assert!(html.contains("What this page means"));
     assert!(html.contains("Best follow-up"));
     assert!(html.contains("Plan contents"));
@@ -1090,6 +1100,41 @@ fn anime_remediation_result_template_renders_review_samples() {
     assert!(html.contains("name=\"token\""));
     assert!(html.contains("/wiki/Anime-Remediation"));
     assert!(!html.contains("Confirmation token"));
+}
+
+#[test]
+fn prune_preview_template_renders_playback_guard_warning() {
+    let template = PrunePreviewTemplate {
+        findings: vec![],
+        total: 0,
+        actionable_candidates: 1,
+        critical: 0,
+        high: 0,
+        warning: 0,
+        blocked_candidates: 0,
+        managed_candidates: 1,
+        foreign_candidates: 0,
+        reason_counts: vec![],
+        blocked_reason_summary: vec![],
+        legacy_anime_root_groups: vec![],
+        report_path: Some(PathBuf::from("/tmp/cleanup-audit-all.json")),
+        confirmation_token: Some("abcdef1234567890".to_string()),
+        already_applied: false,
+        error_message: None,
+        playback_guard: Some(MutationStreamingGuardView {
+            protected_count: 2,
+            protected_paths: vec![
+                "/plex/Show/Season 01/Show - S01E01.mkv".to_string(),
+                "/plex/Show/Season 01/Show - S01E02.mkv".to_string(),
+            ],
+        }),
+        csrf_token: "csrf-test-token".to_string(),
+    };
+
+    let html = template.render().unwrap();
+    assert!(html.contains("Active playback overlaps this apply set"));
+    assert!(html.contains("Protected paths in this preview"));
+    assert!(html.contains("/plex/Show/Season 01/Show - S01E01.mkv"));
 }
 
 #[test]

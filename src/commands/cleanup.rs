@@ -801,7 +801,7 @@ pub(crate) async fn apply_cleanup_prune_with_refresh(
     Ok((outcome, invalidation))
 }
 
-async fn cleanup_report_candidate_paths(
+pub(crate) async fn cleanup_report_candidate_paths(
     cfg: &Config,
     db: &Database,
     report: &cleanup_audit::CleanupReport,
@@ -817,7 +817,7 @@ async fn cleanup_report_candidate_paths(
     Ok(plan.candidate_paths)
 }
 
-async fn cleanup_report_candidate_paths_from_path(
+pub(crate) async fn cleanup_report_candidate_paths_from_path(
     cfg: &Config,
     db: &Database,
     report_path: &Path,

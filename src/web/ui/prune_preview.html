@@ -28,6 +28,34 @@
 </div>
 {% when None %}{% endmatch %}
 
+{% match playback_guard %}
+{% when Some with (guard) %}
+<div class="alert alert-warning">
+    <strong>Active playback overlaps this apply set.</strong>
+    {{ guard.protected_count }} candidate path(s) in this preview are currently streaming, so cleanup apply will refuse to run until playback stops.
+</div>
+<details class="card disclosure-card">
+    <summary class="disclosure-card__summary">
+        <div class="disclosure-card__copy">
+            <span class="disclosure-card__eyebrow">Playback guard</span>
+            <h2 class="disclosure-card__title">Protected paths in this preview</h2>
+            <p class="disclosure-card__hint">Open when you need the exact sample paths that are currently keeping apply blocked.</p>
+        </div>
+        <div class="disclosure-card__meta">
+            <span class="badge badge-warning">{{ guard.protected_count }} protected</span>
+            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
+        </div>
+    </summary>
+    <div class="disclosure-card__body">
+        <div class="stack-list">
+            {% for path in guard.protected_paths %}
+            <code class="mono">{{ path }}</code>
+            {% endfor %}
+        </div>
+    </div>
+</details>
+{% when None %}{% endmatch %}
+
 {% if findings|length > 0 %}
 <div class="split-grid">
     <section class="card hero-card hero-card--accent">

@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::HashSet;
 
 #[derive(Debug, Deserialize, Default, Clone)]
 pub(crate) struct AnimeRemediationQuery {
@@ -76,6 +77,96 @@ pub(super) async fn visible_last_cleanup_audit_outcome(
 
 async fn visible_last_repair_outcome(state: &WebState) -> Option<BackgroundRepairOutcomeView> {
     state.last_repair_outcome().await.map(Into::into)
+}
+
+async fn candidate_streaming_guard_view(
+    state: &WebState,
+    candidate_paths: Vec<PathBuf>,
+) -> Option<MutationStreamingGuardView> {
+    if !state.config.has_tautulli() || candidate_paths.is_empty() {
+        return None;
+    }
+
+    let tautulli = TautulliClient::new(&state.config.tautulli);
+    let active_paths = match tautulli.get_active_file_paths().await {
+        Ok(paths) => paths,
+        Err(err) => {
+            tracing::warn!(
+                "cleanup web playback guard query failed (non-fatal): {}",
+                err
+            );
+            return None;
+        }
+    };
+
+    let active_path_set: HashSet<_> = active_paths.into_iter().collect();
+    let protected_paths = candidate_paths
+        .into_iter()
+        .filter(|path| active_path_set.contains(path.to_string_lossy().as_ref()))
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>();
+
+    if protected_paths.is_empty() {
+        return None;
+    }
+
+    let protected_count = protected_paths.len();
+    Some(MutationStreamingGuardView {
+        protected_count,
+        protected_paths: protected_paths.into_iter().take(6).collect(),
+    })
+}
+
+async fn cleanup_report_streaming_guard_view(
+    state: &WebState,
+    report: &cleanup_audit::CleanupReport,
+    include_legacy_anime_roots: bool,
+) -> Option<MutationStreamingGuardView> {
+    let candidate_paths = match crate::commands::cleanup::cleanup_report_candidate_paths(
+        &state.config,
+        &state.database,
+        report,
+        include_legacy_anime_roots,
+    )
+    .await
+    {
+        Ok(paths) => paths,
+        Err(err) => {
+            tracing::warn!(
+                "cleanup web playback guard could not derive candidate paths: {}",
+                err
+            );
+            return None;
+        }
+    };
+
+    candidate_streaming_guard_view(state, candidate_paths).await
+}
+
+async fn cleanup_report_path_streaming_guard_view(
+    state: &WebState,
+    report_path: &StdPath,
+    include_legacy_anime_roots: bool,
+) -> Option<MutationStreamingGuardView> {
+    let candidate_paths = match crate::commands::cleanup::cleanup_report_candidate_paths_from_path(
+        &state.config,
+        &state.database,
+        report_path,
+        include_legacy_anime_roots,
+    )
+    .await
+    {
+        Ok(paths) => paths,
+        Err(err) => {
+            tracing::warn!(
+                "cleanup web playback guard could not load report candidate paths: {}",
+                err
+            );
+            return None;
+        }
+    };
+
+    candidate_streaming_guard_view(state, candidate_paths).await
 }
 
 /// GET /cleanup - Cleanup page
@@ -268,13 +359,14 @@ pub(crate) async fn post_cleanup_anime_remediation_preview(
 
     let Some(plex_db_path) = resolve_plex_db_path(form.plex_db.as_deref()) else {
         return Html(
-            AnimeRemediationResultTemplate {
-                success: false,
-                message: "Anime remediation preview failed: Plex DB path is required or must exist at a standard local path".to_string(),
-                preview: None,
-                apply: None,
-                csrf_token: browser_csrf_token(&state),
-            }
+                AnimeRemediationResultTemplate {
+                    success: false,
+                    message: "Anime remediation preview failed: Plex DB path is required or must exist at a standard local path".to_string(),
+                    preview: None,
+                    apply: None,
+                    playback_guard: None,
+                    csrf_token: browser_csrf_token(&state),
+                }
             .render()
             .unwrap_or_else(|e| e.to_string()),
         )
@@ -319,6 +411,12 @@ pub(crate) async fn post_cleanup_anime_remediation_preview(
                         .collect(),
                 }),
                 apply: None,
+                playback_guard: cleanup_report_streaming_guard_view(
+                    &state,
+                    &plan.cleanup_report,
+                    true,
+                )
+                .await,
                 csrf_token: browser_csrf_token(&state),
             }
             .render()
@@ -331,6 +429,7 @@ pub(crate) async fn post_cleanup_anime_remediation_preview(
                 message: format!("Anime remediation preview failed: {}", err),
                 preview: None,
                 apply: None,
+                playback_guard: None,
                 csrf_token: browser_csrf_token(&state),
             }
             .render()
@@ -360,6 +459,7 @@ pub(crate) async fn post_cleanup_anime_remediation_apply(
                     message: format!("Anime remediation apply failed: {}", err),
                     preview: None,
                     apply: None,
+                    playback_guard: None,
                     csrf_token: browser_csrf_token(&state),
                 }
                 .render()
@@ -368,6 +468,8 @@ pub(crate) async fn post_cleanup_anime_remediation_apply(
             .into_response();
         }
     };
+
+    let playback_guard = cleanup_report_path_streaming_guard_view(&state, &report_path, true).await;
 
     match apply_anime_remediation_plan_with_refresh(
         &state.config,
@@ -398,6 +500,7 @@ pub(crate) async fn post_cleanup_anime_remediation_apply(
                     media_server_invalidation_summary: invalidation.summary_suffix(),
                 }),
                 csrf_token: browser_csrf_token(&state),
+                playback_guard,
             }
             .render()
             .unwrap_or_else(|e| e.to_string()),
@@ -409,6 +512,7 @@ pub(crate) async fn post_cleanup_anime_remediation_apply(
                 message: format!("Anime remediation apply failed: {}", err),
                 preview: None,
                 apply: None,
+                playback_guard,
                 csrf_token: browser_csrf_token(&state),
             }
             .render()
@@ -503,6 +607,7 @@ pub(crate) async fn get_cleanup_prune(
                 confirmation_token: None,
                 already_applied: false,
                 error_message: None,
+                playback_guard: None,
                 csrf_token: browser_csrf_token(&state),
             }
             .render()
@@ -531,6 +636,7 @@ pub(crate) async fn get_cleanup_prune(
                     confirmation_token: None,
                     already_applied: false,
                     error_message: Some(err.to_string()),
+                    playback_guard: None,
                     csrf_token: browser_csrf_token(&state),
                 }
                 .render()
@@ -561,6 +667,7 @@ pub(crate) async fn get_cleanup_prune(
                     "Cleanup report not found: {}",
                     report_path.display()
                 )),
+                playback_guard: None,
                 csrf_token: browser_csrf_token(&state),
             }
             .render()
@@ -591,6 +698,7 @@ pub(crate) async fn get_cleanup_prune(
                     confirmation_token: None,
                     already_applied: false,
                     error_message: Some(format!("Failed to read report: {}", e)),
+                    playback_guard: None,
                     csrf_token: browser_csrf_token(&state),
                 }
                 .render()
@@ -621,6 +729,7 @@ pub(crate) async fn get_cleanup_prune(
                     confirmation_token: None,
                     already_applied: false,
                     error_message: Some(format!("Failed to parse report: {}", e)),
+                    playback_guard: None,
                     csrf_token: browser_csrf_token(&state),
                 }
                 .render()
@@ -688,9 +797,17 @@ pub(crate) async fn get_cleanup_prune(
             .map(|plan| plan.legacy_anime_root_groups.clone())
             .unwrap_or_default(),
         report_path: Some(report_path.to_path_buf()),
-        confirmation_token: prune_plan.map(|plan| plan.confirmation_token),
+        confirmation_token: prune_plan
+            .as_ref()
+            .map(|plan| plan.confirmation_token.clone()),
         already_applied: report.applied_at.is_some(),
         error_message: None,
+        playback_guard: match prune_plan.as_ref() {
+            Some(plan) => {
+                candidate_streaming_guard_view(&state, plan.candidate_paths.clone()).await
+            }
+            None => None,
+        },
         csrf_token: browser_csrf_token(&state),
     };
 

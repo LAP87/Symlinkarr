@@ -27,6 +27,34 @@
     {{ message }}
 </div>
 
+{% match playback_guard %}
+{% when Some with (guard) %}
+<div class="alert alert-warning">
+    <strong>Active playback overlaps this legacy cleanup plan.</strong>
+    {{ guard.protected_count }} candidate path(s) from the saved plan are currently streaming, so apply will refuse to run until playback stops.
+</div>
+<details class="card disclosure-card">
+    <summary class="disclosure-card__summary">
+        <div class="disclosure-card__copy">
+            <span class="disclosure-card__eyebrow">Playback guard</span>
+            <h2 class="disclosure-card__title">Protected legacy paths</h2>
+            <p class="disclosure-card__hint">Open when you need the exact sample paths that are currently blocking this saved plan.</p>
+        </div>
+        <div class="disclosure-card__meta">
+            <span class="badge badge-warning">{{ guard.protected_count }} protected</span>
+            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
+        </div>
+    </summary>
+    <div class="disclosure-card__body">
+        <div class="stack-list">
+            {% for path in guard.protected_paths %}
+            <code class="mono">{{ path }}</code>
+            {% endfor %}
+        </div>
+    </div>
+</details>
+{% when None %}{% endmatch %}
+
 <div class="split-grid">
     <section class="card">
         <div class="section-head">

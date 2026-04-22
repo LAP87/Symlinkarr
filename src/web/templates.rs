@@ -728,7 +728,14 @@ pub struct PrunePreviewTemplate {
     pub confirmation_token: Option<String>,
     pub already_applied: bool,
     pub error_message: Option<String>,
+    pub playback_guard: Option<MutationStreamingGuardView>,
     pub csrf_token: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct MutationStreamingGuardView {
+    pub protected_count: usize,
+    pub protected_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -992,6 +999,7 @@ pub struct AnimeRemediationResultTemplate {
     pub message: String,
     pub preview: Option<AnimeRemediationPreviewResultView>,
     pub apply: Option<AnimeRemediationApplyResultView>,
+    pub playback_guard: Option<MutationStreamingGuardView>,
     pub csrf_token: String,
 }
 
