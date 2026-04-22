@@ -204,6 +204,19 @@ fn sample_queue_jobs() -> Vec<QueueJobView> {
     ]
 }
 
+fn sample_daemon_schedule_view() -> DaemonScheduleView {
+    DaemonScheduleView {
+        status_label: "Waiting".to_string(),
+        status_badge_class: "badge-success",
+        interval_label: "Every 60 min".to_string(),
+        search_missing_label: "Enabled".to_string(),
+        vacuum_label: "Daily @ 03:00 local".to_string(),
+        last_run_label: "2026-04-22 10:00:00 UTC".to_string(),
+        next_due_label: "2026-04-22 11:00:00 UTC (in 45m)".to_string(),
+        detail: "This is a config-based estimate from the latest recorded scan.".to_string(),
+    }
+}
+
 fn sample_config() -> Config {
     Config {
         libraries: vec![LibraryConfig {
@@ -436,6 +449,7 @@ fn dashboard_template_renders_needs_attention_section() {
         stats: DashboardStats::default(),
         needs_attention: sample_needs_attention_view(),
         activity_feed: sample_activity_feed_view(),
+        daemon_schedule: sample_daemon_schedule_view(),
         recent_queue_jobs: sample_queue_jobs(),
         latest_run: Some(sample_scan_run_view()),
         recent_runs: vec![sample_scan_run_view()],
@@ -454,6 +468,8 @@ fn dashboard_template_renders_needs_attention_section() {
     assert!(html.contains("Recent queue jobs"));
     assert!(html.contains("Queued Anime"));
     assert!(html.contains("Blocked Anime"));
+    assert!(html.contains("Configured schedule and next due estimate"));
+    assert!(html.contains("Next due estimate"));
 }
 
 #[test]
@@ -473,6 +489,7 @@ fn status_template_renders_recent_queue_jobs() {
             failed: 0,
             completed_unlinked: 0,
         },
+        daemon_schedule: sample_daemon_schedule_view(),
         checks: std::collections::BTreeMap::new(),
         deferred_refresh: DeferredRefreshSummaryView::default(),
         streaming_guard: Some(StreamingGuardView {
@@ -494,6 +511,8 @@ fn status_template_renders_recent_queue_jobs() {
     assert!(html.contains("Needs Relink"));
     assert!(html.contains("Active playback protection"));
     assert!(html.contains("2 active stream(s) detected"));
+    assert!(html.contains("Configured cadence"));
+    assert!(html.contains("2026-04-22 11:00:00 UTC (in 45m)"));
 }
 
 #[test]

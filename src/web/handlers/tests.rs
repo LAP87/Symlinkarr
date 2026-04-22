@@ -268,6 +268,7 @@ async fn dashboard_renders_latest_run_and_queue_summary() {
     assert!(body.contains("Recent queue jobs"));
     assert!(body.contains("Queued Anime"));
     assert!(body.contains("Needs Relink"));
+    assert!(body.contains("Configured schedule and next due estimate"));
 }
 
 #[tokio::test]
@@ -1024,6 +1025,7 @@ async fn status_page_renders_queue_pressure_and_recent_links() {
     assert!(body.contains("Recent Links"));
     assert!(body.contains("tvdb-1"));
     assert!(body.contains("Queued"));
+    assert!(body.contains("Configured cadence"));
 }
 
 #[tokio::test]

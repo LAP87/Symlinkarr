@@ -79,6 +79,42 @@
 
 {% include "web/ui/partials/activity_feed.html" %}
 
+<details class="card disclosure-card">
+    <summary class="disclosure-card__summary">
+        <div class="disclosure-card__copy">
+            <span class="disclosure-card__eyebrow">Daemon cadence</span>
+            <h2 class="disclosure-card__title">Configured schedule and next due estimate</h2>
+            <p class="disclosure-card__hint">Open when you need the daemon interval, the latest recorded scan, or a rough next-pass estimate without jumping to config.</p>
+        </div>
+        <div class="disclosure-card__meta">
+            <span class="badge {{ daemon_schedule.status_badge_class }}">{{ daemon_schedule.status_label }}</span>
+            <span class="badge badge-info">{{ daemon_schedule.interval_label }}</span>
+            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
+        </div>
+    </summary>
+    <div class="disclosure-card__body">
+        <div class="metric-grid metric-grid--compact">
+            <div class="metric-card">
+                <span class="metric-label">Last recorded scan</span>
+                <strong>{{ daemon_schedule.last_run_label }}</strong>
+            </div>
+            <div class="metric-card">
+                <span class="metric-label">Next due estimate</span>
+                <strong>{{ daemon_schedule.next_due_label }}</strong>
+            </div>
+            <div class="metric-card">
+                <span class="metric-label">Search Missing</span>
+                <strong>{{ daemon_schedule.search_missing_label }}</strong>
+            </div>
+            <div class="metric-card">
+                <span class="metric-label">VACUUM</span>
+                <strong>{{ daemon_schedule.vacuum_label }}</strong>
+            </div>
+        </div>
+        <p class="text-muted mt-2">{{ daemon_schedule.detail }}</p>
+    </div>
+</details>
+
 <div class="split-grid">
     <section class="card">
         <div class="section-head">

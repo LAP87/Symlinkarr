@@ -82,6 +82,26 @@
     </section>
 </div>
 
+<section class="card">
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Daemon</p>
+            <h2 class="section-title">Configured cadence</h2>
+        </div>
+        <div class="header-badges">
+            <span class="badge {{ daemon_schedule.status_badge_class }}">{{ daemon_schedule.status_label }}</span>
+            <span class="badge badge-info">{{ daemon_schedule.interval_label }}</span>
+        </div>
+    </div>
+    <div class="metric-grid metric-grid--compact">
+        <div class="metric-card"><span class="metric-label">Last recorded scan</span><strong>{{ daemon_schedule.last_run_label }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Next due estimate</span><strong>{{ daemon_schedule.next_due_label }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Search Missing</span><strong>{{ daemon_schedule.search_missing_label }}</strong></div>
+        <div class="metric-card"><span class="metric-label">VACUUM</span><strong>{{ daemon_schedule.vacuum_label }}</strong></div>
+    </div>
+    <p class="text-muted mt-2">{{ daemon_schedule.detail }}</p>
+</section>
+
 <div class="split-grid">
     <section class="card">
         <div class="section-head">

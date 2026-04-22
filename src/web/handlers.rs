@@ -7,6 +7,7 @@ use axum::{
     http::StatusCode,
     response::{Html, IntoResponse, Redirect, Response},
 };
+use chrono::{DateTime, Duration as ChronoDuration, NaiveDateTime, Utc};
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Component, Path as StdPath, PathBuf};
@@ -101,6 +102,104 @@ fn scan_activity_badges(dry_run: bool, search_missing: bool) -> Vec<ActivityFeed
 
 fn activity_timestamp_rank(timestamp: &str) -> String {
     timestamp.replace(" UTC", "")
+}
+
+fn parse_scan_timestamp(input: &str) -> Option<DateTime<Utc>> {
+    let normalized = input.trim().trim_end_matches(" UTC");
+    let naive = NaiveDateTime::parse_from_str(normalized, "%Y-%m-%d %H:%M:%S").ok()?;
+    Some(DateTime::<Utc>::from_naive_utc_and_offset(naive, Utc))
+}
+
+fn humanize_duration(delta: ChronoDuration) -> String {
+    let total_minutes = delta.num_minutes().max(0);
+    if total_minutes < 60 {
+        return format!("{}m", total_minutes);
+    }
+
+    let hours = total_minutes / 60;
+    let minutes = total_minutes % 60;
+    if minutes == 0 {
+        format!("{}h", hours)
+    } else {
+        format!("{}h {}m", hours, minutes)
+    }
+}
+
+fn daemon_schedule_view(
+    config: &crate::config::Config,
+    latest_run_started_at: Option<&str>,
+) -> DaemonScheduleView {
+    let interval_label = format!("Every {} min", config.daemon.interval_minutes);
+    let search_missing_label = if config.daemon.search_missing {
+        "Enabled".to_string()
+    } else {
+        "Off".to_string()
+    };
+    let vacuum_label = if config.daemon.vacuum_enabled {
+        format!("Daily @ {:02}:00 local", config.daemon.vacuum_hour_local)
+    } else {
+        "Off".to_string()
+    };
+    let last_run_label = latest_run_started_at
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("Never recorded")
+        .to_string();
+
+    if !config.daemon.enabled {
+        return DaemonScheduleView {
+            status_label: "Config only".to_string(),
+            status_badge_class: "badge-secondary",
+            interval_label,
+            search_missing_label,
+            vacuum_label,
+            last_run_label,
+            next_due_label: "Not scheduled by daemon".to_string(),
+            detail: "Daemon mode is disabled in config, so recorded scans here come from manual triggers or an external scheduler.".to_string(),
+        };
+    }
+
+    let Some(last_run_at) = latest_run_started_at.and_then(parse_scan_timestamp) else {
+        return DaemonScheduleView {
+            status_label: "Priming".to_string(),
+            status_badge_class: "badge-info",
+            interval_label,
+            search_missing_label,
+            vacuum_label,
+            last_run_label,
+            next_due_label: "After first recorded scan".to_string(),
+            detail: "Daemon mode is enabled but this database has no recorded scan yet. The web UI can only estimate cadence after the first run lands.".to_string(),
+        };
+    };
+
+    let next_due = last_run_at + ChronoDuration::minutes(config.daemon.interval_minutes as i64);
+    let now = Utc::now();
+    if now >= next_due {
+        return DaemonScheduleView {
+            status_label: "Due".to_string(),
+            status_badge_class: "badge-warning",
+            interval_label,
+            search_missing_label,
+            vacuum_label,
+            last_run_label,
+            next_due_label: format!("Due now ({} late)", humanize_duration(now - next_due)),
+            detail: "This is a config-based estimate only. The web UI still cannot prove whether a daemon process is actually running on this machine right now.".to_string(),
+        };
+    }
+
+    DaemonScheduleView {
+        status_label: "Waiting".to_string(),
+        status_badge_class: "badge-success",
+        interval_label,
+        search_missing_label,
+        vacuum_label,
+        last_run_label,
+        next_due_label: format!(
+            "{} (in {})",
+            next_due.format("%Y-%m-%d %H:%M:%S UTC"),
+            humanize_duration(next_due - now)
+        ),
+        detail: "This is a config-based estimate from the latest recorded scan. It is useful for cadence awareness, not as proof that the daemon loop is alive.".to_string(),
+    }
 }
 
 const RECENT_QUEUE_JOB_LIMIT: usize = 6;
@@ -832,6 +931,10 @@ pub async fn get_dashboard(State(state): State<WebState>) -> impl IntoResponse {
         stats,
         needs_attention,
         activity_feed: dashboard_activity_feed(&state).await,
+        daemon_schedule: daemon_schedule_view(
+            &state.config,
+            latest_run.as_ref().map(|run| run.started_at.as_str()),
+        ),
         recent_queue_jobs,
         latest_run,
         recent_runs,
@@ -876,6 +979,12 @@ pub async fn get_status(State(state): State<WebState>) -> impl IntoResponse {
             QueueOverview::default()
         }
     };
+    let latest_scan_started_at = state
+        .database
+        .get_scan_history(1)
+        .await
+        .ok()
+        .and_then(|history| history.into_iter().next().map(|run| run.started_at));
     let checks = collect_health_checks(&state);
     let deferred_refresh = deferred_refresh_summary(&state.config)
         .map(DeferredRefreshSummaryView::from)
@@ -896,6 +1005,7 @@ pub async fn get_status(State(state): State<WebState>) -> impl IntoResponse {
         tracked_dead_links,
         recent_queue_jobs,
         queue,
+        daemon_schedule: daemon_schedule_view(&state.config, latest_scan_started_at.as_deref()),
         checks,
         deferred_refresh,
         streaming_guard,
