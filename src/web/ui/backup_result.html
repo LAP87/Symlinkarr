@@ -4,8 +4,20 @@
 {% block nav_backup %}active{% endblock %}
 
 {% block content %}
-<div class="page-header">
-    <h1>&#128190; Backup Result</h1>
+<div class="page-header page-header--split">
+    <div>
+        <h1>&#128190; Backup Result</h1>
+        <div class="page-help-links">
+            <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Backup-and-Restore" target="_blank" rel="noreferrer noopener">
+                <span class="help-link__eyebrow">Learn more</span>
+                <span class="help-link__title">Backup and restore guide</span>
+            </a>
+        </div>
+    </div>
+    <div class="actions">
+        <a href="/backup" class="btn btn-secondary">&#8592; Back to Backup</a>
+        <a href="/" class="btn">&#127968; Dashboard</a>
+    </div>
 </div>
 
 {% if success %}
@@ -19,6 +31,40 @@
     {{ message }}
 </div>
 {% endif %}
+
+<div class="split-grid">
+    <section class="card">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Meaning</p>
+                <h2 class="section-title">What this artifact gives you</h2>
+            </div>
+        </div>
+        {% if success %}
+        <p class="text-muted">This page confirms the snapshot artifacts that were actually created or restored. It does not replace checking the backup inventory page afterward.</p>
+        {% else %}
+        <p class="text-muted">The requested backup or restore step did not complete cleanly. Treat the message below as the immediate failure reason and avoid assuming rollback safety exists yet.</p>
+        {% endif %}
+    </section>
+
+    <section class="card">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Next Step</p>
+                <h2 class="section-title">Best follow-up</h2>
+            </div>
+        </div>
+        <ol class="steps-list text-muted">
+            {% if success %}
+            <li>Return to Backup and confirm the artifact now appears in the inventory list.</li>
+            <li>If this was a restore, inspect Config and Status before assuming the runtime matches the restored state.</li>
+            {% else %}
+            <li>Return to Backup and fix the reported path/runtime issue before trying again.</li>
+            <li>Use Config or Doctor if the failure suggests broader environment or secret problems.</li>
+            {% endif %}
+        </ol>
+    </section>
+</div>
 
 {% match backup_path %}
 {% when Some with (path) %}
@@ -64,6 +110,7 @@
 
 <div class="actions mt-2">
     <a href="/backup" class="btn btn-secondary">&#8592; Back to Backup</a>
+    <a href="/config" class="btn btn-secondary">Config</a>
     <a href="/" class="btn">&#127968; Dashboard</a>
 </div>
 {% endblock %}

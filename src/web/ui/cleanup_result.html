@@ -8,6 +8,12 @@
     <div>
         <p class="page-kicker">Maintenance</p>
         <h1>Cleanup Result</h1>
+        <div class="page-help-links">
+            <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Cleanup-Audit-and-Prune-Preview" target="_blank" rel="noreferrer noopener">
+                <span class="help-link__eyebrow">Learn more</span>
+                <span class="help-link__title">Cleanup and prune guide</span>
+            </a>
+        </div>
     </div>
     <div class="actions">
         <a href="/cleanup" class="btn btn-secondary">Back to Cleanup</a>
@@ -84,4 +90,45 @@
     <p>{{ message }}</p>
 </div>
 {% endif %}
+
+<div class="split-grid">
+    <section class="card">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Meaning</p>
+                <h2 class="section-title">What happened here</h2>
+            </div>
+        </div>
+        {% match active_cleanup_audit %}
+        {% when Some with (_) %}
+        <p class="text-muted">The audit is running in the background. This page is only the acceptance/result shell; the real review work starts once a report exists.</p>
+        {% when None %}
+        {% if success %}
+        <p class="text-muted">A cleanup report is the handoff point, not the destructive step. Treat it as the single source of truth for the matching prune preview.</p>
+        {% else %}
+        <p class="text-muted">Cleanup did not reach a safe report output. Fix the underlying path or runtime issue before trying to prune anything.</p>
+        {% endif %}
+        {% endmatch %}
+    </section>
+
+    <section class="card">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Next Step</p>
+                <h2 class="section-title">Best follow-up</h2>
+            </div>
+        </div>
+        <ol class="steps-list text-muted">
+            {% match report_path %}
+            {% when Some with (_) %}
+            <li>Open Prune Preview for this exact report file.</li>
+            <li>Review blocked findings, foreign quarantine, and legacy-anime groups before you apply anything.</li>
+            <li>Only apply prune from that matching preview page.</li>
+            {% when None %}
+            <li>Return to Cleanup and confirm the audit can complete cleanly before expecting a safe prune step.</li>
+            <li>If the audit failed, fix the reported runtime or path issue first.</li>
+            {% endmatch %}
+        </ol>
+    </section>
+</div>
 {% endblock %}

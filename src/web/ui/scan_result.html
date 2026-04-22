@@ -9,6 +9,12 @@
         <p class="page-kicker">Result</p>
         <h1>&#128269; Scan Result</h1>
         <p class="page-lead">The web trigger schedules the same scan pipeline as the CLI path, without blocking the browser.</p>
+        <div class="page-help-links">
+            <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Scan-History-and-Why-Not-Signals" target="_blank" rel="noreferrer noopener">
+                <span class="help-link__eyebrow">Learn more</span>
+                <span class="help-link__title">Run outcomes and why-not guide</span>
+            </a>
+        </div>
     </div>
     <div class="header-badges">
         {% if dry_run %}
@@ -60,6 +66,46 @@
 </div>
 {% endif %}
 
+<div class="split-grid">
+    <section class="card">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Meaning</p>
+                <h2 class="section-title">What this result actually means</h2>
+            </div>
+        </div>
+        {% match active_scan %}
+        {% when Some with (_) %}
+        <p class="text-muted">The browser accepted the run and the real work is still happening in the background. Use Scan History or the dashboard feed when you need to confirm the final outcome.</p>
+        {% when None %}
+        {% if success %}
+        <p class="text-muted">The run finished and a recorded scan snapshot is available below when Symlinkarr managed to persist it cleanly.</p>
+        {% else %}
+        <p class="text-muted">The trigger failed or the run ended badly enough that you should inspect the latest recorded outcome before retrying.</p>
+        {% endif %}
+        {% endmatch %}
+    </section>
+
+    <section class="card">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Next Step</p>
+                <h2 class="section-title">Best follow-up</h2>
+            </div>
+        </div>
+        <ol class="steps-list text-muted">
+            {% match latest_run %}
+            {% when Some with (_) %}
+            <li>Open the recorded run detail to inspect phase timings, why-not signals, and queue impact.</li>
+            <li>If acquisition still looks unhealthy, compare Scan with Status before rerunning.</li>
+            {% when None %}
+            <li>Return to Scan and wait for the next recorded outcome before assuming the pipeline is done.</li>
+            <li>Use the dashboard feed if you only need to confirm whether work is still running.</li>
+            {% endmatch %}
+        </ol>
+    </section>
+</div>
+
 {% match latest_run %}
 {% when Some with (run) %}
 <section class="card">
@@ -101,6 +147,7 @@
     {% when Some with (run) %}
     <a href="/scan/history/{{ run.id }}" class="btn btn-primary">&#128196; View Run Details</a>
     {% when None %}{% endmatch %}
+    <a href="/scan/history" class="btn btn-secondary">Scan History</a>
     <a href="/scan" class="btn btn-secondary">&#8592; Back to Scan</a>
     <a href="/" class="btn">&#127968; Dashboard</a>
 </div>

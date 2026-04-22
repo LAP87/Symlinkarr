@@ -4,8 +4,20 @@
 {% block nav_links %}active{% endblock %}
 
 {% block content %}
-<div class="page-header">
-    <h1>&#128296; Repair Result</h1>
+<div class="page-header page-header--split">
+    <div>
+        <h1>&#128296; Repair Result</h1>
+        <div class="page-help-links">
+            <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Repair-and-Dead-Links" target="_blank" rel="noreferrer noopener">
+                <span class="help-link__eyebrow">Learn more</span>
+                <span class="help-link__title">Repair and dead-link guide</span>
+            </a>
+        </div>
+    </div>
+    <div class="actions">
+        <a href="/links/dead" class="btn btn-secondary">&#128683; View Dead Links</a>
+        <a href="/cleanup" class="btn btn-secondary">&#129529; Cleanup</a>
+    </div>
 </div>
 
 {% match active_repair %}
@@ -38,6 +50,44 @@
         <div class="card-value {% if failed > 0 %}text-error{% else %}text-success{% endif %}">{{ failed }}</div>
         <div class="card-label">Failed</div>
     </div>
+</div>
+
+<div class="split-grid">
+    <section class="card">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Meaning</p>
+                <h2 class="section-title">How to read this result</h2>
+            </div>
+        </div>
+        {% match active_repair %}
+        {% when Some with (_) %}
+        <p class="text-muted">The repair run is still active. Treat these numbers as a handoff into the dead-links page, not as the final stable state yet.</p>
+        {% when None %}
+        {% if failed > 0 %}
+        <p class="text-muted">Repair improved part of the set, but some rows still need manual judgment. That usually means the source is still missing or no safe replacement was found.</p>
+        {% else %}
+        <p class="text-muted">Repair finished without leaving obvious unresolved rows in this result. Dead Links is still the right place to confirm the queue is actually empty.</p>
+        {% endif %}
+        {% endmatch %}
+    </section>
+
+    <section class="card">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Next Step</p>
+                <h2 class="section-title">Best follow-up</h2>
+            </div>
+        </div>
+        <ol class="steps-list text-muted">
+            <li>Open Dead Links and verify the remaining rows, not just the counters on this page.</li>
+            {% if failed > 0 %}
+            <li>Use Cleanup only for rows that really have no safe replacement left.</li>
+            {% else %}
+            <li>If the queue is empty, go back to Dashboard or Scan rather than rerunning repair blindly.</li>
+            {% endif %}
+        </ol>
+    </section>
 </div>
 
 {% match last_repair_outcome %}

@@ -620,6 +620,9 @@ fn cleanup_result_template_renders_report_summary() {
     assert!(html.contains("Anime"));
     assert!(html.contains("18"));
     assert!(html.contains("4 / 9"));
+    assert!(html.contains("Best follow-up"));
+    assert!(html.contains("Open Prune Preview for this exact report file."));
+    assert!(html.contains("/wiki/Cleanup-Audit-and-Prune-Preview"));
 }
 
 #[test]
@@ -641,6 +644,7 @@ fn cleanup_result_template_renders_background_audit_banner() {
     assert!(html.contains("Background cleanup audit running"));
     assert!(html.contains("Background Audit Accepted"));
     assert!(html.contains("2026-03-29 23:59:00 UTC"));
+    assert!(html.contains("The audit is running in the background."));
 }
 
 #[test]
@@ -664,6 +668,80 @@ fn cleanup_result_template_renders_last_failed_audit_outcome() {
     let html = template.render().unwrap();
     assert!(html.contains("Last background cleanup audit failed"));
     assert!(html.contains("source root unhealthy"));
+    assert!(html.contains("Fix the underlying path or runtime issue"));
+}
+
+#[test]
+fn scan_result_template_renders_guided_follow_up() {
+    let template = ScanResultTemplate {
+        success: true,
+        message: "Background scan started for Anime.".to_string(),
+        active_scan: Some(ActiveScanView {
+            started_at: "2026-04-22 01:10:00 UTC".to_string(),
+            scope_label: "Anime".to_string(),
+            dry_run: false,
+            search_missing: true,
+        }),
+        last_scan_outcome: None,
+        latest_run: Some(sample_scan_run_view()),
+        dry_run: false,
+    };
+
+    let html = template.render().unwrap();
+    assert!(html.contains("What this result actually means"));
+    assert!(html.contains("Best follow-up"));
+    assert!(html.contains("Scan History"));
+    assert!(html.contains("/wiki/Scan-History-and-Why-Not-Signals"));
+}
+
+#[test]
+fn repair_result_template_renders_recovery_guidance() {
+    let template = RepairResultTemplate {
+        success: true,
+        message: "Repair completed with unresolved rows.".to_string(),
+        repaired: 3,
+        failed: 2,
+        active_repair: None,
+        last_repair_outcome: Some(BackgroundRepairOutcomeView {
+            finished_at: "2026-04-22 01:15:00 UTC".to_string(),
+            success: false,
+            message: "Some files were still missing".to_string(),
+        }),
+    };
+
+    let html = template.render().unwrap();
+    assert!(html.contains("How to read this result"));
+    assert!(html.contains("Use Cleanup only for rows that really have no safe replacement left."));
+    assert!(html.contains("/wiki/Repair-and-Dead-Links"));
+}
+
+#[test]
+fn backup_result_template_renders_follow_up_guidance() {
+    let template = BackupResultTemplate {
+        success: true,
+        message: "Backup created successfully".to_string(),
+        backup_path: Some(PathBuf::from("/backups/symlinkarr-backup-20260422.json")),
+        database_snapshot_path: Some(PathBuf::from("/backups/symlinkarr-backup-20260422.sqlite3")),
+        config_snapshot_path: Some(PathBuf::from(
+            "/backups/symlinkarr-backup-20260422.config.yaml",
+        )),
+        secret_snapshot_count: 2,
+        app_state_restore_summary: Some(crate::backup::BackupAppStateRestoreSummary {
+            present: true,
+            config_included: true,
+            config_restored: true,
+            secrets_included: 2,
+            secrets_restored: 2,
+            secrets_skipped: 0,
+        }),
+    };
+
+    let html = template.render().unwrap();
+    assert!(html.contains("What this artifact gives you"));
+    assert!(html.contains("Best follow-up"));
+    assert!(html
+        .contains("Return to Backup and confirm the artifact now appears in the inventory list."));
+    assert!(html.contains("/wiki/Backup-and-Restore"));
 }
 
 #[test]
