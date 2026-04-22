@@ -1,9 +1,11 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use chrono::Utc;
 use tracing::info;
 
+use crate::api::tautulli::TautulliClient;
 use crate::cleanup_audit::{self, CleanupAuditor, CleanupScope};
 use crate::commands::report::build_anime_remediation_report;
 use crate::commands::{ensure_runtime_directories_healthy, print_json, selected_libraries};
@@ -668,6 +670,15 @@ pub(crate) async fn apply_anime_remediation_plan(
 
     let plan = load_anime_remediation_plan_report(report_path)?;
     validate_anime_remediation_plan_report(&plan)?;
+    let anime_candidate_paths =
+        cleanup_report_candidate_paths(cfg, db, &plan.cleanup_report, true).await?;
+    ensure_no_active_stream_overlap(
+        cfg,
+        &anime_candidate_paths,
+        "cleanup anime remediation apply",
+        false,
+    )
+    .await?;
 
     let safety_snapshot = if cfg.backup.enabled {
         let extra_symlink_paths: Vec<_> = plan
@@ -759,6 +770,11 @@ pub(crate) async fn apply_cleanup_prune_with_refresh(
         confirm_token,
         emit_text,
     } = args;
+    let candidate_paths =
+        cleanup_report_candidate_paths_from_path(cfg, db, report_path, include_legacy_anime_roots)
+            .await?;
+    ensure_no_active_stream_overlap(cfg, &candidate_paths, "cleanup prune apply", emit_text)
+        .await?;
     let outcome = cleanup_audit::run_prune(
         cfg,
         db,
@@ -783,6 +799,98 @@ pub(crate) async fn apply_cleanup_prune_with_refresh(
     };
 
     Ok((outcome, invalidation))
+}
+
+async fn cleanup_report_candidate_paths(
+    cfg: &Config,
+    db: &Database,
+    report: &cleanup_audit::CleanupReport,
+    include_legacy_anime_roots: bool,
+) -> Result<Vec<PathBuf>> {
+    let mut report = report.clone();
+    cleanup_audit::hydrate_report_db_tracked_flags(db, &mut report).await?;
+    let plan = cleanup_audit::build_prune_plan(
+        &report,
+        cfg.cleanup.prune.quarantine_foreign,
+        include_legacy_anime_roots,
+    );
+    Ok(plan.candidate_paths)
+}
+
+async fn cleanup_report_candidate_paths_from_path(
+    cfg: &Config,
+    db: &Database,
+    report_path: &Path,
+    include_legacy_anime_roots: bool,
+) -> Result<Vec<PathBuf>> {
+    let json = std::fs::read_to_string(report_path)?;
+    let report: cleanup_audit::CleanupReport = serde_json::from_str(&json)?;
+    cleanup_report_candidate_paths(cfg, db, &report, include_legacy_anime_roots).await
+}
+
+async fn ensure_no_active_stream_overlap(
+    cfg: &Config,
+    candidate_paths: &[PathBuf],
+    operation: &str,
+    emit_text: bool,
+) -> Result<()> {
+    if !cfg.has_tautulli() || candidate_paths.is_empty() {
+        return Ok(());
+    }
+
+    let tautulli = TautulliClient::new(&cfg.tautulli);
+    let active_paths = match tautulli.get_active_file_paths().await {
+        Ok(paths) => paths,
+        Err(err) => {
+            if emit_text {
+                println!(
+                    "   ⚠️  Tautulli query failed ({}), proceeding without playback guard for {}",
+                    err, operation
+                );
+            }
+            tracing::warn!(
+                "{}: Tautulli query failed (non-fatal), proceeding without playback guard: {}",
+                operation,
+                err
+            );
+            return Ok(());
+        }
+    };
+
+    let active_path_set: HashSet<_> = active_paths.into_iter().collect();
+    let protected_paths: Vec<_> = candidate_paths
+        .iter()
+        .filter(|path| active_path_set.contains(path.to_string_lossy().as_ref()))
+        .cloned()
+        .collect();
+
+    if protected_paths.is_empty() {
+        return Ok(());
+    }
+
+    if emit_text {
+        println!(
+            "   🎬 Tautulli: refusing {} because {} targeted path(s) are actively streaming",
+            operation,
+            protected_paths.len()
+        );
+        for path in protected_paths.iter().take(3) {
+            println!("      - {}", path.display());
+        }
+    }
+
+    let sample = protected_paths
+        .iter()
+        .take(3)
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    anyhow::bail!(
+        "Refusing {}: {} targeted path(s) are currently active in Tautulli/Plex (for example: {})",
+        operation,
+        protected_paths.len(),
+        sample
+    );
 }
 
 async fn maybe_refresh_media_servers_after_cleanup(
