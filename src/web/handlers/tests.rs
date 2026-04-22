@@ -543,6 +543,7 @@ fn dashboard_needs_attention_includes_playback_guard_when_mutations_are_waiting(
         last_cleanup_outcome: None,
         last_repair_outcome: None,
         streaming_guard: Some(&guard),
+        daemon_schedule: None,
     };
 
     let needs_attention = dashboard_needs_attention(
@@ -559,6 +560,50 @@ fn dashboard_needs_attention_includes_playback_guard_when_mutations_are_waiting(
     assert!(needs_attention.items.iter().any(|item| item
         .message
         .contains("2 active stream(s) are currently protected")));
+}
+
+#[test]
+fn dashboard_needs_attention_includes_overdue_daemon_signal() {
+    let stats = DashboardStats {
+        active_links: 10,
+        dead_links: 0,
+        total_scans: 4,
+        last_scan: Some("2026-04-22 12:00:00 UTC".to_string()),
+    };
+    let daemon_schedule = DaemonScheduleView {
+        status_label: "Due".to_string(),
+        status_badge_class: "badge-warning",
+        interval_label: "Every 60 min".to_string(),
+        search_missing_label: "Enabled".to_string(),
+        vacuum_label: "Daily @ 03:00 local".to_string(),
+        last_run_label: "2026-04-22 12:00:00 UTC".to_string(),
+        next_due_label: "Due now (2h late)".to_string(),
+        detail: "This is a config-based estimate only.".to_string(),
+    };
+    let inputs = DashboardAttentionInputs {
+        latest_run: None,
+        last_scan_outcome: None,
+        last_cleanup_outcome: None,
+        last_repair_outcome: None,
+        streaming_guard: None,
+        daemon_schedule: Some(&daemon_schedule),
+    };
+
+    let needs_attention = dashboard_needs_attention(
+        &stats,
+        &QueueOverview::default(),
+        &DeferredRefreshSummaryView::default(),
+        &inputs,
+    );
+
+    assert!(needs_attention
+        .items
+        .iter()
+        .any(|item| item.title == "Daemon scan cadence looks overdue"));
+    assert!(needs_attention
+        .items
+        .iter()
+        .any(|item| item.message.contains("Due now (2h late)")));
 }
 
 #[tokio::test]

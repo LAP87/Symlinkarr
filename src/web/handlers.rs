@@ -502,6 +502,7 @@ struct DashboardAttentionInputs<'a> {
     last_cleanup_outcome: Option<&'a BackgroundCleanupAuditOutcomeView>,
     last_repair_outcome: Option<&'a BackgroundRepairOutcomeView>,
     streaming_guard: Option<&'a StreamingGuardView>,
+    daemon_schedule: Option<&'a DaemonScheduleView>,
 }
 
 fn dashboard_needs_attention(
@@ -598,6 +599,23 @@ fn dashboard_needs_attention(
                 guard.active_streams
             ),
             "Open Status or the dashboard playback-protection panel and confirm the protected paths before retrying repair or cleanup apply.",
+            Some(activity_link("/status", "Open Status")),
+        ));
+    }
+
+    if let Some(schedule) = inputs
+        .daemon_schedule
+        .filter(|schedule| schedule.status_label == "Due")
+    {
+        items.push(needs_attention_item(
+            "Medium",
+            "badge-warning",
+            "Daemon scan cadence looks overdue",
+            format!(
+                "Latest recorded scan is behind the configured cadence. {}",
+                schedule.next_due_label
+            ),
+            "Open Status and verify the daemon/service is actually running before you assume scans are still happening on schedule.",
             Some(activity_link("/status", "Open Status")),
         ));
     }
@@ -948,12 +966,17 @@ pub async fn get_dashboard(State(state): State<WebState>) -> impl IntoResponse {
     };
     let streaming_guard = streaming_guard_view(&state).await;
     let recent_queue_jobs = recent_queue_jobs(&state, RECENT_QUEUE_JOB_LIMIT).await;
+    let daemon_schedule = daemon_schedule_view(
+        &state.config,
+        latest_run.as_ref().map(|run| run.started_at.as_str()),
+    );
     let attention_inputs = DashboardAttentionInputs {
         latest_run: latest_run.as_ref(),
         last_scan_outcome: last_scan_outcome.as_ref(),
         last_cleanup_outcome: last_cleanup_audit_outcome.as_ref(),
         last_repair_outcome: last_repair_outcome.as_ref(),
         streaming_guard: streaming_guard.as_ref(),
+        daemon_schedule: Some(&daemon_schedule),
     };
     let needs_attention =
         dashboard_needs_attention(&stats, &queue, &deferred_refresh, &attention_inputs);
@@ -962,10 +985,7 @@ pub async fn get_dashboard(State(state): State<WebState>) -> impl IntoResponse {
         stats,
         needs_attention,
         activity_feed: dashboard_activity_feed(&state).await,
-        daemon_schedule: daemon_schedule_view(
-            &state.config,
-            latest_run.as_ref().map(|run| run.started_at.as_str()),
-        ),
+        daemon_schedule,
         streaming_guard,
         recent_queue_jobs,
         latest_run,
