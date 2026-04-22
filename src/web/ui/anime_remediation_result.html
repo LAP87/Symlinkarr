@@ -9,6 +9,12 @@
         <p class="page-kicker">Cleanup</p>
         <h1>&#127909; Legacy Anime Cleanup</h1>
         <p class="page-lead">Advanced cleanup for old anime root drift. Preview first; the browser apply form below is already tied to this saved plan.</p>
+        <div class="page-help-links">
+            <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Anime-Remediation" target="_blank" rel="noreferrer noopener">
+                <span class="help-link__eyebrow">Learn more</span>
+                <span class="help-link__title">Legacy anime remediation guide</span>
+            </a>
+        </div>
     </div>
     <div class="actions">
         <a href="/cleanup/anime-remediation" class="btn btn-secondary">&#8592; Back to Backlog</a>
@@ -19,6 +25,66 @@
 <div class="alert {% if success %}alert-success{% else %}alert-error{% endif %}">
     <strong>{% if success %}Operation completed.{% else %}Operation failed.{% endif %}</strong>
     {{ message }}
+</div>
+
+<div class="split-grid">
+    <section class="card">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Meaning</p>
+                <h2 class="section-title">What this page means</h2>
+            </div>
+        </div>
+        {% match preview %}
+        {% when Some with (_) %}
+        <p class="text-muted">The guarded plan is saved, but nothing has been mutated yet. This page is the handoff between backlog review and the only allowed apply path for this exact report.</p>
+        {% when None %}
+        {% match apply %}
+        {% when Some with (_) %}
+        {% if success %}
+        <p class="text-muted">The saved plan has already been applied. Treat this page as the mutation receipt, then confirm cleanup, dead-link, and refresh state from the main operator surfaces afterward.</p>
+        {% else %}
+        <p class="text-muted">Apply did not complete cleanly. Re-open the backlog or the saved report before assuming any more legacy anime cleanup is safe.</p>
+        {% endif %}
+        {% when None %}
+        {% if success %}
+        <p class="text-muted">The request completed without a review payload on this page. Return to the backlog and rebuild the saved plan before assuming there is anything safe to apply.</p>
+        {% else %}
+        <p class="text-muted">No guarded plan was produced. Fix the Plex DB path, saved report path, or confirmation token problem before retrying.</p>
+        {% endif %}
+        {% endmatch %}
+        {% endmatch %}
+    </section>
+
+    <section class="card">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Next Step</p>
+                <h2 class="section-title">Best follow-up</h2>
+            </div>
+        </div>
+        <ol class="steps-list text-muted">
+            {% match preview %}
+            {% when Some with (_) %}
+            <li>Review blocked groups and sample paths before touching the apply gate.</li>
+            <li>Apply only from this saved report page so the confirmation token and report path stay paired.</li>
+            {% when None %}
+            {% match apply %}
+            {% when Some with (_) %}
+            {% if success %}
+            <li>Check Cleanup or Status to confirm there is no broader dead-link or refresh fallout after the mutation.</li>
+            <li>If anime groups are still blocked later, generate a new preview instead of reusing this old result page.</li>
+            {% else %}
+            <li>Return to Legacy Anime Cleanup and rebuild the saved plan before retrying apply.</li>
+            <li>Verify the saved report path and confirmation token if this came from an older tab or stale browser form.</li>
+            {% endif %}
+            {% when None %}
+            <li>Return to Legacy Anime Cleanup and generate a fresh preview from the backlog page.</li>
+            <li>Use the guide link above if you are unsure whether this is really an anime-remediation case or a normal cleanup problem.</li>
+            {% endmatch %}
+            {% endmatch %}
+        </ol>
+    </section>
 </div>
 
 {% match preview %}
@@ -217,6 +283,25 @@
         {% endmatch %}
     </section>
 </div>
+<div class="actions mt-2">
+    <a href="/cleanup/anime-remediation" class="btn btn-secondary">&#8592; Back to Backlog</a>
+    <a href="/cleanup" class="btn btn-secondary">&#129529; Cleanup</a>
+    <a href="/status" class="btn">&#128202; Status</a>
+</div>
 {% when None %}
+{% endmatch %}
+
+{% match preview %}
+{% when Some with (_) %}
+{% when None %}
+{% match apply %}
+{% when Some with (_) %}
+{% when None %}
+<div class="actions mt-2">
+    <a href="/cleanup/anime-remediation" class="btn btn-secondary">&#8592; Back to Backlog</a>
+    <a href="/cleanup" class="btn btn-secondary">&#129529; Cleanup</a>
+    <a href="/" class="btn">&#127968; Dashboard</a>
+</div>
+{% endmatch %}
 {% endmatch %}
 {% endblock %}

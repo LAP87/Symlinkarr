@@ -10,6 +10,7 @@ use crate::config::{
     PlexConfig, ProwlarrConfig, RadarrConfig, RealDebridConfig, SecurityConfig, SonarrConfig,
     SourceConfig, SymlinkConfig, TautulliConfig, WebConfig,
 };
+use crate::discovery::DiscoverPlacementAction;
 use crate::models::{LinkStatus, MediaType};
 
 fn sample_skip_reasons() -> Vec<SkipReasonView> {
@@ -1078,6 +1079,8 @@ fn anime_remediation_result_template_renders_review_samples() {
     };
 
     let html = template.render().unwrap();
+    assert!(html.contains("What this page means"));
+    assert!(html.contains("Best follow-up"));
     assert!(html.contains("Plan contents"));
     assert!(html.contains("Candidate symlinks"));
     assert!(html.contains("Broken legacy symlinks"));
@@ -1085,5 +1088,51 @@ fn anime_remediation_result_template_renders_review_samples() {
     assert!(html.contains("Horimiya - S01E03.mkv"));
     assert!(html.contains("Apply Legacy Cleanup"));
     assert!(html.contains("name=\"token\""));
+    assert!(html.contains("/wiki/Anime-Remediation"));
     assert!(!html.contains("Confirmation token"));
+}
+
+#[test]
+fn discover_content_template_renders_guidance_and_help_link() {
+    let template = DiscoverContentTemplate {
+        discover_summary: DiscoverSummary {
+            folders: 1,
+            placements: 2,
+            creates: 1,
+            updates: 0,
+            blocked: 1,
+        },
+        folder_plans: vec![DiscoverFolderPlan {
+            library_name: "Anime".to_string(),
+            media_id: "tvdb-1".to_string(),
+            title: "Solo Leveling".to_string(),
+            folder_path: PathBuf::from("/library/anime/Solo Leveling (2024) {tvdb-1}"),
+            existing_links: 0,
+            planned_creates: 1,
+            planned_updates: 0,
+            blocked: 1,
+        }],
+        discovered_items: vec![DiscoverPlacement {
+            library_name: "Anime".to_string(),
+            media_id: "tvdb-1".to_string(),
+            title: "Solo Leveling".to_string(),
+            folder_path: PathBuf::from("/library/anime/Solo Leveling (2024) {tvdb-1}"),
+            source_path: PathBuf::from("/source/rd/Solo.Leveling.S01E01.mkv"),
+            target_path: PathBuf::from(
+                "/library/anime/Solo Leveling (2024) {tvdb-1}/Season 01/Solo Leveling - S01E01.mkv",
+            ),
+            source_name: "Solo.Leveling.S01E01.mkv".to_string(),
+            action: DiscoverPlacementAction::BlockedRegularFile,
+            season: Some(1),
+            episode: Some(1),
+        }],
+        status_message: Some("Using cached discover snapshot".to_string()),
+    };
+
+    let html = template.render().unwrap();
+    assert!(html.contains("How to read this preview"));
+    assert!(html.contains("Best follow-up"));
+    assert!(html.contains("/wiki/Discover-and-Queue"));
+    assert!(html.contains("Discover never writes links"));
+    assert!(html.contains("Inspect blocked rows first"));
 }

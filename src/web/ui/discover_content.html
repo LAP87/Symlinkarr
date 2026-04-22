@@ -23,6 +23,47 @@
     </div>
 </section>
 
+<div class="split-grid">
+    <section class="card">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Meaning</p>
+                <h2 class="section-title">How to read this preview</h2>
+            </div>
+        </div>
+        {% if discover_summary.placements > 0 %}
+        <p class="text-muted">Discover never writes links. These rows show where cached or freshly synced source content would land under the current tagged roots if the normal scan and queue pipeline later reaches the same matches.</p>
+        {% else %}
+        <p class="text-muted">This snapshot found no safe placement rows for the current scope. That usually means the chosen library or the current cache does not contain content Symlinkarr can place yet.</p>
+        {% endif %}
+        <div class="page-help-links mt-2">
+            <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Discover-and-Queue" target="_blank" rel="noreferrer noopener">
+                <span class="help-link__eyebrow">Learn more</span>
+                <span class="help-link__title">Discover preview and queue guide</span>
+            </a>
+        </div>
+    </section>
+
+    <section class="card">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Next Step</p>
+                <h2 class="section-title">Best follow-up</h2>
+            </div>
+        </div>
+        <ol class="steps-list text-muted">
+            {% if discover_summary.blocked > 0 %}
+            <li>Inspect blocked rows first; they usually point at path ownership or target conflicts that the normal linking flow still cannot cross safely.</li>
+            {% else if discover_summary.placements > 0 %}
+            <li>Use this preview to confirm folder targeting, then go back to Scan or Dashboard for the actual linking and queue workflows.</li>
+            {% else %}
+            <li>Re-run Discover with refresh enabled if you expected new RD content and want a slower live cache snapshot before judging the result.</li>
+            {% endif %}
+            <li>Use Status when you need queue pressure or relink state; Discover itself stays read-only even when the placement plan looks correct.</li>
+        </ol>
+    </section>
+</div>
+
 {% if folder_plans|length > 0 %}
 <section class="card">
     <div class="section-head">

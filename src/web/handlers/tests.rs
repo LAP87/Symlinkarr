@@ -1128,6 +1128,8 @@ async fn discover_content_renders_cached_gap_items() {
     assert!(body.contains("Season 01"));
     assert!(body.contains("Real-Debrid API key not configured"));
     assert!(body.contains("live refresh is unavailable"));
+    assert!(body.contains("How to read this preview"));
+    assert!(body.contains("/wiki/Discover-and-Queue"));
     assert!(!body.contains("name=\"torrent_id\""));
 }
 
