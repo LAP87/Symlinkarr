@@ -1079,6 +1079,19 @@ pub async fn get_dashboard_needs_attention(State(state): State<WebState>) -> imp
     }
 }
 
+/// GET /dashboard/latest-run - HTMX fragment for latest scan baseline
+pub async fn get_dashboard_latest_run(State(state): State<WebState>) -> impl IntoResponse {
+    let latest_run = match state.database.get_scan_history(1).await {
+        Ok(runs) => runs.into_iter().next().map(ScanRunView::from_record),
+        Err(err) => {
+            error!("Failed to get latest scan history for latest-run fragment: {}", err);
+            None
+        }
+    };
+
+    DashboardLatestRunTemplate { latest_run }
+}
+
 /// GET /status - Detailed status page
 pub async fn get_status(State(state): State<WebState>) -> impl IntoResponse {
     info!("Serving status page");

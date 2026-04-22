@@ -494,6 +494,19 @@ async fn dashboard_needs_attention_fragment_renders_live_section() {
 }
 
 #[tokio::test]
+async fn dashboard_latest_run_fragment_renders_current_baseline() {
+    let ctx = test_context().await;
+
+    let body = render_body(get_dashboard_latest_run(State(ctx.state.clone())).await).await;
+
+    assert!(body.contains("Latest Run"));
+    assert!(body.contains("Current baseline"));
+    assert!(body.contains("hx-get=\"/dashboard/latest-run\""));
+    assert!(body.contains("Open Scan"));
+    assert!(body.contains("Top Why-Not Signals"));
+}
+
+#[tokio::test]
 async fn dashboard_renders_needs_attention_priorities() {
     let ctx = test_context().await;
     ctx.state

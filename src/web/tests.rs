@@ -345,6 +345,7 @@ async fn dashboard_page_exposes_primary_operator_actions() {
     assert!(dashboard.contains("href=\"/status\""));
     assert!(dashboard.contains("hx-get=\"/dashboard/needs-attention\""));
     assert!(dashboard.contains("hx-get=\"/dashboard/activity-feed\""));
+    assert!(dashboard.contains("hx-get=\"/dashboard/latest-run\""));
     assert!(dashboard.contains("href=\"/scan/history/"));
     assert!(dashboard.contains("Queue 1"));
 }
@@ -370,6 +371,17 @@ async fn dashboard_needs_attention_route_renders_fragment() {
     assert!(fragment.contains("Needs Attention"));
     assert!(fragment.contains("Operator priorities"));
     assert!(fragment.contains("hx-get=\"/dashboard/needs-attention\""));
+}
+
+#[tokio::test]
+async fn dashboard_latest_run_route_renders_fragment() {
+    let router = test_router().await;
+    let (status, fragment) = get_html(&router, "/dashboard/latest-run").await;
+
+    assert_eq!(status, 200);
+    assert!(fragment.contains("Latest Run"));
+    assert!(fragment.contains("Current baseline"));
+    assert!(fragment.contains("hx-get=\"/dashboard/latest-run\""));
 }
 
 #[tokio::test]

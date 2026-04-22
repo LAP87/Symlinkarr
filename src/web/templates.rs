@@ -527,6 +527,12 @@ pub struct DashboardNeedsAttentionTemplate {
     pub needs_attention: DashboardNeedsAttentionView,
 }
 
+#[derive(Template)]
+#[template(path = "web/ui/partials/latest_run.html")]
+pub struct DashboardLatestRunTemplate {
+    pub latest_run: Option<ScanRunView>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct DashboardNeedsAttentionView {
     pub items: Vec<NeedsAttentionItemView>,
@@ -1243,6 +1249,7 @@ pub struct BackupResultTemplate {
 impl_template_into_response!(
     DashboardTemplate,
     DashboardNeedsAttentionTemplate,
+    DashboardLatestRunTemplate,
     DashboardActivityFeedTemplate,
     StatusTemplate,
     ScanTemplate,
