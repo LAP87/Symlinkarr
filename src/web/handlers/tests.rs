@@ -426,6 +426,26 @@ async fn dashboard_activity_feed_fragment_renders_running_and_recent_work() {
 }
 
 #[tokio::test]
+async fn dashboard_activity_feed_surfaces_live_daemon_heartbeat() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = test_config(dir.path());
+    cfg.daemon.enabled = true;
+    let db = Database::new(&cfg.db_path).await.unwrap();
+    db.record_daemon_heartbeat("sleeping", Some("Next scan in 60 minutes"))
+        .await
+        .unwrap();
+    let state = WebState::new(cfg, db);
+
+    let body = render_body(get_dashboard_activity_feed(State(state)).await).await;
+
+    assert!(body.contains("Daemon"));
+    assert!(body.contains("Background scheduler"));
+    assert!(body.contains("Phase: Sleeping"));
+    assert!(body.contains("Next scan in 60 minutes"));
+    assert!(body.contains("Open Status"));
+}
+
+#[tokio::test]
 async fn dashboard_needs_attention_fragment_renders_live_section() {
     let ctx = test_context().await;
     ctx.state

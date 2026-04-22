@@ -927,6 +927,25 @@ fn build_dashboard_needs_attention_view(
 
 async fn dashboard_activity_feed(state: &WebState) -> DashboardActivityFeedView {
     let mut active_items = Vec::new();
+    let daemon_heartbeat = daemon_heartbeat_view(&state.config, daemon_heartbeat_record(state).await);
+
+    if let Some(heartbeat) = daemon_heartbeat.as_ref().filter(|heartbeat| !heartbeat.stale) {
+        active_items.push(ActivityFeedItemView {
+            kind_label: "Daemon".to_string(),
+            status_label: heartbeat.status_label.clone(),
+            status_badge_class: heartbeat.status_badge_class,
+            scope_label: "Background scheduler".to_string(),
+            timestamp_label: "Heartbeat".to_string(),
+            timestamp: heartbeat.last_seen_label.clone(),
+            context: Some(format!("Phase: {}", heartbeat.phase_label)),
+            message: heartbeat.detail.clone(),
+            badges: vec![activity_badge(
+                heartbeat.phase_label.clone(),
+                "badge-info",
+            )],
+            link: Some(activity_link("/status", "Open Status")),
+        });
+    }
 
     if let Some(job) = state.active_scan().await {
         active_items.push(ActivityFeedItemView {
@@ -1005,6 +1024,21 @@ async fn dashboard_activity_feed(state: &WebState) -> DashboardActivityFeedView 
         if should_surface_recorded_scan {
             recent_items.push(recorded_scan_activity_item(run));
         }
+    }
+
+    if let Some(heartbeat) = daemon_heartbeat.filter(|heartbeat| heartbeat.stale) {
+        recent_items.push(ActivityFeedItemView {
+            kind_label: "Daemon".to_string(),
+            status_label: heartbeat.status_label.clone(),
+            status_badge_class: heartbeat.status_badge_class,
+            scope_label: "Background scheduler".to_string(),
+            timestamp_label: "Heartbeat".to_string(),
+            timestamp: heartbeat.last_seen_label.clone(),
+            context: Some(format!("Phase: {}", heartbeat.phase_label)),
+            message: heartbeat.detail,
+            badges: Vec::new(),
+            link: Some(activity_link("/status", "Open Status")),
+        });
     }
 
     if let Some(outcome) = cleanup::visible_last_cleanup_audit_outcome(state).await {

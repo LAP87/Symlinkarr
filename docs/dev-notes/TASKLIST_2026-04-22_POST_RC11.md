@@ -22,6 +22,7 @@ The new center of gravity is operator confidence under live runtime conditions.
 - [x] Record scan origin and use daemon-origin runs for cadence estimates instead of letting web/manual scans masquerade as daemon proof
 - [x] Surface scan origin in history/detail/API and show the freshest recorded scan provenance in the dashboard activity feed
 - [x] Add a DB-backed daemon heartbeat so dashboard/status can distinguish “daemon seems alive” from “a daemon-origin scan happened once”
+- [x] Surface live daemon heartbeat/phase directly in `Live Activity`, so operators can see “alive and sleeping” without leaving the dashboard
 - [ ] Decide whether observability should stop at heartbeat + persisted provenance for v1.0 or continue toward deeper live daemon/queue provenance
 
 ### 2. Keep the anime override track narrow and operator-friendly
