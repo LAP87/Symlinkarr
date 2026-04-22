@@ -533,6 +533,14 @@ pub struct DashboardLatestRunTemplate {
     pub latest_run: Option<ScanRunView>,
 }
 
+#[derive(Template)]
+#[template(path = "web/ui/partials/dashboard_summary.html")]
+pub struct DashboardSummaryTemplate {
+    pub stats: DashboardStats,
+    pub queue: QueueOverview,
+    pub deferred_refresh: DeferredRefreshSummaryView,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct DashboardNeedsAttentionView {
     pub items: Vec<NeedsAttentionItemView>,
@@ -1250,6 +1258,7 @@ impl_template_into_response!(
     DashboardTemplate,
     DashboardNeedsAttentionTemplate,
     DashboardLatestRunTemplate,
+    DashboardSummaryTemplate,
     DashboardActivityFeedTemplate,
     StatusTemplate,
     ScanTemplate,

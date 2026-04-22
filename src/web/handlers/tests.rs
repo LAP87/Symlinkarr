@@ -507,6 +507,19 @@ async fn dashboard_latest_run_fragment_renders_current_baseline() {
 }
 
 #[tokio::test]
+async fn dashboard_summary_fragment_renders_live_counters() {
+    let ctx = test_context().await;
+
+    let body = render_body(get_dashboard_summary(State(ctx.state.clone())).await).await;
+
+    assert!(body.contains("Link Health"));
+    assert!(body.contains("Auto-Acquire Queue"));
+    assert!(body.contains("Media Refresh Backlog"));
+    assert!(body.contains("hx-get=\"/dashboard/summary\""));
+    assert!(body.contains("Queue"));
+}
+
+#[tokio::test]
 async fn dashboard_renders_needs_attention_priorities() {
     let ctx = test_context().await;
     ctx.state

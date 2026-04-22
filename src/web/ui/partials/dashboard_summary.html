@@ -1,0 +1,48 @@
+<div
+    id="dashboard-summary"
+    class="hero-grid"
+    hx-get="/dashboard/summary"
+    hx-trigger="every 10s"
+    hx-swap="outerHTML"
+>
+    <section class="hero-card hero-card--accent">
+        <p class="hero-label">Link Health</p>
+        <div class="hero-value">{{ stats.active_links }}</div>
+        <p class="hero-copy">Tracked active symlinks across all libraries.</p>
+        <div class="hero-inline-stats">
+            <span>Dead: <strong class="{% if stats.dead_links > 0 %}text-error{% else %}text-success{% endif %}">{{ stats.dead_links }}</strong></span>
+            <span>Last scan:
+                <strong>
+                    {% match stats.last_scan %}
+                    {% when Some with (ts) %}{{ ts }}{% when None %}Never{% endmatch %}
+                </strong>
+            </span>
+        </div>
+    </section>
+
+    <section class="hero-card">
+        <p class="hero-label">Auto-Acquire Queue</p>
+        <div class="hero-value">{{ queue.active_total }}</div>
+        <p class="hero-copy">Jobs currently waiting, downloading, relinking, or retrying.</p>
+        <div class="hero-inline-stats">
+            <span>Queued <strong>{{ queue.queued }}</strong></span>
+            <span>Downloading <strong>{{ queue.downloading }}</strong></span>
+            <span>Blocked <strong>{{ queue.blocked }}</strong></span>
+        </div>
+    </section>
+
+    <section class="hero-card">
+        <p class="hero-label">Media Refresh Backlog</p>
+        <div class="hero-value">{{ deferred_refresh.pending_targets }}</div>
+        <p class="hero-copy">Refresh targets waiting for the media-server lock or a later scan.</p>
+        <div class="hero-inline-stats">
+            {% if deferred_refresh.servers|length > 0 %}
+            {% for server in deferred_refresh.servers %}
+            <span>{{ server.server }} <strong>{{ server.queued_targets }}</strong></span>
+            {% endfor %}
+            {% else %}
+            <span>None queued</span>
+            {% endif %}
+        </div>
+    </section>
+</div>

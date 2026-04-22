@@ -521,6 +521,44 @@ fn dashboard_latest_run_template_renders_polling_fragment() {
 }
 
 #[test]
+fn dashboard_summary_template_renders_polling_fragment() {
+    let template = DashboardSummaryTemplate {
+        stats: DashboardStats {
+            active_links: 12,
+            dead_links: 2,
+            total_scans: 9,
+            last_scan: Some("2026-04-22 12:00:00 UTC".to_string()),
+        },
+        queue: QueueOverview {
+            active_total: 3,
+            queued: 2,
+            downloading: 1,
+            relinking: 0,
+            blocked: 1,
+            no_result: 0,
+            failed: 0,
+            completed_unlinked: 0,
+        },
+        deferred_refresh: DeferredRefreshSummaryView {
+            pending_targets: 4,
+            servers: vec![DeferredRefreshServerView {
+                server: "plex".to_string(),
+                queued_targets: 4,
+            }],
+        },
+    };
+
+    let html = template.render().unwrap();
+    assert!(html.contains("Link Health"));
+    assert!(html.contains("Auto-Acquire Queue"));
+    assert!(html.contains("Media Refresh Backlog"));
+    assert!(html.contains("hx-get=\"/dashboard/summary\""));
+    assert!(html.contains("hx-trigger=\"every 10s\""));
+    assert!(html.contains("plex"));
+    assert!(html.contains("4"));
+}
+
+#[test]
 fn dashboard_template_renders_needs_attention_section() {
     let template = DashboardTemplate {
         stats: DashboardStats::default(),
@@ -537,6 +575,7 @@ fn dashboard_template_renders_needs_attention_section() {
 
     let html = template.render().unwrap();
     assert!(html.contains("Needs Attention"));
+    assert!(html.contains("hx-get=\"/dashboard/summary\""));
     assert!(html.contains("hx-get=\"/dashboard/needs-attention\""));
     assert!(html.contains("hx-get=\"/dashboard/latest-run\""));
     assert!(html.contains("Latest background scan failed"));

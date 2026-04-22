@@ -1012,6 +1012,43 @@ pub async fn get_dashboard_activity_feed(State(state): State<WebState>) -> impl 
     }
 }
 
+/// GET /dashboard/summary - HTMX fragment for live dashboard hero summary
+pub async fn get_dashboard_summary(State(state): State<WebState>) -> impl IntoResponse {
+    let stats = match state.database.get_web_stats().await {
+        Ok(stats) => dashboard_stats_from_web_stats(stats),
+        Err(err) => {
+            error!("Failed to get dashboard stats for summary fragment: {}", err);
+            DashboardStats::default()
+        }
+    };
+    let queue = match state.database.get_acquisition_job_counts().await {
+        Ok(counts) => queue_overview_from_counts(counts),
+        Err(err) => {
+            error!(
+                "Failed to get acquisition queue counts for summary fragment: {}",
+                err
+            );
+            QueueOverview::default()
+        }
+    };
+    let deferred_refresh = match deferred_refresh_summary(&state.config) {
+        Ok(summary) => DeferredRefreshSummaryView::from(summary),
+        Err(err) => {
+            error!(
+                "Failed to read deferred refresh queue for summary fragment: {}",
+                err
+            );
+            DeferredRefreshSummaryView::default()
+        }
+    };
+
+    DashboardSummaryTemplate {
+        stats,
+        queue,
+        deferred_refresh,
+    }
+}
+
 /// GET /dashboard/needs-attention - HTMX fragment for live operator triage
 pub async fn get_dashboard_needs_attention(State(state): State<WebState>) -> impl IntoResponse {
     let stats = match state.database.get_web_stats().await {

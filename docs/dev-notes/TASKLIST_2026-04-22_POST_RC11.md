@@ -18,7 +18,8 @@ The new center of gravity is operator confidence under live runtime conditions.
 - [x] Add `Needs Attention` triage for failed work, dead links, queue pressure, playback guard, and deferred refresh backlog
 - [x] Surface overdue daemon cadence in dashboard triage and in `Status`
 - [x] Make the `Needs Attention` panel itself HTMX-live so the highest-signal dashboard section no longer goes stale after first render
-- [ ] Decide whether the next live slice should target dashboard summary cards/header badges or true daemon-origin provenance
+- [x] Make the latest run baseline and dashboard hero summary live so queue / link / refresh counters no longer require a hard reload
+- [ ] Decide whether the next live slice should target the remaining static header badges or move to true daemon-origin provenance
 
 ### 2. Keep the anime override track narrow and operator-friendly
 
