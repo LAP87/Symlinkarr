@@ -652,6 +652,7 @@ pub struct ScanTemplate {
     pub queue: QueueOverview,
     pub anime_search_overrides: Vec<AnimeSearchOverrideView>,
     pub anime_override_feedback: Option<FormFeedbackView>,
+    pub anime_override_draft: AnimeSearchOverrideDraftView,
     pub anime_override_panel_open: bool,
     pub filters: ScanHistoryFilters,
     pub default_dry_run: bool,
@@ -664,8 +665,17 @@ pub struct AnimeSearchOverrideView {
     pub preferred_title: Option<String>,
     pub extra_hints: Vec<String>,
     pub note: Option<String>,
+    pub local_target_label: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AnimeSearchOverrideDraftView {
+    pub media_id: String,
+    pub preferred_title: String,
+    pub extra_hints: String,
+    pub note: String,
 }
 
 impl From<AnimeSearchOverrideRecord> for AnimeSearchOverrideView {
@@ -675,6 +685,7 @@ impl From<AnimeSearchOverrideRecord> for AnimeSearchOverrideView {
             preferred_title: value.preferred_title,
             extra_hints: value.extra_hints,
             note: value.note,
+            local_target_label: None,
             created_at: value.created_at,
             updated_at: value.updated_at,
         }

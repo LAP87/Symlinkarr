@@ -157,20 +157,20 @@
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                     <div class="form-group">
                         <label class="form-label" for="anime-override-media-id">Media ID</label>
-                        <input id="anime-override-media-id" name="media_id" type="text" class="form-control field-max-md mono" placeholder="tvdb-12345">
+                        <input id="anime-override-media-id" name="media_id" type="text" class="form-control field-max-md mono" placeholder="tvdb-12345" value="{{ anime_override_draft.media_id }}">
                     </div>
                     <div class="form-group">
                         <label class="form-label" for="anime-override-preferred-title">Preferred title (optional)</label>
-                        <input id="anime-override-preferred-title" name="preferred_title" type="text" class="form-control field-max-lg" placeholder="e.g. Yofukashi no Uta">
+                        <input id="anime-override-preferred-title" name="preferred_title" type="text" class="form-control field-max-lg" placeholder="e.g. Yofukashi no Uta" value="{{ anime_override_draft.preferred_title }}">
                         <small class="text-muted">If set, this becomes the primary anime query title before alternate titles or anime-lists hints.</small>
                     </div>
                     <div class="form-group">
                         <label class="form-label" for="anime-override-extra-hints">Extra hints (optional)</label>
-                        <textarea id="anime-override-extra-hints" name="extra_hints" rows="4" class="form-control mono" placeholder="One hint per line&#10;Call of the Night&#10;Yofukashi no Uta 2"></textarea>
+                        <textarea id="anime-override-extra-hints" name="extra_hints" rows="4" class="form-control mono" placeholder="One hint per line&#10;Call of the Night&#10;Yofukashi no Uta 2">{{ anime_override_draft.extra_hints }}</textarea>
                     </div>
                     <div class="form-group">
                         <label class="form-label" for="anime-override-note">Operator note (optional)</label>
-                        <input id="anime-override-note" name="note" type="text" class="form-control field-max-lg" placeholder="Why this override exists">
+                        <input id="anime-override-note" name="note" type="text" class="form-control field-max-lg" placeholder="Why this override exists" value="{{ anime_override_draft.note }}">
                     </div>
                     <div class="actions">
                         <button type="submit" class="btn btn-primary">Save Anime Override</button>
@@ -216,6 +216,12 @@
                         {% when Some with (note) %}
                         <p class="text-muted mt-1">{{ note }}</p>
                         {% when None %}{% endmatch %}
+                        {% match anime_override.local_target_label %}
+                        {% when Some with (target_label) %}
+                        <p class="text-muted mt-1">Linked to <strong>{{ target_label }}</strong>.</p>
+                        {% when None %}
+                        <p class="text-muted mt-1"><span class="badge badge-warning">Missing locally</span> This media id is not currently present in a tagged anime library folder.</p>
+                        {% endmatch %}
                         <p class="text-muted mt-1">Created {{ anime_override.created_at }} · Updated {{ anime_override.updated_at }}</p>
                     </div>
                     {% endfor %}

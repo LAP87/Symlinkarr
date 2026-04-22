@@ -226,6 +226,7 @@ fn sample_anime_search_overrides() -> Vec<AnimeSearchOverrideView> {
             "Yofukashi no Uta 2".to_string(),
         ],
         note: Some("Prefer scene title".to_string()),
+        local_target_label: Some("Call of the Night in Anime".to_string()),
         created_at: "2026-04-21 11:00:00 UTC".to_string(),
         updated_at: "2026-04-22 12:00:00 UTC".to_string(),
     }]
@@ -445,6 +446,7 @@ fn scan_template_renders_top_skip_reason_summary() {
             success: true,
             message: "Saved anime override.".to_string(),
         }),
+        anime_override_draft: AnimeSearchOverrideDraftView::default(),
         anime_override_panel_open: true,
         filters: ScanHistoryFilters::default(),
         default_dry_run: false,
@@ -459,6 +461,8 @@ fn scan_template_renders_top_skip_reason_summary() {
     assert!(html.contains("Anime Search Overrides"));
     assert!(html.contains("tvdb-12345"));
     assert!(html.contains("Yofukashi no Uta"));
+    assert!(html.contains("Linked to"));
+    assert!(html.contains("Call of the Night in Anime"));
 }
 
 #[test]

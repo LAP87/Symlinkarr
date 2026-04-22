@@ -715,6 +715,10 @@ async fn scan_anime_override_post_rejects_unknown_local_media_id() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body = render_body(response).await;
     assert!(body.contains("does not match any tagged folder in your configured anime libraries"));
+    assert!(body.contains("value=\"tvdb-12345\""));
+    assert!(body.contains("Yofukashi no Uta"));
+    assert!(body.contains("Call of the Night"));
+    assert!(body.contains("Prefer scene title"));
     assert!(ctx
         .state
         .database
@@ -758,6 +762,28 @@ async fn scan_anime_override_delete_removes_rule() {
         .await
         .unwrap()
         .is_none());
+}
+
+#[tokio::test]
+async fn scan_page_marks_saved_anime_override_missing_when_local_folder_is_gone() {
+    let ctx = test_context().await;
+    ctx.state
+        .database
+        .upsert_anime_search_override(&crate::db::AnimeSearchOverrideSeed {
+            media_id: "tvdb-12345".to_string(),
+            preferred_title: Some("Yofukashi no Uta".to_string()),
+            extra_hints: vec!["Call of the Night".to_string()],
+            note: None,
+        })
+        .await
+        .unwrap();
+
+    let body =
+        render_body(get_scan(State(ctx.state.clone()), Query(ScanHistoryQuery::default())).await)
+            .await;
+
+    assert!(body.contains("Missing locally"));
+    assert!(body.contains("not currently present in a tagged anime library folder"));
 }
 
 #[tokio::test]

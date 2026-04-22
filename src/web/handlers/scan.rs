@@ -171,24 +171,43 @@ fn find_local_anime_override_target(
     config: &crate::config::Config,
     media_id: &str,
 ) -> Option<String> {
-    let scanner = crate::library_scanner::LibraryScanner::new();
+    local_anime_target_labels(config).remove(media_id)
+}
 
-    config
+fn local_anime_target_labels(
+    config: &crate::config::Config,
+) -> std::collections::HashMap<String, String> {
+    let scanner = crate::library_scanner::LibraryScanner::new();
+    let mut targets = std::collections::HashMap::new();
+
+    for library in config
         .libraries
         .iter()
         .filter(|library| library.content_type == Some(crate::config::ContentType::Anime))
-        .find_map(|library| {
-            scanner
-                .scan_library(library)
-                .into_iter()
-                .find(|item| item.id.to_string() == media_id)
-                .map(|item| format!("{} in {}", item.title, item.library_name))
-        })
+    {
+        for item in scanner.scan_library(library) {
+            targets
+                .entry(item.id.to_string())
+                .or_insert_with(|| format!("{} in {}", item.title, item.library_name));
+        }
+    }
+
+    targets
 }
 
-async fn load_anime_override_views(state: &WebState) -> Vec<AnimeSearchOverrideView> {
+async fn load_anime_override_views(
+    state: &WebState,
+    local_targets: &std::collections::HashMap<String, String>,
+) -> Vec<AnimeSearchOverrideView> {
     match state.database.list_anime_search_overrides().await {
-        Ok(entries) => entries.into_iter().map(Into::into).collect(),
+        Ok(entries) => entries
+            .into_iter()
+            .map(|entry| {
+                let mut view = AnimeSearchOverrideView::from(entry);
+                view.local_target_label = local_targets.get(&view.media_id).cloned();
+                view
+            })
+            .collect(),
         Err(err) => {
             error!("Failed to load anime search overrides: {}", err);
             Vec::new()
@@ -200,6 +219,7 @@ async fn build_scan_template(
     state: &WebState,
     query: &ScanHistoryQuery,
     anime_override_feedback: Option<FormFeedbackView>,
+    anime_override_draft: Option<AnimeSearchOverrideDraftView>,
 ) -> ScanTemplate {
     let mut scan_query = query.clone();
     if scan_query.limit.is_none() {
@@ -220,7 +240,8 @@ async fn build_scan_template(
             QueueOverview::default()
         }
     };
-    let anime_search_overrides = load_anime_override_views(state).await;
+    let local_anime_targets = local_anime_target_labels(&state.config);
+    let anime_search_overrides = load_anime_override_views(state, &local_anime_targets).await;
     let anime_override_panel_open =
         anime_override_feedback.is_some() || !anime_search_overrides.is_empty();
 
@@ -233,6 +254,7 @@ async fn build_scan_template(
         queue,
         anime_search_overrides,
         anime_override_feedback,
+        anime_override_draft: anime_override_draft.unwrap_or_default(),
         anime_override_panel_open,
         filters,
         default_dry_run: state.config.symlink.dry_run,
@@ -246,7 +268,7 @@ pub(crate) async fn get_scan(
 ) -> impl IntoResponse {
     info!("Serving scan page");
 
-    let template = build_scan_template(&state, &query, None).await;
+    let template = build_scan_template(&state, &query, None, None).await;
     Html(template.render().unwrap_or_else(|e| e.to_string())).into_response()
 }
 
@@ -329,6 +351,12 @@ pub(crate) async fn post_scan_anime_override(
     let extra_hints = parse_anime_override_hints(form.extra_hints.as_deref());
     let note = normalize_optional_form_text(form.note.as_deref());
     let local_anime_target = find_local_anime_override_target(&state.config, &media_id);
+    let failure_draft = AnimeSearchOverrideDraftView {
+        media_id: media_id.clone(),
+        preferred_title: preferred_title.clone().unwrap_or_default(),
+        extra_hints: extra_hints.join("\n"),
+        note: note.clone().unwrap_or_default(),
+    };
 
     let (status, feedback) = if !has_anime_library(&state.config) {
         (
@@ -396,6 +424,11 @@ pub(crate) async fn post_scan_anime_override(
             ),
         }
     };
+    let draft = if feedback.success {
+        None
+    } else {
+        Some(failure_draft)
+    };
 
     let template = build_scan_template(
         &state,
@@ -404,6 +437,7 @@ pub(crate) async fn post_scan_anime_override(
             ..ScanHistoryQuery::default()
         },
         Some(feedback),
+        draft,
     )
     .await;
     (
@@ -468,6 +502,7 @@ pub(crate) async fn post_scan_anime_override_delete(
             ..ScanHistoryQuery::default()
         },
         Some(feedback),
+        None,
     )
     .await;
     (
