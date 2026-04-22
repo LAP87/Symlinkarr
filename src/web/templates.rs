@@ -598,12 +598,22 @@ pub struct StatusTemplate {
     pub queue: QueueOverview,
     pub checks: std::collections::BTreeMap<String, HealthCheck>,
     pub deferred_refresh: DeferredRefreshSummaryView,
+    pub streaming_guard: Option<StreamingGuardView>,
 }
 
 pub struct HealthCheck {
     pub service: String,
     pub status: String,
     pub message: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct StreamingGuardView {
+    pub status_label: String,
+    pub status_badge_class: &'static str,
+    pub active_streams: usize,
+    pub protected_paths: Vec<String>,
+    pub error_message: Option<String>,
 }
 
 // ─── Scan ───────────────────────────────────────────────────────────

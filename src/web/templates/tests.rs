@@ -474,6 +474,16 @@ fn status_template_renders_recent_queue_jobs() {
         },
         checks: std::collections::BTreeMap::new(),
         deferred_refresh: DeferredRefreshSummaryView::default(),
+        streaming_guard: Some(StreamingGuardView {
+            status_label: "Protecting".to_string(),
+            status_badge_class: "badge-warning",
+            active_streams: 2,
+            protected_paths: vec![
+                "/library/anime/Show A/Season 01/S01E01.mkv".to_string(),
+                "/library/anime/Show B/Season 01/S01E02.mkv".to_string(),
+            ],
+            error_message: None,
+        }),
     };
 
     let html = template.render().unwrap();
@@ -481,6 +491,8 @@ fn status_template_renders_recent_queue_jobs() {
     assert!(html.contains("Queued Anime"));
     assert!(html.contains("Blocked Anime"));
     assert!(html.contains("Needs Relink"));
+    assert!(html.contains("Active playback protection"));
+    assert!(html.contains("2 active stream(s) detected"));
 }
 
 #[test]

@@ -30,6 +30,7 @@ use scan::scan_run_views;
 use scan::ScanHistoryQuery;
 pub(crate) use scan::{get_scan, get_scan_history, get_scan_run_detail, post_scan_trigger};
 
+use crate::api::tautulli::TautulliClient;
 use crate::backup::BackupManager;
 use crate::cleanup_audit;
 use crate::commands::backup::ensure_backup_restore_runtime_healthy;
@@ -284,6 +285,38 @@ async fn recent_queue_jobs(state: &WebState, limit: usize) -> Vec<QueueJobView> 
             error!("Failed to list recent acquisition jobs: {}", err);
             Vec::new()
         }
+    }
+}
+
+async fn streaming_guard_view(state: &WebState) -> Option<StreamingGuardView> {
+    if !state.config.has_tautulli() {
+        return None;
+    }
+
+    let tautulli = TautulliClient::new(&state.config.tautulli);
+    match tautulli.get_active_file_paths().await {
+        Ok(paths) => Some(StreamingGuardView {
+            status_label: if paths.is_empty() {
+                "Idle".to_string()
+            } else {
+                "Protecting".to_string()
+            },
+            status_badge_class: if paths.is_empty() {
+                "badge-success"
+            } else {
+                "badge-warning"
+            },
+            active_streams: paths.len(),
+            protected_paths: paths.into_iter().take(6).collect(),
+            error_message: None,
+        }),
+        Err(err) => Some(StreamingGuardView {
+            status_label: "Unavailable".to_string(),
+            status_badge_class: "badge-danger",
+            active_streams: 0,
+            protected_paths: Vec::new(),
+            error_message: Some(err.to_string()),
+        }),
     }
 }
 
@@ -847,6 +880,7 @@ pub async fn get_status(State(state): State<WebState>) -> impl IntoResponse {
     let deferred_refresh = deferred_refresh_summary(&state.config)
         .map(DeferredRefreshSummaryView::from)
         .unwrap_or_default();
+    let streaming_guard = streaming_guard_view(&state).await;
     let recent_queue_jobs = recent_queue_jobs(&state, RECENT_QUEUE_JOB_LIMIT).await;
     let tracked_dead_links = match state.database.get_dead_links_limited(8).await {
         Ok(links) => links,
@@ -864,6 +898,7 @@ pub async fn get_status(State(state): State<WebState>) -> impl IntoResponse {
         queue,
         checks,
         deferred_refresh,
+        streaming_guard,
     };
     Html(template.render().unwrap_or_else(|e| e.to_string())).into_response()
 }
