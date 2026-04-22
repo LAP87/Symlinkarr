@@ -24,6 +24,12 @@
         <span class="badge {% if stats.dead_links > 0 %}badge-danger{% else %}badge-success{% endif %}">
             Dead {{ stats.dead_links }}
         </span>
+        {% match streaming_guard %}
+        {% when Some with (guard) %}
+        <span class="badge {{ guard.status_badge_class }}">
+            Streams {{ guard.active_streams }}
+        </span>
+        {% when None %}{% endmatch %}
         {% if deferred_refresh.pending_targets > 0 %}
         <span class="badge badge-warning">
             Deferred refresh {{ deferred_refresh.pending_targets }}
@@ -114,6 +120,52 @@
         <p class="text-muted mt-2">{{ daemon_schedule.detail }}</p>
     </div>
 </details>
+
+{% match streaming_guard %}
+{% when Some with (guard) %}
+<details class="card disclosure-card" {% if guard.active_streams > 0 %}open{% endif %}>
+    <summary class="disclosure-card__summary">
+        <div class="disclosure-card__copy">
+            <span class="disclosure-card__eyebrow">Streaming guard</span>
+            <h2 class="disclosure-card__title">Current playback protection</h2>
+            <p class="disclosure-card__hint">Open when you need to confirm whether active playback is the reason repair or cleanup-apply work is being deferred right now.</p>
+        </div>
+        <div class="disclosure-card__meta">
+            <span class="badge {{ guard.status_badge_class }}">{{ guard.status_label }}</span>
+            <span class="badge badge-info">{{ guard.active_streams }} active</span>
+            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
+        </div>
+    </summary>
+    <div class="disclosure-card__body">
+        {% match guard.error_message %}
+        {% when Some with (message) %}
+        <div class="alert alert-error">
+            <strong>Tautulli could not be queried.</strong>
+            {{ message }}
+        </div>
+        {% when None %}
+        {% if guard.active_streams > 0 %}
+        <div class="alert alert-warning">
+            <strong>{{ guard.active_streams }} active stream(s) detected.</strong>
+            Repair and cleanup apply will intentionally protect overlapping paths until playback stops.
+        </div>
+        {% if guard.protected_paths|length > 0 %}
+        <div class="stack-list">
+            {% for path in guard.protected_paths %}
+            <code class="mono">{{ path }}</code>
+            {% endfor %}
+        </div>
+        {% endif %}
+        {% else %}
+        <div class="alert alert-success">
+            <strong>No active streams detected.</strong>
+            Playback is not the reason repair or cleanup apply would be deferred right now.
+        </div>
+        {% endif %}
+        {% endmatch %}
+    </div>
+</details>
+{% when None %}{% endmatch %}
 
 <div class="split-grid">
     <section class="card">

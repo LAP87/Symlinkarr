@@ -917,6 +917,7 @@ pub async fn get_dashboard(State(state): State<WebState>) -> impl IntoResponse {
             DeferredRefreshSummaryView::default()
         }
     };
+    let streaming_guard = streaming_guard_view(&state).await;
     let recent_queue_jobs = recent_queue_jobs(&state, RECENT_QUEUE_JOB_LIMIT).await;
     let needs_attention = dashboard_needs_attention(
         &stats,
@@ -936,6 +937,7 @@ pub async fn get_dashboard(State(state): State<WebState>) -> impl IntoResponse {
             &state.config,
             latest_run.as_ref().map(|run| run.started_at.as_str()),
         ),
+        streaming_guard,
         recent_queue_jobs,
         latest_run,
         recent_runs,

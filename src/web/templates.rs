@@ -513,6 +513,7 @@ pub struct DashboardTemplate {
     pub needs_attention: DashboardNeedsAttentionView,
     pub activity_feed: DashboardActivityFeedView,
     pub daemon_schedule: DaemonScheduleView,
+    pub streaming_guard: Option<StreamingGuardView>,
     pub recent_queue_jobs: Vec<QueueJobView>,
     pub latest_run: Option<ScanRunView>,
     pub recent_runs: Vec<ScanRunView>,

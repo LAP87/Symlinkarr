@@ -231,6 +231,19 @@ fn sample_anime_search_overrides() -> Vec<AnimeSearchOverrideView> {
     }]
 }
 
+fn sample_streaming_guard_view() -> StreamingGuardView {
+    StreamingGuardView {
+        status_label: "Protecting".to_string(),
+        status_badge_class: "badge-warning",
+        active_streams: 2,
+        protected_paths: vec![
+            "/library/anime/Show A/Season 01/S01E01.mkv".to_string(),
+            "/library/anime/Show B/Season 01/S01E02.mkv".to_string(),
+        ],
+        error_message: None,
+    }
+}
+
 fn sample_config() -> Config {
     Config {
         libraries: vec![LibraryConfig {
@@ -473,6 +486,7 @@ fn dashboard_template_renders_needs_attention_section() {
         needs_attention: sample_needs_attention_view(),
         activity_feed: sample_activity_feed_view(),
         daemon_schedule: sample_daemon_schedule_view(),
+        streaming_guard: Some(sample_streaming_guard_view()),
         recent_queue_jobs: sample_queue_jobs(),
         latest_run: Some(sample_scan_run_view()),
         recent_runs: vec![sample_scan_run_view()],
@@ -493,6 +507,9 @@ fn dashboard_template_renders_needs_attention_section() {
     assert!(html.contains("Blocked Anime"));
     assert!(html.contains("Configured schedule and next due estimate"));
     assert!(html.contains("Next due estimate"));
+    assert!(html.contains("Current playback protection"));
+    assert!(html.contains("Streams 2"));
+    assert!(!html.contains("Playback is not the reason"));
 }
 
 #[test]
@@ -515,16 +532,7 @@ fn status_template_renders_recent_queue_jobs() {
         daemon_schedule: sample_daemon_schedule_view(),
         checks: std::collections::BTreeMap::new(),
         deferred_refresh: DeferredRefreshSummaryView::default(),
-        streaming_guard: Some(StreamingGuardView {
-            status_label: "Protecting".to_string(),
-            status_badge_class: "badge-warning",
-            active_streams: 2,
-            protected_paths: vec![
-                "/library/anime/Show A/Season 01/S01E01.mkv".to_string(),
-                "/library/anime/Show B/Season 01/S01E02.mkv".to_string(),
-            ],
-            error_message: None,
-        }),
+        streaming_guard: Some(sample_streaming_guard_view()),
     };
 
     let html = template.render().unwrap();
