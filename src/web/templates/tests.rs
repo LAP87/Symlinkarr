@@ -559,6 +559,35 @@ fn status_template_renders_recent_queue_jobs() {
 }
 
 #[test]
+fn status_template_surfaces_overdue_daemon_warning() {
+    let template = StatusTemplate {
+        stats: DashboardStats::default(),
+        recent_links: Vec::new(),
+        tracked_dead_links: Vec::new(),
+        recent_queue_jobs: Vec::new(),
+        queue: QueueOverview::default(),
+        daemon_schedule: DaemonScheduleView {
+            status_label: "Due".to_string(),
+            status_badge_class: "badge-warning",
+            interval_label: "Every 60 min".to_string(),
+            search_missing_label: "Enabled".to_string(),
+            vacuum_label: "Daily @ 03:00 local".to_string(),
+            last_run_label: "2026-04-22 08:00:00 UTC".to_string(),
+            next_due_label: "Due now (3h late)".to_string(),
+            detail: "This is a config-based estimate only.".to_string(),
+        },
+        checks: std::collections::BTreeMap::new(),
+        deferred_refresh: DeferredRefreshSummaryView::default(),
+        streaming_guard: None,
+    };
+
+    let html = template.render().unwrap();
+    assert!(html.contains("Configured scan cadence looks overdue."));
+    assert!(html.contains("Due now (3h late)"));
+    assert!(html.contains("Verify the daemon/service is still running"));
+}
+
+#[test]
 fn config_template_renders_topology_and_defaults_disclosures() {
     let template = ConfigTemplate {
         config: sample_config(),

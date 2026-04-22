@@ -30,6 +30,15 @@
     </div>
 </div>
 
+{% if daemon_schedule.status_label == "Due" %}
+<div class="alert alert-warning">
+    <strong>Configured scan cadence looks overdue.</strong>
+    Last recorded scan: {{ daemon_schedule.last_run_label }}.
+    {{ daemon_schedule.next_due_label }}.
+    Verify the daemon/service is still running before assuming scans are happening on schedule.
+</div>
+{% endif %}
+
 <div class="split-grid">
     <section class="card">
         <div class="section-head">
