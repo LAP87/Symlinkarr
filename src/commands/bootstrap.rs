@@ -157,7 +157,10 @@ mod tests {
 
         run_bootstrap(Some(&target), false).unwrap();
 
-        assert_eq!(std::fs::read_to_string(target.join("config.yaml")).unwrap(), STARTER_CONFIG);
+        assert_eq!(
+            std::fs::read_to_string(target.join("config.yaml")).unwrap(),
+            STARTER_CONFIG
+        );
         assert!(target.join("backups").is_dir());
         assert!(!target.join("symlinkarr.db").exists());
     }

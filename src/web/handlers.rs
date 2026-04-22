@@ -526,7 +526,10 @@ fn dashboard_needs_attention(
         ));
     }
 
-    if let Some(outcome) = inputs.last_cleanup_outcome.filter(|outcome| !outcome.success) {
+    if let Some(outcome) = inputs
+        .last_cleanup_outcome
+        .filter(|outcome| !outcome.success)
+    {
         let link = outcome
             .report_path
             .as_ref()
@@ -550,7 +553,10 @@ fn dashboard_needs_attention(
         ));
     }
 
-    if let Some(outcome) = inputs.last_repair_outcome.filter(|outcome| !outcome.success) {
+    if let Some(outcome) = inputs
+        .last_repair_outcome
+        .filter(|outcome| !outcome.success)
+    {
         items.push(needs_attention_item(
             "High",
             "badge-danger",
@@ -949,12 +955,8 @@ pub async fn get_dashboard(State(state): State<WebState>) -> impl IntoResponse {
         last_repair_outcome: last_repair_outcome.as_ref(),
         streaming_guard: streaming_guard.as_ref(),
     };
-    let needs_attention = dashboard_needs_attention(
-        &stats,
-        &queue,
-        &deferred_refresh,
-        &attention_inputs,
-    );
+    let needs_attention =
+        dashboard_needs_attention(&stats, &queue, &deferred_refresh, &attention_inputs);
 
     let template = DashboardTemplate {
         stats,

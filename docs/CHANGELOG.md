@@ -2,7 +2,7 @@
 
 ## Release Target
 
-- package version for this push: `1.0.0-rc.6`
+- package version for this push: `1.0.0-rc.11`
 - posture: `release-candidate with downloadable binary artifacts`
 - intended use: local-first host or Docker installs, with Windows 11 users running through WSL2 or a Linux container
 
@@ -70,6 +70,59 @@
 - `cargo clippy --all-targets --all-features -- -D warnings`
   - result: passed locally
 - `cargo audit`
+  - result: passed locally
+- `cargo build --release --locked`
+  - result: passed locally
+
+## 2026-04-15 through 2026-04-22 - RC.7-rc.11: Dashboard Observability, Streaming Guard, Anime Override, and Result UX
+
+### Code Changes
+
+- added a polling HTMX activity feed to the dashboard that surfaces active scan/cleanup/repair jobs, recent outcomes, and a "needs attention" layer for failed work, dead links, queue pressure, and deferred refresh backlog.
+  - files: `src/web/mod.rs`, `src/web/handlers.rs`, `src/web/templates.rs`, `src/web/ui/dashboard.html`, `src/web/static/style.css`
+- surfaced auto-acquire queue pressure, recent queue samples, and relink-pending work directly in dashboard and status pages so operators can read queue health without bouncing to separate pages.
+  - files: `src/web/handlers.rs`, `src/web/templates.rs`, `src/web/ui/dashboard.html`, `src/web/ui/status.html`
+- integrated Tautulli-based streaming guard into repair, cleanup prune, anime remediation apply, and dashboard/status so destructive mutations are blocked when a candidate symlink overlaps an active stream, and the protection reason is surfaced to operators.
+  - files: `src/repair.rs`, `src/cleanup_audit.rs`, `src/commands/cleanup.rs`, `src/web/handlers.rs`, `src/web/templates.rs`, `src/web/ui/dashboard.html`, `src/web/ui/status.html`, `src/web/ui/prune_preview.html`, `src/web/ui/cleanup_result.html`
+- surfaced configured daemon cadence, latest recorded scan timestamp, and next-due estimate on dashboard and status so operators can read scheduling intent without leaving the main UI.
+  - files: `src/web/handlers.rs`, `src/web/templates.rs`, `src/web/ui/dashboard.html`, `src/web/ui/status.html`
+- tightened result/transition pages (backup, cleanup, repair, scan, discover, anime remediation) so they always explain what happened, why it matters, and what the operator should do next, with relevant wiki links.
+  - files: `src/web/templates.rs`, `src/web/ui/backup_result.html`, `src/web/ui/cleanup_result.html`, `src/web/ui/repair_result.html`, `src/web/ui/scan_result.html`, `src/web/ui/discover_content.html`, `src/web/ui/anime_remediation_result.html`
+- split the wiki-style feature guide into focused operator-task pages and retargeted web help links to those narrower destinations, reducing context switching between UI and scattered docs.
+  - files: `docs/wiki/*.md`, `src/web/ui/*.html`, `src/web/templates.rs`
+- added lightweight disclosure panels across dashboard, scan, status, cleanup, and advanced system pages so secondary guidance stays available on demand without front-loading every view.
+  - files: `src/web/templates.rs`, `src/web/ui/*.html`, `src/web/static/style.css`, `src/web/static/ui-preferences.js`
+- added a local anime override store for auto-acquire search titles and extra query hints, with validation against real tagged folders, sticky draft forms, and a scan-page operator surface for saving/deleting overrides.
+  - files: `src/db/anime_overrides.rs`, `src/auto_acquire/anime.rs`, `src/web/handlers.rs`, `src/web/templates.rs`, `src/web/ui/scan.html`, `src/db.rs`, `src/web/api/mod.rs`, `docs/API_SCHEMA.md`
+- hardened the anime override operator flow with clearer precedence rules (local overrides before anime-lists hints), explicit scope, and auditability in the UI.
+  - files: `src/auto_acquire/anime.rs`, `src/db/anime_overrides.rs`, `src/web/handlers.rs`, `src/web/templates.rs`
+- completed the structural file-split pass for the largest remaining hotspots:
+  - extracted `cleanup_audit` tests into `src/cleanup_audit/tests.rs`, prune/quarantine helpers into `src/cleanup_audit/prune.rs`, and classification helpers into `src/cleanup_audit/classify.rs`.
+  - extracted `config` tests into `src/config/tests.rs`, defaults into `src/config/defaults.rs`, load/resolve into `src/config/load.rs`, and validation into `src/config/validation.rs`.
+  - split `web/api/mod.rs` into `src/web/api/scan.rs`, `src/web/api/cleanup.rs`, `src/web/api/misc.rs`, and moved tests into `src/web/api/tests.rs`.
+  - split `web/handlers.rs` into `src/web/handlers/scan.rs`, `src/web/handlers/cleanup.rs`, `src/web/handlers/admin.rs`, and moved tests into `src/web/handlers/tests.rs`.
+  - extracted `auto_acquire` tests into `src/auto_acquire/tests.rs`, queue persistence into `src/auto_acquire/queue.rs`, DMM lookup into `src/auto_acquire/dmm.rs`, and anime scoring into `src/auto_acquire/anime.rs`.
+  - extracted `repair` tests into `src/repair/tests.rs`, scoring helpers into `src/repair/scoring.rs`, TRaSH parsing into `src/repair/trash.rs`, and drift/safety helpers into `src/repair/drift.rs`.
+  - extracted `backup` tests into `src/backup/tests.rs`, restore validation into `src/backup/restore.rs`, and manifest helpers into `src/backup/manifest.rs`.
+  - extracted `commands/report` tests into `src/commands/report/tests.rs`, anime duplicate helpers into `src/commands/report/anime.rs`, and path compare into `src/commands/report/path_compare.rs`.
+  - extracted `matcher` tests into `src/matcher/tests.rs`, metadata/cache helpers into `src/matcher/metadata.rs`, and scoring/prefilter into `src/matcher/scoring.rs`.
+  - extracted `commands/cleanup` tests into `src/commands/cleanup/tests.rs` and anime remediation helpers into `src/commands/cleanup/anime.rs`.
+  - extracted `web/mod.rs` tests into `src/web/tests.rs` and auth/session helpers into `src/web/auth.rs`.
+  - extracted `linker` tests into `src/linker/tests.rs` and naming helpers into `src/linker/naming.rs`.
+  - extracted `media_servers/mod.rs` tests into `src/media_servers/tests.rs` and deferred refresh helpers into `src/media_servers/deferred.rs`.
+  - extracted `web/templates.rs` tests into `src/web/templates/tests.rs` and skip-reason presenters into `src/web/templates/skip_reasons.rs`.
+  - extracted `commands/scan` tests into `src/commands/scan/tests.rs` and telemetry helpers into `src/commands/scan/telemetry.rs`.
+  - extracted `source_scanner` tests into `src/source_scanner/tests.rs`.
+- expanded test quality by replacing string-mirroring tests with assertions against production formatting helpers, adding standalone restore wrapper tests, bootstrap command tests, startup auto-restore selection/guard tests, and no-config web route contract tests.
+  - files: `src/commands/scan/tests.rs`, `src/backup/tests.rs`, `src/commands/bootstrap.rs`, `src/main.rs`, `src/web/tests.rs`
+
+### Validation
+
+- `cargo test -q`
+  - result: `700 passed; 0 failed; 1 ignored`
+- `cargo clippy --all-targets --all-features -- -D warnings`
+  - result: passed locally
+- `cargo fmt --all -- --check`
   - result: passed locally
 - `cargo build --release --locked`
   - result: passed locally
@@ -983,23 +1036,5 @@ Accounts with large RD libraries (10k+ torrents) triggered cascading `429 Too Ma
   - `backups/cleanup-reports/symlinkarr-cleanup-anime-threshold-v2.json`
 - pre-change safety backup:
   - `backups/backup-20260224-185003.json`
-# 2026-04-02
 
-## Media-Server Hardening
-
-- Emby and Jellyfin invalidation now support a guarded `fallback_to_library_roots_when_capped` path. When a targeted invalidation storm would exceed the configured cap and abort entirely, Symlinkarr can fall back to a much smaller set of library-root invalidations instead of leaving the media server stale.
-- post-link scan refresh now goes through the same affected-path invalidation flow as cleanup and repair, so Plex/Emby/Jellyfin all share the same cap/fallback semantics after mutations.
-- concurrent Symlinkarr mutation runs now serialize media-server refreshes behind a lock. Later runs surface `deferred_due_to_lock` in scan history/API/UI instead of issuing overlapping refresh storms.
-
-## Web Remediation
-
-- the anime remediation page is no longer read-only. Web operators can now build a saved guarded remediation plan and apply that exact plan from the browser using the same report/token workflow as the CLI and JSON API.
-- web remediation apply results now surface the same post-mutation media-server invalidation summary as the CLI path.
-
-### Verification
-
-- `cargo test -q`
-- `cargo clippy --all-targets --all-features -- -D warnings`
-- `symlinkarr config validate --output json`
-- `symlinkarr status --health --output json`
-- `symlinkarr scan --library Anime`
+---

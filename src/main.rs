@@ -1046,7 +1046,9 @@ mod tests {
             backup_dir,
             &format!("{name}.config.yaml"),
             config_contents,
-            backup_dir.join("legacy").join(format!("{name}.config.yaml")),
+            backup_dir
+                .join("legacy")
+                .join(format!("{name}.config.yaml")),
         );
         let secret_snapshot = write_managed_file_artifact(
             backup_dir,
@@ -1054,11 +1056,8 @@ mod tests {
             secret_contents,
             backup_dir.join("legacy").join(format!("{name}.secret")),
         );
-        let database_snapshot = write_database_artifact(
-            backup_dir,
-            &format!("{name}.sqlite3"),
-            db_contents,
-        );
+        let database_snapshot =
+            write_database_artifact(backup_dir, &format!("{name}.sqlite3"), db_contents);
         let manifest = backup::BackupManifest {
             version: 1,
             timestamp,
@@ -1126,7 +1125,11 @@ mod tests {
                 .unwrap(),
             "scheduled-db"
         );
-        assert!(!config_path.parent().unwrap().join("data/safety.db").exists());
+        assert!(!config_path
+            .parent()
+            .unwrap()
+            .join("data/safety.db")
+            .exists());
     }
 
     #[tokio::test]
@@ -1214,8 +1217,16 @@ mod tests {
             std::fs::read_to_string(&config_path).unwrap(),
             "db_path: ./data/existing.db\n"
         );
-        assert!(!config_path.parent().unwrap().join("data/restored.db").exists());
-        assert!(!config_path.parent().unwrap().join("secrets/restored-token").exists());
+        assert!(!config_path
+            .parent()
+            .unwrap()
+            .join("data/restored.db")
+            .exists());
+        assert!(!config_path
+            .parent()
+            .unwrap()
+            .join("secrets/restored-token")
+            .exists());
     }
 
     #[tokio::test]

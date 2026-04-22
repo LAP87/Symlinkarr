@@ -1,7 +1,7 @@
 use anyhow::Result;
 use sqlx::Row;
 
-use super::{Database, AnimeSearchOverrideRecord, AnimeSearchOverrideSeed};
+use super::{AnimeSearchOverrideRecord, AnimeSearchOverrideSeed, Database};
 
 impl Database {
     pub async fn list_anime_search_overrides(&self) -> Result<Vec<AnimeSearchOverrideRecord>> {
@@ -19,7 +19,9 @@ impl Database {
         .fetch_all(&self.pool)
         .await?;
 
-        rows.into_iter().map(map_anime_search_override_row).collect()
+        rows.into_iter()
+            .map(map_anime_search_override_row)
+            .collect()
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -45,10 +47,7 @@ impl Database {
         row.map(map_anime_search_override_row).transpose()
     }
 
-    pub async fn upsert_anime_search_override(
-        &self,
-        seed: &AnimeSearchOverrideSeed,
-    ) -> Result<()> {
+    pub async fn upsert_anime_search_override(&self, seed: &AnimeSearchOverrideSeed) -> Result<()> {
         let preferred_title = normalize_optional_text(seed.preferred_title.as_deref());
         let note = normalize_optional_text(seed.note.as_deref());
         let extra_hints_json = serde_json::to_string(&seed.extra_hints)?;
@@ -86,7 +85,9 @@ impl Database {
     }
 }
 
-fn map_anime_search_override_row(row: sqlx::sqlite::SqliteRow) -> Result<AnimeSearchOverrideRecord> {
+fn map_anime_search_override_row(
+    row: sqlx::sqlite::SqliteRow,
+) -> Result<AnimeSearchOverrideRecord> {
     let extra_hints_json: String = row.get("extra_hints_json");
     Ok(AnimeSearchOverrideRecord {
         media_id: row.get("media_id"),

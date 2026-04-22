@@ -342,7 +342,9 @@ pub(crate) async fn post_scan_anime_override(
     State(state): State<WebState>,
     Form(form): Form<AnimeSearchOverrideForm>,
 ) -> impl IntoResponse {
-    if let Some(response) = require_browser_csrf_token(&state, &form.csrf_token, "/scan/anime-overrides") {
+    if let Some(response) =
+        require_browser_csrf_token(&state, &form.csrf_token, "/scan/anime-overrides")
+    {
         return response;
     }
 
@@ -363,7 +365,8 @@ pub(crate) async fn post_scan_anime_override(
             StatusCode::BAD_REQUEST,
             FormFeedbackView {
                 success: false,
-                message: "Anime override requires at least one configured anime library.".to_string(),
+                message: "Anime override requires at least one configured anime library."
+                    .to_string(),
             },
         )
     } else if !valid_anime_override_media_id(&media_id) {
@@ -371,7 +374,9 @@ pub(crate) async fn post_scan_anime_override(
             StatusCode::BAD_REQUEST,
             FormFeedbackView {
                 success: false,
-                message: "Media ID must use a tagged anime folder id like tvdb-12345 or tmdb-67890.".to_string(),
+                message:
+                    "Media ID must use a tagged anime folder id like tvdb-12345 or tmdb-67890."
+                        .to_string(),
             },
         )
     } else if preferred_title.is_none() && extra_hints.is_empty() {
@@ -452,11 +457,9 @@ pub(crate) async fn post_scan_anime_override_delete(
     State(state): State<WebState>,
     Form(form): Form<DeleteAnimeSearchOverrideForm>,
 ) -> impl IntoResponse {
-    if let Some(response) = require_browser_csrf_token(
-        &state,
-        &form.csrf_token,
-        "/scan/anime-overrides/delete",
-    ) {
+    if let Some(response) =
+        require_browser_csrf_token(&state, &form.csrf_token, "/scan/anime-overrides/delete")
+    {
         return response;
     }
 

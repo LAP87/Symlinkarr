@@ -731,8 +731,8 @@ mod tests {
             true,
             false,
         )
-            .await
-            .unwrap();
+        .await
+        .unwrap();
 
         assert!(!config_dir.exists());
     }
@@ -768,8 +768,8 @@ mod tests {
             false,
             true,
         )
-            .await
-            .unwrap();
+        .await
+        .unwrap();
 
         assert!(!config_dir.exists());
     }
