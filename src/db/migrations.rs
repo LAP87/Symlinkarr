@@ -59,6 +59,9 @@ impl Database {
     }
 
     async fn infer_legacy_schema_version(&self) -> Result<i64> {
+        if self.table_exists("daemon_heartbeat").await? {
+            return Ok(17);
+        }
         if self.table_exists("anime_search_overrides").await? {
             if self.column_exists("scan_runs", "origin").await.unwrap_or(false) {
                 return Ok(16);
@@ -145,8 +148,9 @@ impl Database {
             14 => self.migration_v14_tx(tx).await,
             15 => self.migration_v15_tx(tx).await,
             16 => self.migration_v16_tx(tx).await,
+            17 => self.migration_v17_tx(tx).await,
             _ => anyhow::bail!(
-                "Unsupported schema migration version {}. This build only knows migrations 1 through 16",
+                "Unsupported schema migration version {}. This build only knows migrations 1 through 17",
                 version
             ),
         }
@@ -565,9 +569,29 @@ impl Database {
         Ok(())
     }
 
+    async fn migration_v17_tx(&self, tx: &mut Transaction<'_, Sqlite>) -> Result<()> {
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS daemon_heartbeat (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                last_seen_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                phase TEXT NOT NULL,
+                detail TEXT
+            )",
+        )
+        .execute(&mut **tx)
+        .await?;
+
+        Ok(())
+    }
+
     #[cfg(test)]
     async fn migrate_down_one(&self, current_version: i64) -> Result<()> {
         match current_version {
+            17 => {
+                sqlx::query("DROP TABLE IF EXISTS daemon_heartbeat")
+                    .execute(&self.pool)
+                    .await?;
+            }
             16 => {
                 if self.column_exists("scan_runs", "origin").await? {
                     sqlx::query("ALTER TABLE scan_runs DROP COLUMN origin")

@@ -465,6 +465,16 @@ async fn test_latest_migration_creates_scan_run_origin_column() {
 }
 
 #[tokio::test]
+async fn test_latest_migration_creates_daemon_heartbeat_table() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+        .await
+        .unwrap();
+
+    assert!(db.table_exists("daemon_heartbeat").await.unwrap());
+}
+
+#[tokio::test]
 async fn test_latest_migration_creates_anime_search_overrides_table() {
     let dir = tempfile::tempdir().unwrap();
     let db = Database::new(dir.path().join("test.db").to_str().unwrap())
@@ -1848,6 +1858,23 @@ async fn test_get_latest_scan_run_for_origin() {
     assert_eq!(daemon_run.run_token.as_deref(), Some("daemon-run"));
     assert_eq!(web_run.origin, crate::db::ScanRunOrigin::Web);
     assert_eq!(web_run.run_token.as_deref(), Some("web-run"));
+}
+
+#[tokio::test]
+async fn test_daemon_heartbeat_roundtrip() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+        .await
+        .unwrap();
+
+    db.record_daemon_heartbeat("scan", Some("Running daemon-origin scan"))
+        .await
+        .unwrap();
+
+    let heartbeat = db.get_daemon_heartbeat().await.unwrap().unwrap();
+    assert_eq!(heartbeat.phase, "scan");
+    assert_eq!(heartbeat.detail.as_deref(), Some("Running daemon-origin scan"));
+    assert!(!heartbeat.last_seen_at.is_empty());
 }
 
 #[tokio::test]

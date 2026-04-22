@@ -644,6 +644,7 @@ fn dashboard_needs_attention_includes_playback_guard_when_mutations_are_waiting(
         last_repair_outcome: None,
         streaming_guard: Some(&guard),
         daemon_schedule: None,
+        daemon_heartbeat: None,
     };
 
     let needs_attention = dashboard_needs_attention(
@@ -688,6 +689,7 @@ fn dashboard_needs_attention_includes_overdue_daemon_signal() {
         last_repair_outcome: None,
         streaming_guard: None,
         daemon_schedule: Some(&daemon_schedule),
+        daemon_heartbeat: None,
     };
 
     let needs_attention = dashboard_needs_attention(
@@ -705,6 +707,40 @@ fn dashboard_needs_attention_includes_overdue_daemon_signal() {
         .items
         .iter()
         .any(|item| item.message.contains("Due now (2h late)")));
+}
+
+#[test]
+fn dashboard_needs_attention_includes_stale_daemon_heartbeat_signal() {
+    let heartbeat = DaemonHeartbeatView {
+        status_label: "Stale".to_string(),
+        status_badge_class: "badge-danger",
+        last_seen_label: "2026-04-22 12:00:00 UTC (4m ago)".to_string(),
+        phase_label: "Sleeping".to_string(),
+        detail: "Heartbeat is older than 3 minutes, so the daemon may no longer be running."
+            .to_string(),
+        stale: true,
+    };
+    let inputs = DashboardAttentionInputs {
+        latest_run: None,
+        last_scan_outcome: None,
+        last_cleanup_outcome: None,
+        last_repair_outcome: None,
+        streaming_guard: None,
+        daemon_schedule: None,
+        daemon_heartbeat: Some(&heartbeat),
+    };
+
+    let needs_attention = dashboard_needs_attention(
+        &DashboardStats::default(),
+        &QueueOverview::default(),
+        &DeferredRefreshSummaryView::default(),
+        &inputs,
+    );
+
+    assert!(needs_attention
+        .items
+        .iter()
+        .any(|item| item.title == "Daemon heartbeat looks stale"));
 }
 
 #[tokio::test]

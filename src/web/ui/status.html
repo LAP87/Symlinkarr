@@ -33,11 +33,21 @@
 {% if daemon_schedule.status_label == "Due" %}
 <div class="alert alert-warning">
     <strong>Configured scan cadence looks overdue.</strong>
-    Last recorded scan: {{ daemon_schedule.last_run_label }}.
+    {{ daemon_schedule.last_run_metric_label }}: {{ daemon_schedule.last_run_label }}.
     {{ daemon_schedule.next_due_label }}.
     Verify the daemon/service is still running before assuming scans are happening on schedule.
 </div>
 {% endif %}
+
+{% match daemon_heartbeat %}
+{% when Some with (heartbeat) %}
+{% if heartbeat.stale %}
+<div class="alert alert-error">
+    <strong>Daemon heartbeat looks stale.</strong>
+    {{ heartbeat.detail }}
+</div>
+{% endif %}
+{% when None %}{% endmatch %}
 
 <div class="split-grid">
     <section class="card">
@@ -99,6 +109,10 @@
         </div>
         <div class="header-badges">
             <span class="badge {{ daemon_schedule.status_badge_class }}">{{ daemon_schedule.status_label }}</span>
+            {% match daemon_heartbeat %}
+            {% when Some with (heartbeat) %}
+            <span class="badge {{ heartbeat.status_badge_class }}">{{ heartbeat.status_label }}</span>
+            {% when None %}{% endmatch %}
             <span class="badge badge-info">{{ daemon_schedule.interval_label }}</span>
         </div>
     </div>
@@ -107,8 +121,17 @@
         <div class="metric-card"><span class="metric-label">Next due estimate</span><strong>{{ daemon_schedule.next_due_label }}</strong></div>
         <div class="metric-card"><span class="metric-label">Search Missing</span><strong>{{ daemon_schedule.search_missing_label }}</strong></div>
         <div class="metric-card"><span class="metric-label">VACUUM</span><strong>{{ daemon_schedule.vacuum_label }}</strong></div>
+        {% match daemon_heartbeat %}
+        {% when Some with (heartbeat) %}
+        <div class="metric-card"><span class="metric-label">Heartbeat</span><strong>{{ heartbeat.last_seen_label }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Daemon Phase</span><strong>{{ heartbeat.phase_label }}</strong></div>
+        {% when None %}{% endmatch %}
     </div>
     <p class="text-muted mt-2">{{ daemon_schedule.detail }}</p>
+    {% match daemon_heartbeat %}
+    {% when Some with (heartbeat) %}
+    <p class="text-muted">{{ heartbeat.detail }}</p>
+    {% when None %}{% endmatch %}
 </section>
 
 <div class="split-grid">

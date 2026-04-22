@@ -49,8 +49,8 @@ use crate::commands::doctor::{collect_doctor_checks, DoctorCheckMode};
 use crate::commands::report::build_anime_remediation_report;
 use crate::commands::selected_libraries;
 use crate::db::{
-    AcquisitionJobCounts, AcquisitionJobRecord, AcquisitionJobStatus, LinkEventHistoryRecord,
-    ScanHistoryRecord, ScanRunOrigin,
+    AcquisitionJobCounts, AcquisitionJobRecord, AcquisitionJobStatus, DaemonHeartbeatRecord,
+    LinkEventHistoryRecord, ScanHistoryRecord, ScanRunOrigin,
 };
 use crate::discovery::DiscoverSummary;
 use crate::media_servers::deferred_refresh_summary;
@@ -198,6 +198,99 @@ async fn latest_daemon_scan_run_record(state: &WebState) -> Option<ScanHistoryRe
             None
         }
     }
+}
+
+async fn daemon_heartbeat_record(state: &WebState) -> Option<DaemonHeartbeatRecord> {
+    match state.database.get_daemon_heartbeat().await {
+        Ok(record) => record,
+        Err(err) => {
+            error!("Failed to get daemon heartbeat: {}", err);
+            None
+        }
+    }
+}
+
+fn humanize_recent_duration(delta: ChronoDuration) -> String {
+    let total_seconds = delta.num_seconds().max(0);
+    if total_seconds < 60 {
+        format!("{}s", total_seconds)
+    } else {
+        humanize_duration(delta)
+    }
+}
+
+fn daemon_phase_label(phase: &str) -> String {
+    match phase {
+        "starting" => "Starting".to_string(),
+        "housekeeping" => "Housekeeping".to_string(),
+        "backup" => "Backup".to_string(),
+        "scan" => "Scanning".to_string(),
+        "sleeping" => "Sleeping".to_string(),
+        "stopping" => "Stopping".to_string(),
+        other => format_operator_name(other),
+    }
+}
+
+fn daemon_heartbeat_view(
+    config: &crate::config::Config,
+    heartbeat: Option<DaemonHeartbeatRecord>,
+) -> Option<DaemonHeartbeatView> {
+    if !config.daemon.enabled {
+        return None;
+    }
+
+    let Some(record) = heartbeat else {
+        return Some(DaemonHeartbeatView {
+            status_label: "Missing".to_string(),
+            status_badge_class: "badge-warning",
+            last_seen_label: "Never recorded".to_string(),
+            phase_label: "Unknown".to_string(),
+            detail: "No daemon heartbeat has been recorded yet. Start the daemon once before trusting live liveness signals.".to_string(),
+            stale: true,
+        });
+    };
+
+    let last_seen_at = parse_scan_timestamp(&record.last_seen_at);
+    let age = last_seen_at.map(|timestamp| Utc::now() - timestamp);
+    let stale = age
+        .map(|delta| delta > ChronoDuration::minutes(3))
+        .unwrap_or(true);
+    let status_label = if stale { "Stale" } else { "Alive" }.to_string();
+    let status_badge_class = if stale {
+        "badge-danger"
+    } else {
+        "badge-success"
+    };
+    let last_seen_label = match age {
+        Some(delta) => format!(
+            "{} ({} ago)",
+            record.last_seen_at,
+            humanize_recent_duration(delta)
+        ),
+        None => record.last_seen_at.clone(),
+    };
+    let phase_label = daemon_phase_label(&record.phase);
+    let detail = match (stale, record.detail) {
+        (true, Some(detail)) => format!(
+            "Heartbeat is older than 3 minutes. Last daemon report: {}",
+            detail
+        ),
+        (true, None) => {
+            "Heartbeat is older than 3 minutes, so the daemon may no longer be running."
+                .to_string()
+        }
+        (false, Some(detail)) => detail,
+        (false, None) => "Daemon loop is still reporting liveness.".to_string(),
+    };
+
+    Some(DaemonHeartbeatView {
+        status_label,
+        status_badge_class,
+        last_seen_label,
+        phase_label,
+        detail,
+        stale,
+    })
 }
 
 fn daemon_schedule_view(
@@ -612,6 +705,7 @@ struct DashboardAttentionInputs<'a> {
     last_repair_outcome: Option<&'a BackgroundRepairOutcomeView>,
     streaming_guard: Option<&'a StreamingGuardView>,
     daemon_schedule: Option<&'a DaemonScheduleView>,
+    daemon_heartbeat: Option<&'a DaemonHeartbeatView>,
 }
 
 fn dashboard_needs_attention(
@@ -725,6 +819,20 @@ fn dashboard_needs_attention(
                 schedule.next_due_label
             ),
             "Open Status and verify the daemon/service is actually running before you assume scans are still happening on schedule.",
+            Some(activity_link("/status", "Open Status")),
+        ));
+    }
+
+    if let Some(heartbeat) = inputs.daemon_heartbeat.filter(|heartbeat| heartbeat.stale) {
+        items.push(needs_attention_item(
+            "High",
+            "badge-danger",
+            "Daemon heartbeat looks stale",
+            format!(
+                "Last heartbeat was {} while the daemon reported phase {}.",
+                heartbeat.last_seen_label, heartbeat.phase_label
+            ),
+            "Open Status and confirm the daemon process is still running before you assume scheduled scans are alive.",
             Some(activity_link("/status", "Open Status")),
         ));
     }
@@ -1096,6 +1204,7 @@ pub async fn get_dashboard(State(state): State<WebState>) -> impl IntoResponse {
     let streaming_guard = streaming_guard_view(&state).await;
     let recent_queue_jobs = recent_queue_jobs(&state, RECENT_QUEUE_JOB_LIMIT).await;
     let latest_daemon_run = latest_daemon_scan_run_record(&state).await;
+    let daemon_heartbeat = daemon_heartbeat_view(&state.config, daemon_heartbeat_record(&state).await);
     let daemon_schedule = daemon_schedule_view(
         &state.config,
         latest_daemon_run.as_ref(),
@@ -1108,6 +1217,7 @@ pub async fn get_dashboard(State(state): State<WebState>) -> impl IntoResponse {
         last_repair_outcome: last_repair_outcome.as_ref(),
         streaming_guard: streaming_guard.as_ref(),
         daemon_schedule: Some(&daemon_schedule),
+        daemon_heartbeat: daemon_heartbeat.as_ref(),
     };
     let needs_attention =
         build_dashboard_needs_attention_view(&stats, &queue, &deferred_refresh, &attention_inputs);
@@ -1117,6 +1227,7 @@ pub async fn get_dashboard(State(state): State<WebState>) -> impl IntoResponse {
         needs_attention,
         activity_feed: dashboard_activity_feed(&state).await,
         daemon_schedule,
+        daemon_heartbeat,
         streaming_guard,
         recent_queue_jobs,
         latest_run,
@@ -1208,6 +1319,7 @@ pub async fn get_dashboard_needs_attention(State(state): State<WebState>) -> imp
     };
     let streaming_guard = streaming_guard_view(&state).await;
     let latest_daemon_run = latest_daemon_scan_run_record(&state).await;
+    let daemon_heartbeat = daemon_heartbeat_view(&state.config, daemon_heartbeat_record(&state).await);
     let daemon_schedule = daemon_schedule_view(
         &state.config,
         latest_daemon_run.as_ref(),
@@ -1220,6 +1332,7 @@ pub async fn get_dashboard_needs_attention(State(state): State<WebState>) -> imp
         last_repair_outcome: last_repair_outcome.as_ref(),
         streaming_guard: streaming_guard.as_ref(),
         daemon_schedule: Some(&daemon_schedule),
+        daemon_heartbeat: daemon_heartbeat.as_ref(),
     };
 
     DashboardNeedsAttentionTemplate {
@@ -1275,6 +1388,7 @@ pub async fn get_status(State(state): State<WebState>) -> impl IntoResponse {
     };
     let latest_scan_run = latest_scan_run_record(&state).await;
     let latest_daemon_run = latest_daemon_scan_run_record(&state).await;
+    let daemon_heartbeat = daemon_heartbeat_view(&state.config, daemon_heartbeat_record(&state).await);
     let checks = collect_health_checks(&state);
     let deferred_refresh = deferred_refresh_summary(&state.config)
         .map(DeferredRefreshSummaryView::from)
@@ -1300,6 +1414,7 @@ pub async fn get_status(State(state): State<WebState>) -> impl IntoResponse {
             latest_daemon_run.as_ref(),
             latest_scan_run.as_ref(),
         ),
+        daemon_heartbeat,
         checks,
         deferred_refresh,
         streaming_guard,

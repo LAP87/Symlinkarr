@@ -105,6 +105,13 @@ impl ScanRunOrigin {
 }
 
 #[derive(Debug, Clone)]
+pub struct DaemonHeartbeatRecord {
+    pub last_seen_at: String,
+    pub phase: String,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct AnimeSearchOverrideSeed {
     pub media_id: String,
     pub preferred_title: Option<String>,

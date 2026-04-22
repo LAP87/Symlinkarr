@@ -8,6 +8,37 @@ use crate::config::Config;
 use crate::db::Database;
 use crate::OutputFormat;
 
+async fn record_heartbeat(db: &Database, phase: &str, detail: Option<&str>) {
+    if let Err(err) = db.record_daemon_heartbeat(phase, detail).await {
+        tracing::warn!("Daemon heartbeat update failed (non-fatal): {}", err);
+    }
+}
+
+async fn sleep_with_heartbeat(interval: Duration, db: &Database, detail: &str) -> bool {
+    let tick = Duration::from_secs(interval.as_secs().clamp(1, 60));
+    let start = tokio::time::Instant::now();
+
+    loop {
+        let elapsed = start.elapsed();
+        if elapsed >= interval {
+            return false;
+        }
+
+        let remaining = interval.saturating_sub(elapsed);
+        let step = tick.min(remaining);
+        tokio::select! {
+            _ = tokio::time::sleep(step) => {
+                record_heartbeat(db, "sleeping", Some(detail)).await;
+            }
+            _ = tokio::signal::ctrl_c() => {
+                record_heartbeat(db, "stopping", Some("Shutdown signal received; stopping daemon loop")).await;
+                info!("Shutdown signal received; stopping daemon loop");
+                return true;
+            }
+        }
+    }
+}
+
 async fn run_housekeeping(cfg: &Config, db: &Database, last_vacuum_date: &mut Option<NaiveDate>) {
     let now = Local::now();
     let today = now.date_naive();
@@ -52,6 +83,12 @@ pub(crate) async fn run_daemon(cfg: &Config, db: &Database) -> Result<()> {
         "Symlinkarr daemon starting (interval: {} minutes)",
         cfg.daemon.interval_minutes
     );
+    record_heartbeat(
+        db,
+        "starting",
+        Some("Daemon loop booted and is preparing the first cycle"),
+    )
+    .await;
 
     match db
         .recover_stale_downloading_jobs(cfg.decypharr.completion_timeout_minutes)
@@ -75,9 +112,11 @@ pub(crate) async fn run_daemon(cfg: &Config, db: &Database) -> Result<()> {
     }
 
     loop {
+        record_heartbeat(db, "housekeeping", Some("Running housekeeping")).await;
         run_housekeeping(cfg, db, &mut last_vacuum_date).await;
 
         if cfg.backup.enabled && cfg.backup.interval_hours > 0 {
+            record_heartbeat(db, "backup", Some("Checking scheduled backups")).await;
             let bm = crate::backup::BackupManager::new(&cfg.backup);
             let should_create_backup = match bm.latest_scheduled_backup_timestamp() {
                 Ok(Some(last_backup)) => {
@@ -100,12 +139,14 @@ pub(crate) async fn run_daemon(cfg: &Config, db: &Database) -> Result<()> {
         }
 
         if cfg.backup.enabled {
+            record_heartbeat(db, "backup", Some("Creating pre-scan safety snapshot")).await;
             let bm = crate::backup::BackupManager::new(&cfg.backup);
             if let Err(e) = bm.create_safety_snapshot(db, "daemon-scan").await {
                 tracing::warn!("Pre-scan backup failed: {}", e);
             }
         }
 
+        record_heartbeat(db, "scan", Some("Running daemon-origin scan")).await;
         if let Err(e) = super::scan::run_scan_with_origin(
             cfg,
             db,
@@ -120,13 +161,11 @@ pub(crate) async fn run_daemon(cfg: &Config, db: &Database) -> Result<()> {
             tracing::error!("Scan cycle failed: {}", e);
         }
 
-        info!("Next scan in {} minutes...", cfg.daemon.interval_minutes);
-        tokio::select! {
-            _ = tokio::time::sleep(interval) => {}
-            _ = tokio::signal::ctrl_c() => {
-                info!("Shutdown signal received; stopping daemon loop");
-                break;
-            }
+        let sleep_detail = format!("Next scan in {} minutes", cfg.daemon.interval_minutes);
+        info!("{}...", sleep_detail);
+        record_heartbeat(db, "sleeping", Some(&sleep_detail)).await;
+        if sleep_with_heartbeat(interval, db, &sleep_detail).await {
+            break;
         }
     }
 

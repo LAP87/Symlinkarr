@@ -537,6 +537,7 @@ pub struct DashboardTemplate {
     pub needs_attention: DashboardNeedsAttentionView,
     pub activity_feed: DashboardActivityFeedView,
     pub daemon_schedule: DaemonScheduleView,
+    pub daemon_heartbeat: Option<DaemonHeartbeatView>,
     pub streaming_guard: Option<StreamingGuardView>,
     pub recent_queue_jobs: Vec<QueueJobView>,
     pub latest_run: Option<ScanRunView>,
@@ -639,6 +640,16 @@ pub struct DaemonScheduleView {
     pub detail: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct DaemonHeartbeatView {
+    pub status_label: String,
+    pub status_badge_class: &'static str,
+    pub last_seen_label: String,
+    pub phase_label: String,
+    pub detail: String,
+    pub stale: bool,
+}
+
 #[derive(Template)]
 #[template(path = "web/ui/partials/activity_feed.html")]
 pub struct DashboardActivityFeedTemplate {
@@ -656,6 +667,7 @@ pub struct StatusTemplate {
     pub recent_queue_jobs: Vec<QueueJobView>,
     pub queue: QueueOverview,
     pub daemon_schedule: DaemonScheduleView,
+    pub daemon_heartbeat: Option<DaemonHeartbeatView>,
     pub checks: std::collections::BTreeMap<String, HealthCheck>,
     pub deferred_refresh: DeferredRefreshSummaryView,
     pub streaming_guard: Option<StreamingGuardView>,

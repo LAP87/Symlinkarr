@@ -53,6 +53,10 @@
         </div>
         <div class="disclosure-card__meta">
             <span class="badge {{ daemon_schedule.status_badge_class }}">{{ daemon_schedule.status_label }}</span>
+            {% match daemon_heartbeat %}
+            {% when Some with (heartbeat) %}
+            <span class="badge {{ heartbeat.status_badge_class }}">{{ heartbeat.status_label }}</span>
+            {% when None %}{% endmatch %}
             <span class="badge badge-info">{{ daemon_schedule.interval_label }}</span>
             <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
         </div>
@@ -75,8 +79,23 @@
                 <span class="metric-label">VACUUM</span>
                 <strong>{{ daemon_schedule.vacuum_label }}</strong>
             </div>
+            {% match daemon_heartbeat %}
+            {% when Some with (heartbeat) %}
+            <div class="metric-card">
+                <span class="metric-label">Heartbeat</span>
+                <strong>{{ heartbeat.last_seen_label }}</strong>
+            </div>
+            <div class="metric-card">
+                <span class="metric-label">Daemon Phase</span>
+                <strong>{{ heartbeat.phase_label }}</strong>
+            </div>
+            {% when None %}{% endmatch %}
         </div>
         <p class="text-muted mt-2">{{ daemon_schedule.detail }}</p>
+        {% match daemon_heartbeat %}
+        {% when Some with (heartbeat) %}
+        <p class="text-muted">{{ heartbeat.detail }}</p>
+        {% when None %}{% endmatch %}
     </div>
 </details>
 

@@ -220,6 +220,17 @@ fn sample_daemon_schedule_view() -> DaemonScheduleView {
     }
 }
 
+fn sample_daemon_heartbeat_view() -> DaemonHeartbeatView {
+    DaemonHeartbeatView {
+        status_label: "Alive".to_string(),
+        status_badge_class: "badge-success",
+        last_seen_label: "2026-04-22 10:58:30 UTC (30s ago)".to_string(),
+        phase_label: "Sleeping".to_string(),
+        detail: "Next scan in 60 minutes".to_string(),
+        stale: false,
+    }
+}
+
 fn sample_anime_search_overrides() -> Vec<AnimeSearchOverrideView> {
     vec![AnimeSearchOverrideView {
         media_id: "tvdb-12345".to_string(),
@@ -568,6 +579,7 @@ fn dashboard_template_renders_needs_attention_section() {
         needs_attention: sample_needs_attention_view(),
         activity_feed: sample_activity_feed_view(),
         daemon_schedule: sample_daemon_schedule_view(),
+        daemon_heartbeat: Some(sample_daemon_heartbeat_view()),
         streaming_guard: Some(sample_streaming_guard_view()),
         recent_queue_jobs: sample_queue_jobs(),
         latest_run: Some(sample_scan_run_view()),
@@ -615,6 +627,7 @@ fn status_template_renders_recent_queue_jobs() {
             completed_unlinked: 0,
         },
         daemon_schedule: sample_daemon_schedule_view(),
+        daemon_heartbeat: Some(sample_daemon_heartbeat_view()),
         checks: std::collections::BTreeMap::new(),
         deferred_refresh: DeferredRefreshSummaryView::default(),
         streaming_guard: Some(sample_streaming_guard_view()),
@@ -650,6 +663,14 @@ fn status_template_surfaces_overdue_daemon_warning() {
             next_due_label: "Due now (3h late)".to_string(),
             detail: "This estimate is based on the latest daemon-origin scan.".to_string(),
         },
+        daemon_heartbeat: Some(DaemonHeartbeatView {
+            status_label: "Stale".to_string(),
+            status_badge_class: "badge-danger",
+            last_seen_label: "2026-04-22 08:02:00 UTC (3h ago)".to_string(),
+            phase_label: "Sleeping".to_string(),
+            detail: "Heartbeat is older than 3 minutes, so the daemon may no longer be running.".to_string(),
+            stale: true,
+        }),
         checks: std::collections::BTreeMap::new(),
         deferred_refresh: DeferredRefreshSummaryView::default(),
         streaming_guard: None,
@@ -657,6 +678,7 @@ fn status_template_surfaces_overdue_daemon_warning() {
 
     let html = template.render().unwrap();
     assert!(html.contains("Configured scan cadence looks overdue."));
+    assert!(html.contains("Daemon heartbeat looks stale."));
     assert!(html.contains("Due now (3h late)"));
     assert!(html.contains("Verify the daemon/service is still running"));
 }
