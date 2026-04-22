@@ -34,6 +34,25 @@ Common buckets:
 4. Check grouped skip reasons first.
 5. Only expand deep telemetry or concrete skip samples if grouped reasons are not enough.
 
+## Manual Anime Search Overrides
+
+The `Scan` page now also has an advanced-only `Anime Search Overrides` section.
+
+Use it when:
+
+- anime auto-acquire keeps searching with the wrong scene title
+- AniDB/TVDB mapping is not the real problem, but the search title is
+- you want a local, explicit correction before queue retries keep failing
+
+The current first slice is intentionally narrow:
+
+- you can save a preferred title for one anime media id
+- you can add extra search hints, one per line
+- the override is local and auditable
+- it affects anime auto-acquire query building before the normal `anime-lists` hints are added
+
+Use the tagged folder suffix such as `tvdb-12345` or `tmdb-67890` as the media id.
+
 ## When a Scan Looks "Quiet"
 
 A scan can finish successfully and still leave work undone.

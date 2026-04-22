@@ -508,6 +508,55 @@ async fn dashboard_renders_needs_attention_priorities() {
     assert!(body.contains("Open Latest Run"));
 }
 
+#[test]
+fn dashboard_needs_attention_includes_playback_guard_when_mutations_are_waiting() {
+    let stats = DashboardStats {
+        active_links: 10,
+        dead_links: 2,
+        total_scans: 4,
+        last_scan: Some("2026-04-22 12:00:00 UTC".to_string()),
+    };
+    let queue = QueueOverview {
+        active_total: 1,
+        queued: 0,
+        downloading: 0,
+        relinking: 0,
+        blocked: 0,
+        no_result: 0,
+        failed: 0,
+        completed_unlinked: 1,
+    };
+    let guard = StreamingGuardView {
+        status_label: "Protecting".to_string(),
+        status_badge_class: "badge-warning",
+        active_streams: 2,
+        protected_paths: vec!["/library/anime/Show A/S01E01.mkv".to_string()],
+        error_message: None,
+    };
+    let inputs = DashboardAttentionInputs {
+        latest_run: None,
+        last_scan_outcome: None,
+        last_cleanup_outcome: None,
+        last_repair_outcome: None,
+        streaming_guard: Some(&guard),
+    };
+
+    let needs_attention = dashboard_needs_attention(
+        &stats,
+        &queue,
+        &DeferredRefreshSummaryView::default(),
+        &inputs,
+    );
+
+    assert!(needs_attention
+        .items
+        .iter()
+        .any(|item| item.title == "Playback guard is deferring safe mutations"));
+    assert!(needs_attention.items.iter().any(|item| item
+        .message
+        .contains("2 active stream(s) are currently protected")));
+}
+
 #[tokio::test]
 async fn scan_page_renders_phase_telemetry_and_acquire_summary() {
     let ctx = test_context().await;

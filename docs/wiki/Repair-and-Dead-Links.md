@@ -33,6 +33,18 @@ Repair is the right first move when:
 - the content likely still exists somewhere in the source universe
 - you want to avoid churn in downstream media-server libraries
 
+## Playback Guard
+
+If Tautulli is configured, repair may intentionally skip links that are actively being streamed.
+
+That is a safety feature, not a silent failure.
+
+Check `Status` or the dashboard playback-protection panel when:
+
+- repair seems quieter than expected
+- a streamed file should obviously have been repaired
+- you want to confirm that active playback is the reason the row is still waiting
+
 ## When to Stop Repairing and Move to Cleanup
 
 Move to cleanup when:

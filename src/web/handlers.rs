@@ -496,18 +496,23 @@ fn needs_attention_item(
     }
 }
 
+struct DashboardAttentionInputs<'a> {
+    latest_run: Option<&'a ScanRunView>,
+    last_scan_outcome: Option<&'a BackgroundScanOutcomeView>,
+    last_cleanup_outcome: Option<&'a BackgroundCleanupAuditOutcomeView>,
+    last_repair_outcome: Option<&'a BackgroundRepairOutcomeView>,
+    streaming_guard: Option<&'a StreamingGuardView>,
+}
+
 fn dashboard_needs_attention(
     stats: &DashboardStats,
     queue: &QueueOverview,
     deferred_refresh: &DeferredRefreshSummaryView,
-    latest_run: Option<&ScanRunView>,
-    last_scan_outcome: Option<&BackgroundScanOutcomeView>,
-    last_cleanup_outcome: Option<&BackgroundCleanupAuditOutcomeView>,
-    last_repair_outcome: Option<&BackgroundRepairOutcomeView>,
+    inputs: &DashboardAttentionInputs<'_>,
 ) -> DashboardNeedsAttentionView {
     let mut items = Vec::new();
 
-    if let Some(outcome) = last_scan_outcome.filter(|outcome| !outcome.success) {
+    if let Some(outcome) = inputs.last_scan_outcome.filter(|outcome| !outcome.success) {
         items.push(needs_attention_item(
             "Critical",
             "badge-danger",
@@ -521,7 +526,7 @@ fn dashboard_needs_attention(
         ));
     }
 
-    if let Some(outcome) = last_cleanup_outcome.filter(|outcome| !outcome.success) {
+    if let Some(outcome) = inputs.last_cleanup_outcome.filter(|outcome| !outcome.success) {
         let link = outcome
             .report_path
             .as_ref()
@@ -545,7 +550,7 @@ fn dashboard_needs_attention(
         ));
     }
 
-    if let Some(outcome) = last_repair_outcome.filter(|outcome| !outcome.success) {
+    if let Some(outcome) = inputs.last_repair_outcome.filter(|outcome| !outcome.success) {
         items.push(needs_attention_item(
             "High",
             "badge-danger",
@@ -570,6 +575,24 @@ fn dashboard_needs_attention(
             ),
             "Review Dead Links, then decide whether the safest next move is repair or cleanup before the next media refresh.",
             Some(activity_link("/links/dead", "Review Dead Links")),
+        ));
+    }
+
+    if let Some(guard) = inputs
+        .streaming_guard
+        .filter(|guard| guard.error_message.is_none() && guard.active_streams > 0)
+        .filter(|_| stats.dead_links > 0 || queue.completed_unlinked > 0)
+    {
+        items.push(needs_attention_item(
+            "Medium",
+            "badge-warning",
+            "Playback guard is deferring safe mutations",
+            format!(
+                "{} active stream(s) are currently protected, so repair or cleanup apply may intentionally wait on overlapping paths.",
+                guard.active_streams
+            ),
+            "Open Status or the dashboard playback-protection panel and confirm the protected paths before retrying repair or cleanup apply.",
+            Some(activity_link("/status", "Open Status")),
         ));
     }
 
@@ -630,7 +653,7 @@ fn dashboard_needs_attention(
         ));
     }
 
-    if let Some(run) = latest_run {
+    if let Some(run) = inputs.latest_run {
         if run.plex_refresh_capped_batches > 0 || run.plex_refresh_failed_batches > 0 {
             items.push(needs_attention_item(
                 "Medium",
@@ -919,14 +942,18 @@ pub async fn get_dashboard(State(state): State<WebState>) -> impl IntoResponse {
     };
     let streaming_guard = streaming_guard_view(&state).await;
     let recent_queue_jobs = recent_queue_jobs(&state, RECENT_QUEUE_JOB_LIMIT).await;
+    let attention_inputs = DashboardAttentionInputs {
+        latest_run: latest_run.as_ref(),
+        last_scan_outcome: last_scan_outcome.as_ref(),
+        last_cleanup_outcome: last_cleanup_audit_outcome.as_ref(),
+        last_repair_outcome: last_repair_outcome.as_ref(),
+        streaming_guard: streaming_guard.as_ref(),
+    };
     let needs_attention = dashboard_needs_attention(
         &stats,
         &queue,
         &deferred_refresh,
-        latest_run.as_ref(),
-        last_scan_outcome.as_ref(),
-        last_cleanup_audit_outcome.as_ref(),
-        last_repair_outcome.as_ref(),
+        &attention_inputs,
     );
 
     let template = DashboardTemplate {

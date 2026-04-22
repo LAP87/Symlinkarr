@@ -14,6 +14,7 @@ The dashboard is not the place for deep diagnostics. It should tell you where to
 
 - `Needs Attention`: the most important operator problems right now
 - `Live Activity`: active or recently completed background work
+- `Current playback protection`: whether Tautulli currently sees active streams that can make repair or cleanup apply wait on purpose
 - `Latest Run`: the newest scan summary
 - backlog and history panels: secondary context when you want pressure or trend information
 
@@ -40,3 +41,16 @@ It means:
 - no current high-priority blocker is surfaced
 - the latest background outcomes do not imply immediate operator intervention
 - dead links and blocked queue work are not dominating the system
+
+## Playback Guard
+
+If Tautulli is configured, the dashboard now surfaces the playback guard directly.
+
+Use that panel to answer:
+
+- are active streams the reason repair or cleanup apply is deferring work right now?
+- is playback protection idle, protecting paths, or unavailable because Tautulli cannot be queried?
+
+If streams are active, the panel shows sample protected paths.
+That does not mean the system is broken.
+It means Symlinkarr is intentionally choosing safety over mutation until playback stops.
