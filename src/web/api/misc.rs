@@ -1,11 +1,34 @@
 use super::*;
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(super) struct ApiStatus {
     pub active_links: i64,
     pub dead_links: i64,
     pub total_scans: i64,
     pub last_scan: Option<String>,
+    pub daemon_schedule: Option<ApiDaemonSchedule>,
+    pub daemon_heartbeat: Option<ApiDaemonHeartbeat>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct ApiDaemonSchedule {
+    pub status_label: String,
+    pub interval_label: String,
+    pub search_missing_label: String,
+    pub vacuum_label: String,
+    pub last_run_metric_label: String,
+    pub last_run_label: String,
+    pub next_due_label: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct ApiDaemonHeartbeat {
+    pub status_label: String,
+    pub last_seen_label: String,
+    pub phase_label: String,
+    pub detail: String,
+    pub stale: bool,
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -118,12 +141,44 @@ pub(super) struct ApiDoctorResponse {
 /// GET /api/v1/status
 pub(super) async fn api_get_status(State(state): State<WebState>) -> Json<ApiStatus> {
     let stats = state.database.get_web_stats().await.unwrap_or_default();
+    let latest_scan_run = state.database.get_latest_scan_run().await.unwrap_or(None);
+    let latest_daemon_run = state
+        .database
+        .get_latest_scan_run_for_origin(crate::db::ScanRunOrigin::Daemon)
+        .await
+        .unwrap_or(None);
+    let daemon_schedule = crate::web::handlers::daemon_schedule_view(
+        &state.config,
+        latest_daemon_run.as_ref(),
+        latest_scan_run.as_ref(),
+    );
+    let daemon_heartbeat = crate::web::handlers::daemon_heartbeat_view(
+        &state.config,
+        state.database.get_daemon_heartbeat().await.unwrap_or(None),
+    );
 
     Json(ApiStatus {
         active_links: stats.active_links,
         dead_links: stats.dead_links,
         total_scans: stats.total_scans,
         last_scan: stats.last_scan,
+        daemon_schedule: state.config.daemon.enabled.then_some(ApiDaemonSchedule {
+            status_label: daemon_schedule.status_label,
+            interval_label: daemon_schedule.interval_label,
+            search_missing_label: daemon_schedule.search_missing_label,
+            vacuum_label: daemon_schedule.vacuum_label,
+            last_run_metric_label: daemon_schedule.last_run_metric_label,
+            last_run_label: daemon_schedule.last_run_label,
+            next_due_label: daemon_schedule.next_due_label,
+            detail: daemon_schedule.detail,
+        }),
+        daemon_heartbeat: daemon_heartbeat.map(|heartbeat| ApiDaemonHeartbeat {
+            status_label: heartbeat.status_label,
+            last_seen_label: heartbeat.last_seen_label,
+            phase_label: heartbeat.phase_label,
+            detail: heartbeat.detail,
+            stale: heartbeat.stale,
+        }),
     })
 }
 

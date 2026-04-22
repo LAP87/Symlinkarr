@@ -148,6 +148,42 @@ async fn test_state() -> WebState {
     WebState::new(cfg, db)
 }
 
+#[tokio::test]
+async fn api_get_status_includes_daemon_observability() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = test_config(dir.path());
+    cfg.daemon.enabled = true;
+    cfg.daemon.interval_minutes = 60;
+    let db = Database::new(&cfg.db_path).await.unwrap();
+
+    db.record_scan_run(&ScanRunRecord {
+        origin: crate::db::ScanRunOrigin::Daemon,
+        run_token: Some("scan-run-daemon-status".to_string()),
+        library_filter: Some("Anime".to_string()),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    db.record_daemon_heartbeat("sleeping", Some("Next scan in 60 minutes"))
+        .await
+        .unwrap();
+
+    let response = api_get_status(State(WebState::new(cfg, db)))
+        .await
+        .into_response();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: ApiStatus = serde_json::from_slice(&bytes).unwrap();
+
+    let daemon_schedule = json.daemon_schedule.expect("daemon schedule missing");
+    assert_eq!(daemon_schedule.status_label, "Waiting");
+    assert_eq!(daemon_schedule.last_run_metric_label, "Last daemon scan");
+    let daemon_heartbeat = json.daemon_heartbeat.expect("daemon heartbeat missing");
+    assert_eq!(daemon_heartbeat.status_label, "Alive");
+    assert_eq!(daemon_heartbeat.phase_label, "Sleeping");
+    assert!(daemon_heartbeat.detail.contains("Next scan in 60 minutes"));
+}
+
 async fn create_test_plex_duplicate_db(path: &Path) {
     let options = SqliteConnectOptions::from_str(path.to_str().unwrap())
         .unwrap()

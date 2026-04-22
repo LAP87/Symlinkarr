@@ -231,7 +231,7 @@ fn daemon_phase_label(phase: &str) -> String {
     }
 }
 
-fn daemon_heartbeat_view(
+pub(crate) fn daemon_heartbeat_view(
     config: &crate::config::Config,
     heartbeat: Option<DaemonHeartbeatRecord>,
 ) -> Option<DaemonHeartbeatView> {
@@ -293,7 +293,7 @@ fn daemon_heartbeat_view(
     })
 }
 
-fn daemon_schedule_view(
+pub(crate) fn daemon_schedule_view(
     config: &crate::config::Config,
     latest_daemon_run: Option<&ScanHistoryRecord>,
     latest_overall_run: Option<&ScanHistoryRecord>,
