@@ -783,7 +783,6 @@ async fn scan_page_marks_saved_anime_override_missing_when_local_folder_is_gone(
             .await;
 
     assert!(body.contains("Missing locally"));
-    assert!(body.contains("not currently present in a tagged anime library folder"));
 }
 
 #[tokio::test]

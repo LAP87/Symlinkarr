@@ -665,9 +665,12 @@ pub struct AnimeSearchOverrideView {
     pub preferred_title: Option<String>,
     pub extra_hints: Vec<String>,
     pub note: Option<String>,
-    pub local_target_label: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    pub local_target_label: Option<String>,
+    pub local_target_resolved: bool,
+    pub effect_badge: String,
+    pub effect_summary: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -685,9 +688,61 @@ impl From<AnimeSearchOverrideRecord> for AnimeSearchOverrideView {
             preferred_title: value.preferred_title,
             extra_hints: value.extra_hints,
             note: value.note,
-            local_target_label: None,
             created_at: value.created_at,
             updated_at: value.updated_at,
+            local_target_label: None,
+            local_target_resolved: false,
+            effect_badge: "Unknown".to_string(),
+            effect_summary: "Target resolution unknown; reload to compute effect.".to_string(),
+        }
+    }
+}
+
+impl AnimeSearchOverrideView {
+    /// Build a view from a record with local targets, computing effect badges and resolution state.
+    pub(crate) fn from_record_with_target(
+        record: AnimeSearchOverrideRecord,
+        local_targets: &std::collections::HashMap<String, String>,
+    ) -> Self {
+        let local_target_label = local_targets.get(&record.media_id).cloned();
+        let local_target_resolved = local_target_label.is_some();
+        let has_preferred = record
+            .preferred_title
+            .as_ref()
+            .is_some_and(|s| !s.is_empty());
+        let hint_count = record.extra_hints.len();
+
+        let (effect_badge, effect_summary) = match (has_preferred, hint_count) {
+            (true, 0) => (
+                "Preferred title".to_string(),
+                "Replaces default query with preferred title before anime-lists hints.".to_string(),
+            ),
+            (true, _) => (
+                "Title + hints".to_string(),
+                "Preferred title used first, then extra hints before anime-lists hints."
+                    .to_string(),
+            ),
+            (false, 0) => (
+                "None".to_string(),
+                "No active override content; only clears previous settings.".to_string(),
+            ),
+            (false, _) => (
+                "Hints only".to_string(),
+                "Hints added before anime-lists hints; no preferred title replacement.".to_string(),
+            ),
+        };
+
+        Self {
+            media_id: record.media_id,
+            preferred_title: record.preferred_title,
+            extra_hints: record.extra_hints,
+            note: record.note,
+            created_at: record.created_at,
+            updated_at: record.updated_at,
+            local_target_label,
+            local_target_resolved,
+            effect_badge,
+            effect_summary,
         }
     }
 }

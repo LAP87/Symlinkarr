@@ -182,22 +182,33 @@
                 <div class="section-head">
                     <div>
                         <p class="section-kicker">Saved Overrides</p>
-                        <h3 class="subsection-title">Current local rules</h3>
+                        <div class="section-title-wrap">
+                            <h3 class="subsection-title">Current local rules</h3>
+                            <span class="badge badge-info" id="override-count-badge">{{ anime_search_overrides|length }}</span>
+                        </div>
                     </div>
                 </div>
                 {% if anime_search_overrides|length > 0 %}
-                <div class="stack-list">
+                <div class="form-group mb-2">
+                    <label class="form-label" for="override-filter">Filter overrides</label>
+                    <input id="override-filter" type="text" class="form-control mono" placeholder="media id, title, or hint substring" oninput="filterOverrides(this.value)">
+                </div>
+                <div class="stack-list" id="override-list">
                     {% for anime_override in anime_search_overrides %}
-                    <div class="card card--nested">
+                    <div class="card card--nested override-item" data-terms="{{ anime_override.media_id }} {{ anime_override.preferred_title.as_deref().unwrap_or("") }} {{ anime_override.effect_badge }} {{ anime_override.note.as_deref().unwrap_or("") }} {{ anime_override.extra_hints.join(" ") }}">
                         <div class="section-head">
                             <div>
                                 <strong class="mono">{{ anime_override.media_id }}</strong>
+                                {% if !anime_override.local_target_resolved %}
+                                <span class="badge badge-warning">Missing locally</span>
+                                {% endif %}
                                 {% match anime_override.preferred_title %}
                                 {% when Some with (preferred_title) %}
                                 <div>{{ preferred_title }}</div>
                                 {% when None %}
                                 <div class="text-muted">No preferred title, hints only.</div>
                                 {% endmatch %}
+                                <span class="badge badge-info">{{ anime_override.effect_badge }}</span>
                             </div>
                             <form action="/scan/anime-overrides/delete" method="post">
                                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -205,6 +216,7 @@
                                 <button type="submit" class="btn btn-danger">Delete</button>
                             </form>
                         </div>
+                        <p class="text-muted mt-1"><small>{{ anime_override.effect_summary }}</small></p>
                         {% if anime_override.extra_hints|length > 0 %}
                         <div class="badge-stack">
                             {% for hint in anime_override.extra_hints %}
@@ -214,18 +226,33 @@
                         {% endif %}
                         {% match anime_override.note %}
                         {% when Some with (note) %}
-                        <p class="text-muted mt-1">{{ note }}</p>
+                        <p class="text-muted mt-1"><small>{{ note }}</small></p>
                         {% when None %}{% endmatch %}
                         {% match anime_override.local_target_label %}
                         {% when Some with (target_label) %}
-                        <p class="text-muted mt-1">Linked to <strong>{{ target_label }}</strong>.</p>
-                        {% when None %}
-                        <p class="text-muted mt-1"><span class="badge badge-warning">Missing locally</span> This media id is not currently present in a tagged anime library folder.</p>
-                        {% endmatch %}
-                        <p class="text-muted mt-1">Created {{ anime_override.created_at }} · Updated {{ anime_override.updated_at }}</p>
+                        <p class="text-muted mt-1"><small>Linked to <strong>{{ target_label }}</strong>.</small></p>
+                        {% when None %}{% endmatch %}
+                        <p class="text-muted mt-1"><small>Created {{ anime_override.created_at }} · Updated {{ anime_override.updated_at }}</small></p>
                     </div>
                     {% endfor %}
                 </div>
+                <script>
+                (function(){
+                    function filterOverrides(q){
+                        var term = q.toLowerCase().trim();
+                        var items = document.querySelectorAll('.override-item');
+                        var visible = 0;
+                        items.forEach(function(el){
+                            var show = !term || el.getAttribute('data-terms').toLowerCase().indexOf(term) !== -1;
+                            el.style.display = show ? '' : 'none';
+                            if(show) visible++;
+                        });
+                        var badge = document.getElementById('override-count-badge');
+                        if(badge) badge.textContent = visible;
+                    }
+                    window.filterOverrides = filterOverrides;
+                })();
+                </script>
                 {% else %}
                 <div class="empty-state">
                     <strong>No local anime search overrides saved.</strong>

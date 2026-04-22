@@ -202,11 +202,7 @@ async fn load_anime_override_views(
     match state.database.list_anime_search_overrides().await {
         Ok(entries) => entries
             .into_iter()
-            .map(|entry| {
-                let mut view = AnimeSearchOverrideView::from(entry);
-                view.local_target_label = local_targets.get(&view.media_id).cloned();
-                view
-            })
+            .map(|entry| AnimeSearchOverrideView::from_record_with_target(entry, local_targets))
             .collect(),
         Err(err) => {
             error!("Failed to load anime search overrides: {}", err);
