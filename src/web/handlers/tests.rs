@@ -28,6 +28,10 @@ struct TestWebContext {
     state: WebState,
 }
 
+fn create_anime_folder(ctx: &TestWebContext, folder_name: &str) {
+    std::fs::create_dir_all(ctx._dir.path().join("anime").join(folder_name)).unwrap();
+}
+
 fn test_config(root: &std::path::Path) -> Config {
     let library = root.join("anime");
     let source = root.join("rd");
@@ -658,6 +662,7 @@ async fn scan_page_renders_anime_override_management_section() {
 #[tokio::test]
 async fn scan_anime_override_post_persists_rule() {
     let ctx = test_context().await;
+    create_anime_folder(&ctx, "Call of the Night {tvdb-12345}");
 
     let response = post_scan_anime_override(
         State(ctx.state.clone()),
@@ -675,6 +680,7 @@ async fn scan_anime_override_post_persists_rule() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = render_body(response).await;
     assert!(body.contains("Saved anime search override for tvdb-12345"));
+    assert!(body.contains("Call of the Night in Anime"));
     assert!(body.contains("Yofukashi no Uta"));
     assert!(body.contains("Call of the Night"));
 
@@ -687,6 +693,35 @@ async fn scan_anime_override_post_persists_rule() {
         .unwrap();
     assert_eq!(stored.preferred_title.as_deref(), Some("Yofukashi no Uta"));
     assert_eq!(stored.extra_hints.len(), 2);
+}
+
+#[tokio::test]
+async fn scan_anime_override_post_rejects_unknown_local_media_id() {
+    let ctx = test_context().await;
+
+    let response = post_scan_anime_override(
+        State(ctx.state.clone()),
+        Form(scan::AnimeSearchOverrideForm {
+            media_id: "tvdb-12345".to_string(),
+            preferred_title: Some("Yofukashi no Uta".to_string()),
+            extra_hints: Some("Call of the Night".to_string()),
+            note: Some("Prefer scene title".to_string()),
+            csrf_token: ctx.state.browser_session_token().to_string(),
+        }),
+    )
+    .await
+    .into_response();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = render_body(response).await;
+    assert!(body.contains("does not match any tagged folder in your configured anime libraries"));
+    assert!(ctx
+        .state
+        .database
+        .get_anime_search_override("tvdb-12345")
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]

@@ -167,6 +167,25 @@ fn parse_anime_override_hints(raw: Option<&str>) -> Vec<String> {
     hints
 }
 
+fn find_local_anime_override_target(
+    config: &crate::config::Config,
+    media_id: &str,
+) -> Option<String> {
+    let scanner = crate::library_scanner::LibraryScanner::new();
+
+    config
+        .libraries
+        .iter()
+        .filter(|library| library.content_type == Some(crate::config::ContentType::Anime))
+        .find_map(|library| {
+            scanner
+                .scan_library(library)
+                .into_iter()
+                .find(|item| item.id.to_string() == media_id)
+                .map(|item| format!("{} in {}", item.title, item.library_name))
+        })
+}
+
 async fn load_anime_override_views(state: &WebState) -> Vec<AnimeSearchOverrideView> {
     match state.database.list_anime_search_overrides().await {
         Ok(entries) => entries.into_iter().map(Into::into).collect(),
@@ -309,6 +328,7 @@ pub(crate) async fn post_scan_anime_override(
     let preferred_title = normalize_optional_form_text(form.preferred_title.as_deref());
     let extra_hints = parse_anime_override_hints(form.extra_hints.as_deref());
     let note = normalize_optional_form_text(form.note.as_deref());
+    let local_anime_target = find_local_anime_override_target(&state.config, &media_id);
 
     let (status, feedback) = if !has_anime_library(&state.config) {
         (
@@ -334,6 +354,17 @@ pub(crate) async fn post_scan_anime_override(
                 message: "Add either a preferred title or at least one extra hint before saving an anime override.".to_string(),
             },
         )
+    } else if local_anime_target.is_none() {
+        (
+            StatusCode::BAD_REQUEST,
+            FormFeedbackView {
+                success: false,
+                message: format!(
+                    "Media ID {} does not match any tagged folder in your configured anime libraries. Save overrides against an existing anime folder like `Series Name {{tvdb-12345}}` first.",
+                    media_id
+                ),
+            },
+        )
     } else {
         match state
             .database
@@ -350,8 +381,9 @@ pub(crate) async fn post_scan_anime_override(
                 FormFeedbackView {
                     success: true,
                     message: format!(
-                        "Saved anime search override for {}. Future anime auto-acquire requests will prefer it before anime-lists hints.",
-                        media_id
+                        "Saved anime search override for {} ({}). Future anime auto-acquire requests will prefer it before anime-lists hints.",
+                        media_id,
+                        local_anime_target.unwrap_or_else(|| "unknown anime folder".to_string())
                     ),
                 },
             ),
