@@ -25,6 +25,7 @@
         {% if run.search_missing %}
         <span class="badge badge-warning">Search Missing</span>
         {% endif %}
+        <span class="badge {{ run.origin_badge_class }}">{{ run.origin_label }}</span>
         <span class="badge badge-info mono">#{{ run.id }}</span>
     </div>
 </div>
@@ -40,6 +41,7 @@
     <p class="text-muted mono mb-2">{{ run.started_at }}</p>
 
     <div class="metric-grid">
+        <div class="metric-card"><span class="metric-label">Origin</span><strong>{{ run.origin_label }}</strong></div>
         <div class="metric-card"><span class="metric-label">Runtime</span><strong>{{ run.total_runtime }}</strong></div>
         <div class="metric-card"><span class="metric-label">Library Items</span><strong>{{ run.library_items_found }}</strong></div>
         <div class="metric-card"><span class="metric-label">Source Items</span><strong>{{ run.source_items_found }}</strong></div>

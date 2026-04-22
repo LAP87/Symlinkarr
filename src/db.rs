@@ -37,7 +37,7 @@ pub struct Database {
     db_path: PathBuf,
 }
 
-const LATEST_SCHEMA_VERSION: i64 = 15;
+const LATEST_SCHEMA_VERSION: i64 = 16;
 
 // SqlitePool is Clone (wraps Arc), so Database can safely be Clone
 impl Clone for Database {

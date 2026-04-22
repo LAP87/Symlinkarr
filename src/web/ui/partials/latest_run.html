@@ -29,6 +29,7 @@
                 {% else %}
                 <span class="badge badge-success">Live</span>
                 {% endif %}
+                <span class="badge {{ run.origin_badge_class }}">{{ run.origin_label }}</span>
                 {% if run.search_missing %}
                 <span class="badge badge-warning">Search Missing</span>
                 {% endif %}

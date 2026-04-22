@@ -26,7 +26,7 @@ use crate::cleanup_audit::{CleanupReport, CleanupScope};
 use crate::commands::cleanup::{AnimeRemediationBlockedReasonSummary, AnimeRemediationPlanGroup};
 use crate::commands::report::AnimeRemediationSample;
 use crate::config::Config;
-use crate::db::{AcquisitionJobCounts, AnimeSearchOverrideRecord, ScanHistoryRecord};
+use crate::db::{AcquisitionJobCounts, AnimeSearchOverrideRecord, ScanHistoryRecord, ScanRunOrigin};
 use crate::media_servers::{DeferredRefreshSummary, LibraryInvalidationServerOutcome};
 use crate::models::LinkRecord;
 
@@ -288,6 +288,8 @@ pub struct ScanRunView {
     pub id: i64,
     pub started_at: String,
     pub scope_label: String,
+    pub origin_label: &'static str,
+    pub origin_badge_class: &'static str,
     pub dry_run: bool,
     pub search_missing: bool,
     pub library_items_found: i64,
@@ -412,6 +414,8 @@ impl ScanRunView {
                 .library_filter
                 .clone()
                 .unwrap_or_else(|| "All Libraries".to_string()),
+            origin_label: scan_run_origin_label(record.origin),
+            origin_badge_class: scan_run_origin_badge_class(record.origin),
             dry_run: record.dry_run,
             search_missing: record.search_missing,
             library_items_found: record.library_items_found,
@@ -469,6 +473,26 @@ impl ScanRunView {
             auto_acquire_completed_unlinked: record.auto_acquire_completed_unlinked,
             auto_acquire_successes,
         }
+    }
+}
+
+pub(crate) fn scan_run_origin_label(origin: ScanRunOrigin) -> &'static str {
+    match origin {
+        ScanRunOrigin::Unknown => "Unknown",
+        ScanRunOrigin::Cli => "CLI",
+        ScanRunOrigin::Daemon => "Daemon",
+        ScanRunOrigin::Web => "Web",
+        ScanRunOrigin::AutoAcquire => "Auto-Acquire",
+    }
+}
+
+pub(crate) fn scan_run_origin_badge_class(origin: ScanRunOrigin) -> &'static str {
+    match origin {
+        ScanRunOrigin::Unknown => "badge-secondary",
+        ScanRunOrigin::Cli => "badge-secondary",
+        ScanRunOrigin::Daemon => "badge-success",
+        ScanRunOrigin::Web => "badge-info",
+        ScanRunOrigin::AutoAcquire => "badge-warning",
     }
 }
 
@@ -609,6 +633,7 @@ pub struct DaemonScheduleView {
     pub interval_label: String,
     pub search_missing_label: String,
     pub vacuum_label: String,
+    pub last_run_metric_label: String,
     pub last_run_label: String,
     pub next_due_label: String,
     pub detail: String,

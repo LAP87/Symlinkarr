@@ -9,7 +9,7 @@
         <div>
             <p class="section-kicker">Live Activity</p>
             <h2 class="section-title">Operator feed <span class="htmx-indicator">&#8987;</span></h2>
-            <p class="text-muted">Tracks active web-triggered work and the latest finished outcomes.</p>
+            <p class="text-muted">Tracks active web-triggered work plus the freshest recorded outcomes, including daemon-origin scans.</p>
         </div>
         <div class="header-badges">
             <span class="badge badge-info">Refresh 5s</span>
@@ -60,7 +60,7 @@
         <div class="activity-feed-column">
             <h3 class="subsection-title">Latest outcomes</h3>
             {% if activity_feed.recent_items|length == 0 %}
-            <p class="text-muted">Finished web-triggered outcomes will appear here after scan, cleanup, or repair jobs complete.</p>
+            <p class="text-muted">Recent scans, cleanup work, and repair outcomes will appear here once they are either recorded or finished.</p>
             {% else %}
             <div class="activity-feed-stack">
                 {% for item in activity_feed.recent_items %}

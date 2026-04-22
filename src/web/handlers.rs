@@ -50,7 +50,7 @@ use crate::commands::report::build_anime_remediation_report;
 use crate::commands::selected_libraries;
 use crate::db::{
     AcquisitionJobCounts, AcquisitionJobRecord, AcquisitionJobStatus, LinkEventHistoryRecord,
-    ScanHistoryRecord,
+    ScanHistoryRecord, ScanRunOrigin,
 };
 use crate::discovery::DiscoverSummary;
 use crate::media_servers::deferred_refresh_summary;
@@ -101,6 +101,56 @@ fn scan_activity_badges(dry_run: bool, search_missing: bool) -> Vec<ActivityFeed
     badges
 }
 
+fn scan_origin_activity_badge(origin: ScanRunOrigin) -> ActivityFeedBadgeView {
+    activity_badge(
+        scan_run_origin_label(origin),
+        scan_run_origin_badge_class(origin),
+    )
+}
+
+fn recorded_scan_activity_item(run: ScanHistoryRecord) -> ActivityFeedItemView {
+    let mut badges = scan_activity_badges(run.dry_run, run.search_missing);
+    badges.push(scan_origin_activity_badge(run.origin));
+
+    let linked_total = run.links_created + run.links_updated;
+    let dead_total = run.dead_marked + run.links_removed;
+    let scope_label = run
+        .library_filter
+        .clone()
+        .unwrap_or_else(|| "All Libraries".to_string());
+    let message = if run.dry_run {
+        format!(
+            "Recorded {} match(es). Dry run left {} candidate link change(s) unapplied.",
+            run.matches_found, linked_total
+        )
+    } else {
+        format!(
+            "Recorded {} match(es), {} link mutation(s), and {} dead link(s) marked or removed.",
+            run.matches_found, linked_total, dead_total
+        )
+    };
+
+    ActivityFeedItemView {
+        kind_label: "Scan".to_string(),
+        status_label: "Recorded".to_string(),
+        status_badge_class: if run.dry_run {
+            "badge-info"
+        } else {
+            "badge-success"
+        },
+        scope_label,
+        timestamp_label: "Recorded".to_string(),
+        timestamp: run.started_at,
+        context: Some(format!(
+            "{} origin persisted in scan history.",
+            scan_run_origin_label(run.origin)
+        )),
+        message,
+        badges,
+        link: Some(activity_link(format!("/scan/history/{}", run.id), "Open Run")),
+    }
+}
+
 fn activity_timestamp_rank(timestamp: &str) -> String {
     timestamp.replace(" UTC", "")
 }
@@ -126,9 +176,34 @@ fn humanize_duration(delta: ChronoDuration) -> String {
     }
 }
 
+async fn latest_scan_run_record(state: &WebState) -> Option<ScanHistoryRecord> {
+    match state.database.get_latest_scan_run().await {
+        Ok(run) => run,
+        Err(err) => {
+            error!("Failed to get latest scan run: {}", err);
+            None
+        }
+    }
+}
+
+async fn latest_daemon_scan_run_record(state: &WebState) -> Option<ScanHistoryRecord> {
+    match state
+        .database
+        .get_latest_scan_run_for_origin(ScanRunOrigin::Daemon)
+        .await
+    {
+        Ok(run) => run,
+        Err(err) => {
+            error!("Failed to get latest daemon scan run: {}", err);
+            None
+        }
+    }
+}
+
 fn daemon_schedule_view(
     config: &crate::config::Config,
-    latest_run_started_at: Option<&str>,
+    latest_daemon_run: Option<&ScanHistoryRecord>,
+    latest_overall_run: Option<&ScanHistoryRecord>,
 ) -> DaemonScheduleView {
     let interval_label = format!("Every {} min", config.daemon.interval_minutes);
     let search_missing_label = if config.daemon.search_missing {
@@ -141,10 +216,25 @@ fn daemon_schedule_view(
     } else {
         "Off".to_string()
     };
-    let last_run_label = latest_run_started_at
+    let last_recorded_scan_label = latest_overall_run
+        .map(|run| run.started_at.as_str())
         .filter(|value| !value.trim().is_empty())
         .unwrap_or("Never recorded")
         .to_string();
+    let last_daemon_scan_label = latest_daemon_run
+        .map(|run| run.started_at.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("Never recorded")
+        .to_string();
+    let latest_overall_non_daemon_note = latest_overall_run
+        .filter(|run| run.origin != ScanRunOrigin::Daemon)
+        .map(|run| {
+            format!(
+                " Latest overall run came from {} at {} and does not count as daemon proof.",
+                scan_run_origin_label(run.origin),
+                run.started_at
+            )
+        });
 
     if !config.daemon.enabled {
         return DaemonScheduleView {
@@ -153,53 +243,72 @@ fn daemon_schedule_view(
             interval_label,
             search_missing_label,
             vacuum_label,
-            last_run_label,
+            last_run_metric_label: "Last recorded scan".to_string(),
+            last_run_label: last_recorded_scan_label,
             next_due_label: "Not scheduled by daemon".to_string(),
             detail: "Daemon mode is disabled in config, so recorded scans here come from manual triggers or an external scheduler.".to_string(),
         };
     }
 
-    let Some(last_run_at) = latest_run_started_at.and_then(parse_scan_timestamp) else {
+    let Some(last_run_at) = latest_daemon_run.and_then(|run| parse_scan_timestamp(&run.started_at))
+    else {
+        let mut detail = "Daemon mode is enabled but this database has no daemon-origin scan yet. The web UI can only estimate cadence after the first daemon run lands.".to_string();
+        if let Some(note) = latest_overall_non_daemon_note {
+            detail.push_str(&note);
+        }
         return DaemonScheduleView {
             status_label: "Priming".to_string(),
             status_badge_class: "badge-info",
             interval_label,
             search_missing_label,
             vacuum_label,
-            last_run_label,
+            last_run_metric_label: "Last daemon scan".to_string(),
+            last_run_label: last_daemon_scan_label,
             next_due_label: "After first recorded scan".to_string(),
-            detail: "Daemon mode is enabled but this database has no recorded scan yet. The web UI can only estimate cadence after the first run lands.".to_string(),
+            detail,
         };
     };
 
     let next_due = last_run_at + ChronoDuration::minutes(config.daemon.interval_minutes as i64);
     let now = Utc::now();
     if now >= next_due {
+        let mut detail =
+            "This estimate is based on the most recent daemon-origin scan, not on newer manual or web-triggered runs.".to_string();
+        if let Some(note) = latest_overall_non_daemon_note {
+            detail.push_str(&note);
+        }
         return DaemonScheduleView {
             status_label: "Due".to_string(),
             status_badge_class: "badge-warning",
             interval_label,
             search_missing_label,
             vacuum_label,
-            last_run_label,
+            last_run_metric_label: "Last daemon scan".to_string(),
+            last_run_label: last_daemon_scan_label,
             next_due_label: format!("Due now ({} late)", humanize_duration(now - next_due)),
-            detail: "This is a config-based estimate only. The web UI still cannot prove whether a daemon process is actually running on this machine right now.".to_string(),
+            detail,
         };
     }
 
+    let mut detail =
+        "This estimate is based on the latest daemon-origin scan. Manual or web-triggered runs do not reset daemon cadence.".to_string();
+    if let Some(note) = latest_overall_non_daemon_note {
+        detail.push_str(&note);
+    }
     DaemonScheduleView {
         status_label: "Waiting".to_string(),
         status_badge_class: "badge-success",
         interval_label,
         search_missing_label,
         vacuum_label,
-        last_run_label,
+        last_run_metric_label: "Last daemon scan".to_string(),
+        last_run_label: last_daemon_scan_label,
         next_due_label: format!(
             "{} (in {})",
             next_due.format("%Y-%m-%d %H:%M:%S UTC"),
             humanize_duration(next_due - now)
         ),
-        detail: "This is a config-based estimate from the latest recorded scan. It is useful for cadence awareness, not as proof that the daemon loop is alive.".to_string(),
+        detail,
     }
 }
 
@@ -758,7 +867,8 @@ async fn dashboard_activity_feed(state: &WebState) -> DashboardActivityFeedView 
 
     let mut recent_items = Vec::new();
 
-    if let Some(outcome) = scan::visible_last_scan_outcome(state).await {
+    let latest_scan_outcome = scan::visible_last_scan_outcome(state).await;
+    if let Some(outcome) = latest_scan_outcome.as_ref() {
         recent_items.push(ActivityFeedItemView {
             kind_label: "Scan".to_string(),
             status_label: if outcome.success {
@@ -771,14 +881,22 @@ async fn dashboard_activity_feed(state: &WebState) -> DashboardActivityFeedView 
             } else {
                 "badge-danger"
             },
-            scope_label: outcome.scope_label,
+            scope_label: outcome.scope_label.clone(),
             timestamp_label: "Finished".to_string(),
-            timestamp: outcome.finished_at,
+            timestamp: outcome.finished_at.clone(),
             context: None,
-            message: outcome.message,
+            message: outcome.message.clone(),
             badges: scan_activity_badges(outcome.dry_run, outcome.search_missing),
             link: Some(activity_link("/scan", "Open Scan")),
         });
+    }
+
+    if let Some(run) = latest_scan_run_record(state).await {
+        let should_surface_recorded_scan =
+            run.origin != ScanRunOrigin::Web || latest_scan_outcome.is_none();
+        if should_surface_recorded_scan {
+            recent_items.push(recorded_scan_activity_item(run));
+        }
     }
 
     if let Some(outcome) = cleanup::visible_last_cleanup_audit_outcome(state).await {
@@ -947,13 +1065,15 @@ pub async fn get_dashboard(State(state): State<WebState>) -> impl IntoResponse {
         }
     };
 
-    let recent_runs = match state.database.get_scan_history(5).await {
-        Ok(history) => scan_run_views(history),
+    let recent_history = match state.database.get_scan_history(5).await {
+        Ok(history) => history,
         Err(e) => {
             error!("Failed to get scan history: {}", e);
             Vec::new()
         }
     };
+    let latest_run_record = recent_history.first().cloned();
+    let recent_runs = scan_run_views(recent_history);
     let latest_run = recent_runs.first().cloned();
     let last_scan_outcome = scan::visible_last_scan_outcome(&state).await;
     let last_cleanup_audit_outcome = cleanup::visible_last_cleanup_audit_outcome(&state).await;
@@ -975,9 +1095,11 @@ pub async fn get_dashboard(State(state): State<WebState>) -> impl IntoResponse {
     };
     let streaming_guard = streaming_guard_view(&state).await;
     let recent_queue_jobs = recent_queue_jobs(&state, RECENT_QUEUE_JOB_LIMIT).await;
+    let latest_daemon_run = latest_daemon_scan_run_record(&state).await;
     let daemon_schedule = daemon_schedule_view(
         &state.config,
-        latest_run.as_ref().map(|run| run.started_at.as_str()),
+        latest_daemon_run.as_ref(),
+        latest_run_record.as_ref(),
     );
     let attention_inputs = DashboardAttentionInputs {
         latest_run: latest_run.as_ref(),
@@ -1059,16 +1181,8 @@ pub async fn get_dashboard_needs_attention(State(state): State<WebState>) -> imp
         }
     };
 
-    let latest_run = match state.database.get_scan_history(1).await {
-        Ok(runs) => runs.into_iter().next().map(ScanRunView::from_record),
-        Err(err) => {
-            error!(
-                "Failed to get latest scan history for needs-attention fragment: {}",
-                err
-            );
-            None
-        }
-    };
+    let latest_run_record = latest_scan_run_record(&state).await;
+    let latest_run = latest_run_record.clone().map(ScanRunView::from_record);
     let last_scan_outcome = scan::visible_last_scan_outcome(&state).await;
     let last_cleanup_audit_outcome = cleanup::visible_last_cleanup_audit_outcome(&state).await;
     let last_repair_outcome = state.last_repair_outcome().await.map(Into::into);
@@ -1093,9 +1207,11 @@ pub async fn get_dashboard_needs_attention(State(state): State<WebState>) -> imp
         }
     };
     let streaming_guard = streaming_guard_view(&state).await;
+    let latest_daemon_run = latest_daemon_scan_run_record(&state).await;
     let daemon_schedule = daemon_schedule_view(
         &state.config,
-        latest_run.as_ref().map(|run| run.started_at.as_str()),
+        latest_daemon_run.as_ref(),
+        latest_run_record.as_ref(),
     );
     let attention_inputs = DashboardAttentionInputs {
         latest_run: latest_run.as_ref(),
@@ -1118,8 +1234,8 @@ pub async fn get_dashboard_needs_attention(State(state): State<WebState>) -> imp
 
 /// GET /dashboard/latest-run - HTMX fragment for latest scan baseline
 pub async fn get_dashboard_latest_run(State(state): State<WebState>) -> impl IntoResponse {
-    let latest_run = match state.database.get_scan_history(1).await {
-        Ok(runs) => runs.into_iter().next().map(ScanRunView::from_record),
+    let latest_run = match state.database.get_latest_scan_run().await {
+        Ok(run) => run.map(ScanRunView::from_record),
         Err(err) => {
             error!("Failed to get latest scan history for latest-run fragment: {}", err);
             None
@@ -1157,12 +1273,8 @@ pub async fn get_status(State(state): State<WebState>) -> impl IntoResponse {
             QueueOverview::default()
         }
     };
-    let latest_scan_started_at = state
-        .database
-        .get_scan_history(1)
-        .await
-        .ok()
-        .and_then(|history| history.into_iter().next().map(|run| run.started_at));
+    let latest_scan_run = latest_scan_run_record(&state).await;
+    let latest_daemon_run = latest_daemon_scan_run_record(&state).await;
     let checks = collect_health_checks(&state);
     let deferred_refresh = deferred_refresh_summary(&state.config)
         .map(DeferredRefreshSummaryView::from)
@@ -1183,7 +1295,11 @@ pub async fn get_status(State(state): State<WebState>) -> impl IntoResponse {
         tracked_dead_links,
         recent_queue_jobs,
         queue,
-        daemon_schedule: daemon_schedule_view(&state.config, latest_scan_started_at.as_deref()),
+        daemon_schedule: daemon_schedule_view(
+            &state.config,
+            latest_daemon_run.as_ref(),
+            latest_scan_run.as_ref(),
+        ),
         checks,
         deferred_refresh,
         streaming_guard,

@@ -60,7 +60,7 @@
     <div class="disclosure-card__body">
         <div class="metric-grid metric-grid--compact">
             <div class="metric-card">
-                <span class="metric-label">Last recorded scan</span>
+                <span class="metric-label">{{ daemon_schedule.last_run_metric_label }}</span>
                 <strong>{{ daemon_schedule.last_run_label }}</strong>
             </div>
             <div class="metric-card">
@@ -249,6 +249,7 @@
                     {% else %}
                     <span class="badge badge-success">Live</span>
                     {% endif %}
+                    <span class="badge {{ run.origin_badge_class }}">{{ run.origin_label }}</span>
                     {% if run.search_missing %}
                     <span class="badge badge-warning">Missing</span>
                     {% endif %}

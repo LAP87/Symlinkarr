@@ -60,6 +60,9 @@ impl Database {
 
     async fn infer_legacy_schema_version(&self) -> Result<i64> {
         if self.table_exists("anime_search_overrides").await? {
+            if self.column_exists("scan_runs", "origin").await.unwrap_or(false) {
+                return Ok(16);
+            }
             return Ok(15);
         }
         if self.table_exists("acquisition_jobs").await? {
@@ -141,8 +144,9 @@ impl Database {
             13 => self.migration_v13_tx(tx).await,
             14 => self.migration_v14_tx(tx).await,
             15 => self.migration_v15_tx(tx).await,
+            16 => self.migration_v16_tx(tx).await,
             _ => anyhow::bail!(
-                "Unsupported schema migration version {}. This build only knows migrations 1 through 15",
+                "Unsupported schema migration version {}. This build only knows migrations 1 through 16",
                 version
             ),
         }
@@ -236,6 +240,7 @@ impl Database {
             "CREATE TABLE IF NOT EXISTS scan_runs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 run_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                origin TEXT NOT NULL DEFAULT 'unknown',
                 dry_run INTEGER NOT NULL DEFAULT 0,
                 library_filter TEXT,
                 run_token TEXT,
@@ -547,9 +552,29 @@ impl Database {
         Ok(())
     }
 
+    async fn migration_v16_tx(&self, tx: &mut Transaction<'_, Sqlite>) -> Result<()> {
+        match sqlx::query("ALTER TABLE scan_runs ADD COLUMN origin TEXT NOT NULL DEFAULT 'unknown'")
+            .execute(&mut **tx)
+            .await
+        {
+            Ok(_) => {}
+            Err(err) if err.to_string().contains("duplicate column name") => {}
+            Err(err) => return Err(err.into()),
+        }
+
+        Ok(())
+    }
+
     #[cfg(test)]
     async fn migrate_down_one(&self, current_version: i64) -> Result<()> {
         match current_version {
+            16 => {
+                if self.column_exists("scan_runs", "origin").await? {
+                    sqlx::query("ALTER TABLE scan_runs DROP COLUMN origin")
+                        .execute(&self.pool)
+                        .await?;
+                }
+            }
             15 => {
                 sqlx::query("DROP INDEX IF EXISTS idx_anime_search_overrides_updated_at")
                     .execute(&self.pool)

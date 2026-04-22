@@ -226,9 +226,10 @@ impl WebState {
         let background_job = job.clone();
         tokio::spawn(async move {
             let result = std::panic::AssertUnwindSafe(async {
-                crate::commands::scan::run_scan(
+                crate::commands::scan::run_scan_with_origin(
                     config.as_ref(),
                     database.as_ref(),
+                    crate::db::ScanRunOrigin::Web,
                     dry_run,
                     search_missing,
                     crate::OutputFormat::Json,

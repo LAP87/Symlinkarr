@@ -35,6 +35,8 @@ fn sample_scan_run_view() -> ScanRunView {
         id: 42,
         started_at: "2026-03-21 20:15:00".to_string(),
         scope_label: "Anime".to_string(),
+        origin_label: "Daemon",
+        origin_badge_class: "badge-success",
         dry_run: false,
         search_missing: true,
         library_items_found: 3906,
@@ -211,9 +213,10 @@ fn sample_daemon_schedule_view() -> DaemonScheduleView {
         interval_label: "Every 60 min".to_string(),
         search_missing_label: "Enabled".to_string(),
         vacuum_label: "Daily @ 03:00 local".to_string(),
+        last_run_metric_label: "Last daemon scan".to_string(),
         last_run_label: "2026-04-22 10:00:00 UTC".to_string(),
         next_due_label: "2026-04-22 11:00:00 UTC (in 45m)".to_string(),
-        detail: "This is a config-based estimate from the latest recorded scan.".to_string(),
+        detail: "This estimate is based on the latest daemon-origin scan.".to_string(),
     }
 }
 
@@ -642,9 +645,10 @@ fn status_template_surfaces_overdue_daemon_warning() {
             interval_label: "Every 60 min".to_string(),
             search_missing_label: "Enabled".to_string(),
             vacuum_label: "Daily @ 03:00 local".to_string(),
+            last_run_metric_label: "Last daemon scan".to_string(),
             last_run_label: "2026-04-22 08:00:00 UTC".to_string(),
             next_due_label: "Due now (3h late)".to_string(),
-            detail: "This is a config-based estimate only.".to_string(),
+            detail: "This estimate is based on the latest daemon-origin scan.".to_string(),
         },
         checks: std::collections::BTreeMap::new(),
         deferred_refresh: DeferredRefreshSummaryView::default(),

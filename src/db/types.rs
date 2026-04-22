@@ -16,6 +16,7 @@ pub struct HousekeepingStats {
 
 #[derive(Debug, Clone, Default)]
 pub struct ScanRunRecord {
+    pub origin: ScanRunOrigin,
     pub dry_run: bool,
     pub library_filter: Option<String>,
     pub run_token: Option<String>,
@@ -65,6 +66,42 @@ pub struct ScanRunRecord {
     pub auto_acquire_failed: i64,
     pub auto_acquire_completed_linked: i64,
     pub auto_acquire_completed_unlinked: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScanRunOrigin {
+    #[default]
+    Unknown,
+    Cli,
+    Daemon,
+    Web,
+    AutoAcquire,
+}
+
+impl ScanRunOrigin {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Cli => "cli",
+            Self::Daemon => "daemon",
+            Self::Web => "web",
+            Self::AutoAcquire => "auto_acquire",
+        }
+    }
+
+    pub(crate) fn from_db(value: &str) -> Result<Self> {
+        match value {
+            "unknown" => Ok(Self::Unknown),
+            "cli" => Ok(Self::Cli),
+            "daemon" => Ok(Self::Daemon),
+            "web" => Ok(Self::Web),
+            "auto_acquire" => Ok(Self::AutoAcquire),
+            _ => anyhow::bail!(
+                "Unsupported scan run origin '{}' in the database. Expected one of: unknown, cli, daemon, web, auto_acquire",
+                value
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -285,6 +322,7 @@ pub struct WebStats {
 pub struct ScanHistoryRecord {
     pub id: i64,
     pub started_at: String,
+    pub origin: ScanRunOrigin,
     pub dry_run: bool,
     pub library_filter: Option<String>,
     pub run_token: Option<String>,

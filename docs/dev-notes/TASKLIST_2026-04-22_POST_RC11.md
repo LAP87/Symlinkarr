@@ -19,7 +19,9 @@ The new center of gravity is operator confidence under live runtime conditions.
 - [x] Surface overdue daemon cadence in dashboard triage and in `Status`
 - [x] Make the `Needs Attention` panel itself HTMX-live so the highest-signal dashboard section no longer goes stale after first render
 - [x] Make the latest run baseline and dashboard hero summary live so queue / link / refresh counters no longer require a hard reload
-- [ ] Decide whether the next live slice should target the remaining static header badges or move to true daemon-origin provenance
+- [x] Record scan origin and use daemon-origin runs for cadence estimates instead of letting web/manual scans masquerade as daemon proof
+- [x] Surface scan origin in history/detail/API and show the freshest recorded scan provenance in the dashboard activity feed
+- [ ] Decide whether the next observability slice should target true daemon-process liveness or stop at persisted run provenance for v1.0
 
 ### 2. Keep the anime override track narrow and operator-friendly
 

@@ -108,6 +108,7 @@ async fn test_context() -> TestWebContext {
     .unwrap();
 
     db.record_scan_run(&ScanRunRecord {
+            origin: crate::db::ScanRunOrigin::Daemon,
             dry_run: true,
             library_filter: Some("Anime".to_string()),
             run_token: Some("scan-run-handler".to_string()),
@@ -415,8 +416,10 @@ async fn dashboard_activity_feed_fragment_renders_running_and_recent_work() {
     assert!(body.contains("Audit is building a new cleanup report."));
     assert!(body.contains("Repair is checking tracked dead links."));
     assert!(body.contains("RD cache sync failed"));
+    assert!(body.contains("Daemon origin persisted in scan history."));
     assert!(body.contains("Open Cleanup"));
     assert!(body.contains("Open Dead Links"));
+    assert!(body.contains("Open Run"));
     assert!(body.contains("Auto-Acquire"));
     assert!(body.contains("provider returned a hard block"));
     assert!(body.contains("Open Status"));
@@ -673,9 +676,10 @@ fn dashboard_needs_attention_includes_overdue_daemon_signal() {
         interval_label: "Every 60 min".to_string(),
         search_missing_label: "Enabled".to_string(),
         vacuum_label: "Daily @ 03:00 local".to_string(),
+        last_run_metric_label: "Last daemon scan".to_string(),
         last_run_label: "2026-04-22 12:00:00 UTC".to_string(),
         next_due_label: "Due now (2h late)".to_string(),
-        detail: "This is a config-based estimate only.".to_string(),
+        detail: "This estimate is based on the latest daemon-origin scan.".to_string(),
     };
     let inputs = DashboardAttentionInputs {
         latest_run: None,
@@ -1360,6 +1364,64 @@ async fn status_page_renders_queue_pressure_and_recent_links() {
     assert!(body.contains("tvdb-1"));
     assert!(body.contains("Queued"));
     assert!(body.contains("Configured cadence"));
+}
+
+#[tokio::test]
+async fn status_page_uses_last_daemon_run_when_newer_web_run_exists() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = test_config(dir.path());
+    cfg.daemon.enabled = true;
+    cfg.daemon.interval_minutes = 60;
+    let db = Database::new(&cfg.db_path).await.unwrap();
+    let state = WebState::new(cfg, db);
+
+    state
+        .database
+        .record_scan_run(&ScanRunRecord {
+            origin: crate::db::ScanRunOrigin::Daemon,
+            run_token: Some("scan-run-daemon".to_string()),
+            library_filter: Some("Anime".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    state
+        .database
+        .record_scan_run(&ScanRunRecord {
+            origin: crate::db::ScanRunOrigin::Web,
+            run_token: Some("scan-run-newer-web".to_string()),
+            library_filter: Some("Anime".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    let options = SqliteConnectOptions::from_str(state.config.db_path.as_str())
+        .unwrap()
+        .create_if_missing(true);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE scan_runs SET run_at = ? WHERE run_token = ?")
+        .bind("2026-04-22 10:00:00")
+        .bind("scan-run-daemon")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE scan_runs SET run_at = ? WHERE run_token = ?")
+        .bind("2026-04-22 12:00:00")
+        .bind("scan-run-newer-web")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let body = render_body(get_status(State(state.clone())).await).await;
+
+    assert!(body.contains("Last daemon scan"));
+    assert!(body.contains("2026-04-22 10:00:00"));
+    assert!(body.contains("Latest overall run came from Web at 2026-04-22 12:00:00"));
 }
 
 #[tokio::test]

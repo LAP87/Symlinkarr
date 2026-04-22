@@ -455,6 +455,16 @@ async fn test_latest_migration_creates_skip_reason_json_column() {
 }
 
 #[tokio::test]
+async fn test_latest_migration_creates_scan_run_origin_column() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+        .await
+        .unwrap();
+
+    assert!(db.column_exists("scan_runs", "origin").await.unwrap());
+}
+
+#[tokio::test]
 async fn test_latest_migration_creates_anime_search_overrides_table() {
     let dir = tempfile::tempdir().unwrap();
     let db = Database::new(dir.path().join("test.db").to_str().unwrap())
@@ -1398,6 +1408,7 @@ async fn test_record_scan_run_roundtrip() {
         .unwrap();
 
     let run = ScanRunRecord {
+            origin: crate::db::ScanRunOrigin::Cli,
             dry_run: true,
             run_token: Some("scan-run-db".to_string()),
             library_items_found: 42,
@@ -1457,7 +1468,7 @@ async fn test_record_scan_run_roundtrip() {
     db.record_scan_run(&run).await.unwrap();
 
     let row = sqlx::query(
-            "SELECT dry_run, library_filter, search_missing, library_items_found, source_items_found, matches_found, \
+            "SELECT origin, dry_run, library_filter, search_missing, library_items_found, source_items_found, matches_found, \
              links_created, links_updated, dead_marked, links_removed, links_skipped, \
              ambiguous_skipped, runtime_checks_ms, plex_refresh_planned_batches, plex_refresh_capped_batches, \
              plex_refresh_aborted_due_to_cap, media_server_refresh_json, \
@@ -1468,6 +1479,8 @@ async fn test_record_scan_run_roundtrip() {
         .await
         .unwrap();
 
+    let origin: String = row.get("origin");
+    assert_eq!(origin, "cli");
     let dry_run: i64 = row.get("dry_run");
     assert_eq!(dry_run, 1, "dry_run stored as 1");
     let library_filter: Option<String> = row.get("library_filter");
@@ -1794,6 +1807,47 @@ async fn test_get_scan_history() {
     // Full history returns all 3
     let all = db.get_scan_history(10).await.unwrap();
     assert_eq!(all.len(), 3);
+}
+
+#[tokio::test]
+async fn test_get_latest_scan_run_for_origin() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+        .await
+        .unwrap();
+
+    db.record_scan_run(&ScanRunRecord {
+        origin: crate::db::ScanRunOrigin::Daemon,
+        run_token: Some("daemon-run".to_string()),
+        matches_found: 5,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    db.record_scan_run(&ScanRunRecord {
+        origin: crate::db::ScanRunOrigin::Web,
+        run_token: Some("web-run".to_string()),
+        matches_found: 8,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let daemon_run = db
+        .get_latest_scan_run_for_origin(crate::db::ScanRunOrigin::Daemon)
+        .await
+        .unwrap()
+        .unwrap();
+    let web_run = db
+        .get_latest_scan_run_for_origin(crate::db::ScanRunOrigin::Web)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(daemon_run.origin, crate::db::ScanRunOrigin::Daemon);
+    assert_eq!(daemon_run.run_token.as_deref(), Some("daemon-run"));
+    assert_eq!(web_run.origin, crate::db::ScanRunOrigin::Web);
+    assert_eq!(web_run.run_token.as_deref(), Some("web-run"));
 }
 
 #[tokio::test]

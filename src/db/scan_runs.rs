@@ -5,7 +5,7 @@ use sqlx::Row;
 
 use super::{
     path_to_db_text, Database, LinkEventHistoryRecord, LinkEventRecord, ScanHistoryRecord,
-    ScanRunRecord, WebStats,
+    ScanRunOrigin, ScanRunRecord, WebStats,
 };
 
 impl Database {
@@ -34,6 +34,7 @@ impl Database {
     pub async fn record_scan_run(&self, run: &ScanRunRecord) -> Result<()> {
         sqlx::query(
             "INSERT INTO scan_runs (
+                origin,
                 dry_run,
                 library_filter,
                 run_token,
@@ -83,8 +84,9 @@ impl Database {
                 auto_acquire_failed,
                 auto_acquire_completed_linked,
                 auto_acquire_completed_unlinked
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
+        .bind(run.origin.as_str())
         .bind(if run.dry_run { 1 } else { 0 })
         .bind(run.library_filter.as_deref())
         .bind(run.run_token.as_deref())
@@ -232,7 +234,7 @@ impl Database {
     #[allow(dead_code)]
     pub async fn get_scan_history(&self, limit: i64) -> Result<Vec<ScanHistoryRecord>> {
         let rows = sqlx::query(
-            "SELECT id, run_at, dry_run, library_filter, run_token, search_missing, library_items_found, source_items_found,
+            "SELECT id, run_at, origin, dry_run, library_filter, run_token, search_missing, library_items_found, source_items_found,
                     matches_found, links_created, links_updated, dead_marked,
                     links_removed, links_skipped, ambiguous_skipped, skip_reason_json,
                     runtime_checks_ms, library_scan_ms, source_inventory_ms,
@@ -264,9 +266,50 @@ impl Database {
         Ok(records)
     }
 
+    pub async fn get_latest_scan_run(&self) -> Result<Option<ScanHistoryRecord>> {
+        let rows = self.get_scan_history(1).await?;
+        Ok(rows.into_iter().next())
+    }
+
+    pub async fn get_latest_scan_run_for_origin(
+        &self,
+        origin: ScanRunOrigin,
+    ) -> Result<Option<ScanHistoryRecord>> {
+        let row = sqlx::query(
+            "SELECT id, run_at, origin, dry_run, library_filter, run_token, search_missing, library_items_found, source_items_found,
+                    matches_found, links_created, links_updated, dead_marked,
+                    links_removed, links_skipped, ambiguous_skipped, skip_reason_json,
+                    runtime_checks_ms, library_scan_ms, source_inventory_ms,
+                    matching_ms, title_enrichment_ms, linking_ms, plex_refresh_ms,
+                    plex_refresh_requested_paths, plex_refresh_unique_paths,
+                    plex_refresh_planned_batches, plex_refresh_coalesced_batches,
+                    plex_refresh_coalesced_paths, plex_refresh_refreshed_batches,
+                    plex_refresh_refreshed_paths_covered, plex_refresh_skipped_batches,
+                    plex_refresh_unresolved_paths, plex_refresh_capped_batches,
+                    plex_refresh_aborted_due_to_cap,
+                    plex_refresh_failed_batches,
+                    media_server_refresh_json,
+                    dead_link_sweep_ms, cache_hit_ratio, candidate_slots,
+                    scored_candidates, exact_id_hits, auto_acquire_requests,
+                    auto_acquire_missing_requests, auto_acquire_cutoff_requests,
+                    auto_acquire_dry_run_hits, auto_acquire_submitted,
+                    auto_acquire_no_result, auto_acquire_blocked, auto_acquire_failed,
+                    auto_acquire_completed_linked, auto_acquire_completed_unlinked
+             FROM scan_runs
+             WHERE origin = ?
+             ORDER BY run_at DESC
+             LIMIT 1",
+        )
+        .bind(origin.as_str())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|row| self.row_to_scan_history_record(&row)))
+    }
+
     pub async fn get_scan_run(&self, id: i64) -> Result<Option<ScanHistoryRecord>> {
         let row = sqlx::query(
-            "SELECT id, run_at, dry_run, library_filter, run_token, search_missing, library_items_found, source_items_found,
+            "SELECT id, run_at, origin, dry_run, library_filter, run_token, search_missing, library_items_found, source_items_found,
                     matches_found, links_created, links_updated, dead_marked,
                     links_removed, links_skipped, ambiguous_skipped, skip_reason_json,
                     runtime_checks_ms, library_scan_ms, source_inventory_ms,
@@ -332,6 +375,8 @@ impl Database {
         ScanHistoryRecord {
             id: row.get("id"),
             started_at: row.get("run_at"),
+            origin: ScanRunOrigin::from_db(&row.get::<String, _>("origin"))
+                .unwrap_or(ScanRunOrigin::Unknown),
             dry_run: row.get::<i64, _>("dry_run") != 0,
             library_filter: row.get("library_filter"),
             run_token: row.get("run_token"),

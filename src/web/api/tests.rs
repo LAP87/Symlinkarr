@@ -76,6 +76,7 @@ async fn test_state() -> WebState {
     let db = Database::new(&cfg.db_path).await.unwrap();
 
     db.record_scan_run(&ScanRunRecord {
+            origin: crate::db::ScanRunOrigin::Daemon,
             dry_run: true,
             library_filter: Some("Anime".to_string()),
             run_token: Some("scan-run-test".to_string()),
@@ -305,6 +306,8 @@ async fn api_get_scan_run_returns_full_detail() {
     assert_eq!(json.id, run_id);
     assert_eq!(json.library_filter.as_deref(), Some("Anime"));
     assert_eq!(json.scope_label, "Anime");
+    assert_eq!(json.origin, "daemon");
+    assert_eq!(json.origin_label, "Daemon");
     assert_eq!(json.total_runtime_ms, 288_200);
     assert_eq!(json.plex_refresh.runtime_ms, 3_100);
     assert_eq!(json.plex_refresh.planned_batches, 5);
@@ -421,6 +424,8 @@ async fn api_get_scan_history_filters_and_summarizes_runs() {
     assert_eq!(json.len(), 1);
     let run = &json[0];
     assert_eq!(run.scope_label, "Anime");
+    assert_eq!(run.origin, "daemon");
+    assert_eq!(run.origin_label, "Daemon");
     assert!(run.dry_run);
     assert!(run.search_missing);
     assert_eq!(run.matches_found, 9924);

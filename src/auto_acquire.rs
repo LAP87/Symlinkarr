@@ -968,9 +968,10 @@ async fn run_relink_scans(
     }
 
     for filter in library_filters {
-        Box::pin(crate::commands::scan::run_scan(
+        Box::pin(crate::commands::scan::run_scan_with_origin(
             cfg,
             db,
+            crate::db::ScanRunOrigin::AutoAcquire,
             false,
             false,
             crate::OutputFormat::Text,

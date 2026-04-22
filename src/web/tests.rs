@@ -114,6 +114,7 @@ async fn test_router() -> Router {
     .unwrap();
 
     db.record_scan_run(&ScanRunRecord {
+        origin: crate::db::ScanRunOrigin::Daemon,
         dry_run: true,
         library_filter: Some("Anime".to_string()),
         run_token: Some("scan-run-web".to_string()),

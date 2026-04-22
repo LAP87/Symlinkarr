@@ -106,9 +106,10 @@ pub(crate) async fn run_daemon(cfg: &Config, db: &Database) -> Result<()> {
             }
         }
 
-        if let Err(e) = super::scan::run_scan(
+        if let Err(e) = super::scan::run_scan_with_origin(
             cfg,
             db,
+            crate::db::ScanRunOrigin::Daemon,
             false,
             cfg.daemon.search_missing,
             OutputFormat::Text,

@@ -22,6 +22,7 @@ use crate::commands::{
 };
 use crate::config::Config;
 use crate::db::Database;
+use crate::db::ScanRunOrigin;
 use crate::library_scanner::LibraryScanner;
 use crate::linker::{LinkProcessSummary, Linker};
 use crate::matcher::{MatchRunOutput, MatchTelemetry, Matcher};
@@ -74,6 +75,27 @@ struct ScanTelemetry {
 pub(crate) async fn run_scan(
     cfg: &Config,
     db: &Database,
+    dry_run: bool,
+    search_missing: bool,
+    output: OutputFormat,
+    library_filter: Option<&str>,
+) -> Result<(i64, i64)> {
+    run_scan_with_origin(
+        cfg,
+        db,
+        ScanRunOrigin::Cli,
+        dry_run,
+        search_missing,
+        output,
+        library_filter,
+    )
+    .await
+}
+
+pub(crate) async fn run_scan_with_origin(
+    cfg: &Config,
+    db: &Database,
+    origin: ScanRunOrigin,
     dry_run: bool,
     search_missing: bool,
     output: OutputFormat,
@@ -459,6 +481,7 @@ pub(crate) async fn run_scan(
     }
 
     db.record_scan_run(&crate::db::ScanRunRecord {
+        origin,
         dry_run: effective_dry_run,
         library_filter: library_filter.map(str::to_string),
         run_token: Some(run_token.clone()),
