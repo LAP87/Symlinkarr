@@ -699,6 +699,15 @@ fn dashboard_needs_attention(
     DashboardNeedsAttentionView { items }
 }
 
+fn build_dashboard_needs_attention_view(
+    stats: &DashboardStats,
+    queue: &QueueOverview,
+    deferred_refresh: &DeferredRefreshSummaryView,
+    inputs: &DashboardAttentionInputs<'_>,
+) -> DashboardNeedsAttentionView {
+    dashboard_needs_attention(stats, queue, deferred_refresh, inputs)
+}
+
 async fn dashboard_activity_feed(state: &WebState) -> DashboardActivityFeedView {
     let mut active_items = Vec::new();
 
@@ -979,7 +988,7 @@ pub async fn get_dashboard(State(state): State<WebState>) -> impl IntoResponse {
         daemon_schedule: Some(&daemon_schedule),
     };
     let needs_attention =
-        dashboard_needs_attention(&stats, &queue, &deferred_refresh, &attention_inputs);
+        build_dashboard_needs_attention_view(&stats, &queue, &deferred_refresh, &attention_inputs);
 
     let template = DashboardTemplate {
         stats,
@@ -1000,6 +1009,73 @@ pub async fn get_dashboard(State(state): State<WebState>) -> impl IntoResponse {
 pub async fn get_dashboard_activity_feed(State(state): State<WebState>) -> impl IntoResponse {
     DashboardActivityFeedTemplate {
         activity_feed: dashboard_activity_feed(&state).await,
+    }
+}
+
+/// GET /dashboard/needs-attention - HTMX fragment for live operator triage
+pub async fn get_dashboard_needs_attention(State(state): State<WebState>) -> impl IntoResponse {
+    let stats = match state.database.get_web_stats().await {
+        Ok(stats) => dashboard_stats_from_web_stats(stats),
+        Err(err) => {
+            error!("Failed to get dashboard stats for needs-attention fragment: {}", err);
+            DashboardStats::default()
+        }
+    };
+
+    let latest_run = match state.database.get_scan_history(1).await {
+        Ok(runs) => runs.into_iter().next().map(ScanRunView::from_record),
+        Err(err) => {
+            error!(
+                "Failed to get latest scan history for needs-attention fragment: {}",
+                err
+            );
+            None
+        }
+    };
+    let last_scan_outcome = scan::visible_last_scan_outcome(&state).await;
+    let last_cleanup_audit_outcome = cleanup::visible_last_cleanup_audit_outcome(&state).await;
+    let last_repair_outcome = state.last_repair_outcome().await.map(Into::into);
+    let queue = match state.database.get_acquisition_job_counts().await {
+        Ok(counts) => queue_overview_from_counts(counts),
+        Err(err) => {
+            error!(
+                "Failed to get acquisition queue counts for needs-attention fragment: {}",
+                err
+            );
+            QueueOverview::default()
+        }
+    };
+    let deferred_refresh = match deferred_refresh_summary(&state.config) {
+        Ok(summary) => DeferredRefreshSummaryView::from(summary),
+        Err(err) => {
+            error!(
+                "Failed to read deferred refresh queue for needs-attention fragment: {}",
+                err
+            );
+            DeferredRefreshSummaryView::default()
+        }
+    };
+    let streaming_guard = streaming_guard_view(&state).await;
+    let daemon_schedule = daemon_schedule_view(
+        &state.config,
+        latest_run.as_ref().map(|run| run.started_at.as_str()),
+    );
+    let attention_inputs = DashboardAttentionInputs {
+        latest_run: latest_run.as_ref(),
+        last_scan_outcome: last_scan_outcome.as_ref(),
+        last_cleanup_outcome: last_cleanup_audit_outcome.as_ref(),
+        last_repair_outcome: last_repair_outcome.as_ref(),
+        streaming_guard: streaming_guard.as_ref(),
+        daemon_schedule: Some(&daemon_schedule),
+    };
+
+    DashboardNeedsAttentionTemplate {
+        needs_attention: build_dashboard_needs_attention_view(
+            &stats,
+            &queue,
+            &deferred_refresh,
+            &attention_inputs,
+        ),
     }
 }
 

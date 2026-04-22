@@ -684,6 +684,10 @@ fn create_router(state: WebState) -> Router {
             "/dashboard/activity-feed",
             get(handlers::get_dashboard_activity_feed),
         )
+        .route(
+            "/dashboard/needs-attention",
+            get(handlers::get_dashboard_needs_attention),
+        )
         // Status & Health
         .route("/status", get(handlers::get_status))
         .route("/health", get(handlers::get_health))

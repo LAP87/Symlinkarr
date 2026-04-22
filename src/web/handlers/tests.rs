@@ -423,6 +423,77 @@ async fn dashboard_activity_feed_fragment_renders_running_and_recent_work() {
 }
 
 #[tokio::test]
+async fn dashboard_needs_attention_fragment_renders_live_section() {
+    let ctx = test_context().await;
+    ctx.state
+        .database
+        .insert_link(&LinkRecord {
+            id: None,
+            source_path: ctx.state.config.sources[0]
+                .path
+                .join("Missing.Show.S01E02.mkv"),
+            target_path: ctx.state.config.libraries[0]
+                .path
+                .join("Missing Show")
+                .join("Season 01")
+                .join("S01E02.mkv"),
+            media_id: "tvdb-missing".to_string(),
+            media_type: MediaType::Tv,
+            status: LinkStatus::Dead,
+            created_at: None,
+            updated_at: None,
+        })
+        .await
+        .unwrap();
+    let jobs = ctx
+        .state
+        .database
+        .get_manageable_acquisition_jobs()
+        .await
+        .unwrap();
+    let blocked_id = jobs
+        .iter()
+        .find(|job| job.request_key == "anime-queued-1")
+        .unwrap()
+        .id;
+    ctx.state
+        .database
+        .update_acquisition_job_state(
+            blocked_id,
+            &AcquisitionJobUpdate {
+                status: AcquisitionJobStatus::Blocked,
+                release_title: None,
+                info_hash: None,
+                error: Some("blocked".to_string()),
+                next_retry_at: None,
+                submitted_at: None,
+                completed_at: None,
+                increment_attempts: false,
+            },
+        )
+        .await
+        .unwrap();
+    ctx.state
+        .set_last_scan_outcome_for_test(Some(LastScanOutcome {
+            finished_at: "2099-04-19 21:18:00 UTC".to_string(),
+            scope_label: "Anime".to_string(),
+            dry_run: false,
+            search_missing: true,
+            success: false,
+            message: "RD cache sync failed".to_string(),
+        }))
+        .await;
+
+    let body = render_body(get_dashboard_needs_attention(State(ctx.state.clone())).await).await;
+
+    assert!(body.contains("Needs Attention"));
+    assert!(body.contains("Operator priorities"));
+    assert!(body.contains("hx-get=\"/dashboard/needs-attention\""));
+    assert!(body.contains("Latest background scan failed"));
+    assert!(body.contains("Auto-acquire queue is blocked"));
+}
+
+#[tokio::test]
 async fn dashboard_renders_needs_attention_priorities() {
     let ctx = test_context().await;
     ctx.state

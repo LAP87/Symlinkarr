@@ -492,6 +492,20 @@ fn dashboard_activity_feed_template_renders_active_and_recent_items() {
 }
 
 #[test]
+fn dashboard_needs_attention_template_renders_polling_fragment() {
+    let template = DashboardNeedsAttentionTemplate {
+        needs_attention: sample_needs_attention_view(),
+    };
+
+    let html = template.render().unwrap();
+    assert!(html.contains("Needs Attention"));
+    assert!(html.contains("Operator priorities"));
+    assert!(html.contains("hx-get=\"/dashboard/needs-attention\""));
+    assert!(html.contains("hx-trigger=\"every 10s\""));
+    assert!(html.contains("Latest background scan failed"));
+}
+
+#[test]
 fn dashboard_template_renders_needs_attention_section() {
     let template = DashboardTemplate {
         stats: DashboardStats::default(),
@@ -508,6 +522,7 @@ fn dashboard_template_renders_needs_attention_section() {
 
     let html = template.render().unwrap();
     assert!(html.contains("Needs Attention"));
+    assert!(html.contains("hx-get=\"/dashboard/needs-attention\""));
     assert!(html.contains("Latest background scan failed"));
     assert!(html.contains("Dead links need cleanup or repair"));
     assert!(html.contains("Next step:"));

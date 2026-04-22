@@ -521,6 +521,12 @@ pub struct DashboardTemplate {
     pub deferred_refresh: DeferredRefreshSummaryView,
 }
 
+#[derive(Template)]
+#[template(path = "web/ui/partials/needs_attention.html")]
+pub struct DashboardNeedsAttentionTemplate {
+    pub needs_attention: DashboardNeedsAttentionView,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct DashboardNeedsAttentionView {
     pub items: Vec<NeedsAttentionItemView>,
@@ -1236,6 +1242,7 @@ pub struct BackupResultTemplate {
 
 impl_template_into_response!(
     DashboardTemplate,
+    DashboardNeedsAttentionTemplate,
     DashboardActivityFeedTemplate,
     StatusTemplate,
     ScanTemplate,

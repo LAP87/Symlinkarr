@@ -1,4 +1,10 @@
-<section class="card">
+<section
+    id="dashboard-needs-attention"
+    class="card"
+    hx-get="/dashboard/needs-attention"
+    hx-trigger="every 10s"
+    hx-swap="outerHTML"
+>
     <div class="section-head">
         <div>
             <p class="section-kicker">Needs Attention</p>
