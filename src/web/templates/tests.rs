@@ -174,6 +174,35 @@ fn sample_needs_attention_view() -> DashboardNeedsAttentionView {
     }
 }
 
+fn sample_queue_jobs() -> Vec<QueueJobView> {
+    vec![
+        QueueJobView {
+            label: "Queued Anime".to_string(),
+            status_label: "Queued".to_string(),
+            status_badge_class: "badge-info",
+            arr_label: "Sonarr".to_string(),
+            scope_label: "Anime".to_string(),
+            query: "Queued Anime S01E01".to_string(),
+            attempts: 1,
+            detail: None,
+            timing_label: "Queued".to_string(),
+            timing_value: "Pending".to_string(),
+        },
+        QueueJobView {
+            label: "Blocked Anime".to_string(),
+            status_label: "Blocked".to_string(),
+            status_badge_class: "badge-warning",
+            arr_label: "Sonarr".to_string(),
+            scope_label: "Anime".to_string(),
+            query: "Blocked Anime S01E02".to_string(),
+            attempts: 2,
+            detail: Some("provider returned a hard block".to_string()),
+            timing_label: "Next retry".to_string(),
+            timing_value: "2026-04-22 02:15:00 UTC".to_string(),
+        },
+    ]
+}
+
 fn sample_config() -> Config {
     Config {
         libraries: vec![LibraryConfig {
@@ -406,6 +435,7 @@ fn dashboard_template_renders_needs_attention_section() {
         stats: DashboardStats::default(),
         needs_attention: sample_needs_attention_view(),
         activity_feed: sample_activity_feed_view(),
+        recent_queue_jobs: sample_queue_jobs(),
         latest_run: Some(sample_scan_run_view()),
         recent_runs: vec![sample_scan_run_view()],
         queue: QueueOverview::default(),
@@ -420,6 +450,37 @@ fn dashboard_template_renders_needs_attention_section() {
     assert!(html.contains("compare the failure against the latest run detail"));
     assert!(html.contains("Review Dead Links"));
     assert!(html.contains("/wiki/Dashboard-and-Daily-Operations"));
+    assert!(html.contains("Recent queue jobs"));
+    assert!(html.contains("Queued Anime"));
+    assert!(html.contains("Blocked Anime"));
+}
+
+#[test]
+fn status_template_renders_recent_queue_jobs() {
+    let template = StatusTemplate {
+        stats: DashboardStats::default(),
+        recent_links: Vec::new(),
+        tracked_dead_links: Vec::new(),
+        recent_queue_jobs: sample_queue_jobs(),
+        queue: QueueOverview {
+            active_total: 2,
+            queued: 1,
+            downloading: 0,
+            relinking: 0,
+            blocked: 1,
+            no_result: 0,
+            failed: 0,
+            completed_unlinked: 0,
+        },
+        checks: std::collections::BTreeMap::new(),
+        deferred_refresh: DeferredRefreshSummaryView::default(),
+    };
+
+    let html = template.render().unwrap();
+    assert!(html.contains("Recent auto-acquire jobs"));
+    assert!(html.contains("Queued Anime"));
+    assert!(html.contains("Blocked Anime"));
+    assert!(html.contains("Needs Relink"));
 }
 
 #[test]

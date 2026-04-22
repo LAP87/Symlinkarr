@@ -1,0 +1,43 @@
+{% if recent_queue_jobs|length > 0 %}
+<div class="table-wrap">
+    <table class="data-table dense-table">
+        <thead>
+            <tr>
+                <th>Status</th>
+                <th>Job</th>
+                <th>Query</th>
+                <th>Attempts</th>
+                <th>Timing</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for job in recent_queue_jobs %}
+            <tr>
+                <td><span class="badge {{ job.status_badge_class }}">{{ job.status_label }}</span></td>
+                <td>
+                    <strong>{{ job.label }}</strong>
+                    <br>
+                    <small class="text-muted">{{ job.arr_label }} · {{ job.scope_label }}</small>
+                    {% match job.detail %}
+                    {% when Some with (detail) %}
+                    <br>
+                    <small class="text-muted">{{ detail }}</small>
+                    {% when None %}{% endmatch %}
+                </td>
+                <td><code class="mono">{{ job.query }}</code></td>
+                <td>{{ job.attempts }}</td>
+                <td>
+                    <span class="text-muted">{{ job.timing_label }}</span>
+                    <br>
+                    <strong>{{ job.timing_value }}</strong>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div class="alert alert-success">
+    <strong>No recent queue jobs need operator review.</strong>
+</div>
+{% endif %}

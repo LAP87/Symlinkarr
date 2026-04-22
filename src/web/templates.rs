@@ -75,6 +75,7 @@ pub struct QueueOverview {
     pub blocked: i64,
     pub no_result: i64,
     pub failed: i64,
+    pub completed_unlinked: i64,
 }
 
 impl From<AcquisitionJobCounts> for QueueOverview {
@@ -87,6 +88,7 @@ impl From<AcquisitionJobCounts> for QueueOverview {
             blocked: value.blocked,
             no_result: value.no_result,
             failed: value.failed,
+            completed_unlinked: value.completed_unlinked,
         }
     }
 }
@@ -510,6 +512,7 @@ pub struct DashboardTemplate {
     pub stats: DashboardStats,
     pub needs_attention: DashboardNeedsAttentionView,
     pub activity_feed: DashboardActivityFeedView,
+    pub recent_queue_jobs: Vec<QueueJobView>,
     pub latest_run: Option<ScanRunView>,
     pub recent_runs: Vec<ScanRunView>,
     pub queue: QueueOverview,
@@ -563,6 +566,20 @@ pub struct ActivityFeedLinkView {
     pub label: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct QueueJobView {
+    pub label: String,
+    pub status_label: String,
+    pub status_badge_class: &'static str,
+    pub arr_label: String,
+    pub scope_label: String,
+    pub query: String,
+    pub attempts: i64,
+    pub detail: Option<String>,
+    pub timing_label: String,
+    pub timing_value: String,
+}
+
 #[derive(Template)]
 #[template(path = "web/ui/partials/activity_feed.html")]
 pub struct DashboardActivityFeedTemplate {
@@ -577,6 +594,7 @@ pub struct StatusTemplate {
     pub stats: DashboardStats,
     pub recent_links: Vec<LinkRecord>,
     pub tracked_dead_links: Vec<LinkRecord>,
+    pub recent_queue_jobs: Vec<QueueJobView>,
     pub queue: QueueOverview,
     pub checks: std::collections::BTreeMap<String, HealthCheck>,
     pub deferred_refresh: DeferredRefreshSummaryView,

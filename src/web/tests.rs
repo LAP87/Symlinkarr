@@ -370,6 +370,9 @@ async fn status_page_exposes_link_health_actions_and_seeded_rows() {
     assert!(status_page.contains("tvdb-1"));
     assert!(status_page.contains("S01E01.mkv"));
     assert!(status_page.contains("No persistent dead links are currently tracked."));
+    assert!(status_page.contains("Recent auto-acquire jobs"));
+    assert!(status_page.contains("Queued Anime"));
+    assert!(status_page.contains("Needs Relink"));
 }
 
 #[tokio::test]

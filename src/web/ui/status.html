@@ -77,6 +77,7 @@
             <div class="metric-card"><span class="metric-label">Blocked</span><strong>{{ queue.blocked }}</strong></div>
             <div class="metric-card"><span class="metric-label">No Result</span><strong>{{ queue.no_result }}</strong></div>
             <div class="metric-card"><span class="metric-label">Failed</span><strong>{{ queue.failed }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Needs Relink</span><strong>{{ queue.completed_unlinked }}</strong></div>
         </div>
     </section>
 </div>
@@ -149,6 +150,23 @@
         </div>
         {% endif %}
     </section>
+
+    <details class="card disclosure-card" {% if queue.blocked > 0 || queue.failed > 0 || queue.no_result > 0 || queue.completed_unlinked > 0 %}open{% endif %}>
+        <summary class="disclosure-card__summary">
+            <div class="disclosure-card__copy">
+                <span class="disclosure-card__eyebrow">Queue Detail</span>
+                <h2 class="disclosure-card__title">Recent auto-acquire jobs</h2>
+                <p class="disclosure-card__hint">Open when queue counters alone are too coarse and you need the latest stalled, blocked, or relink-pending rows.</p>
+            </div>
+            <div class="disclosure-card__meta">
+                <span class="badge {% if queue.active_total > 0 %}badge-warning{% else %}badge-success{% endif %}">{{ recent_queue_jobs|length }} shown</span>
+                <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
+            </div>
+        </summary>
+        <div class="disclosure-card__body">
+            {% include "web/ui/partials/queue_jobs.html" %}
+        </div>
+    </details>
 
     <section class="card advanced-only">
         <div class="section-head">

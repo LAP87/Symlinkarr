@@ -45,7 +45,10 @@ use crate::commands::discover::load_discovery_snapshot;
 use crate::commands::doctor::{collect_doctor_checks, DoctorCheckMode};
 use crate::commands::report::build_anime_remediation_report;
 use crate::commands::selected_libraries;
-use crate::db::{AcquisitionJobCounts, LinkEventHistoryRecord, ScanHistoryRecord};
+use crate::db::{
+    AcquisitionJobCounts, AcquisitionJobRecord, AcquisitionJobStatus, LinkEventHistoryRecord,
+    ScanHistoryRecord,
+};
 use crate::discovery::DiscoverSummary;
 use crate::media_servers::deferred_refresh_summary;
 
@@ -97,6 +100,249 @@ fn scan_activity_badges(dry_run: bool, search_missing: bool) -> Vec<ActivityFeed
 
 fn activity_timestamp_rank(timestamp: &str) -> String {
     timestamp.replace(" UTC", "")
+}
+
+const RECENT_QUEUE_JOB_LIMIT: usize = 6;
+
+fn format_operator_name(raw: &str) -> String {
+    let mut chars = raw.chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+
+    let mut formatted = String::new();
+    formatted.push(first.to_ascii_uppercase());
+    formatted.push_str(chars.as_str());
+    formatted
+}
+
+fn queue_status_presenter(status: AcquisitionJobStatus) -> (&'static str, &'static str) {
+    match status {
+        AcquisitionJobStatus::Queued => ("Queued", "badge-info"),
+        AcquisitionJobStatus::Downloading => ("Downloading", "badge-warning"),
+        AcquisitionJobStatus::Relinking => ("Relinking", "badge-warning"),
+        AcquisitionJobStatus::NoResult => ("No Result", "badge-info"),
+        AcquisitionJobStatus::Blocked => ("Blocked", "badge-warning"),
+        AcquisitionJobStatus::CompletedLinked => ("Linked", "badge-success"),
+        AcquisitionJobStatus::CompletedUnlinked => ("Needs Relink", "badge-secondary"),
+        AcquisitionJobStatus::Failed => ("Failed", "badge-danger"),
+    }
+}
+
+fn queue_job_timing(record: &AcquisitionJobRecord) -> (String, String) {
+    if let Some(next_retry_at) = record.next_retry_at {
+        return (
+            "Next retry".to_string(),
+            next_retry_at.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+        );
+    }
+    if let Some(completed_at) = record.completed_at {
+        return (
+            "Completed".to_string(),
+            completed_at.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+        );
+    }
+    if let Some(submitted_at) = record.submitted_at {
+        return (
+            "Submitted".to_string(),
+            submitted_at.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+        );
+    }
+
+    (
+        match record.status {
+            AcquisitionJobStatus::Queued => "Queued",
+            AcquisitionJobStatus::Downloading | AcquisitionJobStatus::Relinking => "Active",
+            AcquisitionJobStatus::NoResult
+            | AcquisitionJobStatus::Blocked
+            | AcquisitionJobStatus::CompletedUnlinked
+            | AcquisitionJobStatus::Failed => "Pending",
+            AcquisitionJobStatus::CompletedLinked => "Completed",
+        }
+        .to_string(),
+        "Pending".to_string(),
+    )
+}
+
+fn queue_job_detail(record: &AcquisitionJobRecord) -> Option<String> {
+    match (&record.error, &record.release_title) {
+        (Some(error), Some(release)) => Some(format!("{} | Release: {}", error, release)),
+        (Some(error), None) => Some(error.clone()),
+        (None, Some(release)) => Some(format!("Release: {}", release)),
+        (None, None) => None,
+    }
+}
+
+fn queue_job_view(record: AcquisitionJobRecord) -> QueueJobView {
+    let (status_label, status_badge_class) = queue_status_presenter(record.status);
+    let (timing_label, timing_value) = queue_job_timing(&record);
+    let detail = queue_job_detail(&record);
+
+    QueueJobView {
+        label: record.label,
+        status_label: status_label.to_string(),
+        status_badge_class,
+        arr_label: format_operator_name(&record.arr),
+        scope_label: record
+            .library_filter
+            .unwrap_or_else(|| "All Libraries".to_string()),
+        query: record.query,
+        attempts: record.attempts,
+        detail,
+        timing_label,
+        timing_value,
+    }
+}
+
+fn queue_activity_message(record: &AcquisitionJobRecord) -> String {
+    match record.status {
+        AcquisitionJobStatus::Queued => {
+            "Queued and waiting for submission or the next retry window.".to_string()
+        }
+        AcquisitionJobStatus::Downloading => {
+            "Download has been handed off and is waiting to relink.".to_string()
+        }
+        AcquisitionJobStatus::Relinking => {
+            "Download finished and is waiting for fresh symlink verification.".to_string()
+        }
+        AcquisitionJobStatus::NoResult => queue_job_detail(record)
+            .unwrap_or_else(|| "No provider result matched the request.".to_string()),
+        AcquisitionJobStatus::Blocked => queue_job_detail(record)
+            .unwrap_or_else(|| "Queue guard blocked automatic progress.".to_string()),
+        AcquisitionJobStatus::CompletedUnlinked => queue_job_detail(record).unwrap_or_else(|| {
+            "Download completed, but Symlinkarr still has not created a fresh link.".to_string()
+        }),
+        AcquisitionJobStatus::Failed => queue_job_detail(record)
+            .unwrap_or_else(|| "Submission or follow-up processing failed.".to_string()),
+        AcquisitionJobStatus::CompletedLinked => queue_job_detail(record)
+            .unwrap_or_else(|| "Queue job completed and linked successfully.".to_string()),
+    }
+}
+
+fn queue_activity_badges(record: &AcquisitionJobRecord) -> Vec<ActivityFeedBadgeView> {
+    let mut badges = vec![activity_badge(
+        format_operator_name(&record.arr),
+        "badge-secondary",
+    )];
+    if let Some(scope) = record
+        .library_filter
+        .as_deref()
+        .map(str::trim)
+        .filter(|scope| !scope.is_empty())
+    {
+        badges.push(activity_badge(scope, "badge-info"));
+    }
+    if record.attempts > 0 {
+        badges.push(activity_badge(
+            format!("Attempts {}", record.attempts),
+            "badge-warning",
+        ));
+    }
+    badges
+}
+
+fn queue_activity_item(record: AcquisitionJobRecord) -> ActivityFeedItemView {
+    let (status_label, status_badge_class) = queue_status_presenter(record.status);
+    let (timestamp_label, timestamp) = queue_job_timing(&record);
+
+    ActivityFeedItemView {
+        kind_label: "Auto-Acquire".to_string(),
+        status_label: status_label.to_string(),
+        status_badge_class,
+        scope_label: record.label.clone(),
+        timestamp_label,
+        timestamp,
+        context: Some(format!(
+            "{} • {}",
+            format_operator_name(&record.arr),
+            record.query
+        )),
+        message: queue_activity_message(&record),
+        badges: queue_activity_badges(&record),
+        link: Some(activity_link("/status", "Open Status")),
+    }
+}
+
+async fn recent_queue_jobs(state: &WebState, limit: usize) -> Vec<QueueJobView> {
+    let statuses = [
+        AcquisitionJobStatus::Queued,
+        AcquisitionJobStatus::Downloading,
+        AcquisitionJobStatus::Relinking,
+        AcquisitionJobStatus::Blocked,
+        AcquisitionJobStatus::NoResult,
+        AcquisitionJobStatus::CompletedUnlinked,
+        AcquisitionJobStatus::Failed,
+    ];
+
+    match state
+        .database
+        .list_acquisition_jobs(Some(&statuses), limit.max(1))
+        .await
+    {
+        Ok(records) => records.into_iter().map(queue_job_view).collect(),
+        Err(err) => {
+            error!("Failed to list recent acquisition jobs: {}", err);
+            Vec::new()
+        }
+    }
+}
+
+async fn acquisition_feed_items(
+    state: &WebState,
+) -> (Vec<ActivityFeedItemView>, Vec<ActivityFeedItemView>) {
+    let statuses = [
+        AcquisitionJobStatus::Queued,
+        AcquisitionJobStatus::Downloading,
+        AcquisitionJobStatus::Relinking,
+        AcquisitionJobStatus::Blocked,
+        AcquisitionJobStatus::NoResult,
+        AcquisitionJobStatus::CompletedUnlinked,
+        AcquisitionJobStatus::Failed,
+    ];
+    let records = match state
+        .database
+        .list_acquisition_jobs(Some(&statuses), 8)
+        .await
+    {
+        Ok(records) => records,
+        Err(err) => {
+            error!("Failed to list acquisition feed jobs: {}", err);
+            return (Vec::new(), Vec::new());
+        }
+    };
+
+    let active_items = records
+        .iter()
+        .filter(|record| {
+            matches!(
+                record.status,
+                AcquisitionJobStatus::Queued
+                    | AcquisitionJobStatus::Downloading
+                    | AcquisitionJobStatus::Relinking
+            )
+        })
+        .take(2)
+        .cloned()
+        .map(queue_activity_item)
+        .collect::<Vec<_>>();
+
+    let recent_items = records
+        .iter()
+        .filter(|record| {
+            matches!(
+                record.status,
+                AcquisitionJobStatus::Blocked
+                    | AcquisitionJobStatus::NoResult
+                    | AcquisitionJobStatus::CompletedUnlinked
+                    | AcquisitionJobStatus::Failed
+            )
+        })
+        .take(3)
+        .cloned()
+        .map(queue_activity_item)
+        .collect::<Vec<_>>();
+
+    (active_items, recent_items)
 }
 
 fn needs_attention_item(
@@ -204,6 +450,18 @@ fn dashboard_needs_attention(
                 queue.blocked, queue.failed
             ),
             "Open Status to confirm queue pressure and provider health, then rerun a targeted scan if the backlog should move again.",
+            Some(activity_link("/status", "Open Status")),
+        ));
+    } else if queue.completed_unlinked > 0 {
+        items.push(needs_attention_item(
+            "High",
+            "badge-warning",
+            "Auto-acquire finished without relinking",
+            format!(
+                "{} completed job(s) still need a fresh link before they become real library wins.",
+                queue.completed_unlinked
+            ),
+            "Open Status and inspect the latest queue rows before rerunning another scan, so you can see whether relink checks, source visibility, or ownership rules are holding them back.",
             Some(activity_link("/status", "Open Status")),
         ));
     } else if queue.no_result > 0 {
@@ -386,6 +644,10 @@ async fn dashboard_activity_feed(state: &WebState) -> DashboardActivityFeedView 
         });
     }
 
+    let (queue_active_items, queue_recent_items) = acquisition_feed_items(state).await;
+    active_items.extend(queue_active_items);
+    recent_items.extend(queue_recent_items);
+
     recent_items.sort_by(|left, right| {
         activity_timestamp_rank(&right.timestamp)
             .cmp(&activity_timestamp_rank(&left.timestamp))
@@ -522,6 +784,7 @@ pub async fn get_dashboard(State(state): State<WebState>) -> impl IntoResponse {
             DeferredRefreshSummaryView::default()
         }
     };
+    let recent_queue_jobs = recent_queue_jobs(&state, RECENT_QUEUE_JOB_LIMIT).await;
     let needs_attention = dashboard_needs_attention(
         &stats,
         &queue,
@@ -536,6 +799,7 @@ pub async fn get_dashboard(State(state): State<WebState>) -> impl IntoResponse {
         stats,
         needs_attention,
         activity_feed: dashboard_activity_feed(&state).await,
+        recent_queue_jobs,
         latest_run,
         recent_runs,
         queue,
@@ -583,6 +847,7 @@ pub async fn get_status(State(state): State<WebState>) -> impl IntoResponse {
     let deferred_refresh = deferred_refresh_summary(&state.config)
         .map(DeferredRefreshSummaryView::from)
         .unwrap_or_default();
+    let recent_queue_jobs = recent_queue_jobs(&state, RECENT_QUEUE_JOB_LIMIT).await;
     let tracked_dead_links = match state.database.get_dead_links_limited(8).await {
         Ok(links) => links,
         Err(e) => {
@@ -595,6 +860,7 @@ pub async fn get_status(State(state): State<WebState>) -> impl IntoResponse {
         stats,
         recent_links,
         tracked_dead_links,
+        recent_queue_jobs,
         queue,
         checks,
         deferred_refresh,

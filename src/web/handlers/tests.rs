@@ -265,6 +265,9 @@ async fn dashboard_renders_latest_run_and_queue_summary() {
     assert!(body.contains("Source missing before link 3044"));
     assert!(body.contains("Plex guard abort"));
     assert!(body.contains("Emby 1/1"));
+    assert!(body.contains("Recent queue jobs"));
+    assert!(body.contains("Queued Anime"));
+    assert!(body.contains("Needs Relink"));
 }
 
 #[tokio::test]
@@ -336,6 +339,9 @@ async fn dashboard_renders_live_activity_feed() {
     assert!(body.contains("Repair queue drained."));
     assert!(body.contains("hx-get=\"/dashboard/activity-feed\""));
     assert!(body.contains("Open Dead Links"));
+    assert!(body.contains("Auto-Acquire"));
+    assert!(body.contains("Queued Anime"));
+    assert!(body.contains("Open Status"));
 }
 
 #[tokio::test]
@@ -364,6 +370,38 @@ async fn dashboard_activity_feed_fragment_renders_running_and_recent_work() {
             message: "RD cache sync failed".to_string(),
         }))
         .await;
+    let jobs = ctx
+        .state
+        .database
+        .get_manageable_acquisition_jobs()
+        .await
+        .unwrap();
+    let queued_id = jobs
+        .iter()
+        .find(|job| job.request_key == "anime-queued-1")
+        .unwrap()
+        .id;
+    ctx.state
+        .database
+        .update_acquisition_job_state(
+            queued_id,
+            &AcquisitionJobUpdate {
+                status: AcquisitionJobStatus::Blocked,
+                release_title: None,
+                info_hash: None,
+                error: Some("provider returned a hard block".to_string()),
+                next_retry_at: Some(
+                    chrono::DateTime::parse_from_rfc3339("2026-04-19T22:00:00Z")
+                        .unwrap()
+                        .with_timezone(&chrono::Utc),
+                ),
+                submitted_at: None,
+                completed_at: None,
+                increment_attempts: true,
+            },
+        )
+        .await
+        .unwrap();
 
     let body = render_body(get_dashboard_activity_feed(State(ctx.state.clone())).await).await;
 
@@ -374,6 +412,9 @@ async fn dashboard_activity_feed_fragment_renders_running_and_recent_work() {
     assert!(body.contains("RD cache sync failed"));
     assert!(body.contains("Open Cleanup"));
     assert!(body.contains("Open Dead Links"));
+    assert!(body.contains("Auto-Acquire"));
+    assert!(body.contains("provider returned a hard block"));
+    assert!(body.contains("Open Status"));
 }
 
 #[tokio::test]
@@ -383,11 +424,10 @@ async fn dashboard_renders_needs_attention_priorities() {
         .database
         .insert_link(&LinkRecord {
             id: None,
-            source_path: ctx.state.config.sources[0].path.join("Missing.Show.S01E02.mkv"),
-            target_path: ctx
-                .state
-                .config
-                .libraries[0]
+            source_path: ctx.state.config.sources[0]
+                .path
+                .join("Missing.Show.S01E02.mkv"),
+            target_path: ctx.state.config.libraries[0]
                 .path
                 .join("Missing Show")
                 .join("Season 01")
@@ -400,7 +440,12 @@ async fn dashboard_renders_needs_attention_priorities() {
         })
         .await
         .unwrap();
-    let jobs = ctx.state.database.get_manageable_acquisition_jobs().await.unwrap();
+    let jobs = ctx
+        .state
+        .database
+        .get_manageable_acquisition_jobs()
+        .await
+        .unwrap();
     let blocked_id = jobs
         .iter()
         .find(|job| job.request_key == "anime-queued-1")
@@ -456,7 +501,9 @@ async fn dashboard_renders_needs_attention_priorities() {
     assert!(body.contains("Media refresh backlog is accumulating"));
     assert!(body.contains("Next step:"));
     assert!(body.contains("verify provider or path health before retrying another background pass"));
-    assert!(body.contains("Review Dead Links, then decide whether the safest next move is repair or cleanup"));
+    assert!(body.contains(
+        "Review Dead Links, then decide whether the safest next move is repair or cleanup"
+    ));
     assert!(body.contains("Open Latest Run"));
 }
 
