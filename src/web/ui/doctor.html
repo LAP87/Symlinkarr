@@ -38,6 +38,35 @@
 </div>
 {% endif %}
 
+<div class="split-grid">
+    <section class="card">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Meaning</p>
+                <h2 class="section-title">How to use Doctor</h2>
+            </div>
+        </div>
+        <p class="text-muted">Doctor is the blunt preflight page. Treat failures here as reasons to stop and understand the environment before running scan, repair, cleanup, or restore flows that could make state harder to reason about.</p>
+    </section>
+
+    <section class="card">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Next Step</p>
+                <h2 class="section-title">Best follow-up</h2>
+            </div>
+        </div>
+        <ol class="steps-list text-muted">
+            {% if all_passed %}
+            <li>If Doctor is clean, return to the operator workflow you were about to run instead of lingering here.</li>
+            {% else %}
+            <li>Fix the failing checks before attempting risky scans, cleanup, repair, or restore work.</li>
+            {% endif %}
+            <li>Use Config for exact live values and Status for current runtime symptoms.</li>
+        </ol>
+    </section>
+</div>
+
 <section class="card">
     <div class="section-head">
         <div>

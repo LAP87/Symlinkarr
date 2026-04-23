@@ -26,6 +26,32 @@
 <section class="card">
     <div class="section-head">
         <div>
+            <p class="section-kicker">Meaning</p>
+            <h2 class="section-title">What this state means</h2>
+        </div>
+    </div>
+    <p class="text-muted">Symlinkarr cannot start normally because there is no active <code>config.yaml</code>. This page is only the recovery and first-run entrypoint, not a partial runtime mode.</p>
+</section>
+
+<section class="card">
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Best path</p>
+            <h2 class="section-title">Choose the shortest safe route</h2>
+        </div>
+    </div>
+    <ol class="steps-list text-muted">
+        <li>If you already have a Symlinkarr backup, restore that instead of creating a fresh config.</li>
+        <li>Only use bootstrap when this is truly a new installation or you intentionally want to rebuild from scratch.</li>
+        <li>After recovery or bootstrap, restart and then use Config or Doctor before assuming the runtime is healthy.</li>
+    </ol>
+</section>
+</div>
+
+<div class="split-grid">
+<section class="card">
+    <div class="section-head">
+        <div>
             <p class="section-kicker">Option 1</p>
             <h2 class="section-title">Restore from backup</h2>
             <p class="section-copy">Place a Symlinkarr backup in your backup directory and restart. Config, database, and secrets are restored automatically.</p>
@@ -55,12 +81,27 @@
 </section>
 </div>
 
-<div class="alert alert-info">
-    <strong>What a backup can restore:</strong> config.yaml, SQLite database, tracked symlinks, and config-local secretfiles.<br>
-    Environment-only secrets and other external secret paths still need to be added manually.
-</div>
+<details class="card disclosure-card">
+    <summary class="disclosure-card__summary">
+        <div class="disclosure-card__copy">
+            <span class="disclosure-card__eyebrow">Recovery notes</span>
+            <h2 class="disclosure-card__title">What restore can bring back</h2>
+            <p class="disclosure-card__hint">Open when you need the exact restore scope or want to confirm how automatic recovery behaves when config is missing.</p>
+        </div>
+        <div class="disclosure-card__meta">
+            <span class="badge badge-info">Restore scope</span>
+            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
+        </div>
+    </summary>
+    <div class="disclosure-card__body">
+        <div class="alert alert-info">
+            <strong>What a backup can restore:</strong> config.yaml, SQLite database, tracked symlinks, and config-local secretfiles.<br>
+            Environment-only secrets and other external secret paths still need to be added manually.
+        </div>
 
-<div class="alert alert-secondary">
-    <strong>Auto-restore:</strong> if a backup exists in the default backup directory when config.yaml is missing, Symlinkarr restores it automatically on startup. No manual step needed.
-</div>
+        <div class="alert alert-secondary">
+            <strong>Auto-restore:</strong> if a backup exists in the default backup directory when config.yaml is missing, Symlinkarr restores it automatically on startup. No manual step needed.
+        </div>
+    </div>
+</details>
 {% endblock %}

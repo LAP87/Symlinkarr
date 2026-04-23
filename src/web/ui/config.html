@@ -51,6 +51,40 @@
     </div>
 </details>
 
+<div class="split-grid">
+    <section class="card">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Meaning</p>
+                <h2 class="section-title">What this page is for</h2>
+            </div>
+        </div>
+        <p class="text-muted">Configuration is the live runtime source of truth. Use this page to confirm what the server is actually running with right now, not to browse every possible option or replace the full docs.</p>
+    </section>
+
+    <section class="card">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Next Step</p>
+                <h2 class="section-title">Best follow-up</h2>
+            </div>
+        </div>
+        <ol class="steps-list text-muted">
+            {% match validation_result %}
+            {% when Some with (result) %}
+            {% if result.valid %}
+            <li>If the config is valid, leave this page and go back to the actual operator workflow you were trying to run.</li>
+            {% else %}
+            <li>Fix the validation errors before trusting Scan, Cleanup, Repair, or background automation with this config.</li>
+            {% endif %}
+            {% when None %}
+            <li>Run validation first if you just changed paths, sources, credentials, or matching rules.</li>
+            {% endmatch %}
+            <li>Use Doctor when you need blunt environment checks, not just config structure.</li>
+        </ol>
+    </section>
+</div>
+
 <section class="card">
     <div class="section-head">
         <div>

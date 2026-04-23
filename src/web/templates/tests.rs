@@ -370,6 +370,8 @@ fn doctor_template_renders_results_without_redundant_metric_summary() {
     };
 
     let html = template.render().unwrap();
+    assert!(html.contains("How to use Doctor"));
+    assert!(html.contains("Best follow-up"));
     assert!(html.contains("Inspection checklist"));
     assert!(html.contains("Needs review"));
     assert!(html.contains("backup directory is not writable"));
@@ -634,13 +636,15 @@ fn status_template_renders_recent_queue_jobs() {
     };
 
     let html = template.render().unwrap();
+    assert!(html.contains("What Status is for"));
+    assert!(html.contains("Best follow-up right now"));
     assert!(html.contains("Recent auto-acquire jobs"));
     assert!(html.contains("Queued Anime"));
     assert!(html.contains("Blocked Anime"));
     assert!(html.contains("Needs Relink"));
     assert!(html.contains("Active playback protection"));
     assert!(html.contains("2 active stream(s) detected"));
-    assert!(html.contains("Configured cadence"));
+    assert!(html.contains("Configured cadence and heartbeat"));
     assert!(html.contains("2026-04-22 11:00:00 UTC (in 45m)"));
 }
 
@@ -697,6 +701,8 @@ fn config_template_renders_topology_and_defaults_disclosures() {
 
     let html = template.render().unwrap();
     assert!(html.contains("Check current configuration"));
+    assert!(html.contains("What this page is for"));
+    assert!(html.contains("Best follow-up"));
     assert!(html.contains("Docs and recommended workflow"));
     assert!(html.contains("Libraries and ingestion roots"));
     assert!(html.contains("Low-level runtime defaults"));

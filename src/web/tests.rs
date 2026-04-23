@@ -445,10 +445,13 @@ async fn noconfig_page_exposes_restore_and_bootstrap_paths() {
     assert!(page.contains("Setup required"));
     assert!(page.contains("Restore from backup"));
     assert!(page.contains("Create new installation"));
+    assert!(page.contains("What this state means"));
+    assert!(page.contains("Choose the shortest safe route"));
     assert!(page.contains("symlinkarr restore &lt;path-to-backup.json&gt;"));
     assert!(page.contains("symlinkarr bootstrap"));
     assert!(page.contains("/wiki/Backup-and-Restore"));
     assert!(page.contains("/wiki/Configuration-and-Doctor"));
+    assert!(page.contains("Recovery notes"));
     assert!(page.contains("Auto-restore:"));
 }
 

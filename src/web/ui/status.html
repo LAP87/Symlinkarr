@@ -53,6 +53,39 @@
     <section class="card">
         <div class="section-head">
             <div>
+                <p class="section-kicker">Meaning</p>
+                <h2 class="section-title">What Status is for</h2>
+            </div>
+        </div>
+        <p class="text-muted">Use Status as the live inspection page when you need current runtime truth: queue pressure, daemon cadence, dead-link backlog, deferred refresh, and service health. Use Dashboard for daily prioritization and Scan History when you need past run detail.</p>
+    </section>
+
+    <section class="card">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Next Step</p>
+                <h2 class="section-title">Best follow-up right now</h2>
+            </div>
+        </div>
+        <ol class="steps-list text-muted">
+            {% if stats.dead_links > 0 %}
+            <li>Review Dead Links first; unresolved rows are still the clearest live repair or cleanup obligation.</li>
+            {% else if queue.blocked > 0 || queue.failed > 0 || queue.completed_unlinked > 0 || queue.no_result > 0 %}
+            <li>Open the queue detail below and decide whether the next move is Scan, queue recovery, or a provider-side fix.</li>
+            {% else if daemon_schedule.status_label == "Due" %}
+            <li>Verify the daemon/service before assuming background scans are still happening on schedule.</li>
+            {% else %}
+            <li>If nothing here looks unhealthy, go back to Dashboard or Scan instead of treating Status as a work queue.</li>
+            {% endif %}
+            <li>Use Config or Doctor only when the live symptoms below look like environment or path problems rather than normal backlog.</li>
+        </ol>
+    </section>
+</div>
+
+<div class="split-grid">
+    <section class="card">
+        <div class="section-head">
+            <div>
                 <p class="section-kicker">System Snapshot</p>
                 <h2 class="section-title">Library health</h2>
             </div>
@@ -101,38 +134,42 @@
     </section>
 </div>
 
-<section class="card">
-    <div class="section-head">
-        <div>
-            <p class="section-kicker">Daemon</p>
-            <h2 class="section-title">Configured cadence</h2>
+<details class="card disclosure-card">
+    <summary class="disclosure-card__summary">
+        <div class="disclosure-card__copy">
+            <span class="disclosure-card__eyebrow">Daemon</span>
+            <h2 class="disclosure-card__title">Configured cadence and heartbeat</h2>
+            <p class="disclosure-card__hint">Open when queue or scan symptoms make you suspect the scheduler rather than the linking pipeline itself.</p>
         </div>
-        <div class="header-badges">
+        <div class="disclosure-card__meta">
             <span class="badge {{ daemon_schedule.status_badge_class }}">{{ daemon_schedule.status_label }}</span>
             {% match daemon_heartbeat %}
             {% when Some with (heartbeat) %}
             <span class="badge {{ heartbeat.status_badge_class }}">{{ heartbeat.status_label }}</span>
             {% when None %}{% endmatch %}
             <span class="badge badge-info">{{ daemon_schedule.interval_label }}</span>
+            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
         </div>
-    </div>
-    <div class="metric-grid metric-grid--compact">
-        <div class="metric-card"><span class="metric-label">{{ daemon_schedule.last_run_metric_label }}</span><strong>{{ daemon_schedule.last_run_label }}</strong></div>
-        <div class="metric-card"><span class="metric-label">Next due estimate</span><strong>{{ daemon_schedule.next_due_label }}</strong></div>
-        <div class="metric-card"><span class="metric-label">Search Missing</span><strong>{{ daemon_schedule.search_missing_label }}</strong></div>
-        <div class="metric-card"><span class="metric-label">VACUUM</span><strong>{{ daemon_schedule.vacuum_label }}</strong></div>
+    </summary>
+    <div class="disclosure-card__body">
+        <div class="metric-grid metric-grid--compact">
+            <div class="metric-card"><span class="metric-label">{{ daemon_schedule.last_run_metric_label }}</span><strong>{{ daemon_schedule.last_run_label }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Next due estimate</span><strong>{{ daemon_schedule.next_due_label }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Search Missing</span><strong>{{ daemon_schedule.search_missing_label }}</strong></div>
+            <div class="metric-card"><span class="metric-label">VACUUM</span><strong>{{ daemon_schedule.vacuum_label }}</strong></div>
+            {% match daemon_heartbeat %}
+            {% when Some with (heartbeat) %}
+            <div class="metric-card"><span class="metric-label">Heartbeat</span><strong>{{ heartbeat.last_seen_label }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Daemon Phase</span><strong>{{ heartbeat.phase_label }}</strong></div>
+            {% when None %}{% endmatch %}
+        </div>
+        <p class="text-muted mt-2">{{ daemon_schedule.detail }}</p>
         {% match daemon_heartbeat %}
         {% when Some with (heartbeat) %}
-        <div class="metric-card"><span class="metric-label">Heartbeat</span><strong>{{ heartbeat.last_seen_label }}</strong></div>
-        <div class="metric-card"><span class="metric-label">Daemon Phase</span><strong>{{ heartbeat.phase_label }}</strong></div>
+        <p class="text-muted">{{ heartbeat.detail }}</p>
         {% when None %}{% endmatch %}
     </div>
-    <p class="text-muted mt-2">{{ daemon_schedule.detail }}</p>
-    {% match daemon_heartbeat %}
-    {% when Some with (heartbeat) %}
-    <p class="text-muted">{{ heartbeat.detail }}</p>
-    {% when None %}{% endmatch %}
-</section>
+</details>
 
 <div class="split-grid">
     <section class="card">
@@ -222,60 +259,63 @@
 
     {% match streaming_guard %}
     {% when Some with (guard) %}
-    <section class="card">
-        <div class="section-head">
-            <div>
-                <p class="section-kicker">Streaming Guard</p>
-                <h2 class="section-title">Active playback protection</h2>
+    <details class="card disclosure-card" {% if guard.active_streams > 0 %}open{% endif %}>
+        <summary class="disclosure-card__summary">
+            <div class="disclosure-card__copy">
+                <span class="disclosure-card__eyebrow">Streaming guard</span>
+                <h2 class="disclosure-card__title">Active playback protection</h2>
+                <p class="disclosure-card__hint">Open when you need to confirm whether active playback is actually blocking destructive repair or cleanup follow-up right now.</p>
             </div>
-            <div class="header-badges">
+            <div class="disclosure-card__meta">
                 <span class="badge {{ guard.status_badge_class }}">{{ guard.status_label }}</span>
                 <span class="badge badge-info">{{ guard.active_streams }} active</span>
+                <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
             </div>
-        </div>
-
-        {% match guard.error_message %}
-        {% when Some with (message) %}
-        <div class="alert alert-error">
-            <strong>Tautulli could not be queried.</strong>
-            {{ message }}
-        </div>
-        {% when None %}
-        {% if guard.active_streams > 0 %}
-        <div class="alert alert-warning">
-            <strong>{{ guard.active_streams }} active stream(s) detected.</strong>
-            Repair already protects these paths; treat cleanup or other destructive follow-up as unsafe until playback stops unless you are deliberately overriding that risk.
-        </div>
-        {% if guard.protected_paths|length > 0 %}
-        <details class="disclosure-card">
-            <summary class="disclosure-card__summary">
-                <div class="disclosure-card__copy">
-                    <span class="disclosure-card__eyebrow">Protected paths</span>
-                    <h3 class="disclosure-card__title">Current playback sample</h3>
-                    <p class="disclosure-card__hint">Expand only when you need the exact file paths the guard is seeing right now.</p>
-                </div>
-                <div class="disclosure-card__meta">
-                    <span class="badge badge-warning">{{ guard.protected_paths|length }} shown</span>
-                    <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
-                </div>
-            </summary>
-            <div class="disclosure-card__body">
-                <div class="stack-list">
-                    {% for path in guard.protected_paths %}
-                    <code class="mono">{{ path }}</code>
-                    {% endfor %}
-                </div>
+        </summary>
+        <div class="disclosure-card__body">
+            {% match guard.error_message %}
+            {% when Some with (message) %}
+            <div class="alert alert-error">
+                <strong>Tautulli could not be queried.</strong>
+                {{ message }}
             </div>
-        </details>
-        {% endif %}
-        {% else %}
-        <div class="alert alert-success">
-            <strong>No active streams detected.</strong>
-            The repair guard is currently idle, so playback is not the reason a repair action would be skipped right now.
+            {% when None %}
+            {% if guard.active_streams > 0 %}
+            <div class="alert alert-warning">
+                <strong>{{ guard.active_streams }} active stream(s) detected.</strong>
+                Repair already protects these paths; treat cleanup or other destructive follow-up as unsafe until playback stops unless you are deliberately overriding that risk.
+            </div>
+            {% if guard.protected_paths|length > 0 %}
+            <details class="disclosure-card">
+                <summary class="disclosure-card__summary">
+                    <div class="disclosure-card__copy">
+                        <span class="disclosure-card__eyebrow">Protected paths</span>
+                        <h3 class="disclosure-card__title">Current playback sample</h3>
+                        <p class="disclosure-card__hint">Expand only when you need the exact file paths the guard is seeing right now.</p>
+                    </div>
+                    <div class="disclosure-card__meta">
+                        <span class="badge badge-warning">{{ guard.protected_paths|length }} shown</span>
+                        <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
+                    </div>
+                </summary>
+                <div class="disclosure-card__body">
+                    <div class="stack-list">
+                        {% for path in guard.protected_paths %}
+                        <code class="mono">{{ path }}</code>
+                        {% endfor %}
+                    </div>
+                </div>
+            </details>
+            {% endif %}
+            {% else %}
+            <div class="alert alert-success">
+                <strong>No active streams detected.</strong>
+                The repair guard is currently idle, so playback is not the reason a repair action would be skipped right now.
+            </div>
+            {% endif %}
+            {% endmatch %}
         </div>
-        {% endif %}
-        {% endmatch %}
-    </section>
+    </details>
     {% when None %}{% endmatch %}
 
     <section class="card advanced-only">

@@ -17,6 +17,9 @@ The new center of gravity is reducing operator decision cost.
 - [x] First pass on result/transition surfaces:
   - move snapshots, artifact receipts, and large review tables behind disclosures
   - keep meaning, next step, and primary drilldowns visible
+- [x] Second pass on inspection/setup-recovery surfaces:
+  - add meaning and next-step framing to `status`, `config`, `doctor`, and `no-config`
+  - hide daemon/runtime detail and recovery caveats behind stricter disclosures
 - [ ] Define the page taxonomy explicitly: hub / result / inspection / setup-recovery
 - [ ] Standardize result pages on the same closure contract:
   - outcome
