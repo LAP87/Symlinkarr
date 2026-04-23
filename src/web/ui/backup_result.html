@@ -66,47 +66,64 @@
     </section>
 </div>
 
-{% match backup_path %}
-{% when Some with (path) %}
-<div class="card">
-    <strong>Backup file:</strong> <code class="mono">{{ path.display() }}</code>
-</div>
-{% when None %}
-{% endmatch %}
+<details class="card disclosure-card">
+    <summary class="disclosure-card__summary">
+        <div class="disclosure-card__copy">
+            <span class="disclosure-card__eyebrow">Artifacts</span>
+            <h2 class="disclosure-card__title">Snapshot files and restore receipt</h2>
+            <p class="disclosure-card__hint">Open when you need the exact artifact paths or the app-state restore receipt from this operation.</p>
+        </div>
+        <div class="disclosure-card__meta">
+            {% if secret_snapshot_count > 0 %}
+            <span class="badge badge-info">{{ secret_snapshot_count }} secrets</span>
+            {% endif %}
+            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
+        </div>
+    </summary>
+    <div class="disclosure-card__body">
+        {% match backup_path %}
+        {% when Some with (path) %}
+        <div class="card">
+            <strong>Backup file:</strong> <code class="mono">{{ path.display() }}</code>
+        </div>
+        {% when None %}
+        {% endmatch %}
 
-{% match database_snapshot_path %}
-{% when Some with (path) %}
-<div class="card">
-    <strong>SQLite snapshot:</strong> <code class="mono">{{ path.display() }}</code>
-</div>
-{% when None %}
-{% endmatch %}
+        {% match database_snapshot_path %}
+        {% when Some with (path) %}
+        <div class="card">
+            <strong>SQLite snapshot:</strong> <code class="mono">{{ path.display() }}</code>
+        </div>
+        {% when None %}
+        {% endmatch %}
 
-{% match config_snapshot_path %}
-{% when Some with (path) %}
-<div class="card">
-    <strong>Config snapshot:</strong> <code class="mono">{{ path.display() }}</code>
-</div>
-{% when None %}
-{% endmatch %}
+        {% match config_snapshot_path %}
+        {% when Some with (path) %}
+        <div class="card">
+            <strong>Config snapshot:</strong> <code class="mono">{{ path.display() }}</code>
+        </div>
+        {% when None %}
+        {% endmatch %}
 
-{% if secret_snapshot_count > 0 %}
-<div class="card">
-    <strong>Secret snapshots:</strong> {{ secret_snapshot_count }}
-</div>
-{% endif %}
+        {% if secret_snapshot_count > 0 %}
+        <div class="card">
+            <strong>Secret snapshots:</strong> {{ secret_snapshot_count }}
+        </div>
+        {% endif %}
 
-{% match app_state_restore_summary %}
-{% when Some with (summary) %}
-{% if summary.present %}
-<div class="card">
-    <strong>App state restore:</strong><br>
-    Config: {% if summary.config_restored %}restored{% else %}{% if summary.config_included %}skipped{% else %}not included{% endif %}{% endif %}<br>
-    Secret files: {{ summary.secrets_restored }} restored, {{ summary.secrets_skipped }} skipped
-</div>
-{% endif %}
-{% when None %}
-{% endmatch %}
+        {% match app_state_restore_summary %}
+        {% when Some with (summary) %}
+        {% if summary.present %}
+        <div class="card">
+            <strong>App state restore:</strong><br>
+            Config: {% if summary.config_restored %}restored{% else %}{% if summary.config_included %}skipped{% else %}not included{% endif %}{% endif %}<br>
+            Secret files: {{ summary.secrets_restored }} restored, {{ summary.secrets_skipped }} skipped
+        </div>
+        {% endif %}
+        {% when None %}
+        {% endmatch %}
+    </div>
+</details>
 
 <div class="actions mt-2">
     <a href="/backup" class="btn btn-secondary">&#8592; Back to Backup</a>

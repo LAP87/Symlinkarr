@@ -816,6 +816,7 @@ fn cleanup_result_template_renders_report_summary() {
 
     let html = template.render().unwrap();
     assert!(html.contains("Audit Report Generated"));
+    assert!(html.contains("Audit report details and risk snapshot"));
     assert!(html.contains("2026-03-21 21:30:00 UTC"));
     assert!(html.contains("Anime"));
     assert!(html.contains("18"));
@@ -890,6 +891,7 @@ fn scan_result_template_renders_guided_follow_up() {
     let html = template.render().unwrap();
     assert!(html.contains("What this result actually means"));
     assert!(html.contains("Best follow-up"));
+    assert!(html.contains("Snapshot from the latest persisted run"));
     assert!(html.contains("Scan History"));
     assert!(html.contains("/wiki/Scan-History-and-Why-Not-Signals"));
 }
@@ -912,6 +914,7 @@ fn repair_result_template_renders_recovery_guidance() {
     let html = template.render().unwrap();
     assert!(html.contains("How to read this result"));
     assert!(html.contains("Use Cleanup only for rows that really have no safe replacement left."));
+    assert!(html.contains("Latest background outcome"));
     assert!(html.contains("/wiki/Repair-and-Dead-Links"));
 }
 
@@ -939,6 +942,7 @@ fn backup_result_template_renders_follow_up_guidance() {
     let html = template.render().unwrap();
     assert!(html.contains("What this artifact gives you"));
     assert!(html.contains("Best follow-up"));
+    assert!(html.contains("Snapshot files and restore receipt"));
     assert!(html
         .contains("Return to Backup and confirm the artifact now appears in the inventory list."));
     assert!(html.contains("/wiki/Backup-and-Restore"));
@@ -1364,6 +1368,8 @@ fn discover_content_template_renders_guidance_and_help_link() {
     let html = template.render().unwrap();
     assert!(html.contains("How to read this preview"));
     assert!(html.contains("Best follow-up"));
+    assert!(html.contains("Folder plans behind this preview"));
+    assert!(html.contains("Row-level placement report"));
     assert!(html.contains("/wiki/Discover-and-Queue"));
     assert!(html.contains("Discover never writes links"));
     assert!(html.contains("Inspect blocked rows first"));

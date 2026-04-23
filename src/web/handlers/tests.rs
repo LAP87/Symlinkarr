@@ -1575,8 +1575,8 @@ async fn discover_content_renders_cached_gap_items() {
     let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let body = String::from_utf8(bytes.to_vec()).unwrap();
 
-    assert!(body.contains("Folder Plans"));
-    assert!(body.contains("Placement Report"));
+    assert!(body.contains("Folder plans behind this preview"));
+    assert!(body.contains("Row-level placement report"));
     assert!(body.contains("Missing Show"));
     assert!(body.contains("create"));
     assert!(body.contains("Season 01"));

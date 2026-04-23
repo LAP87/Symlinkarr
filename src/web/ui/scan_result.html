@@ -108,38 +108,48 @@
 
 {% match latest_run %}
 {% when Some with (run) %}
-<section class="card">
-    <div class="section-head">
-        <div>
-            <p class="section-kicker">Recorded Run</p>
-            <h2 class="section-title"><a href="/scan/history/{{ run.id }}">{{ run.scope_label }}</a></h2>
+<details class="card disclosure-card">
+    <summary class="disclosure-card__summary">
+        <div class="disclosure-card__copy">
+            <span class="disclosure-card__eyebrow">Recorded run</span>
+            <h2 class="disclosure-card__title">Snapshot from the latest persisted run</h2>
+            <p class="disclosure-card__hint">Open when you want the quick metrics here instead of jumping straight into the full run detail page.</p>
         </div>
-        <div class="header-badges">
+        <div class="disclosure-card__meta">
             {% if run.search_missing %}
             <span class="badge badge-warning">Search Missing</span>
             {% endif %}
             <span class="badge badge-info mono">#{{ run.id }}</span>
+            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
+        </div>
+    </summary>
+    <div class="disclosure-card__body">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Recorded Run</p>
+                <h2 class="section-title"><a href="/scan/history/{{ run.id }}">{{ run.scope_label }}</a></h2>
+            </div>
+        </div>
+
+        <p class="text-muted mono mb-2">{{ run.started_at }}</p>
+
+        <div class="metric-grid">
+            <div class="metric-card"><span class="metric-label">Runtime</span><strong>{{ run.total_runtime }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Matches</span><strong>{{ run.matches_found }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Created</span><strong class="text-success">{{ run.links_created }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Updated</span><strong>{{ run.links_updated }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Acquire Hits</span><strong>{{ run.auto_acquire_successes }}</strong></div>
+            <div class="metric-card"><span class="metric-label">No Result</span><strong>{{ run.auto_acquire_no_result }}</strong></div>
+        </div>
+
+        <div class="telemetry-grid">
+            <div class="telemetry-item"><span>Source</span><strong>{{ run.source_inventory }}</strong></div>
+            <div class="telemetry-item"><span>Match</span><strong>{{ run.matching }}</strong></div>
+            <div class="telemetry-item"><span>Link</span><strong>{{ run.linking }}</strong></div>
+            <div class="telemetry-item"><span>Dead Sweep</span><strong>{{ run.dead_link_sweep }}</strong></div>
         </div>
     </div>
-
-    <p class="text-muted mono mb-2">{{ run.started_at }}</p>
-
-    <div class="metric-grid">
-        <div class="metric-card"><span class="metric-label">Runtime</span><strong>{{ run.total_runtime }}</strong></div>
-        <div class="metric-card"><span class="metric-label">Matches</span><strong>{{ run.matches_found }}</strong></div>
-        <div class="metric-card"><span class="metric-label">Created</span><strong class="text-success">{{ run.links_created }}</strong></div>
-        <div class="metric-card"><span class="metric-label">Updated</span><strong>{{ run.links_updated }}</strong></div>
-        <div class="metric-card"><span class="metric-label">Acquire Hits</span><strong>{{ run.auto_acquire_successes }}</strong></div>
-        <div class="metric-card"><span class="metric-label">No Result</span><strong>{{ run.auto_acquire_no_result }}</strong></div>
-    </div>
-
-    <div class="telemetry-grid">
-        <div class="telemetry-item"><span>Source</span><strong>{{ run.source_inventory }}</strong></div>
-        <div class="telemetry-item"><span>Match</span><strong>{{ run.matching }}</strong></div>
-        <div class="telemetry-item"><span>Link</span><strong>{{ run.linking }}</strong></div>
-        <div class="telemetry-item"><span>Dead Sweep</span><strong>{{ run.dead_link_sweep }}</strong></div>
-    </div>
-</section>
+</details>
 {% when None %}{% endmatch %}
 
 <div class="actions mt-2">

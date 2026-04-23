@@ -150,86 +150,100 @@
 </div>
 
 {% if !data.blocked_reason_summary.is_empty() %}
-<section class="card">
-    <div class="section-head">
-        <div>
-            <p class="section-kicker">Blocked reasons</p>
-            <h2 class="section-title">What still needs manual review</h2>
+<details class="card disclosure-card">
+    <summary class="disclosure-card__summary">
+        <div class="disclosure-card__copy">
+            <span class="disclosure-card__eyebrow">Blocked reasons</span>
+            <h2 class="disclosure-card__title">What still needs manual review</h2>
+            <p class="disclosure-card__hint">Open when you need the exact blocker mix before deciding whether this saved plan is worth applying later.</p>
+        </div>
+        <div class="disclosure-card__meta">
+            <span class="badge badge-warning">{{ data.blocked_groups }} blocked</span>
+            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
+        </div>
+    </summary>
+    <div class="disclosure-card__body">
+        <div class="metric-grid metric-grid--compact">
+            {% for item in data.blocked_reason_summary %}
+            <div class="metric-card">
+                <span class="metric-label">{{ item.label }}</span>
+                <strong>{{ item.groups }}</strong>
+                <div class="text-muted">{{ item.recommended_action }}</div>
+            </div>
+            {% endfor %}
         </div>
     </div>
-    <div class="metric-grid metric-grid--compact">
-        {% for item in data.blocked_reason_summary %}
-        <div class="metric-card">
-            <span class="metric-label">{{ item.label }}</span>
-            <strong>{{ item.groups }}</strong>
-            <div class="text-muted">{{ item.recommended_action }}</div>
-        </div>
-        {% endfor %}
-    </div>
-</section>
+</details>
 {% endif %}
 
 {% if !data.groups.is_empty() %}
-<section class="card">
-    <div class="section-head">
-        <div>
-            <p class="section-kicker">Plan contents</p>
-            <h2 class="section-title">Groups in this saved plan</h2>
+<details class="card disclosure-card">
+    <summary class="disclosure-card__summary">
+        <div class="disclosure-card__copy">
+            <span class="disclosure-card__eyebrow">Plan contents</span>
+            <h2 class="disclosure-card__title">Groups in this saved plan</h2>
+            <p class="disclosure-card__hint">Open when you need the exact grouped rows, sample paths, and recommended tagged roots behind the saved plan.</p>
+        </div>
+        <div class="disclosure-card__meta">
+            <span class="badge badge-info">{{ data.groups|length }} groups</span>
+            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
+        </div>
+    </summary>
+    <div class="disclosure-card__body">
+        <div class="table-wrap">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Title</th>
+                        <th>Status</th>
+                        <th>Recommended root</th>
+                        <th>Review samples</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for group in data.groups %}
+                    <tr>
+                        <td><strong>{{ group.normalized_title }}</strong></td>
+                        <td>
+                            {% if group.eligible %}
+                            <span class="badge badge-success">Eligible</span>
+                            {% else %}
+                            <span class="badge badge-warning">Blocked</span>
+                            {% endif %}
+                        </td>
+                        <td><code class="mono">{{ group.recommended_tagged_root.display() }}</code></td>
+                        <td>
+                            <div class="badge-stack">
+                                {% if group.candidate_symlink_samples|length > 0 %}
+                                <strong>Candidate symlinks</strong>
+                                {% for sample in group.candidate_symlink_samples %}
+                                <code class="mono">{{ sample.display() }}</code>
+                                {% endfor %}
+                                {% endif %}
+                                {% if group.broken_symlink_samples|length > 0 %}
+                                <strong>Broken legacy symlinks</strong>
+                                {% for sample in group.broken_symlink_samples %}
+                                <code class="mono">{{ sample.display() }}</code>
+                                {% endfor %}
+                                {% endif %}
+                                {% if group.legacy_media_file_samples|length > 0 %}
+                                <strong>Blocking real media files</strong>
+                                {% for sample in group.legacy_media_file_samples %}
+                                <code class="mono">{{ sample.display() }}</code>
+                                {% endfor %}
+                                {% endif %}
+                                {% if group.candidate_symlink_samples|length == 0 && group.broken_symlink_samples|length == 0 && group.legacy_media_file_samples|length == 0 %}
+                                <span class="text-muted">No sample paths captured</span>
+                                {% endif %}
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
         </div>
     </div>
-    <div class="table-wrap">
-        <table class="table">
-            <thead>
-                <tr>
-                    <th>Title</th>
-                    <th>Status</th>
-                    <th>Recommended root</th>
-                    <th>Review samples</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for group in data.groups %}
-                <tr>
-                    <td><strong>{{ group.normalized_title }}</strong></td>
-                    <td>
-                        {% if group.eligible %}
-                        <span class="badge badge-success">Eligible</span>
-                        {% else %}
-                        <span class="badge badge-warning">Blocked</span>
-                        {% endif %}
-                    </td>
-                    <td><code class="mono">{{ group.recommended_tagged_root.display() }}</code></td>
-                    <td>
-                        <div class="badge-stack">
-                            {% if group.candidate_symlink_samples|length > 0 %}
-                            <strong>Candidate symlinks</strong>
-                            {% for sample in group.candidate_symlink_samples %}
-                            <code class="mono">{{ sample.display() }}</code>
-                            {% endfor %}
-                            {% endif %}
-                            {% if group.broken_symlink_samples|length > 0 %}
-                            <strong>Broken legacy symlinks</strong>
-                            {% for sample in group.broken_symlink_samples %}
-                            <code class="mono">{{ sample.display() }}</code>
-                            {% endfor %}
-                            {% endif %}
-                            {% if group.legacy_media_file_samples|length > 0 %}
-                            <strong>Blocking real media files</strong>
-                            {% for sample in group.legacy_media_file_samples %}
-                            <code class="mono">{{ sample.display() }}</code>
-                            {% endfor %}
-                            {% endif %}
-                            {% if group.candidate_symlink_samples|length == 0 && group.broken_symlink_samples|length == 0 && group.legacy_media_file_samples|length == 0 %}
-                            <span class="text-muted">No sample paths captured</span>
-                            {% endif %}
-                        </div>
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-</section>
+</details>
 {% endif %}
 
 <section class="card">

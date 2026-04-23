@@ -14,6 +14,9 @@ The new center of gravity is reducing operator decision cost.
 
 #### Progress
 
+- [x] First pass on result/transition surfaces:
+  - move snapshots, artifact receipts, and large review tables behind disclosures
+  - keep meaning, next step, and primary drilldowns visible
 - [ ] Define the page taxonomy explicitly: hub / result / inspection / setup-recovery
 - [ ] Standardize result pages on the same closure contract:
   - outcome

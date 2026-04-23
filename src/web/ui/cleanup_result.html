@@ -55,33 +55,43 @@
 
 {% match report_path %}
 {% when Some with (path) %}
-    <div class="card">
-    <div class="section-head">
-        <div>
-            <p class="section-kicker">Report</p>
-            <h2 class="section-title">Audit Report Generated</h2>
+<details class="card disclosure-card">
+    <summary class="disclosure-card__summary">
+        <div class="disclosure-card__copy">
+            <span class="disclosure-card__eyebrow">Saved report</span>
+            <h2 class="disclosure-card__title">Audit report details and risk snapshot</h2>
+            <p class="disclosure-card__hint">Open when you need the exact artifact path and severity counts before jumping into prune preview.</p>
         </div>
-    </div>
-    <p><strong>Report Location:</strong> <code class="mono">{{ path.display() }}</code></p>
+        <div class="disclosure-card__meta">
+            {% match report_summary %}
+            {% when Some with (report) %}
+            <span class="badge badge-warning">{{ report.total_findings }} findings</span>
+            {% when None %}
+            {% endmatch %}
+            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
+        </div>
+    </summary>
+    <div class="disclosure-card__body">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Report</p>
+                <h2 class="section-title">Audit Report Generated</h2>
+            </div>
+        </div>
+        <p><strong>Report Location:</strong> <code class="mono">{{ path.display() }}</code></p>
 
-    {% match report_summary %}
-    {% when Some with (report) %}
-    <div class="metric-grid metric-grid--compact mt-2">
-        <div class="metric-card"><span class="metric-label">Scope</span><strong>{{ report.scope_label }}</strong></div>
-        <div class="metric-card"><span class="metric-label">Generated</span><strong>{{ report.created_at }}</strong></div>
-        <div class="metric-card"><span class="metric-label">Findings</span><strong>{{ report.total_findings }}</strong></div>
-        <div class="metric-card"><span class="metric-label">Critical / High</span><strong>{{ report.critical }} / {{ report.high }}</strong></div>
+        {% match report_summary %}
+        {% when Some with (report) %}
+        <div class="metric-grid metric-grid--compact mt-2">
+            <div class="metric-card"><span class="metric-label">Scope</span><strong>{{ report.scope_label }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Generated</span><strong>{{ report.created_at }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Findings</span><strong>{{ report.total_findings }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Critical / High</span><strong>{{ report.critical }} / {{ report.high }}</strong></div>
+        </div>
+        {% when None %}
+        {% endmatch %}
     </div>
-    {% when None %}
-    {% endmatch %}
-
-    <div class="actions mt-2">
-        <a href="/cleanup/prune?report={{ path.display() }}" class="btn btn-secondary">
-            Preview Prune Actions
-        </a>
-        <a href="/cleanup" class="btn btn-secondary">Back to Cleanup</a>
-    </div>
-</div>
+</details>
 {% when None %}
 {% endmatch %}
 {% else %}
@@ -130,5 +140,15 @@
             {% endmatch %}
         </ol>
     </section>
+</div>
+
+<div class="actions mt-2">
+    {% match report_path %}
+    {% when Some with (path) %}
+    <a href="/cleanup/prune?report={{ path.display() }}" class="btn btn-primary">Preview Prune Actions</a>
+    {% when None %}
+    {% endmatch %}
+    <a href="/cleanup" class="btn btn-secondary">Back to Cleanup</a>
+    <a href="/" class="btn">Dashboard</a>
 </div>
 {% endblock %}

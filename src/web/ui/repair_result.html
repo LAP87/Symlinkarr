@@ -92,11 +92,28 @@
 
 {% match last_repair_outcome %}
 {% when Some with (outcome) %}
-<div class="alert {% if outcome.success %}alert-success{% else %}alert-error{% endif %}">
-    <strong>{% if outcome.success %}Latest background repair outcome{% else %}Latest background repair failure{% endif %}</strong><br>
-    {{ outcome.message }}<br>
-    <span class="text-muted">{{ outcome.finished_at }}</span>
-</div>
+<details class="card disclosure-card">
+    <summary class="disclosure-card__summary">
+        <div class="disclosure-card__copy">
+            <span class="disclosure-card__eyebrow">Latest background outcome</span>
+            <h2 class="disclosure-card__title">{% if outcome.success %}Previous repair completed{% else %}Previous repair failed{% endif %}</h2>
+            <p class="disclosure-card__hint">Open when you need the latest background-repair message while comparing this page against Dead Links.</p>
+        </div>
+        <div class="disclosure-card__meta">
+            <span class="badge {% if outcome.success %}badge-success{% else %}badge-danger{% endif %}">
+                {% if outcome.success %}Completed{% else %}Failed{% endif %}
+            </span>
+            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
+        </div>
+    </summary>
+    <div class="disclosure-card__body">
+        <div class="alert {% if outcome.success %}alert-success{% else %}alert-error{% endif %}">
+            <strong>{% if outcome.success %}Latest background repair outcome{% else %}Latest background repair failure{% endif %}</strong><br>
+            {{ outcome.message }}<br>
+            <span class="text-muted">{{ outcome.finished_at }}</span>
+        </div>
+    </div>
+</details>
 {% when None %}
 {% endmatch %}
 

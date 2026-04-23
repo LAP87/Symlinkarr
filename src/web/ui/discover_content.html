@@ -65,86 +65,95 @@
 </div>
 
 {% if folder_plans|length > 0 %}
-<section class="card">
-    <div class="section-head">
-        <div>
-            <p class="section-kicker">Folders</p>
-            <h2 class="section-title">Folder Plans</h2>
-            <p class="section-copy">Tagged folders with concrete discoverable placements behind them.</p>
+<details class="card disclosure-card">
+    <summary class="disclosure-card__summary">
+        <div class="disclosure-card__copy">
+            <span class="disclosure-card__eyebrow">Folders</span>
+            <h2 class="disclosure-card__title">Folder plans behind this preview</h2>
+            <p class="disclosure-card__hint">Open when you need the tagged-folder rows that explain where Discover thinks future placements belong.</p>
+        </div>
+        <div class="disclosure-card__meta">
+            <span class="badge badge-info">{{ folder_plans|length }} folders</span>
+            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
+        </div>
+    </summary>
+    <div class="disclosure-card__body">
+        <div class="table-wrap">
+        <table class="data-table dense-table">
+            <thead>
+                <tr>
+                    <th>Library</th>
+                    <th>Title</th>
+                    <th>Existing</th>
+                    <th>Create</th>
+                    <th>Update</th>
+                    <th>Blocked</th>
+                    <th>Folder</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for folder in folder_plans %}
+                <tr>
+                    <td>{{ folder.library_name }}</td>
+                    <td><strong>{{ folder.title }}</strong><br><span class="text-muted mono">{{ folder.media_id }}</span></td>
+                    <td>{{ folder.existing_links }}</td>
+                    <td>{{ folder.planned_creates }}</td>
+                    <td>{{ folder.planned_updates }}</td>
+                    <td>{{ folder.blocked }}</td>
+                    <td><code class="mono">{{ folder.folder_path.display() }}</code></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
         </div>
     </div>
-    <div class="table-wrap">
-    <table class="data-table dense-table">
-        <thead>
-            <tr>
-                <th>Library</th>
-                <th>Title</th>
-                <th>Existing</th>
-                <th>Create</th>
-                <th>Update</th>
-                <th>Blocked</th>
-                <th>Folder</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for folder in folder_plans %}
-            <tr>
-                <td>{{ folder.library_name }}</td>
-                <td><strong>{{ folder.title }}</strong><br><span class="text-muted mono">{{ folder.media_id }}</span></td>
-                <td>{{ folder.existing_links }}</td>
-                <td>{{ folder.planned_creates }}</td>
-                <td>{{ folder.planned_updates }}</td>
-                <td>{{ folder.blocked }}</td>
-                <td><code class="mono">{{ folder.folder_path.display() }}</code></td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-    </div>
-</section>
+</details>
 {% endif %}
 
 {% if discovered_items|length > 0 %}
-<section class="card">
-    <div class="section-head">
-        <div>
-            <p class="section-kicker">Placements</p>
-            <h2 class="section-title">Placement Report</h2>
-            <p class="section-copy">What Discover would place where if this plan were applied by a future write-enabled flow.</p>
+<details class="card disclosure-card">
+    <summary class="disclosure-card__summary">
+        <div class="disclosure-card__copy">
+            <span class="disclosure-card__eyebrow">Placements</span>
+            <h2 class="disclosure-card__title">Row-level placement report</h2>
+            <p class="disclosure-card__hint">Open when the summary is not enough and you need the exact source-to-target rows behind this preview.</p>
         </div>
-        <div class="header-badges">
+        <div class="disclosure-card__meta">
             <span class="badge badge-info">{{ discovered_items|length }} rows</span>
+            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
+        </div>
+    </summary>
+    <div class="disclosure-card__body">
+        <div class="table-wrap">
+        <table class="data-table dense-table">
+            <thead>
+                <tr>
+                    <th>Action</th>
+                    <th>Library</th>
+                    <th>Title</th>
+                    <th>Source</th>
+                    <th>Target</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in discovered_items %}
+                <tr>
+                    <td><span class="badge {{ item.action_badge_class() }}">{{ item.action_label() }}</span></td>
+                    <td>{{ item.library_name }}</td>
+                    <td>
+                        <strong>{{ item.title }}</strong>
+                        <br>
+                        <span class="text-muted mono">{{ item.media_id }}</span>
+                    </td>
+                    <td><code class="mono">{{ item.source_path.display() }}</code></td>
+                    <td><code class="mono">{{ item.target_path.display() }}</code></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
         </div>
     </div>
-    <div class="table-wrap">
-    <table class="data-table dense-table">
-        <thead>
-            <tr>
-                <th>Action</th>
-                <th>Library</th>
-                <th>Title</th>
-                <th>Source</th>
-                <th>Target</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for item in discovered_items %}
-            <tr>
-                <td><span class="badge {{ item.action_badge_class() }}">{{ item.action_label() }}</span></td>
-                <td>{{ item.library_name }}</td>
-                <td>
-                    <strong>{{ item.title }}</strong>
-                    <br>
-                    <span class="text-muted mono">{{ item.media_id }}</span>
-                </td>
-                <td><code class="mono">{{ item.source_path.display() }}</code></td>
-                <td><code class="mono">{{ item.target_path.display() }}</code></td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-    </div>
-</section>
+</details>
 {% else %}
 <section class="card">
     <div class="empty-state">
