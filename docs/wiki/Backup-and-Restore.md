@@ -42,4 +42,4 @@ That is meant to shorten recovery on containerized or rebuilt installs.
 ## Related Pages
 
 - validate after restore or bootstrap: [Configuration and Doctor](Configuration-and-Doctor.md)
-- daily operational context: [Dashboard and Daily Operations](Dashboard-and-Daily-Operations.md)
+- daily overview: [Dashboard and Daily Operations](Dashboard-and-Daily-Operations.md)

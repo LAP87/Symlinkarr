@@ -29,7 +29,7 @@ Use it before:
 - cleanup and prune work
 - environment or mount changes
 
-Doctor is intentionally blunt. Failures here should block risky mutation until the cause is understood.
+Doctor is intentionally blunt. Failures here should block risky write actions until the cause is understood.
 
 ## Common Failure Classes
 
@@ -41,4 +41,4 @@ Doctor is intentionally blunt. Failures here should block risky mutation until t
 ## Related Pages
 
 - backup and first-run recovery: [Backup and Restore](Backup-and-Restore.md)
-- media refresh context: [Media Server Refresh and Deferred Work](Media-Server-Refresh-and-Deferred-Work.md)
+- media refresh behavior: [Media Server Refresh](Media-Server-Refresh-and-Deferred-Work.md)

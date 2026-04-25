@@ -21,9 +21,9 @@ That order matters because repair tries to preserve the library shape. Cleanup i
 
 ## Main Pages
 
-- `Dead Links`: broken-path triage and repair-first action surface
+- `Dead Links`: broken paths and repair-first actions
 - `Links`: the tracked link inventory
-- repair result surfaces: quick feedback after a repair run
+- repair result pages: quick feedback after a repair run
 
 ## When to Repair
 
@@ -57,4 +57,4 @@ Move to cleanup when:
 ## Related Pages
 
 - full cleanup review: [Cleanup, Audit, and Prune Preview](Cleanup-Audit-and-Prune-Preview.md)
-- scan context before or after repairs: [Scan, History, and Why-Not Signals](Scan-History-and-Why-Not-Signals.md)
+- scan details before or after repairs: [Scan History and Skip Reasons](Scan-History-and-Why-Not-Signals.md)

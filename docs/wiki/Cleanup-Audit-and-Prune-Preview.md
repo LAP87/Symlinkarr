@@ -28,7 +28,7 @@ Symlinkarr should show you what it found, explain why it wants to act, and only 
 - ownership or confidence checks are not satisfied
 - legacy anime root duplication still needs human review
 
-Blocked rows are not bugs by default. They are often intentional safety rails.
+Blocked rows are not bugs by default. They are usually there to stop unsafe cleanup.
 
 ## When to Expand the Details Table
 
@@ -41,4 +41,4 @@ Only go deep when:
 ## Related Pages
 
 - dead-link recovery before cleanup: [Repair and Dead Links](Repair-and-Dead-Links.md)
-- anime-specific legacy cleanup: [Anime Remediation](Anime-Remediation.md)
+- anime-specific legacy cleanup: [Anime Cleanup](Anime-Remediation.md)

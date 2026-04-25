@@ -1,6 +1,6 @@
-# Media Server Refresh and Deferred Work
+# Media Server Refresh
 
-Use this page for `Status`, dashboard refresh backlog context, and downstream media-server behavior.
+Use this page for `Status`, dashboard refresh backlog, and media-server behavior.
 
 ## What This Covers
 
@@ -9,20 +9,20 @@ After Symlinkarr changes links, Plex, Emby, and Jellyfin still need to learn abo
 This page explains:
 
 - refresh batching
-- coalescing
-- guardrails
-- deferred refresh backlog
+- combining nearby paths
+- safety limits
+- refresh backlog
 
 ## Why Refresh Work Is Not Always Immediate
 
-Symlinkarr intentionally avoids stampeding media servers.
+Symlinkarr avoids hammering media servers.
 
 That means refresh work may be:
 
 - batched
 - capped
 - skipped
-- deferred
+- delayed
 - aborted when safety limits are triggered
 
 ## What the Status Page Is Good For
@@ -36,5 +36,5 @@ Use `Status` to understand:
 
 ## Related Pages
 
-- dashboard triage for live backlog signals: [Dashboard and Daily Operations](Dashboard-and-Daily-Operations.md)
-- scan detail for refresh counters in one run: [Scan, History, and Why-Not Signals](Scan-History-and-Why-Not-Signals.md)
+- dashboard backlog: [Dashboard and Daily Operations](Dashboard-and-Daily-Operations.md)
+- scan detail for refresh counters in one run: [Scan History and Skip Reasons](Scan-History-and-Why-Not-Signals.md)

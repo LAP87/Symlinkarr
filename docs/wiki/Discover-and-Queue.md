@@ -16,7 +16,7 @@ Use it when:
 
 ## Queue
 
-Queue is where deferred or persistent acquisition work lives after scans.
+Queue is where scan-triggered acquisition work lives after scans.
 
 Typical states:
 
@@ -36,5 +36,5 @@ Typical states:
 
 ## Related Pages
 
-- scan context and reason codes: [Scan, History, and Why-Not Signals](Scan-History-and-Why-Not-Signals.md)
-- dashboard triage: [Dashboard and Daily Operations](Dashboard-and-Daily-Operations.md)
+- scan details and reason codes: [Scan History and Skip Reasons](Scan-History-and-Why-Not-Signals.md)
+- dashboard overview: [Dashboard and Daily Operations](Dashboard-and-Daily-Operations.md)

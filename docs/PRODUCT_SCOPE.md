@@ -2,22 +2,22 @@
 
 ## Purpose
 
-Symlinkarr is a local-first symlink manager for Real-Debrid-backed media libraries.
+Symlinkarr is a symlink manager for Real-Debrid-backed media libraries.
 
-Its job is to keep an existing library deterministic and repairable:
+Its job is to keep an existing library clean and repairable:
 
 - scan source mounts and tagged library folders
 - create and update stable symlinks
 - detect dead, stale, or misplaced links
 - repair broken links when a safe replacement exists
 - support backup and restore of Symlinkarr-managed state
-- optionally notify Plex, Emby, or Jellyfin after mutations
+- optionally tell Plex, Emby, or Jellyfin to refresh after link changes
 
-The product is not trying to become a full media manager, downloader, or orchestration platform.
+Symlinkarr is not trying to become a full media manager or downloader.
 
-## v1.0 Contract
+## v1.0 Scope
 
-For `v1.0 RC` and `v1.0`, the stable core is:
+For `v1.0`, the stable core is:
 
 - scan
 - match
@@ -25,32 +25,32 @@ For `v1.0 RC` and `v1.0`, the stable core is:
 - repair
 - cleanup audit / prune
 - backup / restore
-- status / health / observability
-- optional web UI and JSON API for operating those flows
+- status / health
+- optional web UI and JSON API for running those tasks
 
 ## Security Model
 
-Symlinkarr is designed for local-first operation.
+Symlinkarr is designed to run locally by default.
 
 - Loopback-only operation may expose read-only UI/API behavior without strict auth.
-- Loopback-only operation is a trusted mode and may expose mutating UI/API behavior without built-in auth.
-- Any remote exposure must be treated as operator access.
-- Mutating operations must remain guarded.
-- Browser-driven mutations should use same-origin session and CSRF gates when the built-in UI is remotely exposed.
-- The built-in HTML UI is an operator surface, not a public dashboard.
+- Loopback-only operation is trusted mode and may allow write actions without built-in auth.
+- Remote access must use real login protection.
+- Write actions must stay protected.
+- Browser forms should use a same-origin session and CSRF checks when the built-in UI is exposed remotely.
+- The built-in HTML UI is for private admin use, not a public dashboard.
 
 Practical rule:
 
 - local-only: convenience-first is acceptable
-- remote-enabled: require real operator auth and explicit safety gates
+- remote-enabled: require login protection and safety checks
 
 ## Integrations
 
-These integrations are in scope when they help the core workflow:
+These integrations are in scope when they help the core app:
 
 - TMDB / TVDB for metadata-assisted matching
-- Sonarr / Radarr / Bazarr / Prowlarr / Tautulli where they improve diagnosis or operator workflows
-- Plex / Emby / Jellyfin invalidation after Symlinkarr mutations
+- Sonarr / Radarr / Bazarr / Prowlarr / Tautulli where they help explain or repair library state
+- Plex / Emby / Jellyfin refresh after Symlinkarr changes
 - Real-Debrid-backed mounts such as Zurg or Decypharr
 
 These integrations are supporting features, not the product definition.
@@ -60,30 +60,30 @@ These integrations are supporting features, not the product definition.
 The following should not define the product and should not block release unless they directly affect core safety:
 
 - turning Symlinkarr into a general-purpose acquisition manager
-- broad automatic remediation of whole legacy backlogs
+- broad automatic cleanup of whole legacy backlogs
 - media-server-specific deep compare engines as a release requirement
 - event-driven watcher mode as the default runtime model
-- highly polished dashboards or cosmetic UI work
+- chasing UI polish beyond what makes the app clear and usable
 
 ## Design Bias
 
 Prefer:
 
 - safe previews before destructive actions
-- deterministic behavior over aggressive automation
-- explicit operator feedback over silent fallback behavior
-- local-first ergonomics over multi-tenant or internet-facing assumptions
+- repeatable behavior over aggressive automation
+- clear feedback over silent fallback behavior
+- simple local use over internet-facing assumptions
 
 Avoid:
 
-- adding new automation surfaces without matching observability and rollback semantics
-- coupling release readiness to anime-only remediation expansion
+- adding new automation without matching safety and rollback paths
+- tying release readiness to anime-only cleanup expansion
 - treating every adjacent media-ops problem as Symlinkarr scope
 
 ## Current Position
 
 Today Symlinkarr is best described as:
 
-`a local-first symlink daemon and repair/cleanup tool with an operator UI`
+`a symlink daemon and repair/cleanup tool with a private web UI`
 
 That is the product line the repo should optimize around unless explicitly re-scoped.

@@ -9,19 +9,25 @@
 
 Symlinkarr turns Real-Debrid-backed media into a clean local library.
 
-It scans your source mount, matches files to ID-tagged movie and series folders, writes stable symlinks, and keeps state in SQLite. It works with plain folders or alongside Plex, Emby, and Jellyfin.
+It scans your source mount, matches files to ID-tagged movie and series folders, writes stable symlinks, and keeps track of them in SQLite. It works with plain folders or alongside Plex, Emby, and Jellyfin.
 
-If your current stack looks like "RD mount + Sonarr/Radarr + a messy library full of stale or misplaced links", this is the layer meant to make that library deterministic again.
+If your current stack looks like "RD mount + Sonarr/Radarr + a messy library full of stale or misplaced links", Symlinkarr is the cleanup and repair layer between the mount and your media server.
+
+## Screenshots
+
+| CLI usage | Web UI |
+| --- | --- |
+| ![Symlinkarr CLI usage](docs/assets/screenshots/symlinkarr-cli.png) | ![Symlinkarr Web UI setup screen](docs/assets/screenshots/symlinkarr-webui.png) |
 
 ## What It Does
 
 - scans RD-backed mounts and local library folders
 - matches against `{tvdb-*}` and `{tmdb-*}` tagged folders
-- creates and updates symlinks deterministically
+- creates and updates symlinks in a repeatable way
 - repairs dead links and finds missing content
 - audits bad, stale, or misplaced links before cleanup
-- supports Plex, Emby, and Jellyfin refresh after mutations
-- caps and guards media refresh pressure so large mutations do not blindly stampede the media server
+- can refresh Plex, Emby, and Jellyfin after link changes
+- avoids hammering your media server after large cleanup or repair runs
 
 No media server is required.
 
@@ -38,11 +44,11 @@ No media server is required.
 
 ## How To Run It
 
-README examples use `symlinkarr ...` as the neutral command form.
+README examples use `symlinkarr ...` as the normal command form.
 
 - release binary install: run `./symlinkarr ...` or `symlinkarr ...` if it is on your `PATH`
 - source checkout: run `cargo run -- ...`
-- Docker: mainly intended for long-running daemon mode via `docker compose up -d`
+- Docker: mainly for long-running daemon mode via `docker compose up -d`
 
 Example:
 
@@ -148,19 +154,19 @@ If you are replacing another standalone tool, stop that container separately ins
 
 ## Security Modes
 
-Symlinkarr follows a local-first security model similar to how many people already run *arr apps:
+Symlinkarr is meant to run like most home *arr apps: local by default, locked down if you expose it.
 
 - `local-only`: bind to `127.0.0.1`, keep `allow_remote: false`, and use the UI/API from the same host or through your own tunnel/reverse proxy.
-- `remote operator`: bind beyond loopback, set `allow_remote: true`, and configure `web.username` + `web.password`.
-- `scripted operator`: optionally add `web.api_key` for non-browser automation clients that should use `Authorization: Bearer ...` or `X-API-Key`.
+- `remote UI`: bind beyond loopback, set `allow_remote: true`, and configure `web.username` + `web.password`.
+- `scripts/API`: optionally add `web.api_key` for scripts that should use `Authorization: Bearer ...` or `X-API-Key`.
 
 Practical rules:
 
-- `local-only` is a trusted mode: no built-in auth is required, and browser mutation guards stay off by default
+- `local-only` is trusted mode: no built-in auth is required
 - `web.username` + `web.password` protect the HTML UI and API with HTTP Basic auth
 - `web.api_key` protects JSON API clients via `Authorization: Bearer ...` or `X-API-Key`
-- when the UI is remotely exposed, browser form mutations use an issued same-origin session cookie plus a server-rendered CSRF token
-- remote exposure now requires `web.username` + `web.password`; API key alone is not enough for the built-in HTML UI
+- when the UI is exposed remotely, browser forms use a session cookie plus CSRF token
+- remote UI access requires `web.username` + `web.password`; an API key alone is not enough for the built-in HTML UI
 
 Recommended default:
 
@@ -171,8 +177,8 @@ Recommended default:
 Symlinkarr keeps TMDB/TVDB metadata cached for a long time on purpose.
 
 - metadata is mostly stable, while API timeouts and rate limits are expensive
-- the right fix for stale metadata is targeted refresh/invalidation when a specific title looks wrong
-- short global TTLs mainly create avoidable cache churn
+- if one title looks wrong, refresh that cache entry instead of clearing everything
+- short global TTLs mostly create extra API calls
 
 Useful commands:
 
@@ -183,10 +189,10 @@ Useful commands:
 
 ## Backup Policy
 
-Symlinkarr backups preserve two layers on purpose:
+Symlinkarr backups keep the important app state together:
 
 - a JSON manifest of active symlinks for normal restore flows
-- a sibling SQLite snapshot from `backup create`, so operators also have a real database recovery artifact
+- a sibling SQLite snapshot from `backup create`, so you can recover the database too
 - app-state snapshots for the active `config.yaml` and any `secretfile:`-backed secrets the current install can see
 
 Use the backup names deliberately:
@@ -201,7 +207,7 @@ This is closer to a real app backup now, but not identical to Sonarr/Radarr yet:
 - secrets that only exist as environment variables still live outside the backup set
 - a truly fresh install still needs its config/secrets placed before first startup
 
-Current-format manifests are integrity-checked during `backup list` and `backup restore`, so corrupted or tampered backups fail loudly instead of half-restoring.
+Current-format backups are checked during `backup list` and `backup restore`, so corrupted or tampered backups fail loudly instead of half-restoring.
 Restore also stays confined to the configured `backup.path`, so a mistyped absolute path or symlink escape cannot make the restore flow read arbitrary files outside the backup directory.
 When old scheduled backups rotate out, their paired `.sqlite3` snapshots and app-state bundles are removed with them so retention limits still bound disk usage.
 
@@ -224,8 +230,8 @@ symlinkarr web
 
 If you are running from a source checkout, prepend `cargo run --` to the same commands.
 
-Advanced note: `cleanup remediate-anime` exists for older anime libraries with mixed legacy roots or Plex Hama AniDB/TVDB duplicates. Most setups do not need it.
-Discover note: `discover list` now previews concrete source-to-target placements for tagged folders that still look empty or underlinked. Web/API discover stay read-only until unattended apply is trustworthy enough for cron-safe runs.
+Advanced note: `cleanup remediate-anime` is for older anime libraries with mixed roots or Plex Hama AniDB/TVDB duplicates. Most setups do not need it.
+Discover note: `discover list` previews where source files would land for tagged folders that still look empty or underlinked. Web/API discover is read-only for now.
 
 ## Why Use It
 

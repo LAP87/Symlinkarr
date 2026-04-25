@@ -8,30 +8,30 @@ The actual page drafts live under [wiki/Home.md](wiki/Home.md) and the rest of [
 
 - [Home](wiki/Home.md)
 - [Dashboard and Daily Operations](wiki/Dashboard-and-Daily-Operations.md)
-- [Scan, History, and Why-Not Signals](wiki/Scan-History-and-Why-Not-Signals.md)
+- [Scan History and Skip Reasons](wiki/Scan-History-and-Why-Not-Signals.md)
 - [Repair and Dead Links](wiki/Repair-and-Dead-Links.md)
 - [Cleanup, Audit, and Prune Preview](wiki/Cleanup-Audit-and-Prune-Preview.md)
 - [Backup and Restore](wiki/Backup-and-Restore.md)
 - [Configuration and Doctor](wiki/Configuration-and-Doctor.md)
 - [Discover and Queue](wiki/Discover-and-Queue.md)
-- [Anime Remediation](wiki/Anime-Remediation.md)
-- [Media Server Refresh and Deferred Work](wiki/Media-Server-Refresh-and-Deferred-Work.md)
+- [Anime Cleanup](wiki/Anime-Remediation.md)
+- [Media Server Refresh](wiki/Media-Server-Refresh-and-Deferred-Work.md)
 
 ## Why This Changed
 
 The older wiki structure was too broad for the current web UI.
 
-It was possible to add a contextual help link in the UI and still land on a page that mixed too many operator intents together. The new source layout is split by operator task instead.
+Help links could land on pages that tried to explain too many things at once. The wiki is now split by the job you are trying to do.
 
 ## Broad Pages Should Become Hubs
 
-Broad top-level wiki pages can still exist, but they should route the operator to narrower task pages instead of trying to answer everything in one place.
+Broad top-level wiki pages can still exist, but they should point people to narrower task pages instead of trying to answer everything in one place.
 
 In practice:
 
 - `Home` should route to the task pages
-- `Getting Started` should narrow to install/bootstrap/restore intent
-- `User Guide` should stop acting as the catch-all explanation target for advanced operator surfaces
+- `Getting Started` should focus on install, bootstrap, and restore
+- `User Guide` should stop acting as the catch-all explanation target for advanced pages
 - `Operations and Safety` should stop acting as the catch-all explanation target for cleanup, repair, backup, and doctor
 
 ## Related Notes
