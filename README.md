@@ -227,14 +227,14 @@ If you are running from a source checkout, prepend `cargo run --` to the same co
 Advanced note: `cleanup remediate-anime` exists for older anime libraries with mixed legacy roots or Plex Hama AniDB/TVDB duplicates. Most setups do not need it.
 Discover note: `discover list` now previews concrete source-to-target placements for tagged folders that still look empty or underlinked. Web/API discover stay read-only until unattended apply is trustworthy enough for cron-safe runs.
 
-## Why People Use It
+## Why Use It
 
 - keep a Real-Debrid-backed library usable without hand-sorting files
 - keep Sonarr/Radarr-style ID-tagged folders clean
 - detect and repair bad symlinks before Plex, Emby, or Jellyfin drift too far
-- clean up legacy GemLink or early-Symlinkarr mistakes with preview-first workflows
+- clean up legacy linked libraries
 
-## Known RC Limits
+## Known Limits
 
 - anime specials without usable anime-lists numbering hints may still need manual search terms, because many indexers are weak at `S00Exx`-style anime queries
 
