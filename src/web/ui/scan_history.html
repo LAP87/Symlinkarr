@@ -2,10 +2,14 @@
 
 {% block title %}Scan History - Symlinkarr{% endblock %}
 {% block nav_scan %}active{% endblock %}
+{% block body_class %}page-scan-history page-inspection{% endblock %}
 
 {% block content %}
 <div class="page-header">
-    <p class="page-kicker">History</p>
+    <div class="page-meta">
+        <p class="page-kicker">History</p>
+        <span class="page-taxonomy page-taxonomy--inspection">History</span>
+    </div>
     <h1>&#128269; Scan History</h1>
     <p class="page-lead">Every recorded run, including phase timings and acquisition outcomes.</p>
     <div class="page-help-links">
@@ -21,7 +25,7 @@
         <div class="disclosure-card__copy">
             <span class="disclosure-card__eyebrow">Filters</span>
             <h2 class="disclosure-card__title">History filters and row limit</h2>
-            <p class="disclosure-card__hint">Open this when you need to narrow the run list. Leave it closed when you just want the latest operator signal.</p>
+            <p class="disclosure-card__hint">Open to narrow the run list.</p>
         </div>
         <div class="disclosure-card__meta">
             <span class="badge badge-info">{{ filters.limit }} rows</span>
@@ -135,7 +139,7 @@
                     <div>
                         {% for refresh in run.media_server_refresh %}
                         {% if refresh.deferred_due_to_lock %}
-                        <span class="badge badge-warning">{{ refresh.server }} deferred</span>
+                        <span class="badge badge-warning">{{ refresh.server }} pending</span>
                         {% else if refresh.failed_batches > 0 %}
                         <span class="badge badge-danger">{{ refresh.server }} failed</span>
                         {% else if refresh.aborted_due_to_cap %}
@@ -167,7 +171,7 @@
                         {% endfor %}
                     </div>
                     {% if run.skip_reason_extra_buckets > 0 %}
-                    <div class="text-muted">+{{ run.skip_reason_extra_buckets }} more bucket(s)</div>
+                    <div class="text-muted">+{{ run.skip_reason_extra_buckets }} more reason group(s)</div>
                     {% endif %}
                     {% else %}
                     <span class="text-muted">n/a</span>

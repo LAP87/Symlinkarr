@@ -78,10 +78,15 @@ fn activity_badge(label: impl Into<String>, badge_class: &'static str) -> Activi
     }
 }
 
-fn activity_link(href: impl Into<String>, label: impl Into<String>) -> ActivityFeedLinkView {
+fn activity_link(
+    href: impl Into<String>,
+    label: impl Into<String>,
+    landing: impl Into<String>,
+) -> ActivityFeedLinkView {
     ActivityFeedLinkView {
         href: href.into(),
         label: label.into(),
+        landing: landing.into(),
     }
 }
 
@@ -147,7 +152,11 @@ fn recorded_scan_activity_item(run: ScanHistoryRecord) -> ActivityFeedItemView {
         )),
         message,
         badges,
-        link: Some(activity_link(format!("/scan/history/{}", run.id), "Open Run")),
+        link: Some(activity_link(
+            format!("/scan/history/{}", run.id),
+            "Open Run",
+            "Scan run",
+        )),
     }
 }
 
@@ -276,8 +285,7 @@ pub(crate) fn daemon_heartbeat_view(
             detail
         ),
         (true, None) => {
-            "Heartbeat is older than 3 minutes, so the daemon may no longer be running."
-                .to_string()
+            "Heartbeat is older than 3 minutes, so the daemon may no longer be running.".to_string()
         }
         (false, Some(detail)) => detail,
         (false, None) => "Daemon loop is still reporting liveness.".to_string(),
@@ -339,13 +347,13 @@ pub(crate) fn daemon_schedule_view(
             last_run_metric_label: "Last recorded scan".to_string(),
             last_run_label: last_recorded_scan_label,
             next_due_label: "Not scheduled by daemon".to_string(),
-            detail: "Daemon mode is disabled in config, so recorded scans here come from manual triggers or an external scheduler.".to_string(),
+            detail: "Daemon mode is disabled in config, so scans here come from manual runs or an external scheduler.".to_string(),
         };
     }
 
     let Some(last_run_at) = latest_daemon_run.and_then(|run| parse_scan_timestamp(&run.started_at))
     else {
-        let mut detail = "Daemon mode is enabled but this database has no daemon-origin scan yet. The web UI can only estimate cadence after the first daemon run lands.".to_string();
+        let mut detail = "Daemon mode is enabled, but this database has no daemon scan yet. The next scan estimate appears after the first daemon run.".to_string();
         if let Some(note) = latest_overall_non_daemon_note {
             detail.push_str(&note);
         }
@@ -357,7 +365,7 @@ pub(crate) fn daemon_schedule_view(
             vacuum_label,
             last_run_metric_label: "Last daemon scan".to_string(),
             last_run_label: last_daemon_scan_label,
-            next_due_label: "After first recorded scan".to_string(),
+            next_due_label: "After first daemon scan".to_string(),
             detail,
         };
     };
@@ -366,7 +374,7 @@ pub(crate) fn daemon_schedule_view(
     let now = Utc::now();
     if now >= next_due {
         let mut detail =
-            "This estimate is based on the most recent daemon-origin scan, not on newer manual or web-triggered runs.".to_string();
+            "This estimate uses the most recent daemon scan, not newer manual or web-triggered runs.".to_string();
         if let Some(note) = latest_overall_non_daemon_note {
             detail.push_str(&note);
         }
@@ -384,7 +392,7 @@ pub(crate) fn daemon_schedule_view(
     }
 
     let mut detail =
-        "This estimate is based on the latest daemon-origin scan. Manual or web-triggered runs do not reset daemon cadence.".to_string();
+        "This estimate uses the latest daemon scan. Manual or web-triggered runs do not reset the daemon timer.".to_string();
     if let Some(note) = latest_overall_non_daemon_note {
         detail.push_str(&note);
     }
@@ -562,7 +570,7 @@ fn queue_activity_item(record: AcquisitionJobRecord) -> ActivityFeedItemView {
         )),
         message: queue_activity_message(&record),
         badges: queue_activity_badges(&record),
-        link: Some(activity_link("/status", "Open Status")),
+        link: Some(activity_link("/status", "Open Status", "Status")),
     }
 }
 
@@ -726,7 +734,7 @@ fn dashboard_needs_attention(
                 outcome.scope_label, outcome.finished_at, outcome.message
             ),
             "Open Scan, compare the failure against the latest run detail, and verify provider or path health before retrying another background pass.",
-            Some(activity_link("/scan", "Open Scan")),
+            Some(activity_link("/scan", "Open Scan", "Scan hub")),
         ));
     }
 
@@ -741,9 +749,10 @@ fn dashboard_needs_attention(
                 activity_link(
                     format!("/cleanup/prune?report={}", path),
                     "Open Prune Preview",
+                    "Prune preview",
                 )
             })
-            .or_else(|| Some(activity_link("/cleanup", "Open Cleanup")));
+            .or_else(|| Some(activity_link("/cleanup", "Open Cleanup", "Cleanup hub")));
         items.push(needs_attention_item(
             "High",
             "badge-danger",
@@ -752,7 +761,7 @@ fn dashboard_needs_attention(
                 "{} across {} finished {} and reported: {}",
                 outcome.scope_label, outcome.libraries_label, outcome.finished_at, outcome.message
             ),
-            "Open Cleanup and inspect the latest audit output before rerunning the audit or pruning anything.",
+            "Open Cleanup and review the latest report before rerunning the audit or pruning anything.",
             link,
         ));
     }
@@ -770,7 +779,11 @@ fn dashboard_needs_attention(
                 outcome.finished_at, outcome.message
             ),
             "Open Dead Links, confirm the source is really gone, then retry repair only after the replacement path is visible again.",
-            Some(activity_link("/links/dead", "Open Dead Links")),
+            Some(activity_link(
+                "/links/dead",
+                "Open Dead Links",
+                "Dead Links",
+            )),
         ));
     }
 
@@ -784,7 +797,11 @@ fn dashboard_needs_attention(
                 stats.dead_links
             ),
             "Review Dead Links, then decide whether the safest next move is repair or cleanup before the next media refresh.",
-            Some(activity_link("/links/dead", "Review Dead Links")),
+            Some(activity_link(
+                "/links/dead",
+                "Review Dead Links",
+                "Dead Links",
+            )),
         ));
     }
 
@@ -796,13 +813,13 @@ fn dashboard_needs_attention(
         items.push(needs_attention_item(
             "Medium",
             "badge-warning",
-            "Playback guard is deferring safe mutations",
+            "Playback is blocking changes",
             format!(
-                "{} active stream(s) are currently protected, so repair or cleanup apply may intentionally wait on overlapping paths.",
+                "{} active stream(s) are protected, so repair or cleanup may wait on matching paths.",
                 guard.active_streams
             ),
-            "Open Status or the dashboard playback-protection panel and confirm the protected paths before retrying repair or cleanup apply.",
-            Some(activity_link("/status", "Open Status")),
+            "Open Status or the playback panel and check the protected paths before retrying repair or cleanup.",
+            Some(activity_link("/status", "Open Status", "Status")),
         ));
     }
 
@@ -813,13 +830,13 @@ fn dashboard_needs_attention(
         items.push(needs_attention_item(
             "Medium",
             "badge-warning",
-            "Daemon scan cadence looks overdue",
+            "Scheduled scan looks overdue",
             format!(
-                "Latest recorded scan is behind the configured cadence. {}",
+                "The latest scheduled scan is late. {}",
                 schedule.next_due_label
             ),
             "Open Status and verify the daemon/service is actually running before you assume scans are still happening on schedule.",
-            Some(activity_link("/status", "Open Status")),
+            Some(activity_link("/status", "Open Status", "Status")),
         ));
     }
 
@@ -833,7 +850,7 @@ fn dashboard_needs_attention(
                 heartbeat.last_seen_label, heartbeat.phase_label
             ),
             "Open Status and confirm the daemon process is still running before you assume scheduled scans are alive.",
-            Some(activity_link("/status", "Open Status")),
+            Some(activity_link("/status", "Open Status", "Status")),
         ));
     }
 
@@ -843,11 +860,11 @@ fn dashboard_needs_attention(
             "badge-warning",
             "Auto-acquire queue is blocked",
             format!(
-                "{} blocked and {} failed job(s) need operator review before the backlog silently grows.",
+                "{} blocked and {} failed job(s) need review.",
                 queue.blocked, queue.failed
             ),
-            "Open Status to confirm queue pressure and provider health, then rerun a targeted scan if the backlog should move again.",
-            Some(activity_link("/status", "Open Status")),
+            "Open Status to check the queue and provider health, then rerun a targeted scan if those jobs should move.",
+            Some(activity_link("/status", "Open Status", "Status")),
         ));
     } else if queue.completed_unlinked > 0 {
         items.push(needs_attention_item(
@@ -858,8 +875,8 @@ fn dashboard_needs_attention(
                 "{} completed job(s) still need a fresh link before they become real library wins.",
                 queue.completed_unlinked
             ),
-            "Open Status and inspect the latest queue rows before rerunning another scan, so you can see whether relink checks, source visibility, or ownership rules are holding them back.",
-            Some(activity_link("/status", "Open Status")),
+            "Open Status and review the latest queue rows before running another scan.",
+            Some(activity_link("/status", "Open Status", "Status")),
         ));
     } else if queue.no_result > 0 {
         items.push(needs_attention_item(
@@ -871,7 +888,7 @@ fn dashboard_needs_attention(
                 queue.no_result
             ),
             "Open Status and Scan, then compare search scope, provider availability, and query quality before assuming acquisition is broken.",
-            Some(activity_link("/status", "Open Status")),
+            Some(activity_link("/status", "Open Status", "Status")),
         ));
     }
 
@@ -884,13 +901,13 @@ fn dashboard_needs_attention(
         items.push(needs_attention_item(
             "Medium",
             "badge-warning",
-            "Media refresh backlog is accumulating",
+            "Media refresh is waiting",
             format!(
-                "{} deferred target(s) are still queued. {} is already waiting on refresh work.",
+                "{} refresh target(s) are still queued. {} is already waiting.",
                 deferred_refresh.pending_targets, server_label
             ),
-            "Open Status and let the current media-server backlog clear before assuming fresh links are already visible to users.",
-            Some(activity_link("/status", "Open Status")),
+            "Open Status and let the media server catch up before assuming fresh links are visible.",
+            Some(activity_link("/status", "Open Status", "Status")),
         ));
     }
 
@@ -899,15 +916,16 @@ fn dashboard_needs_attention(
             items.push(needs_attention_item(
                 "Medium",
                 "badge-info",
-                "Latest run hit refresh guardrails",
+                "Latest run limited media refresh",
                 format!(
                     "{} capped batch(es) and {} failed batch(es) were recorded on the latest run.",
                     run.plex_refresh_capped_batches, run.plex_refresh_failed_batches
                 ),
-                "Open the latest run detail and inspect refresh caps, skips, or failures before you rerun another large scan.",
+                "Open the latest run detail and review refresh caps, skips, or failures before another large scan.",
                 Some(activity_link(
                     format!("/scan/history/{}", run.id),
                     "Open Latest Run",
+                    "Scan run",
                 )),
             ));
         }
@@ -927,9 +945,13 @@ fn build_dashboard_needs_attention_view(
 
 async fn dashboard_activity_feed(state: &WebState) -> DashboardActivityFeedView {
     let mut active_items = Vec::new();
-    let daemon_heartbeat = daemon_heartbeat_view(&state.config, daemon_heartbeat_record(state).await);
+    let daemon_heartbeat =
+        daemon_heartbeat_view(&state.config, daemon_heartbeat_record(state).await);
 
-    if let Some(heartbeat) = daemon_heartbeat.as_ref().filter(|heartbeat| !heartbeat.stale) {
+    if let Some(heartbeat) = daemon_heartbeat
+        .as_ref()
+        .filter(|heartbeat| !heartbeat.stale)
+    {
         active_items.push(ActivityFeedItemView {
             kind_label: "Daemon".to_string(),
             status_label: heartbeat.status_label.clone(),
@@ -939,11 +961,8 @@ async fn dashboard_activity_feed(state: &WebState) -> DashboardActivityFeedView 
             timestamp: heartbeat.last_seen_label.clone(),
             context: Some(format!("Phase: {}", heartbeat.phase_label)),
             message: heartbeat.detail.clone(),
-            badges: vec![activity_badge(
-                heartbeat.phase_label.clone(),
-                "badge-info",
-            )],
-            link: Some(activity_link("/status", "Open Status")),
+            badges: vec![activity_badge(heartbeat.phase_label.clone(), "badge-info")],
+            link: Some(activity_link("/status", "Open Status", "Status")),
         });
     }
 
@@ -958,7 +977,7 @@ async fn dashboard_activity_feed(state: &WebState) -> DashboardActivityFeedView 
             context: None,
             message: "Background scan is in progress.".to_string(),
             badges: scan_activity_badges(job.dry_run, job.search_missing),
-            link: Some(activity_link("/scan", "Open Scan")),
+            link: Some(activity_link("/scan", "Open Scan", "Scan hub")),
         });
     }
 
@@ -973,7 +992,7 @@ async fn dashboard_activity_feed(state: &WebState) -> DashboardActivityFeedView 
             context: Some(format!("Libraries: {}", job.libraries_label)),
             message: "Audit is building a new cleanup report.".to_string(),
             badges: Vec::new(),
-            link: Some(activity_link("/cleanup", "Open Cleanup")),
+            link: Some(activity_link("/cleanup", "Open Cleanup", "Cleanup hub")),
         });
     }
 
@@ -988,7 +1007,11 @@ async fn dashboard_activity_feed(state: &WebState) -> DashboardActivityFeedView 
             context: None,
             message: "Repair is checking tracked dead links.".to_string(),
             badges: Vec::new(),
-            link: Some(activity_link("/links/dead", "Open Dead Links")),
+            link: Some(activity_link(
+                "/links/dead",
+                "Open Dead Links",
+                "Dead Links",
+            )),
         });
     }
 
@@ -1014,7 +1037,7 @@ async fn dashboard_activity_feed(state: &WebState) -> DashboardActivityFeedView 
             context: None,
             message: outcome.message.clone(),
             badges: scan_activity_badges(outcome.dry_run, outcome.search_missing),
-            link: Some(activity_link("/scan", "Open Scan")),
+            link: Some(activity_link("/scan", "Open Scan", "Scan hub")),
         });
     }
 
@@ -1037,7 +1060,7 @@ async fn dashboard_activity_feed(state: &WebState) -> DashboardActivityFeedView 
             context: Some(format!("Phase: {}", heartbeat.phase_label)),
             message: heartbeat.detail,
             badges: Vec::new(),
-            link: Some(activity_link("/status", "Open Status")),
+            link: Some(activity_link("/status", "Open Status", "Status")),
         });
     }
 
@@ -1061,8 +1084,12 @@ async fn dashboard_activity_feed(state: &WebState) -> DashboardActivityFeedView 
             message: outcome.message,
             badges: Vec::new(),
             link: Some(match outcome.report_path {
-                Some(path) => activity_link(format!("/cleanup/prune?report={path}"), "Open Report"),
-                None => activity_link("/cleanup", "Open Cleanup"),
+                Some(path) => activity_link(
+                    format!("/cleanup/prune?report={path}"),
+                    "Open Report",
+                    "Prune preview",
+                ),
+                None => activity_link("/cleanup", "Open Cleanup", "Cleanup hub"),
             }),
         });
     }
@@ -1089,7 +1116,11 @@ async fn dashboard_activity_feed(state: &WebState) -> DashboardActivityFeedView 
             )),
             message: outcome.message,
             badges: Vec::new(),
-            link: Some(activity_link("/links/dead", "Open Dead Links")),
+            link: Some(activity_link(
+                "/links/dead",
+                "Open Dead Links",
+                "Dead Links",
+            )),
         });
     }
 
@@ -1238,7 +1269,8 @@ pub async fn get_dashboard(State(state): State<WebState>) -> impl IntoResponse {
     let streaming_guard = streaming_guard_view(&state).await;
     let recent_queue_jobs = recent_queue_jobs(&state, RECENT_QUEUE_JOB_LIMIT).await;
     let latest_daemon_run = latest_daemon_scan_run_record(&state).await;
-    let daemon_heartbeat = daemon_heartbeat_view(&state.config, daemon_heartbeat_record(&state).await);
+    let daemon_heartbeat =
+        daemon_heartbeat_view(&state.config, daemon_heartbeat_record(&state).await);
     let daemon_schedule = daemon_schedule_view(
         &state.config,
         latest_daemon_run.as_ref(),
@@ -1284,7 +1316,10 @@ pub async fn get_dashboard_summary(State(state): State<WebState>) -> impl IntoRe
     let stats = match state.database.get_web_stats().await {
         Ok(stats) => dashboard_stats_from_web_stats(stats),
         Err(err) => {
-            error!("Failed to get dashboard stats for summary fragment: {}", err);
+            error!(
+                "Failed to get dashboard stats for summary fragment: {}",
+                err
+            );
             DashboardStats::default()
         }
     };
@@ -1321,7 +1356,10 @@ pub async fn get_dashboard_needs_attention(State(state): State<WebState>) -> imp
     let stats = match state.database.get_web_stats().await {
         Ok(stats) => dashboard_stats_from_web_stats(stats),
         Err(err) => {
-            error!("Failed to get dashboard stats for needs-attention fragment: {}", err);
+            error!(
+                "Failed to get dashboard stats for needs-attention fragment: {}",
+                err
+            );
             DashboardStats::default()
         }
     };
@@ -1353,7 +1391,8 @@ pub async fn get_dashboard_needs_attention(State(state): State<WebState>) -> imp
     };
     let streaming_guard = streaming_guard_view(&state).await;
     let latest_daemon_run = latest_daemon_scan_run_record(&state).await;
-    let daemon_heartbeat = daemon_heartbeat_view(&state.config, daemon_heartbeat_record(&state).await);
+    let daemon_heartbeat =
+        daemon_heartbeat_view(&state.config, daemon_heartbeat_record(&state).await);
     let daemon_schedule = daemon_schedule_view(
         &state.config,
         latest_daemon_run.as_ref(),
@@ -1384,7 +1423,10 @@ pub async fn get_dashboard_latest_run(State(state): State<WebState>) -> impl Int
     let latest_run = match state.database.get_latest_scan_run().await {
         Ok(run) => run.map(ScanRunView::from_record),
         Err(err) => {
-            error!("Failed to get latest scan history for latest-run fragment: {}", err);
+            error!(
+                "Failed to get latest scan history for latest-run fragment: {}",
+                err
+            );
             None
         }
     };
@@ -1422,7 +1464,8 @@ pub async fn get_status(State(state): State<WebState>) -> impl IntoResponse {
     };
     let latest_scan_run = latest_scan_run_record(&state).await;
     let latest_daemon_run = latest_daemon_scan_run_record(&state).await;
-    let daemon_heartbeat = daemon_heartbeat_view(&state.config, daemon_heartbeat_record(&state).await);
+    let daemon_heartbeat =
+        daemon_heartbeat_view(&state.config, daemon_heartbeat_record(&state).await);
     let checks = collect_health_checks(&state);
     let deferred_refresh = deferred_refresh_summary(&state.config)
         .map(DeferredRefreshSummaryView::from)

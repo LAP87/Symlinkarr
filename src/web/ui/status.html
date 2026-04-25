@@ -2,17 +2,21 @@
 
 {% block title %}Service Status - Symlinkarr{% endblock %}
 {% block nav_status %}active{% endblock %}
+{% block body_class %}page-status page-inspection{% endblock %}
 
 {% block content %}
 <div class="page-header page-header--split">
     <div>
-        <p class="page-kicker">Operations</p>
+        <div class="page-meta">
+            <p class="page-kicker">Live</p>
+            <span class="page-taxonomy page-taxonomy--inspection">Status</span>
+        </div>
         <h1>Service Status</h1>
-        <p class="page-lead">Check live link health, queue pressure, and service state.</p>
+        <p class="page-lead">Check links, queue jobs, refresh, and connected services.</p>
         <div class="page-help-links advanced-only">
             <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Media-Server-Refresh-and-Deferred-Work" target="_blank" rel="noreferrer noopener">
                 <span class="help-link__eyebrow">Learn more</span>
-                <span class="help-link__title">Refresh and deferred work</span>
+                <span class="help-link__title">Media refresh guide</span>
             </a>
             <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Configuration-and-Doctor" target="_blank" rel="noreferrer noopener">
                 <span class="help-link__eyebrow">Wiki</span>
@@ -32,7 +36,7 @@
 
 {% if daemon_schedule.status_label == "Due" %}
 <div class="alert alert-warning">
-    <strong>Configured scan cadence looks overdue.</strong>
+    <strong>Scheduled scan looks overdue.</strong>
     {{ daemon_schedule.last_run_metric_label }}: {{ daemon_schedule.last_run_label }}.
     {{ daemon_schedule.next_due_label }}.
     Verify the daemon/service is still running before assuming scans are happening on schedule.
@@ -57,7 +61,7 @@
                 <h2 class="section-title">What Status is for</h2>
             </div>
         </div>
-        <p class="text-muted">Use Status as the live inspection page when you need current runtime truth: queue pressure, daemon cadence, dead-link backlog, deferred refresh, and service health. Use Dashboard for daily prioritization and Scan History when you need past run detail.</p>
+        <p class="text-muted">Use Status when you want the live view: links, queue jobs, scheduled scans, media refresh, and service health. Use Dashboard for the quick overview and Scan History for older runs.</p>
     </section>
 
     <section class="card">
@@ -69,15 +73,15 @@
         </div>
         <ol class="steps-list text-muted">
             {% if stats.dead_links > 0 %}
-            <li>Review Dead Links first; unresolved rows are still the clearest live repair or cleanup obligation.</li>
+            <li>Review Dead Links first; those rows are the clearest repair or cleanup work.</li>
             {% else if queue.blocked > 0 || queue.failed > 0 || queue.completed_unlinked > 0 || queue.no_result > 0 %}
-            <li>Open the queue detail below and decide whether the next move is Scan, queue recovery, or a provider-side fix.</li>
+            <li>Open the queue details below and decide whether to scan again, retry jobs, or fix the provider side.</li>
             {% else if daemon_schedule.status_label == "Due" %}
             <li>Verify the daemon/service before assuming background scans are still happening on schedule.</li>
             {% else %}
             <li>If nothing here looks unhealthy, go back to Dashboard or Scan instead of treating Status as a work queue.</li>
             {% endif %}
-            <li>Use Config or Doctor only when the live symptoms below look like environment or path problems rather than normal backlog.</li>
+            <li>Use Config or Doctor only when this looks like a path, mount, or service problem.</li>
         </ol>
     </section>
 </div>
@@ -86,7 +90,7 @@
     <section class="card">
         <div class="section-head">
             <div>
-                <p class="section-kicker">System Snapshot</p>
+                <p class="section-kicker">Library</p>
                 <h2 class="section-title">Library health</h2>
             </div>
         </div>
@@ -118,7 +122,7 @@
         <div class="section-head">
             <div>
                 <p class="section-kicker">Auto-Acquire</p>
-                <h2 class="section-title">Queue pressure</h2>
+                <h2 class="section-title">Queue</h2>
             </div>
         </div>
 
@@ -138,8 +142,8 @@
     <summary class="disclosure-card__summary">
         <div class="disclosure-card__copy">
             <span class="disclosure-card__eyebrow">Daemon</span>
-            <h2 class="disclosure-card__title">Configured cadence and heartbeat</h2>
-            <p class="disclosure-card__hint">Open when queue or scan symptoms make you suspect the scheduler rather than the linking pipeline itself.</p>
+            <h2 class="disclosure-card__title">Schedule and heartbeat</h2>
+            <p class="disclosure-card__hint">Open when scans are not running when you expect them to.</p>
         </div>
         <div class="disclosure-card__meta">
             <span class="badge {{ daemon_schedule.status_badge_class }}">{{ daemon_schedule.status_label }}</span>
@@ -154,7 +158,7 @@
     <div class="disclosure-card__body">
         <div class="metric-grid metric-grid--compact">
             <div class="metric-card"><span class="metric-label">{{ daemon_schedule.last_run_metric_label }}</span><strong>{{ daemon_schedule.last_run_label }}</strong></div>
-            <div class="metric-card"><span class="metric-label">Next due estimate</span><strong>{{ daemon_schedule.next_due_label }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Next scan</span><strong>{{ daemon_schedule.next_due_label }}</strong></div>
             <div class="metric-card"><span class="metric-label">Search Missing</span><strong>{{ daemon_schedule.search_missing_label }}</strong></div>
             <div class="metric-card"><span class="metric-label">VACUUM</span><strong>{{ daemon_schedule.vacuum_label }}</strong></div>
             {% match daemon_heartbeat %}
@@ -171,11 +175,11 @@
     </div>
 </details>
 
-<div class="split-grid">
+<div class="split-grid split-grid--top">
     <section class="card">
         <div class="section-head">
             <div>
-                <p class="section-kicker">Dead-Link Policy</p>
+                <p class="section-kicker">Dead Links</p>
                 <h2 class="section-title">Persistent unresolved links</h2>
             </div>
             {% if stats.dead_links > 0 %}
@@ -196,7 +200,7 @@
             <summary class="disclosure-card__summary">
                 <div class="disclosure-card__copy">
                     <span class="disclosure-card__eyebrow">Tracked dead links</span>
-                    <h3 class="disclosure-card__title">Inspect the unresolved rows</h3>
+                    <h3 class="disclosure-card__title">Review the unresolved rows</h3>
                     <p class="disclosure-card__hint">Expand only when you need exact paths and media IDs.</p>
                 </div>
                 <div class="disclosure-card__meta">
@@ -253,10 +257,47 @@
             </div>
         </summary>
         <div class="disclosure-card__body">
-            {% include "web/ui/partials/queue_jobs.html" %}
+            {% if recent_queue_jobs|length > 0 %}
+            <div class="queue-jobs-list">
+                {% for job in recent_queue_jobs %}
+                <article class="queue-job-card">
+                    <div class="queue-job-card__header">
+                        <div>
+                            <p class="queue-job-card__eyebrow">{{ job.arr_label }} · {{ job.scope_label }}</p>
+                            <h3 class="queue-job-card__title">{{ job.label }}</h3>
+                        </div>
+                        <div class="queue-job-card__badges">
+                            <span class="badge {{ job.status_badge_class }}">{{ job.status_label }}</span>
+                            <span class="badge {% if job.attempts > 0 %}badge-warning{% else %}badge-info{% endif %}">Attempts {{ job.attempts }}</span>
+                        </div>
+                    </div>
+                    <div class="queue-job-card__facts">
+                        <div>
+                            <span class="queue-job-card__label">Query</span>
+                            <code class="mono queue-job-card__query">{{ job.query }}</code>
+                        </div>
+                        <div>
+                            <span class="queue-job-card__label">{{ job.timing_label }}</span>
+                            <strong class="queue-job-card__timing">{{ job.timing_value }}</strong>
+                        </div>
+                    </div>
+                    {% match job.detail %}
+                    {% when Some with (detail) %}
+                    <p class="queue-job-card__detail">{{ detail }}</p>
+                    {% when None %}{% endmatch %}
+                </article>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="alert alert-success">
+                <strong>No recent queue jobs need review.</strong>
+            </div>
+            {% endif %}
         </div>
     </details>
+</div>
 
+<div class="split-grid split-grid--tight">
     {% match streaming_guard %}
     {% when Some with (guard) %}
     <details class="card disclosure-card" {% if guard.active_streams > 0 %}open{% endif %}>
@@ -360,14 +401,14 @@
         <div class="section-head">
             <div>
                 <p class="section-kicker">Refresh</p>
-                <h2 class="section-title">Deferred media refresh</h2>
+                <h2 class="section-title">Pending media refresh</h2>
             </div>
         </div>
 
         {% if deferred_refresh.pending_targets > 0 %}
         <div class="alert alert-warning">
             <strong>{{ deferred_refresh.pending_targets }} refresh target(s) are queued.</strong>
-            Another Symlinkarr run previously held the refresh lock or deferred refresh work under load.
+            Another Symlinkarr run held the refresh lock, or the media server was busy.
         </div>
         <div class="badge-stack">
             {% for server in deferred_refresh.servers %}
@@ -376,7 +417,7 @@
         </div>
         {% else %}
         <div class="alert alert-success">
-            <strong>No deferred refresh backlog.</strong>
+            <strong>No pending media refresh.</strong>
         </div>
         {% endif %}
     </section>

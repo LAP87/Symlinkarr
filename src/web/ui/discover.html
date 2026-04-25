@@ -2,12 +2,15 @@
 
 {% block title %}Discover - Symlinkarr{% endblock %}
 {% block nav_discover %}active{% endblock %}
-{% block body_class %}page-requires-advanced{% endblock %}
+{% block body_class %}page-discover page-inspection page-requires-advanced{% endblock %}
 
 {% block content %}
 <div class="page-header page-header--split">
     <div>
-    <p class="page-kicker">Maintenance</p>
+    <div class="page-meta">
+        <p class="page-kicker">Maintenance</p>
+        <span class="page-taxonomy page-taxonomy--inspection">Preview</span>
+    </div>
     <h1>Discover</h1>
     <p class="page-lead">Preview candidate placements for tagged folders without writing links.</p>
     </div>
@@ -26,7 +29,7 @@
         <div class="disclosure-card__copy">
             <span class="disclosure-card__eyebrow">Guide</span>
             <h2 class="disclosure-card__title">Discover preview rules</h2>
-            <p class="disclosure-card__hint">Open when you need the read-only placement rules or want the longer operator guide before running a preview.</p>
+            <p class="disclosure-card__hint">Open for the read-only placement rules.</p>
         </div>
         <div class="disclosure-card__meta">
             <span class="badge badge-secondary">Wiki</span>
@@ -73,7 +76,7 @@
             <input type="checkbox" name="refresh_cache" value="true" {% if refresh_cache %}checked{% endif %}>
             <div>
                 <strong>Refresh RD cache first</strong>
-                <p class="text-muted">Slower, but fetches a live cache snapshot before candidate review. Leave off for a faster cached review when you only want a quick check.</p>
+                <p class="text-muted">Slower, but fetches fresh RD cache data before review. Leave off for a quicker cached check.</p>
             </div>
         </label>
         <div class="actions">

@@ -2,13 +2,17 @@
 
 {% block title %}Scan - Symlinkarr{% endblock %}
 {% block nav_scan %}active{% endblock %}
+{% block body_class %}page-scan page-hub{% endblock %}
 
 {% block content %}
 <div class="page-header page-header--split">
     <div>
-        <p class="page-kicker">Pipeline</p>
+        <div class="page-meta">
+            <p class="page-kicker">Pipeline</p>
+            <span class="page-taxonomy page-taxonomy--hub">Hub</span>
+        </div>
         <h1>Scan</h1>
-        <p class="page-lead">Run scans, review timings, and inspect queue impact.</p>
+        <p class="page-lead">Run scans, review timings, and see what happened to the queue.</p>
         <div class="page-help-links">
             <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Scan-History-and-Why-Not-Signals" target="_blank" rel="noreferrer noopener">
                 <span class="help-link__eyebrow">Learn more</span>
@@ -94,9 +98,9 @@
     <details class="card disclosure-card">
         <summary class="disclosure-card__summary">
             <div class="disclosure-card__copy">
-                <span class="disclosure-card__eyebrow">Queue Snapshot</span>
-                <h2 class="disclosure-card__title">Auto-acquire pressure</h2>
-                <p class="disclosure-card__hint">Open when you want the full backlog shape before or after a scan.</p>
+                <span class="disclosure-card__eyebrow">Queue</span>
+                <h2 class="disclosure-card__title">Auto-acquire queue</h2>
+                <p class="disclosure-card__hint">Open for the full queue count before or after a scan.</p>
             </div>
             <div class="disclosure-card__meta">
                 <span class="badge {% if queue.active_total > 0 %}badge-warning{% else %}badge-success{% endif %}">
@@ -169,7 +173,7 @@
                         <textarea id="anime-override-extra-hints" name="extra_hints" rows="4" class="form-control mono" placeholder="One hint per line&#10;Call of the Night&#10;Yofukashi no Uta 2">{{ anime_override_draft.extra_hints }}</textarea>
                     </div>
                     <div class="form-group">
-                        <label class="form-label" for="anime-override-note">Operator note (optional)</label>
+                        <label class="form-label" for="anime-override-note">Note (optional)</label>
                         <input id="anime-override-note" name="note" type="text" class="form-control field-max-lg" placeholder="Why this override exists" value="{{ anime_override_draft.note }}">
                     </div>
                     <div class="actions">
@@ -315,7 +319,7 @@
 
     {% if run.plex_refresh_capped_batches > 0 || run.plex_refresh_skipped_batches > 0 || run.plex_refresh_failed_batches > 0 || run.plex_refresh_unresolved_paths > 0 %}
     <div class="alert alert-warning mt-2">
-        <strong>Media refresh protections activated.</strong>
+        <strong>Media refresh was limited.</strong>
         {% if run.plex_refresh_aborted_due_to_cap %}
         Cap guard aborted all targeted refreshes after the plan exceeded the per-run limit.
         {% else %}
@@ -338,7 +342,7 @@
             {% endfor %}
         </div>
         {% if run.skip_reason_extra_buckets > 0 %}
-        <p class="text-muted mt-1">+{{ run.skip_reason_extra_buckets }} more bucket(s) in the full run detail.</p>
+        <p class="text-muted mt-1">+{{ run.skip_reason_extra_buckets }} more reason group(s) in the full run detail.</p>
         {% endif %}
     </div>
     {% endif %}
@@ -470,7 +474,7 @@
                     <div>
                         {% for refresh in run.media_server_refresh %}
                         {% if refresh.deferred_due_to_lock %}
-                        <span class="badge badge-warning">{{ refresh.server }} deferred</span>
+                        <span class="badge badge-warning">{{ refresh.server }} pending</span>
                         {% else if refresh.failed_batches > 0 %}
                         <span class="badge badge-danger">{{ refresh.server }} failed</span>
                         {% else if refresh.aborted_due_to_cap %}
@@ -502,7 +506,7 @@
                         {% endfor %}
                     </div>
                     {% if run.skip_reason_extra_buckets > 0 %}
-                    <div class="text-muted">+{{ run.skip_reason_extra_buckets }} more bucket(s)</div>
+                    <div class="text-muted">+{{ run.skip_reason_extra_buckets }} more reason group(s)</div>
                     {% endif %}
                     {% else %}
                     <span class="text-muted">n/a</span>

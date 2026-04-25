@@ -2,11 +2,15 @@
 
 {% block title %}Scan Result - Symlinkarr{% endblock %}
 {% block nav_scan %}active{% endblock %}
+{% block body_class %}page-result page-scan-result{% endblock %}
 
 {% block content %}
 <div class="page-header page-header--split">
     <div>
-        <p class="page-kicker">Result</p>
+        <div class="page-meta">
+            <p class="page-kicker">Result</p>
+            <span class="page-taxonomy page-taxonomy--result">Result</span>
+        </div>
         <h1>&#128269; Scan Result</h1>
         <p class="page-lead">The web trigger schedules the same scan pipeline as the CLI path, without blocking the browser.</p>
         <div class="page-help-links">
@@ -79,9 +83,9 @@
         <p class="text-muted">The browser accepted the run and the real work is still happening in the background. Use Scan History or the dashboard feed when you need to confirm the final outcome.</p>
         {% when None %}
         {% if success %}
-        <p class="text-muted">The run finished and a recorded scan snapshot is available below when Symlinkarr managed to persist it cleanly.</p>
+        <p class="text-muted">The run finished and saved scan details are available below.</p>
         {% else %}
-        <p class="text-muted">The trigger failed or the run ended badly enough that you should inspect the latest recorded outcome before retrying.</p>
+        <p class="text-muted">The trigger failed or the run ended badly. Check the latest recorded result before retrying.</p>
         {% endif %}
         {% endmatch %}
     </section>
@@ -96,7 +100,7 @@
         <ol class="steps-list text-muted">
             {% match latest_run %}
             {% when Some with (_) %}
-            <li>Open the recorded run detail to inspect phase timings, why-not signals, and queue impact.</li>
+            <li>Open the run detail to review timings, skip reasons, and queue changes.</li>
             <li>If acquisition still looks unhealthy, compare Scan with Status before rerunning.</li>
             {% when None %}
             <li>Return to Scan and wait for the next recorded outcome before assuming the pipeline is done.</li>
@@ -112,7 +116,7 @@
     <summary class="disclosure-card__summary">
         <div class="disclosure-card__copy">
             <span class="disclosure-card__eyebrow">Recorded run</span>
-            <h2 class="disclosure-card__title">Snapshot from the latest persisted run</h2>
+            <h2 class="disclosure-card__title">Latest saved run</h2>
             <p class="disclosure-card__hint">Open when you want the quick metrics here instead of jumping straight into the full run detail page.</p>
         </div>
         <div class="disclosure-card__meta">

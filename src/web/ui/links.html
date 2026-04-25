@@ -2,15 +2,20 @@
 
 {% block title %}Links - Symlinkarr{% endblock %}
 {% block nav_links %}active{% endblock %}
+{% block body_class %}page-links page-inspection{% endblock %}
 
 {% block content %}
 <div class="page-header">
+    <div class="page-meta">
+        <p class="page-kicker">Inventory</p>
+        <span class="page-taxonomy page-taxonomy--inspection">Links</span>
+    </div>
     <h1>&#128279; Links</h1>
-    <p>Browse and manage symlinks in the database.</p>
+    <p class="page-lead">Browse and manage symlinks in the database.</p>
     <div class="page-help-links">
         <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Repair-and-Dead-Links" target="_blank" rel="noreferrer noopener">
             <span class="help-link__eyebrow">Learn more</span>
-            <span class="help-link__title">Tracked links and dead-link triage</span>
+            <span class="help-link__title">Links and repair guide</span>
         </a>
     </div>
 </div>

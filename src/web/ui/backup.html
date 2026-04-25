@@ -2,12 +2,15 @@
 
 {% block title %}Backup - Symlinkarr{% endblock %}
 {% block nav_backup %}active{% endblock %}
-{% block body_class %}page-requires-advanced{% endblock %}
+{% block body_class %}page-backup page-recovery page-requires-advanced{% endblock %}
 
 {% block content %}
 <div class="page-header page-header--split">
     <div>
-        <p class="page-kicker">System</p>
+        <div class="page-meta">
+            <p class="page-kicker">System</p>
+            <span class="page-taxonomy page-taxonomy--recovery">Backup</span>
+        </div>
         <h1>Backup</h1>
         <p class="page-lead">Create and manage Symlinkarr backups and restore points for tracked links and SQLite state.</p>
         <div class="page-help-links">
@@ -28,7 +31,7 @@
         <div>
             <p class="section-kicker">Create</p>
             <h2 class="section-title">Create new Symlinkarr backup</h2>
-            <p class="section-copy">Use a short label before risky repair, cleanup, or migration work so your main rollback points stay obvious later.</p>
+            <p class="section-copy">Use a short label before repair, cleanup, or migration so the backup is easy to spot later.</p>
         </div>
     </div>
     <form action="/backup/create" method="post" class="stack-form">
@@ -48,8 +51,8 @@
         <summary class="disclosure-card__summary">
             <div class="disclosure-card__copy">
                 <span class="disclosure-card__eyebrow">Storage</span>
-                <h2 class="disclosure-card__title">Storage path and restore semantics</h2>
-                <p class="disclosure-card__hint">Open when you need the exact backup directory or the full restore/app-state caveats for this installation.</p>
+                <h2 class="disclosure-card__title">Storage path and restore notes</h2>
+                <p class="disclosure-card__hint">Open for the backup directory and restore notes.</p>
             </div>
             <div class="disclosure-card__meta">
                 <span class="badge badge-info">{{ backups|length }} snapshots</span>
@@ -77,7 +80,7 @@
                 <strong>Still not identical to Sonarr/Radarr.</strong> Secrets loaded only from environment variables still live outside the backup set, and a true fresh-install restore still needs you to place config/secrets before first start.
             </div>
             <div class="alert alert-info mt-2">
-                <strong>Use the names as intended.</strong> <em>Symlinkarr Backup</em> is the main backup to keep. <em>Restore Point</em> is a lighter rollback point created around risky runs.
+                <strong>Name things clearly.</strong> <em>Symlinkarr Backup</em> is the main backup to keep. <em>Restore Point</em> is a smaller rollback point around a specific job.
             </div>
         </div>
     </details>

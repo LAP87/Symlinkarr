@@ -3,44 +3,49 @@
     class="card"
     hx-get="/dashboard/needs-attention"
     hx-trigger="every 10s"
-    hx-swap="outerHTML"
+    hx-select="#dashboard-needs-attention-body > *"
+    hx-target="#dashboard-needs-attention-body"
+    hx-swap="innerHTML"
 >
     <div class="section-head">
         <div>
             <p class="section-kicker">Needs Attention</p>
-            <h2 class="section-title">Operator priorities</h2>
-            <p class="text-muted">Actionable problems worth checking before the next scan cycle disappears into the background.</p>
+            <h2 class="section-title">Needs attention</h2>
+            <p class="text-muted">Stuff worth checking before the next scan runs.</p>
         </div>
     </div>
 
-    {% if needs_attention.items|length == 0 %}
-    <div class="alert alert-success">
-        <strong>No immediate operator issues detected.</strong>
-        Dead links, blocked queue pressure, and recent background failures are all quiet right now.
-    </div>
-    {% else %}
-    <div class="attention-grid">
-        {% for item in needs_attention.items %}
-        <article class="attention-item">
-            <div class="attention-item__header">
-                <div>
-                    <p class="section-kicker">{{ item.severity_label }}</p>
-                    <h3 class="attention-item__title">{{ item.title }}</h3>
+    <div id="dashboard-needs-attention-body">
+        {% if needs_attention.items|length == 0 %}
+        <div class="alert alert-success">
+            <strong>No issues found.</strong>
+            Dead links, blocked queue jobs, and recent background failures are quiet right now.
+        </div>
+        {% else %}
+        <div class="attention-grid">
+            {% for item in needs_attention.items %}
+            <article class="attention-item">
+                <div class="attention-item__header">
+                    <div>
+                        <p class="section-kicker">{{ item.severity_label }}</p>
+                        <h3 class="attention-item__title">{{ item.title }}</h3>
+                    </div>
+                    <span class="badge {{ item.severity_badge_class }}">{{ item.severity_label }}</span>
                 </div>
-                <span class="badge {{ item.severity_badge_class }}">{{ item.severity_label }}</span>
-            </div>
-            <p>{{ item.message }}</p>
-            <p class="attention-item__hint">
-                <strong>Next step:</strong> {{ item.next_step }}
-            </p>
-            {% match item.link %}
-            {% when Some with (link) %}
-            <div class="actions">
-                <a href="{{ link.href }}" class="btn btn-secondary btn-secondary--subtle">{{ link.label }}</a>
-            </div>
-            {% when None %}{% endmatch %}
-        </article>
-        {% endfor %}
+                <p>{{ item.message }}</p>
+                <p class="attention-item__hint">
+                    <strong>Next step:</strong> {{ item.next_step }}
+                </p>
+                {% match item.link %}
+                {% when Some with (link) %}
+                <div class="actions">
+                    <a href="{{ link.href }}" class="btn btn-secondary btn-secondary--subtle">{{ link.label }}</a>
+                </div>
+                <p class="action-context">Opens: {{ link.landing }}</p>
+                {% when None %}{% endmatch %}
+            </article>
+            {% endfor %}
+        </div>
+        {% endif %}
     </div>
-    {% endif %}
 </section>

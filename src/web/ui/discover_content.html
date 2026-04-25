@@ -9,9 +9,9 @@
 <section class="card">
     <div class="section-head">
         <div>
-            <p class="section-kicker">Summary</p>
-            <h2 class="section-title">Current placement plan</h2>
-            <p class="section-copy">Counts below reflect the currently rendered review scope. This is a preview only and does not mutate links.</p>
+            <p class="section-kicker">Outcome</p>
+            <h2 class="section-title">What this preview found</h2>
+            <p class="section-copy">Counts below match the current scope. Discover is read-only; the rows lower on the page show the details.</p>
         </div>
     </div>
     <div class="metric-grid metric-grid--compact">
@@ -34,7 +34,7 @@
         {% if discover_summary.placements > 0 %}
         <p class="text-muted">Discover never writes links. These rows show where cached or freshly synced source content would land under the current tagged roots if the normal scan and queue pipeline later reaches the same matches.</p>
         {% else %}
-        <p class="text-muted">This snapshot found no safe placement rows for the current scope. That usually means the chosen library or the current cache does not contain content Symlinkarr can place yet.</p>
+        <p class="text-muted">No safe placements found for this scope. The chosen library or current cache probably has nothing Symlinkarr can place yet.</p>
         {% endif %}
         <div class="page-help-links mt-2">
             <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Discover-and-Queue" target="_blank" rel="noreferrer noopener">
@@ -57,12 +57,27 @@
             {% else if discover_summary.placements > 0 %}
             <li>Use this preview to confirm folder targeting, then go back to Scan or Dashboard for the actual linking and queue workflows.</li>
             {% else %}
-            <li>Re-run Discover with refresh enabled if you expected new RD content and want a slower live cache snapshot before judging the result.</li>
+            <li>Re-run Discover with refresh enabled if you expected new RD content.</li>
             {% endif %}
-            <li>Use Status when you need queue pressure or relink state; Discover itself stays read-only even when the placement plan looks correct.</li>
+            <li>Use Status when you need queue or relink details; Discover stays read-only.</li>
         </ol>
     </section>
 </div>
+
+<section class="card">
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Drilldown</p>
+            <h2 class="section-title">Where to go deeper</h2>
+        </div>
+    </div>
+    <p class="text-muted">Use the folder-plan and placement rows below for details. Then decide whether to change scope, run Scan, or check Status.</p>
+    <div class="actions">
+        <a href="/scan" class="btn btn-primary">Open Scan</a>
+        <a href="/status" class="btn btn-secondary">Status</a>
+        <a href="/discover#discover-form" class="btn btn-secondary">Adjust Discover Scope</a>
+    </div>
+</section>
 
 {% if folder_plans|length > 0 %}
 <details class="card disclosure-card">

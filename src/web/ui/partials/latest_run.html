@@ -3,112 +3,116 @@
     class="card"
     hx-get="/dashboard/latest-run"
     hx-trigger="every 10s"
-    hx-swap="outerHTML"
+    hx-select="#dashboard-latest-run-body > *"
+    hx-target="#dashboard-latest-run-body"
+    hx-swap="innerHTML"
 >
     <div class="section-head">
         <div>
             <p class="section-kicker">Latest Run</p>
-            <h2 class="section-title">Current baseline</h2>
+            <h2 class="section-title">Latest scan</h2>
         </div>
         <div class="actions">
             <a href="/scan" class="btn btn-primary">Open Scan</a>
         </div>
     </div>
 
-    {% match latest_run %}
-    {% when Some with (run) %}
-    <div class="run-summary">
-        <div class="run-summary__header">
-            <div>
-                <h3><a href="/scan/history/{{ run.id }}">{{ run.scope_label }}</a></h3>
-                <p class="text-muted mono">{{ run.started_at }}</p>
+    <div id="dashboard-latest-run-body">
+        {% match latest_run %}
+        {% when Some with (run) %}
+        <div class="run-summary">
+            <div class="run-summary__header">
+                <div>
+                    <h3><a href="/scan/history/{{ run.id }}">{{ run.scope_label }}</a></h3>
+                    <p class="text-muted mono">{{ run.started_at }}</p>
+                </div>
+                <div class="header-badges">
+                    {% if run.dry_run %}
+                    <span class="badge badge-info">Dry Run</span>
+                    {% else %}
+                    <span class="badge badge-success">Live</span>
+                    {% endif %}
+                    <span class="badge {{ run.origin_badge_class }}">{{ run.origin_label }}</span>
+                    {% if run.search_missing %}
+                    <span class="badge badge-warning">Search Missing</span>
+                    {% endif %}
+                </div>
             </div>
-            <div class="header-badges">
-                {% if run.dry_run %}
-                <span class="badge badge-info">Dry Run</span>
+
+            <div class="metric-grid">
+                <div class="metric-card">
+                    <span class="metric-label">Runtime</span>
+                    <strong>{{ run.total_runtime }}</strong>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-label">Matches</span>
+                    <strong>{{ run.matches_found }}</strong>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-label">Created + Updated</span>
+                    <strong>{{ run.links_created + run.links_updated }}</strong>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-label">Dead Marked</span>
+                    <strong class="{% if run.dead_marked > 0 %}text-error{% endif %}">{{ run.dead_marked }}</strong>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-label">Cache Hit</span>
+                    <strong>{{ run.cache_hit_ratio }}</strong>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-label">Auto-Acquire Wins</span>
+                    <strong>{{ run.auto_acquire_successes }}</strong>
+                </div>
+            </div>
+
+            <p class="text-muted">Advanced view shows timings and matcher details for this run.</p>
+
+            <div class="advanced-only">
+            <div class="telemetry-grid">
+                <div class="telemetry-item"><span>Checks</span><strong>{{ run.runtime_checks }}</strong></div>
+                <div class="telemetry-item"><span>Library</span><strong>{{ run.library_scan }}</strong></div>
+                <div class="telemetry-item"><span>Source</span><strong>{{ run.source_inventory }}</strong></div>
+                <div class="telemetry-item"><span>Match</span><strong>{{ run.matching }}</strong></div>
+                <div class="telemetry-item"><span>Titles</span><strong>{{ run.title_enrichment }}</strong></div>
+                <div class="telemetry-item"><span>Link</span><strong>{{ run.linking }}</strong></div>
+                <div class="telemetry-item"><span>Refresh</span><strong>{{ run.plex_refresh }}</strong></div>
+                <div class="telemetry-item"><span>Dead Sweep</span><strong>{{ run.dead_link_sweep }}</strong></div>
+            </div>
+            </div>
+
+            {% if run.plex_refresh_capped_batches > 0 || run.plex_refresh_skipped_batches > 0 || run.plex_refresh_failed_batches > 0 || run.plex_refresh_unresolved_paths > 0 %}
+            <div class="alert alert-warning mt-2">
+                <strong>Media refresh was limited.</strong>
+                {% if run.plex_refresh_aborted_due_to_cap %}
+                Cap guard aborted all targeted refreshes after the plan exceeded the per-run limit.
                 {% else %}
-                <span class="badge badge-success">Live</span>
+                Refreshed {{ run.plex_refresh_refreshed_batches }}/{{ run.plex_refresh_planned_batches }} batches.
                 {% endif %}
-                <span class="badge {{ run.origin_badge_class }}">{{ run.origin_label }}</span>
-                {% if run.search_missing %}
-                <span class="badge badge-warning">Search Missing</span>
-                {% endif %}
+                {% if run.plex_refresh_capped_batches > 0 %}Capped {{ run.plex_refresh_capped_batches }}.{% endif %}
+                {% if run.plex_refresh_skipped_batches > 0 %}Skipped {{ run.plex_refresh_skipped_batches }}.{% endif %}
+                {% if run.plex_refresh_failed_batches > 0 %}Failed {{ run.plex_refresh_failed_batches }}.{% endif %}
+                {% if run.plex_refresh_unresolved_paths > 0 %}Unresolved paths {{ run.plex_refresh_unresolved_paths }}.{% endif %}
             </div>
-        </div>
-
-        <div class="metric-grid">
-            <div class="metric-card">
-                <span class="metric-label">Runtime</span>
-                <strong>{{ run.total_runtime }}</strong>
-            </div>
-            <div class="metric-card">
-                <span class="metric-label">Matches</span>
-                <strong>{{ run.matches_found }}</strong>
-            </div>
-            <div class="metric-card">
-                <span class="metric-label">Created + Updated</span>
-                <strong>{{ run.links_created + run.links_updated }}</strong>
-            </div>
-            <div class="metric-card">
-                <span class="metric-label">Dead Marked</span>
-                <strong class="{% if run.dead_marked > 0 %}text-error{% endif %}">{{ run.dead_marked }}</strong>
-            </div>
-            <div class="metric-card">
-                <span class="metric-label">Cache Hit</span>
-                <strong>{{ run.cache_hit_ratio }}</strong>
-            </div>
-            <div class="metric-card">
-                <span class="metric-label">Auto-Acquire Wins</span>
-                <strong>{{ run.auto_acquire_successes }}</strong>
-            </div>
-        </div>
-
-        <p class="text-muted">Advanced view shows per-phase timings and deeper matcher details for this run.</p>
-
-        <div class="advanced-only">
-        <div class="telemetry-grid">
-            <div class="telemetry-item"><span>Checks</span><strong>{{ run.runtime_checks }}</strong></div>
-            <div class="telemetry-item"><span>Library</span><strong>{{ run.library_scan }}</strong></div>
-            <div class="telemetry-item"><span>Source</span><strong>{{ run.source_inventory }}</strong></div>
-            <div class="telemetry-item"><span>Match</span><strong>{{ run.matching }}</strong></div>
-            <div class="telemetry-item"><span>Titles</span><strong>{{ run.title_enrichment }}</strong></div>
-            <div class="telemetry-item"><span>Link</span><strong>{{ run.linking }}</strong></div>
-            <div class="telemetry-item"><span>Refresh</span><strong>{{ run.plex_refresh }}</strong></div>
-            <div class="telemetry-item"><span>Dead Sweep</span><strong>{{ run.dead_link_sweep }}</strong></div>
-        </div>
-        </div>
-
-        {% if run.plex_refresh_capped_batches > 0 || run.plex_refresh_skipped_batches > 0 || run.plex_refresh_failed_batches > 0 || run.plex_refresh_unresolved_paths > 0 %}
-        <div class="alert alert-warning mt-2">
-            <strong>Media refresh protections activated.</strong>
-            {% if run.plex_refresh_aborted_due_to_cap %}
-            Cap guard aborted all targeted refreshes after the plan exceeded the per-run limit.
-            {% else %}
-            Refreshed {{ run.plex_refresh_refreshed_batches }}/{{ run.plex_refresh_planned_batches }} batches.
             {% endif %}
-            {% if run.plex_refresh_capped_batches > 0 %}Capped {{ run.plex_refresh_capped_batches }}.{% endif %}
-            {% if run.plex_refresh_skipped_batches > 0 %}Skipped {{ run.plex_refresh_skipped_batches }}.{% endif %}
-            {% if run.plex_refresh_failed_batches > 0 %}Failed {{ run.plex_refresh_failed_batches }}.{% endif %}
-            {% if run.plex_refresh_unresolved_paths > 0 %}Unresolved paths {{ run.plex_refresh_unresolved_paths }}.{% endif %}
-        </div>
-        {% endif %}
 
-        {% if !run.skip_reason_highlights.is_empty() %}
-        <div class="card card--nested mt-2">
-            <h3 class="subsection-title">Top Why-Not Signals</h3>
-            <p class="text-muted">Most common reasons the latest run skipped work.</p>
-            <div>
-                {% for reason in run.skip_reason_highlights %}
-                <span class="badge badge-secondary">{{ reason.group }}: {{ reason.label }} {{ reason.count }}</span>
-                {% endfor %}
+            {% if !run.skip_reason_highlights.is_empty() %}
+            <div class="card card--nested mt-2">
+                <h3 class="subsection-title">Top skip reasons</h3>
+                <p class="text-muted">Most common reasons the latest run skipped files.</p>
+                <div>
+                    {% for reason in run.skip_reason_highlights %}
+                    <span class="badge badge-secondary">{{ reason.group }}: {{ reason.label }} {{ reason.count }}</span>
+                    {% endfor %}
+                </div>
+                {% if run.skip_reason_extra_buckets > 0 %}
+                <p class="text-muted mt-1">+{{ run.skip_reason_extra_buckets }} more reason group(s) in scan detail.</p>
+                {% endif %}
             </div>
-            {% if run.skip_reason_extra_buckets > 0 %}
-            <p class="text-muted mt-1">+{{ run.skip_reason_extra_buckets }} more bucket(s) in scan detail.</p>
             {% endif %}
         </div>
-        {% endif %}
+        {% when None %}
+        <p class="text-muted">No scan runs recorded yet.</p>
+        {% endmatch %}
     </div>
-    {% when None %}
-    <p class="text-muted">No scan runs recorded yet.</p>
-    {% endmatch %}
 </section>

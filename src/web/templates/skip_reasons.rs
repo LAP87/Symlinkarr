@@ -191,7 +191,7 @@ fn skip_reason_presentation(reason: &str) -> SkipReasonPresentation {
         },
         "auto_acquire_queue_capacity_deferred" => SkipReasonPresentation {
             group: SkipReasonGroupKind::AutoAcquire,
-            label: "Queue capacity deferred".to_string(),
+            label: "Queue limit reached".to_string(),
             help: "The acquisition queue hit its current limit, so Symlinkarr paused new work."
                 .to_string(),
         },

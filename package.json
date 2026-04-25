@@ -1,0 +1,11 @@
+{
+  "name": "symlinkarr-ui-tools",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "visual:qa": "node scripts/visual-qa.mjs"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.59.1"
+  }
+}

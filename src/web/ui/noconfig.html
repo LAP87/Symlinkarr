@@ -1,12 +1,15 @@
 {% extends "web/ui/base.html" %}
 
 {% block title %}Setup Required - Symlinkarr{% endblock %}
-{% block body_class %}page-noconfig{% endblock %}
+{% block body_class %}page-noconfig page-recovery{% endblock %}
 
 {% block content %}
 <div class="page-header page-header--split">
     <div>
-    <p class="page-kicker">Getting Started</p>
+    <div class="page-meta">
+        <p class="page-kicker">Getting Started</p>
+        <span class="page-taxonomy page-taxonomy--recovery">Setup</span>
+    </div>
     <h1>Setup required</h1>
     <p class="page-lead">Symlinkarr needs a config.yaml before it can start. Choose an option below to get set up.</p>
     <div class="page-help-links">
@@ -30,7 +33,7 @@
             <h2 class="section-title">What this state means</h2>
         </div>
     </div>
-    <p class="text-muted">Symlinkarr cannot start normally because there is no active <code>config.yaml</code>. This page is only the recovery and first-run entrypoint, not a partial runtime mode.</p>
+    <p class="text-muted">Symlinkarr cannot start normally because there is no active <code>config.yaml</code>. Restore a backup or create a new config.</p>
 </section>
 
 <section class="card">
@@ -43,7 +46,7 @@
     <ol class="steps-list text-muted">
         <li>If you already have a Symlinkarr backup, restore that instead of creating a fresh config.</li>
         <li>Only use bootstrap when this is truly a new installation or you intentionally want to rebuild from scratch.</li>
-        <li>After recovery or bootstrap, restart and then use Config or Doctor before assuming the runtime is healthy.</li>
+        <li>After restore or bootstrap, restart and then check Config or Doctor.</li>
     </ol>
 </section>
 </div>
@@ -61,7 +64,7 @@
         <p><strong>Docker:</strong> mount the backup file into your backup directory and restart the container.</p>
         <p><strong>Local:</strong> run in your terminal:</p>
         <pre><code>symlinkarr restore &lt;path-to-backup.json&gt;</code></pre>
-        <p class="text-muted">Use <code>--dry-run</code> to preview, <code>--list</code> to inspect backup contents before restoring.</p>
+        <p class="text-muted">Use <code>--dry-run</code> to preview, <code>--list</code> to view backup contents before restoring.</p>
     </div>
 </section>
 
@@ -86,7 +89,7 @@
         <div class="disclosure-card__copy">
             <span class="disclosure-card__eyebrow">Recovery notes</span>
             <h2 class="disclosure-card__title">What restore can bring back</h2>
-            <p class="disclosure-card__hint">Open when you need the exact restore scope or want to confirm how automatic recovery behaves when config is missing.</p>
+            <p class="disclosure-card__hint">Open for restore scope and missing-config behavior.</p>
         </div>
         <div class="disclosure-card__meta">
             <span class="badge badge-info">Restore scope</span>

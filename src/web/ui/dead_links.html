@@ -2,11 +2,15 @@
 
 {% block title %}Dead Links - Symlinkarr{% endblock %}
 {% block nav_links %}active{% endblock %}
+{% block body_class %}page-dead-links page-recovery{% endblock %}
 
 {% block content %}
 <div class="page-header page-header--split">
     <div>
-        <p class="page-kicker">Recovery</p>
+        <div class="page-meta">
+            <p class="page-kicker">Repair</p>
+            <span class="page-taxonomy page-taxonomy--recovery">Repair</span>
+        </div>
         <h1>&#128683; Dead Links</h1>
         <p class="page-lead">Review missing-source symlinks and repair them before pruning.</p>
         <div class="page-help-links advanced-only">
@@ -46,9 +50,9 @@
     <details class="card disclosure-card">
         <summary class="disclosure-card__summary">
             <div class="disclosure-card__copy">
-                <span class="disclosure-card__eyebrow">Snapshot</span>
-                <h2 class="disclosure-card__title">Triage baseline and recovery order</h2>
-                <p class="disclosure-card__hint">Open when you need the condensed recovery plan and operator reminder before touching the queue.</p>
+                <span class="disclosure-card__eyebrow">Summary</span>
+                <h2 class="disclosure-card__title">Repair order</h2>
+                <p class="disclosure-card__hint">Open for counts and the short version of what to do next.</p>
             </div>
             <div class="disclosure-card__meta">
                 <span class="badge badge-danger">{{ links|length }} dead</span>
@@ -67,7 +71,7 @@
                     <span class="text-muted">Exact type is shown on each row.</span>
                 </div>
                 <div class="metric-card">
-                    <span class="metric-label">Triage Order</span>
+                    <span class="metric-label">Best First Step</span>
                     <strong>Repair first</strong>
                     <span class="text-muted">Only prune once no replacement exists.</span>
                 </div>

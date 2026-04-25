@@ -20,8 +20,8 @@ The new center of gravity is reducing operator decision cost.
 - [x] Second pass on inspection/setup-recovery surfaces:
   - add meaning and next-step framing to `status`, `config`, `doctor`, and `no-config`
   - hide daemon/runtime detail and recovery caveats behind stricter disclosures
-- [ ] Define the page taxonomy explicitly: hub / result / inspection / setup-recovery
-- [ ] Standardize result pages on the same closure contract:
+- [x] Define the page taxonomy explicitly: hub / result / inspection / setup-recovery
+- [x] Standardize result pages on the same closure contract:
   - outcome
   - meaning
   - next step
@@ -30,14 +30,14 @@ The new center of gravity is reducing operator decision cost.
 - [ ] Make `Advanced` semantics stricter and consistent:
   - hide low-frequency diagnostics, caveats, filters, exports, and raw detail by default
   - keep action-changing information visible
-- [ ] Audit secondary pages for residual dead ends or duplicated explanation, especially:
+- [x] Audit secondary pages for residual dead ends or duplicated explanation, especially:
   - `scan_result`
   - `cleanup_result`
   - `repair_result`
   - `backup_result`
   - `discover_content`
   - `anime_remediation_result`
-- [ ] Audit dashboard/triage drilldowns so every attention item lands on a page with an obvious next move
+- [x] Audit dashboard/triage drilldowns so every attention item lands on a page with an obvious next move
 
 ### 2. Hold observability at the current v1.0 stop point
 

@@ -26,7 +26,9 @@ use crate::cleanup_audit::{CleanupReport, CleanupScope};
 use crate::commands::cleanup::{AnimeRemediationBlockedReasonSummary, AnimeRemediationPlanGroup};
 use crate::commands::report::AnimeRemediationSample;
 use crate::config::Config;
-use crate::db::{AcquisitionJobCounts, AnimeSearchOverrideRecord, ScanHistoryRecord, ScanRunOrigin};
+use crate::db::{
+    AcquisitionJobCounts, AnimeSearchOverrideRecord, ScanHistoryRecord, ScanRunOrigin,
+};
 use crate::media_servers::{DeferredRefreshSummary, LibraryInvalidationServerOutcome};
 use crate::models::LinkRecord;
 
@@ -611,6 +613,7 @@ pub struct ActivityFeedBadgeView {
 pub struct ActivityFeedLinkView {
     pub href: String,
     pub label: String,
+    pub landing: String,
 }
 
 #[derive(Debug, Clone)]

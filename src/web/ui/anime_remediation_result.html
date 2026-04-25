@@ -2,13 +2,17 @@
 
 {% block title %}Legacy Anime Cleanup Result - Symlinkarr{% endblock %}
 {% block nav_cleanup %}active{% endblock %}
+{% block body_class %}page-result page-anime-remediation-result{% endblock %}
 
 {% block content %}
 <div class="page-header page-header--split">
     <div>
-        <p class="page-kicker">Cleanup</p>
+        <div class="page-meta">
+            <p class="page-kicker">Result</p>
+            <span class="page-taxonomy page-taxonomy--result">Result</span>
+        </div>
         <h1>&#127909; Legacy Anime Cleanup</h1>
-        <p class="page-lead">Advanced cleanup for old anime root drift. Preview first; the browser apply form below is already tied to this saved plan.</p>
+        <p class="page-lead">Review the saved plan here. Apply only from the matching saved report.</p>
         <div class="page-help-links">
             <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Anime-Remediation" target="_blank" rel="noreferrer noopener">
                 <span class="help-link__eyebrow">Learn more</span>
@@ -17,13 +21,25 @@
         </div>
     </div>
     <div class="actions">
-        <a href="/cleanup/anime-remediation" class="btn btn-secondary">&#8592; Back to Backlog</a>
+        <a href="/cleanup/anime-remediation" class="btn btn-secondary">&#8592; Back to Groups</a>
         <a href="/cleanup" class="btn btn-secondary">&#129529; Back to Cleanup</a>
     </div>
 </div>
 
 <div class="alert {% if success %}alert-success{% else %}alert-error{% endif %}">
-    <strong>{% if success %}Operation completed.{% else %}Operation failed.{% endif %}</strong>
+    <strong>
+        {% match preview %}
+        {% when Some with (_) %}
+        {% if success %}Saved preview ready.{% else %}Preview failed.{% endif %}
+        {% when None %}
+        {% match apply %}
+        {% when Some with (_) %}
+        {% if success %}Legacy cleanup applied.{% else %}Legacy cleanup not applied.{% endif %}
+        {% when None %}
+        {% if success %}Request completed.{% else %}Request failed.{% endif %}
+        {% endmatch %}
+        {% endmatch %}
+    </strong>
     {{ message }}
 </div>
 
@@ -65,18 +81,18 @@
         </div>
         {% match preview %}
         {% when Some with (_) %}
-        <p class="text-muted">The guarded plan is saved, but nothing has been mutated yet. This page is the handoff between backlog review and the only allowed apply path for this exact report.</p>
+        <p class="text-muted">The plan is saved, but nothing has changed yet. Apply only from this matching report page.</p>
         {% when None %}
         {% match apply %}
         {% when Some with (_) %}
         {% if success %}
-        <p class="text-muted">The saved plan has already been applied. Treat this page as the mutation receipt, then confirm cleanup, dead-link, and refresh state from the main operator surfaces afterward.</p>
+        <p class="text-muted">The saved plan has already been applied. Check Cleanup, Dead Links, and Status afterward.</p>
         {% else %}
-        <p class="text-muted">Apply did not complete cleanly. Re-open the backlog or the saved report before assuming any more legacy anime cleanup is safe.</p>
+        <p class="text-muted">Apply did not finish cleanly. Re-open the groups or saved report before trying again.</p>
         {% endif %}
         {% when None %}
         {% if success %}
-        <p class="text-muted">The request completed without a review payload on this page. Return to the backlog and rebuild the saved plan before assuming there is anything safe to apply.</p>
+        <p class="text-muted">The request completed without review data here. Return to the groups and rebuild the saved plan.</p>
         {% else %}
         <p class="text-muted">No guarded plan was produced. Fix the Plex DB path, saved report path, or confirmation token problem before retrying.</p>
         {% endif %}
@@ -107,7 +123,7 @@
             <li>Verify the saved report path and confirmation token if this came from an older tab or stale browser form.</li>
             {% endif %}
             {% when None %}
-            <li>Return to Legacy Anime Cleanup and generate a fresh preview from the backlog page.</li>
+            <li>Return to Legacy Anime Cleanup and generate a fresh preview.</li>
             <li>Use the guide link above if you are unsure whether this is really an anime-remediation case or a normal cleanup problem.</li>
             {% endmatch %}
             {% endmatch %}
@@ -121,7 +137,7 @@
     <section class="card hero-card hero-card--accent">
         <p class="hero-label">Preview summary</p>
         <div class="hero-value">{{ data.cleanup_candidates }}</div>
-        <p class="hero-copy">Candidate symlinks that the guarded plan would quarantine or remove if you apply it from this exact saved report.</p>
+        <p class="hero-copy">Candidate symlinks this plan would quarantine or remove if applied.</p>
         <div class="hero-inline-stats">
             <span>Eligible <strong>{{ data.eligible_groups }}</strong></span>
             <span>Blocked <strong>{{ data.blocked_groups }}</strong></span>

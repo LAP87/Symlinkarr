@@ -2,11 +2,17 @@
 
 {% block title %}Backup Result - Symlinkarr{% endblock %}
 {% block nav_backup %}active{% endblock %}
+{% block body_class %}page-result page-backup-result{% endblock %}
 
 {% block content %}
 <div class="page-header page-header--split">
     <div>
+        <div class="page-meta">
+            <p class="page-kicker">Result</p>
+            <span class="page-taxonomy page-taxonomy--result">Result</span>
+        </div>
         <h1>&#128190; Backup Result</h1>
+        <p class="page-lead">Backup or restore result. Exact paths are below if you need to check what was saved or restored.</p>
         <div class="page-help-links">
             <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Backup-and-Restore" target="_blank" rel="noreferrer noopener">
                 <span class="help-link__eyebrow">Learn more</span>
@@ -32,16 +38,66 @@
 </div>
 {% endif %}
 
+<section class="card">
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Outcome</p>
+            <h2 class="section-title">What Symlinkarr recorded</h2>
+        </div>
+    </div>
+    <div class="metric-grid metric-grid--compact">
+        <div class="metric-card">
+            <span class="metric-label">Backup File</span>
+            <strong>{% match backup_path %}{% when Some with (_) %}Recorded{% when None %}None{% endmatch %}</strong>
+        </div>
+        <div class="metric-card">
+            <span class="metric-label">DB Snapshot</span>
+            <strong>{% match database_snapshot_path %}{% when Some with (_) %}Recorded{% when None %}None{% endmatch %}</strong>
+        </div>
+        <div class="metric-card">
+            <span class="metric-label">Config</span>
+            <strong>
+                {% match app_state_restore_summary %}
+                {% when Some with (summary) %}
+                {% if summary.present %}
+                {% if summary.config_restored %}Restored{% else %}{% if summary.config_included %}Skipped{% else %}Not Included{% endif %}{% endif %}
+                {% else %}
+                {% match config_snapshot_path %}{% when Some with (_) %}Saved{% when None %}None{% endmatch %}
+                {% endif %}
+                {% when None %}
+                {% match config_snapshot_path %}{% when Some with (_) %}Saved{% when None %}None{% endmatch %}
+                {% endmatch %}
+            </strong>
+        </div>
+        <div class="metric-card">
+            <span class="metric-label">Secrets</span>
+            <strong>
+                {% match app_state_restore_summary %}
+                {% when Some with (summary) %}
+                {% if summary.present %}{{ summary.secrets_restored }} restored{% else %}{{ secret_snapshot_count }} saved{% endif %}
+                {% when None %}
+                {{ secret_snapshot_count }} saved
+                {% endmatch %}
+            </strong>
+        </div>
+    </div>
+    {% if success %}
+    <p class="text-muted mt-2">Details are collapsed below. Open them only when you need exact paths or restore details.</p>
+    {% else %}
+    <p class="text-muted mt-2">No further mutation should be assumed from this page alone. Confirm the reported failure reason before retrying a backup or restore.</p>
+    {% endif %}
+</section>
+
 <div class="split-grid">
     <section class="card">
         <div class="section-head">
             <div>
                 <p class="section-kicker">Meaning</p>
-                <h2 class="section-title">What this artifact gives you</h2>
+                <h2 class="section-title">What this gives you</h2>
             </div>
         </div>
         {% if success %}
-        <p class="text-muted">This page confirms the snapshot artifacts that were actually created or restored. It does not replace checking the backup inventory page afterward.</p>
+        <p class="text-muted">This page confirms what was created or restored. Check Backup afterward if you want to see it in the list.</p>
         {% else %}
         <p class="text-muted">The requested backup or restore step did not complete cleanly. Treat the message below as the immediate failure reason and avoid assuming rollback safety exists yet.</p>
         {% endif %}
@@ -56,8 +112,8 @@
         </div>
         <ol class="steps-list text-muted">
             {% if success %}
-            <li>Return to Backup and confirm the artifact now appears in the inventory list.</li>
-            <li>If this was a restore, inspect Config and Status before assuming the runtime matches the restored state.</li>
+            <li>Return to Backup and confirm the item appears in the list.</li>
+            <li>If this was a restore, check Config and Status before assuming everything is back.</li>
             {% else %}
             <li>Return to Backup and fix the reported path/runtime issue before trying again.</li>
             <li>Use Config or Doctor if the failure suggests broader environment or secret problems.</li>
@@ -70,8 +126,8 @@
     <summary class="disclosure-card__summary">
         <div class="disclosure-card__copy">
             <span class="disclosure-card__eyebrow">Artifacts</span>
-            <h2 class="disclosure-card__title">Snapshot files and restore receipt</h2>
-            <p class="disclosure-card__hint">Open when you need the exact artifact paths or the app-state restore receipt from this operation.</p>
+            <h2 class="disclosure-card__title">Files and restore details</h2>
+            <p class="disclosure-card__hint">Open for exact paths and restore details.</p>
         </div>
         <div class="disclosure-card__meta">
             {% if secret_snapshot_count > 0 %}
@@ -126,7 +182,8 @@
 </details>
 
 <div class="actions mt-2">
-    <a href="/backup" class="btn btn-secondary">&#8592; Back to Backup</a>
+    <a href="/backup" class="btn btn-primary">&#8592; Back to Backup</a>
+    <a href="/status" class="btn btn-secondary">Status</a>
     <a href="/config" class="btn btn-secondary">Config</a>
     <a href="/" class="btn">&#127968; Dashboard</a>
 </div>

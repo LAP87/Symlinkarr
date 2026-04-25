@@ -259,13 +259,13 @@ async fn dashboard_renders_latest_run_and_queue_summary() {
     let ctx = test_context().await;
     let body = render_body(get_dashboard(State(ctx.state.clone())).await).await;
 
-    assert!(body.contains("Current baseline"));
+    assert!(body.contains("Latest scan"));
     assert!(body.contains("Anime"));
-    assert!(body.contains("Auto-Acquire Queue"));
+    assert!(body.contains("Queue"));
     assert!(body.contains("Queue 1"));
     assert!(body.contains("Cache Hit"));
-    assert!(body.contains("Media refresh protections activated"));
-    assert!(body.contains("Top Why-Not Signals"));
+    assert!(body.contains("Media refresh was limited"));
+    assert!(body.contains("Top skip reasons"));
     assert!(body.contains("Already correct 6200"));
     assert!(body.contains("Source missing before link 3044"));
     assert!(body.contains("Plex guard abort"));
@@ -273,7 +273,7 @@ async fn dashboard_renders_latest_run_and_queue_summary() {
     assert!(body.contains("Recent queue jobs"));
     assert!(body.contains("Queued Anime"));
     assert!(body.contains("Needs Relink"));
-    assert!(body.contains("Configured schedule and next due estimate"));
+    assert!(body.contains("Schedule and next scan"));
 }
 
 #[tokio::test]
@@ -295,8 +295,8 @@ async fn dashboard_renders_deferred_refresh_backlog() {
     .unwrap();
 
     let body = render_body(get_dashboard(State(ctx.state.clone())).await).await;
-    assert!(body.contains("Deferred refresh 3"));
-    assert!(body.contains("Media Refresh Backlog"));
+    assert!(body.contains("Pending refresh 3"));
+    assert!(body.contains("Media Refresh"));
     assert!(body.contains("Plex"));
     assert!(body.contains("Jellyfin"));
 }
@@ -510,10 +510,11 @@ async fn dashboard_needs_attention_fragment_renders_live_section() {
     let body = render_body(get_dashboard_needs_attention(State(ctx.state.clone())).await).await;
 
     assert!(body.contains("Needs Attention"));
-    assert!(body.contains("Operator priorities"));
+    assert!(body.contains("Needs attention"));
     assert!(body.contains("hx-get=\"/dashboard/needs-attention\""));
     assert!(body.contains("Latest background scan failed"));
     assert!(body.contains("Auto-acquire queue is blocked"));
+    assert!(body.contains("Opens: Scan hub"));
 }
 
 #[tokio::test]
@@ -523,10 +524,10 @@ async fn dashboard_latest_run_fragment_renders_current_baseline() {
     let body = render_body(get_dashboard_latest_run(State(ctx.state.clone())).await).await;
 
     assert!(body.contains("Latest Run"));
-    assert!(body.contains("Current baseline"));
+    assert!(body.contains("Latest scan"));
     assert!(body.contains("hx-get=\"/dashboard/latest-run\""));
     assert!(body.contains("Open Scan"));
-    assert!(body.contains("Top Why-Not Signals"));
+    assert!(body.contains("Top skip reasons"));
 }
 
 #[tokio::test]
@@ -535,9 +536,9 @@ async fn dashboard_summary_fragment_renders_live_counters() {
 
     let body = render_body(get_dashboard_summary(State(ctx.state.clone())).await).await;
 
-    assert!(body.contains("Link Health"));
-    assert!(body.contains("Auto-Acquire Queue"));
-    assert!(body.contains("Media Refresh Backlog"));
+    assert!(body.contains("Links"));
+    assert!(body.contains("Queue"));
+    assert!(body.contains("Media Refresh"));
     assert!(body.contains("hx-get=\"/dashboard/summary\""));
     assert!(body.contains("Queue"));
 }
@@ -623,8 +624,9 @@ async fn dashboard_renders_needs_attention_priorities() {
     assert!(body.contains("Latest background scan failed"));
     assert!(body.contains("Dead links need cleanup or repair"));
     assert!(body.contains("Auto-acquire queue is blocked"));
-    assert!(body.contains("Media refresh backlog is accumulating"));
+    assert!(body.contains("Media refresh is waiting"));
     assert!(body.contains("Next step:"));
+    assert!(body.contains("Opens:"));
     assert!(body.contains("verify provider or path health before retrying another background pass"));
     assert!(body.contains(
         "Review Dead Links, then decide whether the safest next move is repair or cleanup"
@@ -677,10 +679,11 @@ fn dashboard_needs_attention_includes_playback_guard_when_mutations_are_waiting(
     assert!(needs_attention
         .items
         .iter()
-        .any(|item| item.title == "Playback guard is deferring safe mutations"));
-    assert!(needs_attention.items.iter().any(|item| item
-        .message
-        .contains("2 active stream(s) are currently protected")));
+        .any(|item| item.title == "Playback is blocking changes"));
+    assert!(needs_attention
+        .items
+        .iter()
+        .any(|item| item.message.contains("2 active stream(s) are protected")));
 }
 
 #[test]
@@ -722,7 +725,7 @@ fn dashboard_needs_attention_includes_overdue_daemon_signal() {
     assert!(needs_attention
         .items
         .iter()
-        .any(|item| item.title == "Daemon scan cadence looks overdue"));
+        .any(|item| item.title == "Scheduled scan looks overdue"));
     assert!(needs_attention
         .items
         .iter()
@@ -776,7 +779,7 @@ async fn scan_page_renders_phase_telemetry_and_acquire_summary() {
     assert!(body.contains("Candidate Slots"));
     assert!(body.contains("1024"));
     assert!(body.contains("4/6"));
-    assert!(body.contains("Media refresh protections activated"));
+    assert!(body.contains("Media refresh was limited"));
     assert!(body.contains("Plex guard abort"));
     assert!(body.contains("Emby 1/1"));
 }
@@ -1413,13 +1416,13 @@ async fn status_page_renders_queue_pressure_and_recent_links() {
     let ctx = test_context().await;
     let body = render_body(get_status(State(ctx.state.clone())).await).await;
 
-    assert!(body.contains("Queue pressure"));
+    assert!(body.contains("Queue"));
     assert!(body.contains("Service connectivity"));
-    assert!(body.contains("Deferred media refresh"));
+    assert!(body.contains("Pending media refresh"));
     assert!(body.contains("Recent Links"));
     assert!(body.contains("tvdb-1"));
     assert!(body.contains("Queued"));
-    assert!(body.contains("Configured cadence"));
+    assert!(body.contains("Schedule"));
 }
 
 #[tokio::test]

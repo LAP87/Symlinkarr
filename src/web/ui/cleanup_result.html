@@ -2,12 +2,17 @@
 
 {% block title %}Cleanup Result - Symlinkarr{% endblock %}
 {% block nav_cleanup %}active{% endblock %}
+{% block body_class %}page-result page-cleanup-result{% endblock %}
 
 {% block content %}
 <div class="page-header page-header--split">
     <div>
-        <p class="page-kicker">Maintenance</p>
+        <div class="page-meta">
+            <p class="page-kicker">Result</p>
+            <span class="page-taxonomy page-taxonomy--result">Result</span>
+        </div>
         <h1>Cleanup Result</h1>
+        <p class="page-lead">Audit is done. Nothing gets deleted until you open the matching prune preview and confirm it.</p>
         <div class="page-help-links">
             <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Cleanup-Audit-and-Prune-Preview" target="_blank" rel="noreferrer noopener">
                 <span class="help-link__eyebrow">Learn more</span>
@@ -59,8 +64,8 @@
     <summary class="disclosure-card__summary">
         <div class="disclosure-card__copy">
             <span class="disclosure-card__eyebrow">Saved report</span>
-            <h2 class="disclosure-card__title">Audit report details and risk snapshot</h2>
-            <p class="disclosure-card__hint">Open when you need the exact artifact path and severity counts before jumping into prune preview.</p>
+            <h2 class="disclosure-card__title">Audit report details</h2>
+            <p class="disclosure-card__hint">Open for the report path and severity counts.</p>
         </div>
         <div class="disclosure-card__meta">
             {% match report_summary %}
@@ -114,7 +119,7 @@
         <p class="text-muted">The audit is running in the background. This page is only the acceptance/result shell; the real review work starts once a report exists.</p>
         {% when None %}
         {% if success %}
-        <p class="text-muted">A cleanup report is the handoff point, not the destructive step. Treat it as the single source of truth for the matching prune preview.</p>
+        <p class="text-muted">The cleanup report is review-only. Deletion only happens from the matching prune preview.</p>
         {% else %}
         <p class="text-muted">Cleanup did not reach a safe report output. Fix the underlying path or runtime issue before trying to prune anything.</p>
         {% endif %}

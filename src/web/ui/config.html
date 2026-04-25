@@ -2,14 +2,17 @@
 
 {% block title %}Config - Symlinkarr{% endblock %}
 {% block nav_config %}active{% endblock %}
-{% block body_class %}page-requires-advanced{% endblock %}
+{% block body_class %}page-config page-inspection page-requires-advanced{% endblock %}
 
 {% block content %}
 <div class="page-header page-header--split">
     <div>
-        <p class="page-kicker">System</p>
+        <div class="page-meta">
+            <p class="page-kicker">System</p>
+            <span class="page-taxonomy page-taxonomy--inspection">Config</span>
+        </div>
         <h1>Configuration</h1>
-        <p class="page-lead">Inspect the active config and validate it before risky runs.</p>
+        <p class="page-lead">View the active config and validate paths, sources, and services.</p>
     </div>
     <div class="header-badges">
         <span class="badge badge-info">Libraries {{ config.libraries|length }}</span>
@@ -30,7 +33,7 @@
         <div class="disclosure-card__copy">
             <span class="disclosure-card__eyebrow">Guides</span>
             <h2 class="disclosure-card__title">Docs and recommended workflow</h2>
-            <p class="disclosure-card__hint">Open when you need setup or operating guidance instead of the live config itself.</p>
+            <p class="disclosure-card__hint">Open when you need setup docs instead of the config values.</p>
         </div>
         <div class="disclosure-card__meta">
             <span class="badge badge-secondary">2 links</span>
@@ -45,7 +48,7 @@
             </a>
             <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Backup-and-Restore" target="_blank" rel="noreferrer noopener">
                 <span class="help-link__eyebrow">Wiki</span>
-                <span class="help-link__title">First-run and recovery</span>
+                <span class="help-link__title">First-run and restore</span>
             </a>
         </div>
     </div>
@@ -59,7 +62,7 @@
                 <h2 class="section-title">What this page is for</h2>
             </div>
         </div>
-        <p class="text-muted">Configuration is the live runtime source of truth. Use this page to confirm what the server is actually running with right now, not to browse every possible option or replace the full docs.</p>
+        <p class="text-muted">This is the config Symlinkarr is using right now. Use it to check paths, sources, services, and matching rules.</p>
     </section>
 
     <section class="card">
@@ -73,9 +76,9 @@
             {% match validation_result %}
             {% when Some with (result) %}
             {% if result.valid %}
-            <li>If the config is valid, leave this page and go back to the actual operator workflow you were trying to run.</li>
+            <li>If the config is valid, go back to the page you were using.</li>
             {% else %}
-            <li>Fix the validation errors before trusting Scan, Cleanup, Repair, or background automation with this config.</li>
+            <li>Fix validation errors before running Scan, Cleanup, Repair, or the daemon.</li>
             {% endif %}
             {% when None %}
             <li>Run validation first if you just changed paths, sources, credentials, or matching rules.</li>
@@ -130,7 +133,7 @@
     {% endif %}
     {% when None %}
     <div class="empty-state">
-        No validation snapshot yet. Use the action on the right to verify paths, credentials, and library definitions against the current config file.
+        No validation result yet. Use the action on the right to verify paths, credentials, and library definitions against the current config file.
     </div>
     {% endmatch %}
 </section>

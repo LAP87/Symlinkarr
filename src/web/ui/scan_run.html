@@ -2,11 +2,15 @@
 
 {% block title %}Scan Run - Symlinkarr{% endblock %}
 {% block nav_scan %}active{% endblock %}
+{% block body_class %}page-scan-run page-inspection{% endblock %}
 
 {% block content %}
 <div class="page-header page-header--split">
     <div>
-        <p class="page-kicker">Detail</p>
+        <div class="page-meta">
+            <p class="page-kicker">Detail</p>
+        <span class="page-taxonomy page-taxonomy--inspection">Run</span>
+        </div>
         <h1>Scan Run Detail</h1>
         <p class="page-lead">A single recorded run, with phase timings, matcher signals, and acquisition outcomes.</p>
         <div class="page-help-links">
@@ -58,7 +62,7 @@
         <div class="disclosure-card__copy">
             <span class="disclosure-card__eyebrow">Advanced telemetry</span>
             <h2 class="disclosure-card__title">Phase Telemetry and Matcher Signals</h2>
-            <p class="disclosure-card__hint">Open when you need timings, candidate pressure, or exact-ID behavior for this specific run.</p>
+            <p class="disclosure-card__hint">Open for timings, candidates, and exact-ID matches for this run.</p>
         </div>
         <div class="disclosure-card__meta">
             <span class="badge badge-info">Deep detail</span>
@@ -240,7 +244,7 @@
                 <strong>{{ refresh.refreshed_batches }}/{{ refresh.planned_batches }}</strong>
                 <div class="text-muted">
                     targets {{ refresh.requested_targets }}
-                    {% if refresh.deferred_due_to_lock %}| deferred{% endif %}
+                    {% if refresh.deferred_due_to_lock %}| pending{% endif %}
                     {% if refresh.skipped_batches > 0 %}| skip {{ refresh.skipped_batches }}{% endif %}
                     {% if refresh.failed_batches > 0 %}| fail {{ refresh.failed_batches }}{% endif %}
                     {% if refresh.aborted_due_to_cap %}| guard abort{% endif %}

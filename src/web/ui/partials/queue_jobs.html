@@ -1,43 +1,36 @@
 {% if recent_queue_jobs|length > 0 %}
-<div class="table-wrap">
-    <table class="data-table dense-table">
-        <thead>
-            <tr>
-                <th>Status</th>
-                <th>Job</th>
-                <th>Query</th>
-                <th>Attempts</th>
-                <th>Timing</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for job in recent_queue_jobs %}
-            <tr>
-                <td><span class="badge {{ job.status_badge_class }}">{{ job.status_label }}</span></td>
-                <td>
-                    <strong>{{ job.label }}</strong>
-                    <br>
-                    <small class="text-muted">{{ job.arr_label }} · {{ job.scope_label }}</small>
-                    {% match job.detail %}
-                    {% when Some with (detail) %}
-                    <br>
-                    <small class="text-muted">{{ detail }}</small>
-                    {% when None %}{% endmatch %}
-                </td>
-                <td><code class="mono">{{ job.query }}</code></td>
-                <td>{{ job.attempts }}</td>
-                <td>
-                    <span class="text-muted">{{ job.timing_label }}</span>
-                    <br>
-                    <strong>{{ job.timing_value }}</strong>
-                </td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+<div class="queue-jobs-list">
+    {% for job in recent_queue_jobs %}
+    <article class="queue-job-card">
+        <div class="queue-job-card__header">
+            <div>
+                <p class="queue-job-card__eyebrow">{{ job.arr_label }} · {{ job.scope_label }}</p>
+                <h3 class="queue-job-card__title">{{ job.label }}</h3>
+            </div>
+            <div class="queue-job-card__badges">
+                <span class="badge {{ job.status_badge_class }}">{{ job.status_label }}</span>
+                <span class="badge {% if job.attempts > 0 %}badge-warning{% else %}badge-info{% endif %}">Attempts {{ job.attempts }}</span>
+            </div>
+        </div>
+        <div class="queue-job-card__facts">
+            <div>
+                <span class="queue-job-card__label">Query</span>
+                <code class="mono queue-job-card__query">{{ job.query }}</code>
+            </div>
+            <div>
+                <span class="queue-job-card__label">{{ job.timing_label }}</span>
+                <strong class="queue-job-card__timing">{{ job.timing_value }}</strong>
+            </div>
+        </div>
+        {% match job.detail %}
+        {% when Some with (detail) %}
+        <p class="queue-job-card__detail">{{ detail }}</p>
+        {% when None %}{% endmatch %}
+    </article>
+    {% endfor %}
 </div>
 {% else %}
 <div class="alert alert-success">
-    <strong>No recent queue jobs need operator review.</strong>
+    <strong>No recent queue jobs need review.</strong>
 </div>
 {% endif %}

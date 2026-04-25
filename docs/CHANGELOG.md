@@ -2,9 +2,41 @@
 
 ## Release Target
 
-- package version for this push: `1.0.0-rc.11`
-- posture: `release-candidate with downloadable binary artifacts`
+- package version for this push: `1.0.0`
+- posture: `stable v1.0 release with downloadable binary artifacts and GHCR images`
 - intended use: local-first host or Docker installs, with Windows 11 users running through WSL2 or a Linux container
+
+## 2026-04-25 - v1.0 Final UI and Release Hygiene
+
+### Code Changes
+
+- replaced the rounded glass-panel dashboard pass with a flatter console-style web UI that keeps the *arr layout practical without leaning on floating bubbles or heavy gradients.
+  - files: `src/web/static/style.css`, `src/web/static/fonts/*`
+- tightened dark and colorful theme readability, including queue/detail cards that now use theme tokens instead of hard-coded light surfaces.
+  - files: `src/web/static/style.css`, `src/web/static/themes/theme-manifest.js`, `src/web/static/ui-preferences.js`
+- rewrote the visible web UI copy into everyday English, removing overloaded terms like truth, bucket, operator, and deferred where plain *arr-style wording is clearer.
+  - files: `src/web/ui/*.html`, `src/web/templates.rs`, `src/web/templates/skip_reasons.rs`, `src/web/handlers.rs`
+- added local visual QA tooling and tightened ignore rules for generated captures, logs, local databases, secrets, and tool caches.
+  - files: `.gitignore`, `package.json`, `package-lock.json`, `scripts/visual-qa.mjs`
+
+### Validation
+
+- `cargo fmt --all -- --check`
+  - result: passed locally
+- `cargo check`
+  - result: passed locally
+- `cargo test --all-targets --locked`
+  - result: `720 passed; 0 failed; 1 ignored`
+- `cargo clippy --all-targets --all-features --locked -- -D warnings`
+  - result: passed locally
+- `cargo audit`
+  - result: passed locally after updating `rustls-webpki` to `0.103.13` for `RUSTSEC-2026-0104`
+- `cargo build --release --locked`
+  - result: passed locally
+- local Docker image `symlinkarr:1.0.0`
+  - result: built locally as `sha256:51dd7923f866d38e7be6bc816b46428ed8236a886394eee9219c34c75c063788`, `symlinkarr --version` returned `symlinkarr 1.0.0`
+- Docker live UI smoke with Playwright
+  - result: captured desktop and mobile no-config pages from `symlinkarr:1.0.0` on `http://127.0.0.1:8730`
 
 ## 2026-04-12 - RC Release Surface Verification and Persistent Dead-Link Signaling
 

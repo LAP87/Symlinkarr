@@ -1873,7 +1873,10 @@ async fn test_daemon_heartbeat_roundtrip() {
 
     let heartbeat = db.get_daemon_heartbeat().await.unwrap().unwrap();
     assert_eq!(heartbeat.phase, "scan");
-    assert_eq!(heartbeat.detail.as_deref(), Some("Running daemon-origin scan"));
+    assert_eq!(
+        heartbeat.detail.as_deref(),
+        Some("Running daemon-origin scan")
+    );
     assert!(!heartbeat.last_seen_at.is_empty());
 }
 

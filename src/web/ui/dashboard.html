@@ -2,17 +2,21 @@
 
 {% block title %}Dashboard - Symlinkarr{% endblock %}
 {% block nav_dashboard %}active{% endblock %}
+{% block body_class %}page-dashboard page-hub{% endblock %}
 
 {% block content %}
 <div class="page-header page-header--split">
     <div>
-        <p class="page-kicker">Operations</p>
+        <div class="page-meta">
+            <p class="page-kicker">Home</p>
+            <span class="page-taxonomy page-taxonomy--hub">Hub</span>
+        </div>
         <h1>Dashboard</h1>
-        <p class="page-lead">Latest scan health, acquisition pressure, and cleanup risk in one place.</p>
+        <p class="page-lead">Latest links, scans, queue jobs, and cleanup warnings.</p>
         <div class="page-help-links">
             <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Dashboard-and-Daily-Operations" target="_blank" rel="noreferrer noopener">
                 <span class="help-link__eyebrow">Learn more</span>
-                <span class="help-link__title">Daily triage guide</span>
+                <span class="help-link__title">Dashboard guide</span>
             </a>
         </div>
     </div>
@@ -32,7 +36,7 @@
         {% when None %}{% endmatch %}
         {% if deferred_refresh.pending_targets > 0 %}
         <span class="badge badge-warning">
-            Deferred refresh {{ deferred_refresh.pending_targets }}
+            Pending refresh {{ deferred_refresh.pending_targets }}
         </span>
         {% endif %}
     </div>
@@ -47,9 +51,9 @@
 <details class="card disclosure-card">
     <summary class="disclosure-card__summary">
         <div class="disclosure-card__copy">
-            <span class="disclosure-card__eyebrow">Daemon cadence</span>
-            <h2 class="disclosure-card__title">Configured schedule and next due estimate</h2>
-            <p class="disclosure-card__hint">Open when you need the daemon interval, the latest recorded scan, or a rough next-pass estimate without jumping to config.</p>
+            <span class="disclosure-card__eyebrow">Daemon</span>
+            <h2 class="disclosure-card__title">Schedule and next scan</h2>
+            <p class="disclosure-card__hint">Open to see the scan interval, last daemon scan, and estimated next run.</p>
         </div>
         <div class="disclosure-card__meta">
             <span class="badge {{ daemon_schedule.status_badge_class }}">{{ daemon_schedule.status_label }}</span>
@@ -68,7 +72,7 @@
                 <strong>{{ daemon_schedule.last_run_label }}</strong>
             </div>
             <div class="metric-card">
-                <span class="metric-label">Next due estimate</span>
+                <span class="metric-label">Next scan</span>
                 <strong>{{ daemon_schedule.next_due_label }}</strong>
             </div>
             <div class="metric-card">
@@ -106,7 +110,7 @@
         <div class="disclosure-card__copy">
             <span class="disclosure-card__eyebrow">Streaming guard</span>
             <h2 class="disclosure-card__title">Current playback protection</h2>
-            <p class="disclosure-card__hint">Open when you need to confirm whether active playback is the reason repair or cleanup-apply work is being deferred right now.</p>
+            <p class="disclosure-card__hint">Open to see if active playback is blocking repair or cleanup right now.</p>
         </div>
         <div class="disclosure-card__meta">
             <span class="badge {{ guard.status_badge_class }}">{{ guard.status_label }}</span>
@@ -125,7 +129,7 @@
         {% if guard.active_streams > 0 %}
         <div class="alert alert-warning">
             <strong>{{ guard.active_streams }} active stream(s) detected.</strong>
-            Repair and cleanup apply will intentionally protect overlapping paths until playback stops.
+            Repair and cleanup will skip matching paths until playback stops.
         </div>
         {% if guard.protected_paths|length > 0 %}
         <div class="stack-list">
@@ -137,7 +141,7 @@
         {% else %}
         <div class="alert alert-success">
             <strong>No active streams detected.</strong>
-            Playback is not the reason repair or cleanup apply would be deferred right now.
+            Playback is not blocking repair or cleanup right now.
         </div>
         {% endif %}
         {% endmatch %}
@@ -151,9 +155,9 @@
     <details class="card disclosure-card">
         <summary class="disclosure-card__summary">
             <div class="disclosure-card__copy">
-                <span class="disclosure-card__eyebrow">Queue Pressure</span>
-                <h2 class="disclosure-card__title">Acquisition backlog and recovery tools</h2>
-                <p class="disclosure-card__hint">Open this only when you need the full queue breakdown or maintenance shortcuts.</p>
+                <span class="disclosure-card__eyebrow">Queue</span>
+                <h2 class="disclosure-card__title">Auto-acquire queue and tools</h2>
+                <p class="disclosure-card__hint">Open for queue counts and quick links.</p>
             </div>
             <div class="disclosure-card__meta">
                 <span class="badge {% if queue.active_total > 0 %}badge-warning{% else %}badge-success{% endif %}">
@@ -218,7 +222,42 @@
             <div class="card card--nested mt-2">
                 <h3 class="subsection-title">Recent queue jobs</h3>
                 <p class="text-muted">Use these rows when counters alone do not explain why acquisition is stalled, blocked, or waiting to relink.</p>
-                {% include "web/ui/partials/queue_jobs.html" %}
+                {% if recent_queue_jobs|length > 0 %}
+                <div class="queue-jobs-list">
+                    {% for job in recent_queue_jobs %}
+                    <article class="queue-job-card">
+                        <div class="queue-job-card__header">
+                            <div>
+                                <p class="queue-job-card__eyebrow">{{ job.arr_label }} · {{ job.scope_label }}</p>
+                                <h4 class="queue-job-card__title">{{ job.label }}</h4>
+                            </div>
+                            <div class="queue-job-card__badges">
+                                <span class="badge {{ job.status_badge_class }}">{{ job.status_label }}</span>
+                                <span class="badge {% if job.attempts > 0 %}badge-warning{% else %}badge-info{% endif %}">Attempts {{ job.attempts }}</span>
+                            </div>
+                        </div>
+                        <div class="queue-job-card__facts">
+                            <div>
+                                <span class="queue-job-card__label">Query</span>
+                                <code class="mono queue-job-card__query">{{ job.query }}</code>
+                            </div>
+                            <div>
+                                <span class="queue-job-card__label">{{ job.timing_label }}</span>
+                                <strong class="queue-job-card__timing">{{ job.timing_value }}</strong>
+                            </div>
+                        </div>
+                        {% match job.detail %}
+                        {% when Some with (detail) %}
+                        <p class="queue-job-card__detail">{{ detail }}</p>
+                        {% when None %}{% endmatch %}
+                    </article>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <div class="alert alert-success">
+                    <strong>No recent queue jobs need review.</strong>
+                </div>
+                {% endif %}
             </div>
         </div>
     </details>
@@ -228,8 +267,8 @@
     <summary class="disclosure-card__summary">
         <div class="disclosure-card__copy">
             <span class="disclosure-card__eyebrow">Recent Runs</span>
-            <h2 class="disclosure-card__title">Trend snapshot and run history</h2>
-            <p class="disclosure-card__hint">Keep this collapsed unless you are comparing runs or looking for historical regressions.</p>
+            <h2 class="disclosure-card__title">Recent scans</h2>
+            <p class="disclosure-card__hint">Open when you want to compare recent runs.</p>
         </div>
         <div class="disclosure-card__meta">
             <span class="badge badge-info">Recent {{ recent_runs|length }}</span>
@@ -292,7 +331,7 @@
                     <div>
                         {% for refresh in run.media_server_refresh %}
                         {% if refresh.deferred_due_to_lock %}
-                        <span class="badge badge-warning">{{ refresh.server }} deferred</span>
+                        <span class="badge badge-warning">{{ refresh.server }} pending</span>
                         {% else if refresh.failed_batches > 0 %}
                         <span class="badge badge-danger">{{ refresh.server }} failed</span>
                         {% else if refresh.aborted_due_to_cap %}
@@ -324,7 +363,7 @@
                         {% endfor %}
                     </div>
                     {% if run.skip_reason_extra_buckets > 0 %}
-                    <div class="text-muted">+{{ run.skip_reason_extra_buckets }} more bucket(s)</div>
+                    <div class="text-muted">+{{ run.skip_reason_extra_buckets }} more reason group(s)</div>
                     {% endif %}
                     {% else %}
                     <span class="text-muted">n/a</span>

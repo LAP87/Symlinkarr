@@ -2,11 +2,15 @@
 
 {% block title %}Doctor - Symlinkarr{% endblock %}
 {% block nav_doctor %}active{% endblock %}
+{% block body_class %}page-doctor page-inspection{% endblock %}
 
 {% block content %}
 <div class="page-header page-header--split">
     <div>
-        <p class="page-kicker">Maintenance</p>
+        <div class="page-meta">
+            <p class="page-kicker">Maintenance</p>
+            <span class="page-taxonomy page-taxonomy--inspection">Checks</span>
+        </div>
         <h1>Doctor</h1>
         <p class="page-lead">Run blunt preflight checks before scans, repairs, or cleanup.</p>
         <div class="page-help-links advanced-only">
@@ -16,7 +20,7 @@
             </a>
             <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Backup-and-Restore" target="_blank" rel="noreferrer noopener">
                 <span class="help-link__eyebrow">Wiki</span>
-                <span class="help-link__title">Recovery workflow</span>
+                <span class="help-link__title">Restore guide</span>
             </a>
         </div>
     </div>
@@ -46,7 +50,7 @@
                 <h2 class="section-title">How to use Doctor</h2>
             </div>
         </div>
-        <p class="text-muted">Doctor is the blunt preflight page. Treat failures here as reasons to stop and understand the environment before running scan, repair, cleanup, or restore flows that could make state harder to reason about.</p>
+        <p class="text-muted">Doctor checks the boring but important stuff: database, paths, mounts, permissions, and service reachability.</p>
     </section>
 
     <section class="card">
@@ -58,9 +62,9 @@
         </div>
         <ol class="steps-list text-muted">
             {% if all_passed %}
-            <li>If Doctor is clean, return to the operator workflow you were about to run instead of lingering here.</li>
+            <li>If Doctor is clean, go back to the page you were using.</li>
             {% else %}
-            <li>Fix the failing checks before attempting risky scans, cleanup, repair, or restore work.</li>
+            <li>Fix failing checks before running scans, cleanup, repair, or restore.</li>
             {% endif %}
             <li>Use Config for exact live values and Status for current runtime symptoms.</li>
         </ol>
@@ -71,8 +75,8 @@
     <div class="section-head">
         <div>
             <p class="section-kicker">Results</p>
-            <h2 class="section-title">Inspection checklist</h2>
-            <p class="section-copy">This page is intentionally blunt: failures here should block risky changes until the underlying cause is understood.</p>
+            <h2 class="section-title">Check list</h2>
+            <p class="section-copy">If a check fails here, fix that before running jobs that change links.</p>
         </div>
         <div class="actions">
             <a href="/doctor" class="btn btn-primary">Re-run Checks</a>

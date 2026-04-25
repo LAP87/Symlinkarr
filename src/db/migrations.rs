@@ -63,7 +63,11 @@ impl Database {
             return Ok(17);
         }
         if self.table_exists("anime_search_overrides").await? {
-            if self.column_exists("scan_runs", "origin").await.unwrap_or(false) {
+            if self
+                .column_exists("scan_runs", "origin")
+                .await
+                .unwrap_or(false)
+            {
                 return Ok(16);
             }
             return Ok(15);

@@ -2,11 +2,17 @@
 
 {% block title %}Repair Result - Symlinkarr{% endblock %}
 {% block nav_links %}active{% endblock %}
+{% block body_class %}page-result page-repair-result{% endblock %}
 
 {% block content %}
 <div class="page-header page-header--split">
     <div>
+        <div class="page-meta">
+            <p class="page-kicker">Result</p>
+            <span class="page-taxonomy page-taxonomy--result">Result</span>
+        </div>
         <h1>&#128296; Repair Result</h1>
+        <p class="page-lead">Repair result. Go back to Dead Links to see what is still broken.</p>
         <div class="page-help-links">
             <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Repair-and-Dead-Links" target="_blank" rel="noreferrer noopener">
                 <span class="help-link__eyebrow">Learn more</span>
@@ -31,26 +37,48 @@
 
 {% if success %}
 <div class="alert alert-success">
+    {% match active_repair %}
+    {% when Some with (_) %}
+    <strong>&#9989; Background repair accepted.</strong><br>
+    {% when None %}
     <strong>&#9989; Repair Completed</strong><br>
+    {% endmatch %}
     {{ message }}
 </div>
 {% else %}
 <div class="alert alert-error">
+    {% match active_repair %}
+    {% when Some with (_) %}
+    <strong>&#10060; Repair Not Started</strong><br>
+    {% when None %}
     <strong>&#10060; Repair Failed</strong><br>
+    {% endmatch %}
     {{ message }}
 </div>
 {% endif %}
 
-<div class="card-grid">
-    <div class="card" style="text-align:center;">
-        <div class="card-value text-success">{{ repaired }}</div>
-        <div class="card-label">Repaired</div>
+<section class="card">
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Outcome</p>
+            <h2 class="section-title">What this attempt changed</h2>
+        </div>
     </div>
-    <div class="card" style="text-align:center;">
-        <div class="card-value {% if failed > 0 %}text-error{% else %}text-success{% endif %}">{{ failed }}</div>
-        <div class="card-label">Failed</div>
+    <div class="metric-grid metric-grid--compact">
+        <div class="metric-card"><span class="metric-label">Repaired</span><strong class="text-success">{{ repaired }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Still Failed</span><strong class="{% if failed > 0 %}text-error{% else %}text-success{% endif %}">{{ failed }}</strong></div>
     </div>
-</div>
+    {% match active_repair %}
+    {% when Some with (_) %}
+    <p class="text-muted mt-2">The background run has started. Counters update when it finishes.</p>
+    {% when None %}
+    {% if failed > 0 %}
+    <p class="text-muted mt-2">This pass fixed some links, but Dead Links still has rows to review or clean up.</p>
+    {% else %}
+    <p class="text-muted mt-2">No unresolved rows are shown here. Check Dead Links to confirm it is clear.</p>
+    {% endif %}
+    {% endmatch %}
+</section>
 
 <div class="split-grid">
     <section class="card">
@@ -62,12 +90,12 @@
         </div>
         {% match active_repair %}
         {% when Some with (_) %}
-        <p class="text-muted">The repair run is still active. Treat these numbers as a handoff into the dead-links page, not as the final stable state yet.</p>
+        <p class="text-muted">Repair is still running. Check Dead Links when it finishes.</p>
         {% when None %}
         {% if failed > 0 %}
-        <p class="text-muted">Repair improved part of the set, but some rows still need manual judgment. That usually means the source is still missing or no safe replacement was found.</p>
+        <p class="text-muted">Repair fixed part of the set, but some rows still need review. Usually the source is still missing or no replacement was found.</p>
         {% else %}
-        <p class="text-muted">Repair finished without leaving obvious unresolved rows in this result. Dead Links is still the right place to confirm the queue is actually empty.</p>
+        <p class="text-muted">Repair finished without unresolved rows in this result. Dead Links is still the place to confirm it.</p>
         {% endif %}
         {% endmatch %}
     </section>
@@ -125,7 +153,7 @@
 {% endif %}
 
 <div class="actions mt-2">
-    <a href="/links/dead" class="btn btn-secondary">&#128683; View Dead Links</a>
+    <a href="/links/dead" class="btn btn-primary">&#128683; View Dead Links</a>
     <a href="/cleanup" class="btn btn-secondary">&#129529; Cleanup</a>
     <a href="/" class="btn">&#127968; Dashboard</a>
 </div>

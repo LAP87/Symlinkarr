@@ -53,16 +53,32 @@
     <div class="app-container">
         <nav class="sidebar">
             <div class="sidebar-top">
-                <a href="/" class="logo">
-                    <span class="logo-mark">SY</span>
-                    <span class="logo-copy">
-                        <span class="logo-title">Symlinkarr</span>
-                        <span class="logo-subtitle">Web UI</span>
-                    </span>
-                </a>
+                <div class="sidebar-brand-row">
+                    <a href="/" class="logo">
+                        <span class="logo-mark">SY</span>
+                        <span class="logo-copy">
+                            <span class="logo-title">Symlinkarr</span>
+                            <span class="logo-subtitle">Web UI</span>
+                        </span>
+                    </a>
+                    <button
+                        id="sidebar-nav-toggle"
+                        type="button"
+                        class="sidebar-nav-toggle"
+                        aria-expanded="false"
+                        aria-controls="sidebar-nav"
+                    >
+                        <span class="sidebar-nav-toggle__label">Menu</span>
+                        <span class="sidebar-nav-toggle__icon" aria-hidden="true">☰</span>
+                    </button>
+                </div>
+                <div class="sidebar-intro">
+                    <span class="sidebar-intro__eyebrow">Symlinkarr</span>
+                    <p class="sidebar-intro__copy">Run scans, fix links, clean up dead paths, and keep the queue moving.</p>
+                </div>
             </div>
 
-            <ul class="nav">
+            <ul id="sidebar-nav" class="nav">
                 <li class="nav-section-label">Overview</li>
                 <li class="nav-item">
                     <a href="/" class="nav-link {% block nav_dashboard %}{% endblock %}">

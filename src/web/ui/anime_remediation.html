@@ -2,11 +2,15 @@
 
 {% block title %}Legacy Anime Cleanup - Symlinkarr{% endblock %}
 {% block nav_cleanup %}active{% endblock %}
+{% block body_class %}page-anime-remediation page-recovery{% endblock %}
 
 {% block content %}
 <div class="page-header page-header--split">
     <div>
-        <p class="page-kicker">Cleanup</p>
+        <div class="page-meta">
+            <p class="page-kicker">Cleanup</p>
+            <span class="page-taxonomy page-taxonomy--recovery">Anime Cleanup</span>
+        </div>
         <h1>&#127909; Legacy Anime Cleanup</h1>
         <p class="page-lead">Advanced tool for older anime libraries with split roots or Plex Hama AniDB/TVDB duplicates. Most users can ignore this page.</p>
         <div class="page-help-links">
@@ -76,8 +80,8 @@
     <summary class="disclosure-card__summary">
         <div class="disclosure-card__copy">
             <span class="disclosure-card__eyebrow">Filters</span>
-            <h2 class="disclosure-card__title">Work the blocked backlog in slices</h2>
-            <p class="disclosure-card__hint">Open this only when you want to slice the queue or export the filtered subset for review.</p>
+            <h2 class="disclosure-card__title">Filter blocked groups</h2>
+            <p class="disclosure-card__hint">Open to filter the list or export the current slice.</p>
         </div>
         <div class="disclosure-card__meta">
             <span class="badge badge-info">{{ data.visible_groups }} visible</span>
@@ -158,7 +162,7 @@
 
 <div class="split-grid">
     <section class="card hero-card hero-card--accent">
-        <p class="hero-label">Current backlog</p>
+        <p class="hero-label">Current Groups</p>
         <div class="hero-value">{{ data.visible_groups }}</div>
         <p class="hero-copy">These groups are the titles where legacy anime roots and Plex metadata splits overlap strongly enough to justify manual review.</p>
         <div class="hero-inline-stats">
@@ -173,7 +177,7 @@
             <div class="disclosure-card__copy">
                 <span class="disclosure-card__eyebrow">Context</span>
                 <h2 class="disclosure-card__title">When you actually need this</h2>
-                <p class="disclosure-card__hint">Open only if you need the backlog source counts or want to confirm that this page is the right tool.</p>
+                <p class="disclosure-card__hint">Open for counts and a quick check that this is the right tool.</p>
             </div>
             <div class="disclosure-card__meta">
                 <span class="badge badge-info">Legacy-only</span>
@@ -238,7 +242,7 @@
             <h2 class="section-title">Review order</h2>
             <p class="text-muted">The queue is ranked by legacy impact. Titles near the top usually have the biggest pile of old symlink drift.</p>
             {% if data.visible_groups != data.returned_groups %}
-            <p class="text-muted">Showing {{ data.visible_groups }} filtered groups from {{ data.returned_groups }} loaded backlog rows.</p>
+            <p class="text-muted">Showing {{ data.visible_groups }} filtered groups from {{ data.returned_groups }} loaded rows.</p>
             {% endif %}
         </div>
         <div class="actions">

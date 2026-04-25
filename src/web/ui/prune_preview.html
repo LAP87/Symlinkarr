@@ -2,11 +2,15 @@
 
 {% block title %}Prune Preview - Symlinkarr{% endblock %}
 {% block nav_cleanup %}active{% endblock %}
+{% block body_class %}page-prune-preview page-inspection{% endblock %}
 
 {% block content %}
 <div class="page-header page-header--split">
     <div>
-        <p class="page-kicker">Cleanup</p>
+        <div class="page-meta">
+            <p class="page-kicker">Cleanup</p>
+            <span class="page-taxonomy page-taxonomy--inspection">Preview</span>
+        </div>
         <h1>Prune Preview</h1>
         <p class="page-lead">Review what cleanup found before applying any changes.</p>
         <div class="page-help-links">

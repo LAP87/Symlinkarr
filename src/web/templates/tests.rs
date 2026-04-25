@@ -126,6 +126,7 @@ fn sample_activity_feed_view() -> DashboardActivityFeedView {
             link: Some(ActivityFeedLinkView {
                 href: "/scan".to_string(),
                 label: "Open Scan".to_string(),
+                landing: "Scan hub".to_string(),
             }),
         }],
         recent_items: vec![ActivityFeedItemView {
@@ -141,6 +142,7 @@ fn sample_activity_feed_view() -> DashboardActivityFeedView {
             link: Some(ActivityFeedLinkView {
                 href: "/cleanup".to_string(),
                 label: "Open Cleanup".to_string(),
+                landing: "Cleanup hub".to_string(),
             }),
         }],
     }
@@ -159,6 +161,7 @@ fn sample_needs_attention_view() -> DashboardNeedsAttentionView {
                 link: Some(ActivityFeedLinkView {
                     href: "/scan".to_string(),
                     label: "Open Scan".to_string(),
+                    landing: "Scan hub".to_string(),
                 }),
             },
             NeedsAttentionItemView {
@@ -171,6 +174,7 @@ fn sample_needs_attention_view() -> DashboardNeedsAttentionView {
                 link: Some(ActivityFeedLinkView {
                     href: "/links/dead".to_string(),
                     label: "Review Dead Links".to_string(),
+                    landing: "Dead-link recovery queue".to_string(),
                 }),
             },
         ],
@@ -245,7 +249,8 @@ fn sample_anime_search_overrides() -> Vec<AnimeSearchOverrideView> {
         local_target_label: Some("Call of the Night in Anime".to_string()),
         local_target_resolved: true,
         effect_badge: "Title + hints".to_string(),
-        effect_summary: "Preferred title used first, then extra hints before anime-lists hints.".to_string(),
+        effect_summary: "Preferred title used first, then extra hints before anime-lists hints."
+            .to_string(),
     }]
 }
 
@@ -341,7 +346,7 @@ fn dead_links_template_renders_summary_and_actions() {
     };
 
     let html = template.render().unwrap();
-    assert!(html.contains("Triage baseline and recovery order"));
+    assert!(html.contains("Repair order"));
     assert!(html.contains("2 dead"));
     assert!(html.contains("Auto-Repair All"));
     assert!(html.contains("Cleanup"));
@@ -372,7 +377,7 @@ fn doctor_template_renders_results_without_redundant_metric_summary() {
     let html = template.render().unwrap();
     assert!(html.contains("How to use Doctor"));
     assert!(html.contains("Best follow-up"));
-    assert!(html.contains("Inspection checklist"));
+    assert!(html.contains("Check list"));
     assert!(html.contains("Needs review"));
     assert!(html.contains("backup directory is not writable"));
     assert!(html.contains("Re-run Checks"));
@@ -431,7 +436,7 @@ fn scan_run_detail_template_renders_deferred_media_refresh_status() {
     };
 
     let html = template.render().unwrap();
-    assert!(html.contains("deferred"));
+    assert!(html.contains("pending"));
 }
 
 #[test]
@@ -447,7 +452,7 @@ fn scan_history_template_renders_humanized_skip_reason_highlights() {
     assert!(html.contains("Why Not"));
     assert!(html.contains("Already correct 6200"));
     assert!(html.contains("Source missing before link 3044"));
-    assert!(html.contains("+1 more bucket(s)"));
+    assert!(html.contains("+1 more reason group(s)"));
     assert!(html.contains("/wiki/Scan-History-and-Why-Not-Signals"));
 }
 
@@ -505,6 +510,7 @@ fn dashboard_activity_feed_template_renders_active_and_recent_items() {
     assert!(html.contains("hx-get=\"/dashboard/activity-feed\""));
     assert!(html.contains("Open Scan"));
     assert!(html.contains("Open Cleanup"));
+    assert!(html.contains("Opens: Scan hub"));
 }
 
 #[test]
@@ -515,10 +521,11 @@ fn dashboard_needs_attention_template_renders_polling_fragment() {
 
     let html = template.render().unwrap();
     assert!(html.contains("Needs Attention"));
-    assert!(html.contains("Operator priorities"));
+    assert!(html.contains("Needs attention"));
     assert!(html.contains("hx-get=\"/dashboard/needs-attention\""));
     assert!(html.contains("hx-trigger=\"every 10s\""));
     assert!(html.contains("Latest background scan failed"));
+    assert!(html.contains("Opens: Scan hub"));
 }
 
 #[test]
@@ -529,11 +536,11 @@ fn dashboard_latest_run_template_renders_polling_fragment() {
 
     let html = template.render().unwrap();
     assert!(html.contains("Latest Run"));
-    assert!(html.contains("Current baseline"));
+    assert!(html.contains("Latest scan"));
     assert!(html.contains("hx-get=\"/dashboard/latest-run\""));
     assert!(html.contains("hx-trigger=\"every 10s\""));
     assert!(html.contains("Open Scan"));
-    assert!(html.contains("Top Why-Not Signals"));
+    assert!(html.contains("Top skip reasons"));
 }
 
 #[test]
@@ -565,9 +572,9 @@ fn dashboard_summary_template_renders_polling_fragment() {
     };
 
     let html = template.render().unwrap();
-    assert!(html.contains("Link Health"));
-    assert!(html.contains("Auto-Acquire Queue"));
-    assert!(html.contains("Media Refresh Backlog"));
+    assert!(html.contains("Links"));
+    assert!(html.contains("Queue"));
+    assert!(html.contains("Media Refresh"));
     assert!(html.contains("hx-get=\"/dashboard/summary\""));
     assert!(html.contains("hx-trigger=\"every 10s\""));
     assert!(html.contains("plex"));
@@ -600,12 +607,13 @@ fn dashboard_template_renders_needs_attention_section() {
     assert!(html.contains("Next step:"));
     assert!(html.contains("compare the failure against the latest run detail"));
     assert!(html.contains("Review Dead Links"));
+    assert!(html.contains("Opens: Dead-link recovery queue"));
     assert!(html.contains("/wiki/Dashboard-and-Daily-Operations"));
     assert!(html.contains("Recent queue jobs"));
     assert!(html.contains("Queued Anime"));
     assert!(html.contains("Blocked Anime"));
-    assert!(html.contains("Configured schedule and next due estimate"));
-    assert!(html.contains("Next due estimate"));
+    assert!(html.contains("Schedule and next scan"));
+    assert!(html.contains("Next scan"));
     assert!(html.contains("Current playback protection"));
     assert!(html.contains("Streams 2"));
     assert!(!html.contains("Playback is not the reason"));
@@ -644,7 +652,7 @@ fn status_template_renders_recent_queue_jobs() {
     assert!(html.contains("Needs Relink"));
     assert!(html.contains("Active playback protection"));
     assert!(html.contains("2 active stream(s) detected"));
-    assert!(html.contains("Configured cadence and heartbeat"));
+    assert!(html.contains("Schedule and heartbeat"));
     assert!(html.contains("2026-04-22 11:00:00 UTC (in 45m)"));
 }
 
@@ -672,7 +680,8 @@ fn status_template_surfaces_overdue_daemon_warning() {
             status_badge_class: "badge-danger",
             last_seen_label: "2026-04-22 08:02:00 UTC (3h ago)".to_string(),
             phase_label: "Sleeping".to_string(),
-            detail: "Heartbeat is older than 3 minutes, so the daemon may no longer be running.".to_string(),
+            detail: "Heartbeat is older than 3 minutes, so the daemon may no longer be running."
+                .to_string(),
             stale: true,
         }),
         checks: std::collections::BTreeMap::new(),
@@ -681,7 +690,7 @@ fn status_template_surfaces_overdue_daemon_warning() {
     };
 
     let html = template.render().unwrap();
-    assert!(html.contains("Configured scan cadence looks overdue."));
+    assert!(html.contains("Scheduled scan looks overdue."));
     assert!(html.contains("Daemon heartbeat looks stale."));
     assert!(html.contains("Due now (3h late)"));
     assert!(html.contains("Verify the daemon/service is still running"));
@@ -758,7 +767,7 @@ fn backup_template_renders_storage_disclosure_and_restore_history() {
 
     let html = template.render().unwrap();
     assert!(html.contains("Create new Symlinkarr backup"));
-    assert!(html.contains("Storage path and restore semantics"));
+    assert!(html.contains("Storage path and restore notes"));
     assert!(html.contains("1 snapshots"));
     assert!(html.contains("Existing backups"));
     assert!(html.contains("Confirm backup restore"));
@@ -822,7 +831,7 @@ fn cleanup_result_template_renders_report_summary() {
 
     let html = template.render().unwrap();
     assert!(html.contains("Audit Report Generated"));
-    assert!(html.contains("Audit report details and risk snapshot"));
+    assert!(html.contains("Audit report details"));
     assert!(html.contains("2026-03-21 21:30:00 UTC"));
     assert!(html.contains("Anime"));
     assert!(html.contains("18"));
@@ -897,7 +906,7 @@ fn scan_result_template_renders_guided_follow_up() {
     let html = template.render().unwrap();
     assert!(html.contains("What this result actually means"));
     assert!(html.contains("Best follow-up"));
-    assert!(html.contains("Snapshot from the latest persisted run"));
+    assert!(html.contains("Latest saved run"));
     assert!(html.contains("Scan History"));
     assert!(html.contains("/wiki/Scan-History-and-Why-Not-Signals"));
 }
@@ -918,10 +927,31 @@ fn repair_result_template_renders_recovery_guidance() {
     };
 
     let html = template.render().unwrap();
+    assert!(html.contains("What this attempt changed"));
     assert!(html.contains("How to read this result"));
     assert!(html.contains("Use Cleanup only for rows that really have no safe replacement left."));
     assert!(html.contains("Latest background outcome"));
     assert!(html.contains("/wiki/Repair-and-Dead-Links"));
+}
+
+#[test]
+fn repair_result_template_renders_background_acceptance_copy() {
+    let template = RepairResultTemplate {
+        success: true,
+        message: "Repair started in background for Anime.".to_string(),
+        repaired: 0,
+        failed: 0,
+        active_repair: Some(ActiveRepairView {
+            started_at: "2026-04-22 01:10:00 UTC".to_string(),
+            scope_label: "Anime".to_string(),
+        }),
+        last_repair_outcome: None,
+    };
+
+    let html = template.render().unwrap();
+    assert!(html.contains("Background repair accepted."));
+    assert!(!html.contains("Repair Completed"));
+    assert!(html.contains("Counters update when it finishes"));
 }
 
 #[test]
@@ -946,11 +976,12 @@ fn backup_result_template_renders_follow_up_guidance() {
     };
 
     let html = template.render().unwrap();
-    assert!(html.contains("What this artifact gives you"));
+    assert!(html.contains("What Symlinkarr recorded"));
+    assert!(html.contains("What this gives you"));
     assert!(html.contains("Best follow-up"));
-    assert!(html.contains("Snapshot files and restore receipt"));
-    assert!(html
-        .contains("Return to Backup and confirm the artifact now appears in the inventory list."));
+    assert!(html.contains("Files and restore details"));
+    assert!(html.contains("Backup File"));
+    assert!(html.contains("Return to Backup and confirm the item appears in the list."));
     assert!(html.contains("/wiki/Backup-and-Restore"));
 }
 
@@ -1285,6 +1316,7 @@ fn anime_remediation_result_template_renders_review_samples() {
     };
 
     let html = template.render().unwrap();
+    assert!(html.contains("Saved preview ready."));
     assert!(html.contains("Active playback overlaps this legacy cleanup plan"));
     assert!(html.contains("What this page means"));
     assert!(html.contains("Best follow-up"));
@@ -1372,8 +1404,10 @@ fn discover_content_template_renders_guidance_and_help_link() {
     };
 
     let html = template.render().unwrap();
+    assert!(html.contains("What this preview found"));
     assert!(html.contains("How to read this preview"));
     assert!(html.contains("Best follow-up"));
+    assert!(html.contains("Where to go deeper"));
     assert!(html.contains("Folder plans behind this preview"));
     assert!(html.contains("Row-level placement report"));
     assert!(html.contains("/wiki/Discover-and-Queue"));

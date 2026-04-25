@@ -370,8 +370,8 @@ async fn dashboard_summary_route_renders_fragment() {
     let (status, fragment) = get_html(&router, "/dashboard/summary").await;
 
     assert_eq!(status, 200);
-    assert!(fragment.contains("Link Health"));
-    assert!(fragment.contains("Auto-Acquire Queue"));
+    assert!(fragment.contains("Links"));
+    assert!(fragment.contains("Queue"));
     assert!(fragment.contains("hx-get=\"/dashboard/summary\""));
 }
 
@@ -382,7 +382,7 @@ async fn dashboard_needs_attention_route_renders_fragment() {
 
     assert_eq!(status, 200);
     assert!(fragment.contains("Needs Attention"));
-    assert!(fragment.contains("Operator priorities"));
+    assert!(fragment.contains("Stuff worth checking before the next scan runs."));
     assert!(fragment.contains("hx-get=\"/dashboard/needs-attention\""));
 }
 
@@ -393,7 +393,7 @@ async fn dashboard_latest_run_route_renders_fragment() {
 
     assert_eq!(status, 200);
     assert!(fragment.contains("Latest Run"));
-    assert!(fragment.contains("Current baseline"));
+    assert!(fragment.contains("Latest scan"));
     assert!(fragment.contains("hx-get=\"/dashboard/latest-run\""));
 }
 
