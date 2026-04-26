@@ -200,6 +200,41 @@
             },
         },
         {
+            id: 'operator-dark',
+            name: 'Operator Dark',
+            group: 'Core',
+            mode: 'dark',
+            palette: {
+                text: '#e0e2e9',
+                textSecondary: '#c2c6d6',
+                textFaint: '#8c909f',
+                base: '#101419',
+                bgSecondary: '#181c21',
+                bgTertiary: '#1c2025',
+                cardBg: '#181c21',
+                cardBgElevated: '#1c2025',
+                shellBg: '#161a1f',
+                shellHoverBg: '#1e2329',
+                shellPanelBg: '#101419',
+                shellPanelBorder: '#1e2329',
+                shellBorderColor: '#1e2329',
+                shellBorderStrong: '#334155',
+                primary: '#3b82f6',
+                brandPrimary: '#60a5fa',
+                tool: '#adc6ff',
+                secondary: '#8c909f',
+                success: '#10b981',
+                error: '#f87171',
+                info: '#38bdf8',
+                warning: '#f59e0b',
+                borderColor: '#1e2329',
+                borderStrong: '#334155',
+                btnPrimaryHover: '#2563eb',
+                btnSecondaryHover: '#262a30',
+                gradientColors: ['#60a5fa', '#10b981', '#f59e0b'],
+            },
+        },
+        {
             id: 'symlinkarr-light',
             name: 'Symlinkarr Light',
             group: 'Core',
@@ -558,7 +593,7 @@
     });
 
     var defaults = {
-        dark: 'symlinkarr-dark',
+        dark: 'operator-dark',
         light: 'symlinkarr-light',
     };
 

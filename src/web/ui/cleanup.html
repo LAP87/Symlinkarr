@@ -55,7 +55,7 @@
 {% when None %}{% endmatch %}
 
 {% if libraries|length > 0 %}
-<div class="card">
+<div class="card operator-action-card">
     <div class="section-head">
         <div>
             <p class="section-kicker">Audit</p>
@@ -63,10 +63,11 @@
             <p class="text-muted">This audit checks the selected libraries and writes a report you can review before deleting anything.</p>
         </div>
     </div>
-    <form action="/cleanup/audit" method="post" class="stack-form">
+    <form action="/cleanup/audit" method="post" class="operator-scan-form">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <div class="form-group">
             <p class="text-muted mb-1">Checked libraries define where the audit runs. Leave everything checked for a full pass, or narrow it down when you are chasing a specific folder or legacy cleanup problem.</p>
+            <div class="operator-option-grid">
             {% for lib in libraries %}
             <label class="toggle-row">
                 <input type="checkbox" name="libraries" value="{{ lib.name }}" checked>
@@ -76,9 +77,10 @@
                 </div>
             </label>
             {% endfor %}
+            </div>
         </div>
 
-        <div class="actions">
+        <div class="operator-action-strip">
             <button type="submit" class="btn btn-primary">
                 Start Audit and Build Report
             </button>
@@ -100,7 +102,7 @@
         </div>
     </section>
 
-    <section class="card">
+    <section class="card operator-remediation-card">
         <div class="section-head">
             <div>
                 <p class="section-kicker">Next Action</p>
@@ -117,7 +119,7 @@
             <div class="metric-card"><span class="metric-label">High</span><strong class="text-warning">{{ report.high }}</strong></div>
             <div class="metric-card"><span class="metric-label">Warning</span><strong class="text-info">{{ report.warning }}</strong></div>
         </div>
-        <div class="actions mt-2">
+        <div class="operator-action-strip mt-2">
             <a href="/cleanup/prune?report={{ report.path.display() }}" class="btn btn-secondary">
                 Open Prune Preview
             </a>

@@ -49,7 +49,7 @@
 {% when None %}{% endmatch %}
 
 <div class="split-grid">
-    <section class="card">
+    <section class="card operator-action-card">
         <div class="section-head">
             <div>
                 <p class="section-kicker">Trigger</p>
@@ -57,7 +57,7 @@
             </div>
         </div>
 
-        <form action="/scan/trigger" method="post" class="stack-form">
+        <form action="/scan/trigger" method="post" class="operator-scan-form">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <div class="form-group">
                 <label class="form-label" for="library">Library scope</label>
@@ -69,23 +69,25 @@
                 </select>
             </div>
 
-            <label class="toggle-row">
-                <input type="checkbox" name="dry_run" value="true" {% if default_dry_run %}checked{% endif %}>
-                <div>
-                    <strong>Dry run</strong>
-                    <p class="text-muted">Preview links and acquisitions without writing symlinks or submitting downloads.</p>
-                </div>
-            </label>
+            <div class="operator-option-grid">
+                <label class="toggle-row">
+                    <input type="checkbox" name="dry_run" value="true" {% if default_dry_run %}checked{% endif %}>
+                    <div>
+                        <strong>Dry run</strong>
+                        <p class="text-muted">Preview links and acquisitions without writing symlinks or submitting downloads.</p>
+                    </div>
+                </label>
 
-            <label class="toggle-row">
-                <input type="checkbox" name="search_missing" value="true">
-                <div>
-                    <strong>Search missing</strong>
-                    <p class="text-muted">Build auto-acquire requests for unmatched movies and anime episode gaps.</p>
-                </div>
-            </label>
+                <label class="toggle-row">
+                    <input type="checkbox" name="search_missing" value="true">
+                    <div>
+                        <strong>Search missing</strong>
+                        <p class="text-muted">Build auto-acquire requests for unmatched movies and anime episode gaps.</p>
+                    </div>
+                </label>
+            </div>
 
-            <div class="actions mt-2">
+            <div class="operator-action-strip">
                 <button type="submit" class="btn btn-primary">
                     Start Scan
                     <span class="htmx-indicator">&#8987;</span>
