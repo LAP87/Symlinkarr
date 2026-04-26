@@ -3436,6 +3436,43 @@ body.page-result .page-header {
   font-size: 0.82rem;
 }
 
+body.page-dashboard .hero-grid {
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+body.page-dashboard .hero-card,
+body.page-dashboard .hero-card--health,
+body.page-dashboard .hero-card--queue,
+body.page-dashboard .hero-card--refresh {
+  min-height: 0;
+}
+
+body.page-dashboard .hero-card {
+  padding: 0.95rem;
+}
+
+body.page-dashboard .hero-value {
+  font-size: clamp(3rem, 4.4vw, 4.2rem);
+  line-height: 0.95;
+}
+
+body.page-dashboard .hero-inline-stats {
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+body.page-status .split-grid {
+  align-items: start;
+}
+
+body.page-status .metric-grid {
+  grid-auto-rows: auto;
+}
+
+body.page-status .metric-card {
+  min-height: 0;
+}
+
 .filter-tabs {
   margin-bottom: 0;
   gap: 0.4rem;
