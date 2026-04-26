@@ -4,6 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Symlinkarr{% endblock %}</title>
+    <link rel="icon" href="/static/favicon.ico" sizes="any">
+    <link rel="icon" type="image/png" href="/static/favicon-32x32.png" sizes="32x32">
+    <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
     <link rel="stylesheet" href="/static/style.css">
     <style id="theme-vars"></style>
     <script src="/static/themes/theme-manifest.js"></script>
@@ -55,7 +58,9 @@
             <div class="sidebar-top">
                 <div class="sidebar-brand-row">
                     <a href="/" class="logo">
-                        <span class="logo-mark">SY</span>
+                        <span class="logo-mark" aria-hidden="true">
+                            <img class="logo-mark__image" src="/static/symlinkarr-icon.png" alt="">
+                        </span>
                         <span class="logo-copy">
                             <span class="logo-title">Symlinkarr</span>
                             <span class="logo-subtitle">Web UI</span>
