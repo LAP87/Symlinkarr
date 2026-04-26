@@ -146,13 +146,17 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(180deg, var(--logo-mark-bg-start), var(--logo-mark-bg-end));
+  background: var(--surface-muted);
   border: 1px solid var(--logo-mark-border);
-  color: var(--brand-primary);
-  font-size: 0.82rem;
-  font-weight: 800;
-  letter-spacing: 0.08em;
   flex-shrink: 0;
+  overflow: hidden;
+}
+
+.logo-mark__image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .logo-copy {
@@ -1825,8 +1829,6 @@ body::after {
   width: 2.75rem;
   height: 2.75rem;
   border-radius: 1rem;
-  font-family: var(--font-mono);
-  font-size: 0.88rem;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 14px 24px rgba(0, 0, 0, 0.18);
 }
 
@@ -2919,10 +2921,9 @@ body.page-result .page-header::before {
 .logo-mark {
   width: 2.55rem;
   height: 2.55rem;
-  border-radius: 3px;
-  background: var(--brand-primary);
-  border: 0;
-  color: var(--text-on-accent);
+  border-radius: 0.85rem;
+  background: var(--surface-muted);
+  border: 1px solid var(--logo-mark-border);
   box-shadow: none;
 }
 
