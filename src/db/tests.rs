@@ -602,6 +602,65 @@ async fn test_record_link_event_roundtrip() {
 }
 
 #[tokio::test]
+async fn test_provider_repair_candidates_group_recent_source_failures() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+        .await
+        .unwrap();
+
+    db.record_link_event_fields(
+        "skipped",
+        Path::new("/plex/show/S01E01.mkv"),
+        Some(Path::new("/mnt/rd/show/ep01.mkv")),
+        Some("tvdb-12345"),
+        Some("source_missing_before_link"),
+    )
+    .await
+    .unwrap();
+    db.record_link_event_fields(
+        "skipped",
+        Path::new("/plex/show/S01E02.mkv"),
+        Some(Path::new("/mnt/rd/show/ep01.mkv")),
+        Some("tvdb-12345"),
+        Some("source_missing_before_link"),
+    )
+    .await
+    .unwrap();
+    db.record_link_event_fields(
+        "skipped",
+        Path::new("/other/show/S01E03.mkv"),
+        Some(Path::new("/mnt/rd/show/ep03.mkv")),
+        Some("tvdb-12345"),
+        Some("source_unreadable_before_link"),
+    )
+    .await
+    .unwrap();
+    db.record_link_event_fields(
+        "skipped",
+        Path::new("/plex/show/S01E04.mkv"),
+        Some(Path::new("/mnt/rd/show/ep04.mkv")),
+        Some("tvdb-12345"),
+        Some("already_correct"),
+    )
+    .await
+    .unwrap();
+
+    let candidates = db
+        .get_provider_repair_candidates(Some(&[PathBuf::from("/plex")]), 10)
+        .await
+        .unwrap();
+
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].occurrences, 2);
+    assert_eq!(candidates[0].reason, "source_missing_before_link");
+    assert_eq!(
+        candidates[0].source_path.as_deref(),
+        Some(Path::new("/mnt/rd/show/ep01.mkv"))
+    );
+    assert_eq!(candidates[0].sample_targets.len(), 2);
+}
+
+#[tokio::test]
 async fn test_has_active_link_for_episode_matches_slot_pattern() {
     let dir = tempfile::tempdir().unwrap();
     let db = Database::new(dir.path().join("test.db").to_str().unwrap())

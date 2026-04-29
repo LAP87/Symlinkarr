@@ -110,6 +110,9 @@ pub(crate) async fn collect_doctor_checks(
         detail: cfg.backup.max_safety_backups.to_string(),
     });
 
+    checks.push(optional_tool_check("media_probe.ffprobe", "ffprobe"));
+    checks.push(optional_tool_check("media_probe.mediainfo", "mediainfo"));
+
     checks.push(DoctorCheckResult {
         name: "security.enforce_roots".to_string(),
         ok: cfg.security.enforce_roots,
@@ -335,6 +338,38 @@ fn format_validation_detail(report: &crate::config::ValidationReport) -> String 
     detail
 }
 
+fn optional_tool_check(name: &str, command: &str) -> DoctorCheckResult {
+    let detail = match std::process::Command::new(command)
+        .arg("--version")
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            let version = String::from_utf8_lossy(&output.stdout);
+            let first_line = version.lines().next().unwrap_or("available");
+            format!("optional; available ({})", first_line)
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let first_line = stderr.lines().next().unwrap_or("version check failed");
+            format!(
+                "optional; installed but version check failed with status {} ({})",
+                output.status, first_line
+            )
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            "optional; not found; import uses metadata-mode=fast unless probing is requested"
+                .to_string()
+        }
+        Err(err) => format!("optional; unavailable ({})", err),
+    };
+
+    DoctorCheckResult {
+        name: name.to_string(),
+        ok: true,
+        detail,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -441,5 +476,18 @@ mod tests {
         assert!(warning_detail.contains("errors=0"));
         assert!(warning_detail.contains("warnings=1"));
         assert!(warning_detail.contains("backup.max_safety_backups=0"));
+    }
+
+    #[test]
+    fn optional_tool_check_is_non_fatal_when_tool_is_missing() {
+        let check = optional_tool_check(
+            "media_probe.fake",
+            "symlinkarr-definitely-missing-probe-tool",
+        );
+
+        assert!(check.ok);
+        assert_eq!(check.name, "media_probe.fake");
+        assert!(check.detail.contains("optional"));
+        assert!(check.detail.contains("not found"));
     }
 }

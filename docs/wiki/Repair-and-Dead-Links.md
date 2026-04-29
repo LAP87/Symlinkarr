@@ -45,6 +45,14 @@ Check `Status` or the dashboard playback-protection panel when:
 - a streamed file should obviously have been repaired
 - you want to confirm that active playback is the reason the row is still waiting
 
+## Provider Repair Reports
+
+Provider repair reporting is separate from normal dead-link repair.
+
+Dead-link repair starts from tracked symlinks whose target/source relationship is broken. Provider repair reporting starts from source/provider-side events such as missing sources before link creation, unreadable provider paths, orphan dead symlinks, or repair failures.
+
+For now, provider repair is report-only. It appears in `symlinkarr report` as a sampled list of provider/source issues. It does not auto-acquire replacements, delete provider content, or take destructive provider-side actions.
+
 ## When to Stop Repairing and Move to Cleanup
 
 Move to cleanup when:

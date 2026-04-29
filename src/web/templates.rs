@@ -29,6 +29,7 @@ use crate::config::Config;
 use crate::db::{
     AcquisitionJobCounts, AnimeSearchOverrideRecord, ScanHistoryRecord, ScanRunOrigin,
 };
+use crate::import_report::ImportSummary;
 use crate::media_servers::{DeferredRefreshSummary, LibraryInvalidationServerOutcome};
 use crate::models::LinkRecord;
 
@@ -1257,6 +1258,66 @@ pub struct DiscoverContentTemplate {
     pub status_message: Option<String>,
 }
 
+// ─── Import ─────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default)]
+pub struct ImportPreviewDraftView {
+    pub source: String,
+    pub destination: String,
+    pub movie_destination: String,
+    pub tv_destination: String,
+    pub anime_destination: String,
+    pub rules: String,
+    pub content_type: String,
+    pub force: bool,
+    pub lookup_mode: String,
+    pub metadata_mode: String,
+    pub probe_tool: String,
+    pub confidence_filter: String,
+    pub max_lookups: usize,
+    pub offline: bool,
+    pub refresh_metadata: bool,
+    pub folders_only: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ImportCandidatePreviewView {
+    pub source_path: String,
+    pub target_path: String,
+    pub title_hint: String,
+    pub media_id: String,
+    pub confidence: String,
+    pub decision: String,
+    pub action: String,
+    pub reason: String,
+    pub needs_review: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ImportPreviewResultView {
+    pub summary: ImportSummary,
+    pub source_shape: String,
+    pub plan_label: String,
+    pub warnings: Vec<String>,
+    pub handoff: Vec<String>,
+    pub report_path: String,
+    pub applied: bool,
+    pub total_candidates: usize,
+    pub shown_candidates: usize,
+    pub confidence_filter: String,
+    pub candidates: Vec<ImportCandidatePreviewView>,
+}
+
+#[derive(Template)]
+#[template(path = "web/ui/import.html")]
+pub struct ImportTemplate {
+    pub libraries: Vec<LibraryConfig>,
+    pub draft: ImportPreviewDraftView,
+    pub feedback: Option<FormFeedbackView>,
+    pub result: Option<ImportPreviewResultView>,
+    pub csrf_token: String,
+}
+
 // ─── Backup ─────────────────────────────────────────────────────────
 
 pub struct BackupInfo {
@@ -1317,6 +1378,7 @@ impl_template_into_response!(
     DoctorTemplate,
     DiscoverTemplate,
     DiscoverContentTemplate,
+    ImportTemplate,
     BackupTemplate,
     BackupResultTemplate,
 );

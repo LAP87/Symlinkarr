@@ -34,6 +34,39 @@ struct TmdbMovieDetails {
     release_date: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TmdbSearchMatch {
+    pub id: u64,
+    pub title: String,
+    pub year: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TmdbMovieSearchResponse {
+    #[serde(default)]
+    results: Vec<TmdbMovieSearchResult>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TmdbMovieSearchResult {
+    id: u64,
+    title: Option<String>,
+    release_date: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TmdbTvSearchResponse {
+    #[serde(default)]
+    results: Vec<TmdbTvSearchResult>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TmdbTvSearchResult {
+    id: u64,
+    name: Option<String>,
+    first_air_date: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct TmdbSeason {
     season_number: u32,
@@ -226,6 +259,54 @@ impl TmdbClient {
         Ok(metadata)
     }
 
+    pub async fn search_movie(
+        &self,
+        query: &str,
+        year: Option<u32>,
+    ) -> Result<Vec<TmdbSearchMatch>> {
+        let mut req = self
+            .authenticated_get("search/movie")
+            .query(&[("query", query.trim())]);
+        let year_string;
+        if let Some(year) = year {
+            year_string = year.to_string();
+            req = req.query(&[("year", year_string.as_str())]);
+        }
+        let resp: TmdbMovieSearchResponse =
+            decode_tmdb_response(http::send_with_retry(req).await?, "movie search").await?;
+        Ok(resp
+            .results
+            .into_iter()
+            .map(|result| TmdbSearchMatch {
+                id: result.id,
+                title: result.title.unwrap_or_default(),
+                year: year_from_date(result.release_date.as_deref()),
+            })
+            .collect())
+    }
+
+    pub async fn search_tv(&self, query: &str, year: Option<u32>) -> Result<Vec<TmdbSearchMatch>> {
+        let mut req = self
+            .authenticated_get("search/tv")
+            .query(&[("query", query.trim())]);
+        let year_string;
+        if let Some(year) = year {
+            year_string = year.to_string();
+            req = req.query(&[("first_air_date_year", year_string.as_str())]);
+        }
+        let resp: TmdbTvSearchResponse =
+            decode_tmdb_response(http::send_with_retry(req).await?, "tv search").await?;
+        Ok(resp
+            .results
+            .into_iter()
+            .map(|result| TmdbSearchMatch {
+                id: result.id,
+                title: result.name.unwrap_or_default(),
+                year: year_from_date(result.first_air_date.as_deref()),
+            })
+            .collect())
+    }
+
     /// Fetch the TVDB ID for a TMDB TV show (cross-reference).
     #[allow(dead_code)]
     pub async fn get_tvdb_id(&self, tmdb_id: u64, db: &Database) -> Result<Option<u64>> {
@@ -323,6 +404,12 @@ impl TmdbClient {
                 .collect(),
         })
     }
+}
+
+fn year_from_date(value: Option<&str>) -> Option<u32> {
+    value
+        .and_then(|date| date.get(..4))
+        .and_then(|year| year.parse().ok())
 }
 
 async fn decode_tmdb_response<T: DeserializeOwned>(
@@ -439,5 +526,12 @@ mod tests {
             request.headers().get(AUTHORIZATION).unwrap(),
             "Bearer bearer-token"
         );
+    }
+
+    #[test]
+    fn year_from_date_reads_first_four_digits() {
+        assert_eq!(year_from_date(Some("2024-03-01")), Some(2024));
+        assert_eq!(year_from_date(Some("")), None);
+        assert_eq!(year_from_date(None), None);
     }
 }

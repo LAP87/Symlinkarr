@@ -1083,6 +1083,8 @@ impl Repairer {
             None
         };
 
+        let active_sources_by_media_id =
+            active_sources_by_media_id(db.get_active_links_scoped(allowed_symlink_roots).await?);
         let total_dead = dead_links.len();
         let mut progress = ProgressLine::new("Repair progress:");
 
@@ -1126,7 +1128,7 @@ impl Repairer {
                 continue;
             }
 
-            let candidates = match dead_link.content_type {
+            let mut candidates = match dead_link.content_type {
                 ContentType::Anime => anime_catalog
                     .as_ref()
                     .map(|catalog| self.find_replacements_in_catalog(&dead_link, catalog))
@@ -1136,6 +1138,11 @@ impl Repairer {
                     .map(|catalog| self.find_replacements_in_catalog(&dead_link, catalog))
                     .unwrap_or_default(),
             };
+            filter_repair_candidates_already_active(
+                &dead_link,
+                &mut candidates,
+                &active_sources_by_media_id,
+            );
 
             if let Some(best) = candidates.first() {
                 if dry_run {
@@ -1386,6 +1393,28 @@ async fn stop_activity_ticker(
 ) {
     let _ = stop_tx.send(());
     let _ = handle.await;
+}
+
+fn active_sources_by_media_id(active_links: Vec<LinkRecord>) -> HashMap<String, HashSet<PathBuf>> {
+    let mut sources = HashMap::new();
+    for link in active_links {
+        sources
+            .entry(link.media_id)
+            .or_insert_with(HashSet::new)
+            .insert(link.source_path);
+    }
+    sources
+}
+
+fn filter_repair_candidates_already_active(
+    dead_link: &DeadLink,
+    candidates: &mut Vec<ReplacementCandidate>,
+    active_sources_by_media_id: &HashMap<String, HashSet<PathBuf>>,
+) {
+    let Some(active_sources) = active_sources_by_media_id.get(&dead_link.media_id) else {
+        return;
+    };
+    candidates.retain(|candidate| !active_sources.contains(&candidate.path));
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────

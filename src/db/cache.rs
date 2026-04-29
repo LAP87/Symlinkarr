@@ -66,6 +66,27 @@ impl Database {
         Ok(deleted)
     }
 
+    /// Return cached title metadata entries that can be used for local-only lookups.
+    pub async fn get_metadata_cache_entries(&self) -> Result<Vec<(String, String)>> {
+        let rows = sqlx::query(
+            "SELECT cache_key, response_json FROM api_cache
+             WHERE (
+                cache_key LIKE 'tmdb:movie:%' ESCAPE '\\'
+                OR cache_key LIKE 'tmdb:tv:%' ESCAPE '\\'
+                OR cache_key LIKE 'tvdb:series:%' ESCAPE '\\'
+             )
+             AND cache_key NOT LIKE '%:external_ids:%' ESCAPE '\\'
+             AND datetime(fetched_at, '+' || ttl_hours || ' hours') > datetime('now')",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| (row.get("cache_key"), row.get("response_json")))
+            .collect())
+    }
+
     /// Upsert an RD torrent record.
     pub async fn upsert_rd_torrent(
         &self,

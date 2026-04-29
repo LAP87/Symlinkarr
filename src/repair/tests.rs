@@ -635,6 +635,60 @@ fn test_destructive_source_exists_rejects_unhealthy_parent() {
         .contains("Aborting repair dead-link detection"));
 }
 
+#[test]
+fn test_repair_candidates_skip_sources_already_active_for_same_media_id() {
+    let live_source = PathBuf::from("/rd/movie.1080p.mkv");
+    let new_source = PathBuf::from("/rd/movie.2160p.mkv");
+    let dead_link = DeadLink {
+        symlink_path: PathBuf::from("/library/Movie/Movie - 2160p.mkv"),
+        original_source: PathBuf::from("/rd/missing.2160p.mkv"),
+        media_id: "tmdb-1".to_string(),
+        media_type: MediaType::Movie,
+        content_type: ContentType::Movie,
+        meta: parse_trash_filename("Movie (2024) [Bluray-2160p].mkv"),
+        original_size: None,
+    };
+    let active_links = vec![LinkRecord {
+        id: None,
+        source_path: live_source.clone(),
+        target_path: PathBuf::from("/library/Movie/Movie - 1080p.mkv"),
+        media_id: "tmdb-1".to_string(),
+        media_type: MediaType::Movie,
+        status: LinkStatus::Active,
+        created_at: None,
+        updated_at: None,
+    }];
+    let mut candidates = vec![
+        ReplacementCandidate {
+            path: live_source,
+            parsed_title: "Movie".to_string(),
+            season: None,
+            episode: None,
+            quality: Some("1080p".to_string()),
+            file_size: 100,
+            score: 0.95,
+        },
+        ReplacementCandidate {
+            path: new_source.clone(),
+            parsed_title: "Movie".to_string(),
+            season: None,
+            episode: None,
+            quality: Some("2160p".to_string()),
+            file_size: 200,
+            score: 0.90,
+        },
+    ];
+
+    filter_repair_candidates_already_active(
+        &dead_link,
+        &mut candidates,
+        &active_sources_by_media_id(active_links),
+    );
+
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].path, new_source);
+}
+
 // ── Pure function unit tests ──────────────────────────────────────────────
 
 #[test]

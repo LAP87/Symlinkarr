@@ -30,6 +30,8 @@ daemon:
 symlink:
   naming_template: "{title} - S{season:02}E{episode:02} - {episode_title}"
   dry_run: false
+  # Opt-in movie multi-version symlinks. TV/anime version behavior remains disabled until evaluated.
+  multi_version: false
 
 matching:
   mode: "strict"
@@ -91,6 +93,7 @@ tautulli:
 #   url: "http://host.docker.internal:32400"
 #   token: "env:SYMLINKARR_PLEX_TOKEN"
 #   refresh_enabled: true
+#   refresh_mode: immediate  # immediate, deferred, disabled
 #   refresh_delay_ms: 250
 #   refresh_coalesce_threshold: 8
 #   max_refresh_batches_per_run: 12
@@ -101,6 +104,7 @@ tautulli:
 #   url: "http://host.docker.internal:8096"
 #   api_key: "env:SYMLINKARR_EMBY_API_KEY"
 #   refresh_enabled: false
+#   refresh_mode: immediate  # immediate, deferred, disabled
 #   refresh_delay_ms: 250
 #   refresh_batch_size: 64
 #   max_refresh_batches_per_run: 12
@@ -112,6 +116,7 @@ tautulli:
 #   url: "http://host.docker.internal:8097"
 #   api_key: "env:SYMLINKARR_JELLYFIN_API_KEY"
 #   refresh_enabled: false
+#   refresh_mode: immediate  # immediate, deferred, disabled
 #   refresh_delay_ms: 250
 #   refresh_batch_size: 64
 #   max_refresh_batches_per_run: 12

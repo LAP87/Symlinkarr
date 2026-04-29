@@ -475,6 +475,7 @@ fn test_write_anime_remediation_tsv_outputs_expected_columns() {
         by_media_type: BTreeMap::new(),
         top_libraries: Vec::new(),
         path_compare: PathCompareOutput::default(),
+        provider_repair: ProviderRepairOutput::default(),
         anime_duplicates: Some(AnimeDuplicateAuditOutput {
             remediation_groups: Some(1),
             remediation_sample_groups: Some(vec![AnimeRemediationSample {

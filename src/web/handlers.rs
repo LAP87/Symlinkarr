@@ -13,12 +13,13 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Component, Path as StdPath, PathBuf};
 use tracing::{error, info};
 
-#[cfg(test)]
-use admin::DiscoverQuery;
 pub(crate) use admin::{
-    get_backup, get_config, get_discover, get_discover_content, get_doctor, post_backup_create,
-    post_backup_restore, post_config_validate,
+    get_backup, get_config, get_discover, get_discover_content, get_doctor, get_import,
+    post_backup_create, post_backup_restore, post_config_validate, post_import_apply,
+    post_import_preview,
 };
+#[cfg(test)]
+use admin::{DiscoverQuery, ImportPreviewForm};
 #[cfg(test)]
 use cleanup::AnimeRemediationQuery;
 pub(crate) use cleanup::{

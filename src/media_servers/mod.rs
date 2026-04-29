@@ -11,7 +11,7 @@ use self::deferred::{
     DeferredRefreshQueueServer,
 };
 pub(crate) use self::deferred::{deferred_refresh_summary, has_pending_deferred_refreshes};
-use crate::config::{Config, LibraryConfig, MediaBrowserConfig};
+use crate::config::{Config, LibraryConfig, MediaBrowserConfig, MediaRefreshMode};
 
 mod deferred;
 pub(crate) mod emby;
@@ -94,6 +94,8 @@ pub(crate) struct LibraryInvalidationOutcome {
 pub(crate) struct LibraryInvalidationServerOutcome {
     pub server: MediaServerKind,
     pub requested_targets: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub targets: Vec<PathBuf>,
     pub refresh: LibraryRefreshTelemetry,
 }
 
@@ -331,6 +333,35 @@ fn refresh_targets_for_server(
     }
 }
 
+fn refresh_mode_for_server(cfg: &Config, server: MediaServerKind) -> MediaRefreshMode {
+    match server {
+        MediaServerKind::Plex => cfg.plex.refresh_mode,
+        MediaServerKind::Emby => cfg.emby.refresh_mode,
+        MediaServerKind::Jellyfin => cfg.jellyfin.refresh_mode,
+    }
+}
+
+fn split_deferred_refresh_servers(
+    cfg: &Config,
+    servers: Vec<MediaServerKind>,
+    force_immediate: bool,
+) -> (Vec<MediaServerKind>, Vec<MediaServerKind>) {
+    if force_immediate {
+        return (servers, Vec::new());
+    }
+
+    let mut immediate = Vec::new();
+    let mut deferred = Vec::new();
+    for server in servers {
+        match refresh_mode_for_server(cfg, server) {
+            MediaRefreshMode::Immediate => immediate.push(server),
+            MediaRefreshMode::Deferred => deferred.push(server),
+            MediaRefreshMode::Disabled => {}
+        }
+    }
+    (immediate, deferred)
+}
+
 #[derive(Debug, Clone)]
 struct PlannedServerRefresh {
     server: MediaServerKind,
@@ -355,6 +386,28 @@ async fn refresh_paths_for_server(
     }
 }
 
+fn emit_refresh_target_log(server: MediaServerKind, targets: &[PathBuf], emit_text: bool) {
+    if !emit_text || targets.is_empty() {
+        return;
+    }
+
+    let sample = targets
+        .iter()
+        .take(5)
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let suffix = if targets.len() > 5 {
+        format!(", ... {} more", targets.len() - 5)
+    } else {
+        String::new()
+    };
+    crate::utils::user_println(format!(
+        "   📺 {} refresh target(s): {}{}",
+        server, sample, suffix
+    ));
+}
+
 async fn execute_planned_server_refreshes(
     cfg: &Config,
     planned_refreshes: Vec<PlannedServerRefresh>,
@@ -370,6 +423,7 @@ async fn execute_planned_server_refreshes(
     let mut pending = FuturesUnordered::new();
 
     for planned in planned_refreshes {
+        emit_refresh_target_log(planned.server, &planned.targets, emit_text);
         let cfg = cfg.clone();
         pending.push(async move {
             let result =
@@ -387,6 +441,7 @@ async fn execute_planned_server_refreshes(
                 server_outcomes.push(LibraryInvalidationServerOutcome {
                     server: planned.server,
                     requested_targets: planned.requested_targets,
+                    targets: planned.targets.clone(),
                     refresh,
                 });
             }
@@ -413,6 +468,7 @@ async fn execute_planned_server_refreshes(
                 server_outcomes.push(LibraryInvalidationServerOutcome {
                     server: planned.server,
                     requested_targets: planned.requested_targets,
+                    targets: planned.targets.clone(),
                     refresh,
                 });
             }
@@ -442,13 +498,57 @@ pub(crate) async fn refresh_library_paths_detailed(
     refresh_paths: &[PathBuf],
     emit_text: bool,
 ) -> Result<LibraryRefreshOutcome> {
+    refresh_library_paths_detailed_inner(cfg, refresh_paths, emit_text, false).await
+}
+
+pub(crate) async fn drain_deferred_refreshes(
+    cfg: &Config,
+    emit_text: bool,
+) -> Result<LibraryRefreshOutcome> {
+    refresh_library_paths_detailed_inner(cfg, &[], emit_text, true).await
+}
+
+async fn refresh_library_paths_detailed_inner(
+    cfg: &Config,
+    refresh_paths: &[PathBuf],
+    emit_text: bool,
+    force_immediate: bool,
+) -> Result<LibraryRefreshOutcome> {
     let pending_deferred_paths = pending_deferred_refresh_count(cfg)?;
     if refresh_paths.is_empty() && pending_deferred_paths == 0 {
         return Ok(LibraryRefreshOutcome::default());
     }
 
     let servers = configured_refresh_backends(cfg);
+    let (servers, deferred_servers) = split_deferred_refresh_servers(cfg, servers, force_immediate);
     if servers.is_empty() {
+        if !deferred_servers.is_empty() && !refresh_paths.is_empty() {
+            let deferred_entries = deferred_servers
+                .iter()
+                .copied()
+                .map(|server| (server, dedup_non_empty_paths(refresh_paths)))
+                .collect::<Vec<_>>();
+            queue_deferred_refresh_targets(cfg, &deferred_entries)?;
+            let mut aggregate = LibraryRefreshTelemetry::default();
+            let outcomes = deferred_entries
+                .into_iter()
+                .filter(|(_, paths)| !paths.is_empty())
+                .map(|(server, paths)| {
+                    let refresh = deferred_refresh_telemetry(paths.len());
+                    merge_refresh_telemetry(&mut aggregate, &refresh);
+                    LibraryInvalidationServerOutcome {
+                        server,
+                        requested_targets: paths.len(),
+                        targets: paths,
+                        refresh,
+                    }
+                })
+                .collect();
+            return Ok(LibraryRefreshOutcome {
+                aggregate,
+                servers: outcomes,
+            });
+        }
         return Ok(LibraryRefreshOutcome {
             aggregate: LibraryRefreshTelemetry {
                 requested_paths: refresh_paths.len(),
@@ -456,6 +556,30 @@ pub(crate) async fn refresh_library_paths_detailed(
             },
             servers: Vec::new(),
         });
+    }
+
+    let mut deferred_aggregate = LibraryRefreshTelemetry::default();
+    let mut deferred_outcomes = Vec::new();
+    if !deferred_servers.is_empty() && !refresh_paths.is_empty() {
+        let deferred_entries = deferred_servers
+            .iter()
+            .copied()
+            .map(|server| (server, dedup_non_empty_paths(refresh_paths)))
+            .collect::<Vec<_>>();
+        queue_deferred_refresh_targets(cfg, &deferred_entries)?;
+        for (server, paths) in deferred_entries {
+            if paths.is_empty() {
+                continue;
+            }
+            let refresh = deferred_refresh_telemetry(paths.len());
+            merge_refresh_telemetry(&mut deferred_aggregate, &refresh);
+            deferred_outcomes.push(LibraryInvalidationServerOutcome {
+                server,
+                requested_targets: paths.len(),
+                targets: paths,
+                refresh,
+            });
+        }
     }
 
     let Some(_guard) = try_acquire_media_refresh_guard(cfg)? else {
@@ -470,11 +594,16 @@ pub(crate) async fn refresh_library_paths_detailed(
         let deferred_summary = deferred_refresh_summary(cfg)?;
         emit_refresh_lock_contention(emit_text, &servers);
         let mut aggregate = LibraryRefreshTelemetry::default();
-        let server_outcomes = servers
+        let mut server_outcomes: Vec<LibraryInvalidationServerOutcome> = servers
             .into_iter()
             .filter_map(|server| {
-                let requested_paths = if !refresh_paths.is_empty() {
-                    dedup_non_empty_paths(refresh_paths).len()
+                let targets = if !refresh_paths.is_empty() {
+                    dedup_non_empty_paths(refresh_paths)
+                } else {
+                    Vec::new()
+                };
+                let requested_paths = if !targets.is_empty() {
+                    targets.len()
                 } else {
                     deferred_summary
                         .servers
@@ -491,10 +620,14 @@ pub(crate) async fn refresh_library_paths_detailed(
                 Some(LibraryInvalidationServerOutcome {
                     server,
                     requested_targets: requested_paths,
+                    targets,
                     refresh,
                 })
             })
             .collect();
+        merge_refresh_telemetry(&mut aggregate, &deferred_aggregate);
+        server_outcomes.extend(deferred_outcomes);
+        server_outcomes.sort_by_key(|entry| entry.server.service_key());
         return Ok(LibraryRefreshOutcome {
             aggregate,
             servers: server_outcomes,
@@ -533,8 +666,11 @@ pub(crate) async fn refresh_library_paths_detailed(
             coalesced_paths: 0,
         });
     }
-    let (aggregate, server_outcomes, failed_entries) =
+    let (mut aggregate, mut server_outcomes, failed_entries) =
         execute_planned_server_refreshes(cfg, planned_refreshes, emit_text).await;
+    merge_refresh_telemetry(&mut aggregate, &deferred_aggregate);
+    server_outcomes.extend(deferred_outcomes);
+    server_outcomes.sort_by_key(|entry| entry.server.service_key());
     merge_deferred_refresh_entries(cfg, failed_entries)?;
 
     Ok(LibraryRefreshOutcome {
@@ -583,6 +719,8 @@ pub(crate) async fn invalidate_after_mutation(
     let refresh_roots = refresh_root_paths_for_affected_paths(libraries, affected_paths);
     let configured_servers = configured_refresh_backends(cfg);
     let configured = !configured_servers.is_empty();
+    let (configured_servers, deferred_servers) =
+        split_deferred_refresh_servers(cfg, configured_servers, false);
 
     if refresh_roots.is_empty() {
         return Ok(LibraryInvalidationOutcome {
@@ -592,6 +730,41 @@ pub(crate) async fn invalidate_after_mutation(
                 .filter(|_| configured_servers.len() == 1),
             configured,
             ..LibraryInvalidationOutcome::default()
+        });
+    }
+
+    let mut deferred_aggregate = LibraryRefreshTelemetry::default();
+    let mut deferred_outcomes = Vec::new();
+    if !deferred_servers.is_empty() {
+        let mut deferred_entries = Vec::new();
+        for server in deferred_servers.iter().copied() {
+            let refresh_plan =
+                refresh_targets_for_server(cfg, server, &refresh_roots, affected_paths);
+            if refresh_plan.targets.is_empty() {
+                continue;
+            }
+            deferred_entries.push((server, refresh_plan.targets.clone()));
+            let mut refresh = deferred_refresh_telemetry(refresh_plan.targets.len());
+            refresh.coalesced_batches = refresh_plan.coalesced_batches;
+            refresh.coalesced_paths = refresh_plan.coalesced_paths;
+            merge_refresh_telemetry(&mut deferred_aggregate, &refresh);
+            deferred_outcomes.push(LibraryInvalidationServerOutcome {
+                server,
+                requested_targets: refresh_plan.targets.len(),
+                targets: refresh_plan.targets,
+                refresh,
+            });
+        }
+        queue_deferred_refresh_targets(cfg, &deferred_entries)?;
+    }
+
+    if configured && configured_servers.is_empty() {
+        return Ok(LibraryInvalidationOutcome {
+            server: None,
+            requested_library_roots: refresh_roots.len(),
+            configured,
+            refresh: Some(deferred_aggregate),
+            servers: deferred_outcomes,
         });
     }
 
@@ -624,9 +797,14 @@ pub(crate) async fn invalidate_after_mutation(
                 server_outcomes.push(LibraryInvalidationServerOutcome {
                     server,
                     requested_targets: refresh_plan.targets.len(),
+                    targets: refresh_plan.targets,
                     refresh,
                 });
             }
+
+            merge_refresh_telemetry(&mut aggregate, &deferred_aggregate);
+            server_outcomes.extend(deferred_outcomes);
+            server_outcomes.sort_by_key(|entry| entry.server.service_key());
 
             return Ok(LibraryInvalidationOutcome {
                 server: configured_servers
@@ -684,8 +862,11 @@ pub(crate) async fn invalidate_after_mutation(
                 coalesced_paths: refresh_plan.coalesced_paths,
             });
         }
-        let (aggregate, server_outcomes, failed_entries) =
+        let (mut aggregate, mut server_outcomes, failed_entries) =
             execute_planned_server_refreshes(cfg, planned_refreshes, emit_text).await;
+        merge_refresh_telemetry(&mut aggregate, &deferred_aggregate);
+        server_outcomes.extend(deferred_outcomes);
+        server_outcomes.sort_by_key(|entry| entry.server.service_key());
         merge_deferred_refresh_entries(cfg, failed_entries)?;
 
         return Ok(LibraryInvalidationOutcome {

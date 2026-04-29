@@ -739,6 +739,10 @@ fn create_router(state: WebState) -> Router {
         // Discover
         .route("/discover", get(handlers::get_discover))
         .route("/discover/content", get(handlers::get_discover_content))
+        // Import
+        .route("/import", get(handlers::get_import))
+        .route("/import/preview", post(handlers::post_import_preview))
+        .route("/import/apply", post(handlers::post_import_apply))
         // Backup
         .route("/backup", get(handlers::get_backup))
         .route("/backup/create", post(handlers::post_backup_create))

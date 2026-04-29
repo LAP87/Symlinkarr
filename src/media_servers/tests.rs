@@ -6,8 +6,8 @@ use super::*;
 use crate::config::{
     ApiConfig, BackupConfig, BazarrConfig, CleanupPolicyConfig, Config, ContentType, DaemonConfig,
     DecypharrConfig, DmmConfig, FeaturesConfig, LibraryConfig, MatchingConfig, MediaBrowserConfig,
-    PlexConfig, ProwlarrConfig, RadarrConfig, RealDebridConfig, SecurityConfig, SonarrConfig,
-    SourceConfig, SymlinkConfig, TautulliConfig, WebConfig,
+    MediaRefreshMode, PlexConfig, ProwlarrConfig, RadarrConfig, RealDebridConfig, SecurityConfig,
+    SonarrConfig, SourceConfig, SymlinkConfig, TautulliConfig, WebConfig,
 };
 use crate::models::MediaType;
 use axum::{extract::State, routing::get, Router};
@@ -293,6 +293,70 @@ async fn invalidate_after_mutation_reports_unconfigured_when_no_backend_exists()
     assert!(outcome.servers.is_empty());
 }
 
+#[tokio::test]
+async fn deferred_refresh_mode_queues_without_contacting_server() {
+    let dir = tempfile::tempdir().unwrap();
+    let (url, refresh_calls) = spawn_mock_plex_server(Duration::from_millis(0))
+        .await
+        .unwrap();
+    let mut cfg = test_config();
+    cfg.plex.url = url;
+    cfg.plex.token = "plex-token".to_string();
+    cfg.plex.refresh_mode = MediaRefreshMode::Deferred;
+    cfg.backup.path = dir.path().join("backups");
+    std::fs::create_dir_all(&cfg.backup.path).unwrap();
+    let library = &cfg.libraries[0];
+    let changed = PathBuf::from("/mnt/storage/plex/anime/Show/Season 01/E01.mkv");
+
+    let outcome =
+        invalidate_after_mutation(&cfg, &[library], std::slice::from_ref(&changed), false)
+            .await
+            .unwrap();
+
+    assert!(outcome.configured);
+    assert!(outcome.refresh.unwrap().deferred_due_to_lock);
+    assert_eq!(
+        outcome.servers[0].targets,
+        vec![PathBuf::from("/mnt/storage/plex/anime")]
+    );
+    assert_eq!(refresh_calls.load(Ordering::SeqCst), 0);
+    let queue = load_deferred_refresh_queue(&cfg).unwrap();
+    assert_eq!(queue.servers.len(), 1);
+    assert_eq!(queue.servers[0].server, MediaServerKind::Plex);
+    assert_eq!(
+        queue.servers[0].paths,
+        vec![PathBuf::from("/mnt/storage/plex/anime")]
+    );
+}
+
+#[tokio::test]
+async fn drain_deferred_refreshes_flushes_deferred_mode_queue() {
+    let dir = tempfile::tempdir().unwrap();
+    let (url, refresh_calls) = spawn_mock_plex_server(Duration::from_millis(0))
+        .await
+        .unwrap();
+    let mut cfg = test_config();
+    cfg.plex.url = url;
+    cfg.plex.token = "plex-token".to_string();
+    cfg.plex.refresh_mode = MediaRefreshMode::Deferred;
+    cfg.backup.path = dir.path().join("backups");
+    std::fs::create_dir_all(&cfg.backup.path).unwrap();
+    queue_deferred_refresh_targets(
+        &cfg,
+        &[(
+            MediaServerKind::Plex,
+            vec![PathBuf::from("/mnt/storage/plex/anime")],
+        )],
+    )
+    .unwrap();
+
+    let outcome = drain_deferred_refreshes(&cfg, false).await.unwrap();
+
+    assert_eq!(outcome.aggregate.refreshed_batches, 1);
+    assert_eq!(refresh_calls.load(Ordering::SeqCst), 1);
+    assert!(!media_refresh_queue_path(&cfg).exists());
+}
+
 #[test]
 fn summary_suffix_mentions_multiple_backends_when_present() {
     let outcome = LibraryInvalidationOutcome {
@@ -307,6 +371,7 @@ fn summary_suffix_mentions_multiple_backends_when_present() {
             LibraryInvalidationServerOutcome {
                 server: MediaServerKind::Plex,
                 requested_targets: 2,
+                targets: Vec::new(),
                 refresh: LibraryRefreshTelemetry {
                     refreshed_batches: 1,
                     ..LibraryRefreshTelemetry::default()
@@ -315,6 +380,7 @@ fn summary_suffix_mentions_multiple_backends_when_present() {
             LibraryInvalidationServerOutcome {
                 server: MediaServerKind::Emby,
                 requested_targets: 4,
+                targets: Vec::new(),
                 refresh: LibraryRefreshTelemetry {
                     refreshed_batches: 2,
                     ..LibraryRefreshTelemetry::default()
@@ -341,6 +407,7 @@ fn summary_suffix_mentions_lock_deferral_when_present() {
         servers: vec![LibraryInvalidationServerOutcome {
             server: MediaServerKind::Plex,
             requested_targets: 2,
+            targets: Vec::new(),
             refresh: LibraryRefreshTelemetry {
                 requested_paths: 2,
                 deferred_due_to_lock: true,
@@ -387,6 +454,12 @@ async fn refresh_library_paths_detailed_defers_when_lock_is_held() {
     assert!(outcome.aggregate.deferred_due_to_lock);
     assert_eq!(outcome.servers.len(), 1);
     assert!(outcome.servers[0].refresh.deferred_due_to_lock);
+    assert_eq!(
+        outcome.servers[0].targets,
+        vec![PathBuf::from(
+            "/mnt/storage/plex/anime/Show/Season 01/E01.mkv"
+        )]
+    );
     assert!(media_refresh_queue_path(&cfg).exists());
 }
 

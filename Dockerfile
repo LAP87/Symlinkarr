@@ -12,7 +12,7 @@ RUN cargo build --release --locked
 FROM debian:bookworm-slim
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates && \
+    apt-get install -y --no-install-recommends ca-certificates ffmpeg mediainfo && \
     rm -rf /var/lib/apt/lists/*
 
 # Create app user

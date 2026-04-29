@@ -6,5 +6,7 @@
 - [Backup and Restore](Backup-and-Restore.md)
 - [Configuration and Doctor](Configuration-and-Doctor.md)
 - [Discover and Queue](Discover-and-Queue.md)
+- [Provider Source Import](Provider-Source-Import.md)
+- [Symlinkarr vs CineSync](Symlinkarr-vs-CineSync.md)
 - [Anime Cleanup](Anime-Remediation.md)
 - [Media Server Refresh](Media-Server-Refresh-and-Deferred-Work.md)

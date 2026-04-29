@@ -1540,6 +1540,112 @@ async fn discover_page_shell_renders_async_loader() {
 }
 
 #[tokio::test]
+async fn import_page_renders_read_only_preview_form() {
+    let ctx = test_context().await;
+    let body = render_body(get_import(State(ctx.state)).await).await;
+
+    assert!(body.contains("Preview first"));
+    assert!(body.contains("action=\"/import/preview\""));
+    assert!(body.contains("name=\"folders_only\""));
+    assert!(body.contains("name=\"force\""));
+    assert!(body.contains("Build Preview"));
+}
+
+#[tokio::test]
+async fn import_preview_renders_candidate_without_writing_target() {
+    let ctx = test_context().await;
+    let source = ctx._dir.path().join("rd").join("Movie.2024 {tmdb-123}.mkv");
+    let destination = ctx._dir.path().join("imported");
+    std::fs::write(&source, b"video").unwrap();
+
+    let body = render_body(
+        post_import_preview(
+            State(ctx.state),
+            Form(ImportPreviewForm {
+                source: source.display().to_string(),
+                destination: Some(destination.display().to_string()),
+                content_type: "movie".to_string(),
+                mode: "safe".to_string(),
+                ..ImportPreviewForm::default()
+            }),
+        )
+        .await,
+    )
+    .await;
+
+    assert!(body.contains("Preview ready"));
+    assert!(body.contains("Import safe plan preview"));
+    assert!(body.contains("action=\"/import/apply\""));
+    assert!(body.contains("Movie.2024 {tmdb-123}.mkv"));
+    assert!(!destination.exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn import_apply_creates_target_and_writes_report() {
+    let ctx = test_context().await;
+    let source = ctx._dir.path().join("rd").join("Movie.2024 {tmdb-123}.mkv");
+    let destination = ctx._dir.path().join("imported");
+    std::fs::write(&source, b"video").unwrap();
+
+    let body = render_body(
+        post_import_apply(
+            State(ctx.state),
+            Form(ImportPreviewForm {
+                source: source.display().to_string(),
+                destination: Some(destination.display().to_string()),
+                content_type: "movie".to_string(),
+                mode: "safe".to_string(),
+                ..ImportPreviewForm::default()
+            }),
+        )
+        .await,
+    )
+    .await;
+
+    let target = destination.join("Movie.2024 {tmdb-123}.mkv");
+    assert!(body.contains("Import applied"));
+    assert!(body.contains("Import apply summary"));
+    assert!(body.contains("import-reports"));
+    assert_eq!(std::fs::read_link(target).unwrap(), source);
+}
+
+#[tokio::test]
+async fn import_preview_filters_candidate_review_table_by_confidence() {
+    let ctx = test_context().await;
+    let source = ctx._dir.path().join("rd");
+    let destination = ctx._dir.path().join("imported");
+    let known = source.join("Known.Movie.2024 {tmdb-123}");
+    let unknown = source.join("Unknown.Movie.2024");
+    std::fs::create_dir_all(&known).unwrap();
+    std::fs::create_dir_all(&unknown).unwrap();
+    std::fs::write(known.join("Known.Movie.2024.mkv"), b"video").unwrap();
+    std::fs::write(unknown.join("Unknown.Movie.2024.mkv"), b"video").unwrap();
+
+    let body = render_body(
+        post_import_preview(
+            State(ctx.state),
+            Form(ImportPreviewForm {
+                source: source.display().to_string(),
+                destination: Some(destination.display().to_string()),
+                content_type: "movie".to_string(),
+                mode: "safe".to_string(),
+                confidence_filter: Some("low".to_string()),
+                ..ImportPreviewForm::default()
+            }),
+        )
+        .await,
+    )
+    .await;
+
+    assert!(body.contains("Candidate review table"));
+    assert!(body.contains("filtered by low confidence"));
+    assert!(body.contains("Unknown.Movie.2024"));
+    assert!(!body.contains("Known.Movie.2024 {tmdb-123}"));
+    assert!(!destination.exists());
+}
+
+#[tokio::test]
 async fn discover_content_renders_cached_gap_items() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = test_config(dir.path());

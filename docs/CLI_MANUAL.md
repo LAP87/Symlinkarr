@@ -178,9 +178,81 @@ Notes:
 - HTML forms require the issued browser session plus a server-rendered CSRF token when the built-in UI is remotely exposed.
 - Native Windows is not supported; use WSL2 or a Linux container on Windows 11.
 - Plex refresh pacing is configured in `config.yaml` under `plex.refresh_delay_ms`, `plex.refresh_coalesce_threshold`, and `plex.max_refresh_batches_per_run`.
+- `plex.refresh_mode`, `emby.refresh_mode`, and `jellyfin.refresh_mode` accept `immediate`, `deferred`, or `disabled`.
 - `plex.abort_refresh_when_capped` is the RC-safe default: if the refresh plan exceeds the per-run cap, Symlinkarr aborts the whole Plex refresh phase instead of queueing only the first batches.
 - Emby and Jellyfin refresh is configured under `emby.*` and `jellyfin.*`. `refresh_batch_size`, `max_refresh_batches_per_run`, and `abort_refresh_when_capped` control load, and `fallback_to_library_roots_when_capped` lets Symlinkarr fall back to a few library-root refreshes when too many individual paths changed.
 - Concurrent Symlinkarr write runs share one media-server refresh lock. Later runs wait instead of hammering Plex, Emby, or Jellyfin in parallel.
+
+### `refresh`
+
+Drain deferred media-server refresh work.
+
+```bash
+symlinkarr refresh drain [--output text|json]
+```
+
+Use this when one or more media servers are configured with `refresh_mode: deferred`. Symlinkarr will queue affected paths during scan/repair/cleanup and only contact the media server when this command is run.
+
+### `import`
+
+Bootstrap symlinks from an existing provider/source mount when the Arr-created library folders do not exist yet or a host was rebuilt without the old Symlinkarr database.
+
+```bash
+symlinkarr import \
+  --source /mnt/rd/movies \
+  --destination /library/movies \
+  --content-type movie \
+  --mode preview
+
+symlinkarr import \
+  --source /mnt/rd \
+  --movie-destination /library/movies \
+  --tv-destination /library/tv \
+  --anime-destination /library/anime \
+  --content-type auto \
+  --mode aggressive \
+  --yes
+```
+
+Modes:
+
+- `preview`: scan and report only; no writes and no prompt.
+- `safe`: write only high-confidence candidates with explicit/cache/accepted lookup IDs, and skip destination conflicts.
+- `aggressive`: best-effort bootstrap; can create unresolved links and replace existing symlink targets, but still refuses to overwrite real files.
+
+Useful flags:
+
+- `--rules /config/import-rules.xml`: route candidates through custom destination rules.
+- `--lookup-mode off|cache|remote`: choose ID lookup behavior. Default is cache-first without online lookup.
+- `--offline`: explicit IDs only; disables cache and remote ID lookup.
+- `--refresh-metadata`: bypass existing metadata cache for this run; requires `--lookup-mode remote`.
+- `--max-lookups N`: cap remote TMDB/TVDB lookups for one run.
+- `--metadata-mode fast|probe|strict`: keep filename/path-only metadata, or probe stream headers for rules that need audio/subtitle/video traits.
+- `--probe-tool auto|ffprobe|mediainfo`: choose the probe backend when probing is enabled.
+- `--report-path /path/import-report.json`: save the JSON report at a known path. If omitted, Symlinkarr writes `symlinkarr-import-report-*.json` in the current directory.
+- `--yes`: required for `safe` and `aggressive` in non-interactive automation.
+- `--folders-only`: create real ID-tagged folders only and leave symlink creation to normal scan/daemon later.
+- `--create-links`: explicit spelling for the default behavior, which creates provider symlink targets.
+- `--output json`: print the same report schema to stdout.
+
+Notes:
+
+- `import` is a bootstrap tool. Normal `scan`/daemon should take over afterwards.
+- It can run without an existing config, but uses the configured DB/cache/API credentials when available.
+- The Web UI `Import` page uses the same report builder for preview and apply, including warning display and confidence-filtered candidate review. Web apply defaults to safe mode; its `Force` checkbox maps to the CLI's best-effort aggressive bootstrap behavior.
+- Source paths can be a direct item, a multi-item folder, or a broad provider root. Broad roots expand common category folders such as `Movies`, `Shows`, `Series`, `Anime`, `4K`, and `Downloads` one level before routing.
+- It never removes provider/RD/Usenet content.
+- It writes an audit report for every run, including source shape, decisions, confidence, target paths, warnings, and handoff guidance.
+- Remote lookup stops at `--max-lookups` and reports how many unresolved candidates remain.
+- Successful remote matches are cached both as regular metadata and as direct import-resolution entries so later runs can reuse title/year matches without another remote lookup.
+- Probing is optional because media-server stacks can already create heavy `ffprobe` load. Keep `--metadata-mode fast` unless routing really needs stream metadata. Successful probes are cached when the Symlinkarr DB is available, keyed by source path, size, mtime, and probe tool.
+- If Plex/Jellyfin/Emby already have folder watchers and scheduled scans enabled, review import output first and let normal scan/daemon work continue afterwards.
+
+### Multi-Version Symlinks
+
+`symlink.multi_version: false` is the default. When enabled, Symlinkarr can keep multiple movie versions for the same movie, using labels such as quality, edition, HDR/DV, and codec. If one version goes dead, repair/cleanup only handles that version.
+
+Keep it disabled unless you want movie multi-version behavior. TV/anime multi-version and future `promote_best_alive` behavior remain deferred.
 
 ### `cleanup`
 
@@ -438,6 +510,7 @@ Notes:
 
 - without `--plex-db`, the report still compares actual filesystem symlink paths against active Symlinkarr DB links
 - with `--plex-db`, the report adds a path-set compare against Plex-indexed files under the selected library roots
+- the report also includes read-only provider repair samples from recent source/readiness/dead-link events, scoped to the selected library roots
 - Plex `deleted_at` is treated as advisory only; the only strong cleanup signal is `Plex deleted + known missing source`, because Plex can mark paths deleted during transient RD-mount outages
 - `--full-anime-duplicates` disables the default sample cap for anime duplicate sections so you can export the full mixed-root and Hama-split cleanup backlog
 - when `--plex-db` is present, the anime section includes a cleanup queue that ranks legacy-root/Hama-split titles by filesystem and DB impact, so you can work the backlog in a sensible order

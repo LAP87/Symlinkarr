@@ -2,9 +2,37 @@
 
 ## Release Target
 
-- package version for this push: `1.0.0`
-- posture: `stable v1.0 release with downloadable binary artifacts and GHCR images`
+- package version for this push: `1.1.0-rc.1`
+- posture: `v1.1 release candidate with provider import, multi-version links, deferred media-server refresh, and updated web controls`
 - intended use: local-first host or Docker installs, with Windows 11 users running through WSL2 or a Linux container
+
+## 2026-04-29 - v1.1.0-rc.1 Provider Import and Multi-Version RC
+
+### Code Changes
+
+- added provider source import for bootstrap/recovery runs, with preview, safe/force modes, direct-item and top-level folder handling, JSON reports, and matching web controls.
+  - files: `src/commands/importer.rs`, `src/import_report.rs`, `src/web/handlers/admin.rs`, `src/web/templates.rs`, `src/web/ui/import.html`
+- added provider repair reporting, multi-version symlink support, cache-backed matching updates, and clearer source/library scan behavior for imported libraries.
+  - files: `src/provider_repair.rs`, `src/linker.rs`, `src/matcher.rs`, `src/source_scanner.rs`, `src/library_scanner.rs`
+- added deferred media-server refresh controls so Plex, Emby, and Jellyfin notifications can be held back until the operator chooses to drain them.
+  - files: `src/commands/refresh.rs`, `src/media_servers/mod.rs`, `src/config.rs`, `src/web/handlers.rs`
+- updated Docker defaults, README, CLI help, and wiki pages for provider import, CineSync comparison notes, media-server refresh, and the v1.1 operator flow.
+  - files: `config.example.yaml`, `config.docker.yaml`, `README.md`, `docs/CLI_MANUAL.md`, `docs/wiki/*.md`
+
+### Validation
+
+- `cargo fmt --all -- --check`
+  - result: passed locally
+- `cargo test --all-targets --locked`
+  - result: `796 passed; 0 failed; 1 ignored`
+- `cargo clippy --all-targets --all-features --locked -- -D warnings`
+  - result: passed locally
+- `cargo build --release --locked`
+  - result: passed locally, `symlinkarr --version` returned `symlinkarr 1.1.0-rc.1`
+- local packaging smoke using the same archive shape as `.github/workflows/release.yml`
+  - result: produced `dist/symlinkarr-v1.1.0-rc.1-linux-amd64.tar.gz` with sha256 `a1c6a559d471c73d7e8af0d6c831265fe384eef294c3fbe1af0918b916c578be`
+- local Docker image `symlinkarr:1.1.0-rc.1`
+  - result: built locally as `sha256:742fcfaf17c2db46def119e8ef5408f691e83b3f6a923c54abcd7da305714e01`, `symlinkarr --version` returned `symlinkarr 1.1.0-rc.1`
 
 ## 2026-04-25 - v1.0 Final UI and Release Hygiene
 

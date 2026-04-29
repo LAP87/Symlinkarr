@@ -138,6 +138,7 @@ pub struct Matcher {
     mode: MatchingMode,
     metadata_mode: MetadataMode,
     metadata_concurrency: usize,
+    multi_version: bool,
 }
 
 impl Matcher {
@@ -154,7 +155,13 @@ impl Matcher {
             mode,
             metadata_mode,
             metadata_concurrency,
+            multi_version: false,
         }
+    }
+
+    pub fn with_multi_version(mut self, enabled: bool) -> Self {
+        self.multi_version = enabled;
+        self
     }
 
     pub async fn find_matches_with_telemetry(
@@ -425,45 +432,52 @@ impl Matcher {
         };
         let candidate_scan = candidate_started.elapsed();
 
-        // Step 3: Enforce one link per destination slot (media_id+episode or media_id movie).
+        // Step 3: Enforce one link per destination slot (media_id+episode or media_id movie),
+        // unless multi-version mode is explicitly enabled.
         // Multi-episode files (episode_end is set) are expanded into one candidate per
         // episode in the range so that destination reduction correctly resolves conflicts
         // between multi-ep and single-ep source files for the same episode slot.
         let destination_started = Instant::now();
-        let mut by_destination: HashMap<DestinationKey, MatchCandidate> = HashMap::new();
+        let final_candidates = if self.multi_version {
+            expand_destination_slots(best_per_source)
+        } else {
+            let mut by_destination: HashMap<DestinationKey, MatchCandidate> = HashMap::new();
 
-        for candidate in best_per_source {
-            let item = &library_items[candidate.library_idx];
-            let episode_slots = expand_episode_slots(&candidate.source_item);
+            for candidate in best_per_source {
+                let item = &library_items[candidate.library_idx];
+                let episode_slots = expand_episode_slots(&candidate.source_item);
 
-            if episode_slots.is_empty() {
-                // Movie or source without episode info — use as-is.
-                let Some(key) = destination_key(item, &candidate.source_item) else {
-                    continue;
-                };
-                insert_or_replace(&mut by_destination, key, candidate);
-            } else {
-                // TV episode (possibly multi-episode) — insert one candidate per slot.
-                for ep in episode_slots {
-                    let mut slot_source = candidate.source_item.clone();
-                    slot_source.episode = Some(ep);
-
-                    let Some(key) = destination_key(item, &slot_source) else {
+                if episode_slots.is_empty() {
+                    // Movie or source without episode info — use as-is.
+                    let Some(key) = destination_key(item, &candidate.source_item) else {
                         continue;
                     };
+                    insert_or_replace(&mut by_destination, key, candidate);
+                } else {
+                    // TV episode (possibly multi-episode) — insert one candidate per slot.
+                    for ep in episode_slots {
+                        let mut slot_source = candidate.source_item.clone();
+                        slot_source.episode = Some(ep);
 
-                    let slot_candidate = MatchCandidate {
-                        source_item: slot_source,
-                        ..candidate.clone()
-                    };
+                        let Some(key) = destination_key(item, &slot_source) else {
+                            continue;
+                        };
 
-                    insert_or_replace(&mut by_destination, key, slot_candidate);
+                        let slot_candidate = MatchCandidate {
+                            source_item: slot_source,
+                            ..candidate.clone()
+                        };
+
+                        insert_or_replace(&mut by_destination, key, slot_candidate);
+                    }
                 }
             }
-        }
+
+            by_destination.into_values().collect()
+        };
 
         // Step 4: Build final match results
-        let mut final_candidates: Vec<MatchCandidate> = by_destination.into_values().collect();
+        let mut final_candidates: Vec<MatchCandidate> = final_candidates;
         final_candidates.sort_by(|a, b| {
             a.library_idx
                 .cmp(&b.library_idx)
@@ -810,6 +824,29 @@ fn match_source_slice(
         skip_reasons,
         best_per_source,
     }
+}
+
+fn expand_destination_slots(candidates: Vec<MatchCandidate>) -> Vec<MatchCandidate> {
+    let mut expanded = Vec::new();
+
+    for candidate in candidates {
+        let episode_slots = expand_episode_slots(&candidate.source_item);
+        if episode_slots.is_empty() {
+            expanded.push(candidate);
+            continue;
+        }
+
+        for ep in episode_slots {
+            let mut slot_source = candidate.source_item.clone();
+            slot_source.episode = Some(ep);
+            expanded.push(MatchCandidate {
+                source_item: slot_source,
+                ..candidate.clone()
+            });
+        }
+    }
+
+    expanded
 }
 
 fn resolve_source_for_library_item(

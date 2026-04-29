@@ -158,6 +158,17 @@ pub struct LinkEventHistoryRecord {
     pub note: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderRepairCandidateRecord {
+    pub last_seen: String,
+    pub latest_action: String,
+    pub source_path: Option<PathBuf>,
+    pub media_id: Option<String>,
+    pub reason: String,
+    pub occurrences: i64,
+    pub sample_targets: Vec<PathBuf>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AcquisitionRelinkKind {
     MediaId,

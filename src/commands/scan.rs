@@ -181,7 +181,8 @@ pub(crate) async fn run_scan_with_origin(
         cfg.matching.mode,
         cfg.matching.metadata_mode,
         cfg.matching.metadata_concurrency,
-    );
+    )
+    .with_multi_version(cfg.symlink.multi_version);
 
     let matching_started = Instant::now();
     let MatchRunOutput {
@@ -204,6 +205,7 @@ pub(crate) async fn run_scan_with_origin(
         &cfg.symlink.naming_template,
         cfg.features.reconcile_links,
     )
+    .with_multi_version(cfg.symlink.multi_version)
     .with_source_readiness_from_config(cfg);
 
     let title_enrichment_started = Instant::now();

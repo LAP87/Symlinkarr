@@ -240,6 +240,36 @@ fn validate_rejects_zero_daemon_interval() {
 }
 
 #[test]
+fn symlink_multi_version_defaults_off() {
+    assert!(!SymlinkConfig::default().multi_version);
+}
+
+#[test]
+fn config_load_accepts_symlink_multi_version_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = dir.path().join("config.yaml");
+    std::fs::write(
+        &config_path,
+        r#"
+libraries:
+  - name: Movies
+    path: "/tmp/library"
+    media_type: movie
+sources:
+  - name: RD
+    path: "/tmp/source"
+    media_type: auto
+symlink:
+  multi_version: true
+"#,
+    )
+    .unwrap();
+
+    let cfg = Config::load(Some(config_path.display().to_string())).unwrap();
+    assert!(cfg.symlink.multi_version);
+}
+
+#[test]
 fn validate_rejects_unknown_source_media_type() {
     let mut cfg = test_config();
     cfg.sources[0].media_type = "tvv".to_string();

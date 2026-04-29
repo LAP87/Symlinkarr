@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{hash_map::DefaultHasher, BTreeMap, HashMap};
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -234,6 +235,7 @@ pub struct Linker {
     strict_mode: bool,
     reconcile_links: bool,
     naming_template: String,
+    multi_version: bool,
     source_readiness_gate: Option<SourceReadinessGate>,
 }
 
@@ -254,8 +256,14 @@ impl Linker {
             strict_mode,
             reconcile_links,
             naming_template: naming_template.to_string(),
+            multi_version: false,
             source_readiness_gate: None,
         }
+    }
+
+    pub fn with_multi_version(mut self, enabled: bool) -> Self {
+        self.multi_version = enabled;
+        self
     }
 
     pub fn with_source_readiness_from_config(mut self, cfg: &Config) -> Self {
@@ -711,6 +719,15 @@ impl Linker {
                     &episode_title,
                     &m.source_item.extension,
                 );
+                let filename = if self.multi_version {
+                    append_version_label(
+                        &filename,
+                        &m.source_item.extension,
+                        &version_label(&m.source_item),
+                    )
+                } else {
+                    filename
+                };
 
                 Ok(season_dir.join(filename))
             }
@@ -723,6 +740,13 @@ impl Linker {
                     .unwrap_or_default();
                 let san_title = sanitize_filename(&m.library_item.title);
                 let mut filename = format!("{}{}.{}", san_title, year_str, m.source_item.extension);
+                if self.multi_version {
+                    filename = append_version_label(
+                        &filename,
+                        &m.source_item.extension,
+                        &version_label(&m.source_item),
+                    );
+                }
                 if filename.len() > 250 {
                     let excess = filename.len() - 250;
                     let truncated_title =
@@ -954,6 +978,53 @@ impl Linker {
             );
         }
     }
+}
+
+fn version_label(source: &crate::models::SourceItem) -> String {
+    let mut hasher = DefaultHasher::new();
+    source.path.hash(&mut hasher);
+    let path_hash = format!("{:08x}", hasher.finish() as u32);
+    let mut parts = Vec::new();
+    if let Some(quality) = source.quality.as_deref().map(sanitize_filename) {
+        if !quality.is_empty() {
+            parts.push(quality);
+        }
+    }
+    if let Some(edition) = source.edition.as_deref().map(sanitize_filename) {
+        if !edition.is_empty() {
+            parts.push(edition);
+        }
+    }
+    for hdr in &source.hdr_formats {
+        let hdr = sanitize_filename(hdr);
+        if !hdr.is_empty() && !parts.contains(&hdr) {
+            parts.push(hdr);
+        }
+    }
+    if let Some(codec) = source.video_codec.as_deref().map(sanitize_filename) {
+        if !codec.is_empty() {
+            parts.push(codec);
+        }
+    }
+    if parts.is_empty() {
+        parts.push("version".to_string());
+    }
+    parts.push(path_hash);
+
+    parts.join("-")
+}
+
+fn append_version_label(filename: &str, extension: &str, label: &str) -> String {
+    const LIMIT: usize = 250;
+
+    let suffix = format!(" - {}.{}", sanitize_filename(label), extension);
+    let stem = filename
+        .strip_suffix(&format!(".{}", extension))
+        .unwrap_or(filename);
+    let max_stem_len = LIMIT.saturating_sub(suffix.len());
+    let truncated_stem = truncate_str_bytes(stem, max_stem_len).trim_end();
+
+    format!("{}{}", truncated_stem, suffix)
 }
 
 async fn preload_existing_links(

@@ -61,8 +61,26 @@ struct ReportOutput {
     by_media_type: BTreeMap<String, MediaTypeInfo>,
     top_libraries: Vec<LibraryInfo>,
     path_compare: PathCompareOutput,
+    provider_repair: ProviderRepairOutput,
     #[serde(skip_serializing_if = "Option::is_none")]
     anime_duplicates: Option<AnimeDuplicateAuditOutput>,
+}
+
+#[derive(Serialize, Debug, Default, PartialEq, Eq)]
+struct ProviderRepairOutput {
+    candidates: i64,
+    sample: Vec<ProviderRepairSample>,
+}
+
+#[derive(Serialize, Debug, PartialEq, Eq)]
+struct ProviderRepairSample {
+    last_seen: String,
+    latest_action: String,
+    reason: String,
+    occurrences: i64,
+    source_path: Option<String>,
+    media_id: Option<String>,
+    sample_targets: Vec<String>,
 }
 
 struct LibraryScannerItem {
@@ -144,6 +162,7 @@ async fn build_report(
             by_media_type: BTreeMap::new(),
             top_libraries: Vec::new(),
             path_compare: PathCompareOutput::default(),
+            provider_repair: ProviderRepairOutput::default(),
             anime_duplicates: None,
         });
     }
@@ -262,6 +281,7 @@ async fn build_report(
         plex_db_path,
     )
     .await?;
+    let provider_repair = build_provider_repair_output(db, Some(&selected_roots)).await?;
 
     Ok(ReportOutput {
         generated_at,
@@ -269,7 +289,34 @@ async fn build_report(
         by_media_type,
         top_libraries,
         path_compare,
+        provider_repair,
         anime_duplicates,
+    })
+}
+
+async fn build_provider_repair_output(
+    db: &Database,
+    target_roots: Option<&[std::path::PathBuf]>,
+) -> Result<ProviderRepairOutput> {
+    let candidates = db.get_provider_repair_candidates(target_roots, 10).await?;
+    Ok(ProviderRepairOutput {
+        candidates: candidates.len() as i64,
+        sample: candidates
+            .into_iter()
+            .map(|candidate| ProviderRepairSample {
+                last_seen: candidate.last_seen,
+                latest_action: candidate.latest_action,
+                reason: candidate.reason,
+                occurrences: candidate.occurrences,
+                source_path: candidate.source_path.map(|path| path.display().to_string()),
+                media_id: candidate.media_id,
+                sample_targets: candidate
+                    .sample_targets
+                    .into_iter()
+                    .map(|path| path.display().to_string())
+                    .collect(),
+            })
+            .collect(),
     })
 }
 
@@ -468,6 +515,29 @@ fn emit_text_report(report: &ReportOutput, anime_remediation_tsv_path: Option<&P
     }
     if let Some(all_three) = report.path_compare.all_three {
         panel_kv_row("  In all three:", all_three);
+    }
+
+    panel_border('╠', '═', '╣');
+    panel_title("Provider Repair");
+    panel_border('╠', '═', '╣');
+    panel_kv_row("  Sampled candidates:", report.provider_repair.candidates);
+    if !report.provider_repair.sample.is_empty() {
+        println!("  Sample provider/source issues:");
+        for sample in &report.provider_repair.sample {
+            println!(
+                "    - {} [{}x, {}]",
+                sample.reason, sample.occurrences, sample.last_seen
+            );
+            if let Some(media_id) = &sample.media_id {
+                println!("      media: {}", media_id);
+            }
+            if let Some(source_path) = &sample.source_path {
+                println!("      source: {}", source_path);
+            }
+            if let Some(target_path) = sample.sample_targets.first() {
+                println!("      target: {}", target_path);
+            }
+        }
     }
 
     if let Some(anime_duplicates) = &report.anime_duplicates {

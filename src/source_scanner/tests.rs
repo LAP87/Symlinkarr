@@ -317,6 +317,18 @@ fn test_single_episode_has_no_episode_end() {
     assert_eq!(item.episode_end, None);
 }
 
+#[test]
+fn test_release_metadata_tags_are_parsed_for_version_labels() {
+    let scanner = SourceScanner::new();
+    let path = PathBuf::from("/mnt/rd/Movie.Title.2024.2160p.UHD.BluRay.REMUX.HDR10.DV.HEVC.mkv");
+    let item = scanner.parse_filename(&path).unwrap();
+
+    assert_eq!(item.quality.as_deref(), Some("2160p"));
+    assert_eq!(item.video_codec.as_deref(), Some("hevc"));
+    assert_eq!(item.hdr_formats, vec!["hdr10", "dv"]);
+    assert_eq!(item.edition.as_deref(), Some("remux"));
+}
+
 // ── Anime edge cases ──
 
 #[test]

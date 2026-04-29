@@ -131,6 +131,90 @@ fn test_custom_naming_template() {
 }
 
 #[test]
+fn test_multi_version_movie_target_adds_unique_version_label() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let lib_path = dir.path().join("Sample Movie {tmdb-550}");
+    let first_source = dir.path().join("rd").join("sample_movie_1080p.mkv");
+    let second_source = dir.path().join("rd").join("sample_movie_2160p.mkv");
+    let linker = Linker::new(false, true, "").with_multi_version(true);
+
+    let mut first = sample_movie_match(&lib_path, &first_source);
+    first.source_item.quality = Some("1080p".to_string());
+    let mut second = sample_movie_match(&lib_path, &second_source);
+    second.source_item.quality = Some("2160p".to_string());
+
+    let first_target = linker.build_target_path(&first).unwrap();
+    let second_target = linker.build_target_path(&second).unwrap();
+
+    assert_ne!(first_target, second_target);
+    assert!(first_target
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .contains("1080p-"));
+    assert!(second_target
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .contains("2160p-"));
+}
+
+#[test]
+fn test_multi_version_label_includes_release_metadata() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let lib_path = dir.path().join("Sample Movie {tmdb-550}");
+    let source_path = dir.path().join("rd").join("sample_movie_2160p.mkv");
+    let linker = Linker::new(false, true, "").with_multi_version(true);
+
+    let mut m = sample_movie_match(&lib_path, &source_path);
+    m.source_item.quality = Some("2160p".to_string());
+    m.source_item.edition = Some("remux".to_string());
+    m.source_item.hdr_formats = vec!["dv".to_string(), "hdr10".to_string()];
+    m.source_item.video_codec = Some("hevc".to_string());
+
+    let target = linker.build_target_path(&m).unwrap();
+    let filename = target.file_name().unwrap().to_string_lossy();
+
+    assert!(filename.contains("2160p-remux-dv-hdr10-hevc-"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_multi_version_process_creates_and_then_skips_existing_versions() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let lib_path = dir.path().join("Sample Movie {tmdb-550}");
+    let rd_dir = dir.path().join("rd");
+    fs::create_dir_all(&lib_path).unwrap();
+    fs::create_dir_all(&rd_dir).unwrap();
+    let source_1080 = rd_dir.join("sample_movie_1080p.mkv");
+    let source_2160 = rd_dir.join("sample_movie_2160p.mkv");
+    fs::write(&source_1080, "1080").unwrap();
+    fs::write(&source_2160, "2160").unwrap();
+
+    let mut match_1080 = sample_movie_match(&lib_path, &source_1080);
+    match_1080.source_item.quality = Some("1080p".to_string());
+    let mut match_2160 = sample_movie_match(&lib_path, &source_2160);
+    match_2160.source_item.quality = Some("2160p".to_string());
+    let matches = vec![match_1080, match_2160];
+    let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+        .await
+        .unwrap();
+    let linker = Linker::new(false, true, "").with_multi_version(true);
+
+    let first = linker.process_matches(&matches, &db, None).await.unwrap();
+    assert_eq!(first.created, 2);
+    assert_eq!(first.updated, 0);
+    assert_eq!(first.skipped, 0);
+
+    let second = linker.process_matches(&matches, &db, None).await.unwrap();
+    assert_eq!(second.created, 0);
+    assert_eq!(second.updated, 0);
+    assert_eq!(second.skipped, 2);
+    assert_eq!(second.skip_reasons.get("already_correct").copied(), Some(2));
+    assert_eq!(db.get_active_links().await.unwrap().len(), 2);
+}
+
+#[test]
 fn test_cached_source_exists_short_circuits_missing_parent() {
     let root = tempfile::TempDir::new().unwrap();
     let missing = root.path().join("missing-parent").join("missing-file.mkv");
@@ -194,6 +278,9 @@ fn sample_movie_match(lib_path: &std::path::Path, source_path: &std::path::Path)
             episode: None,
             episode_end: None,
             quality: None,
+            video_codec: None,
+            hdr_formats: Vec::new(),
+            edition: None,
             extension: "mkv".to_string(),
             year: None,
         },
@@ -225,6 +312,9 @@ fn sample_tv_match(
             episode,
             episode_end: None,
             quality: None,
+            video_codec: None,
+            hdr_formats: Vec::new(),
+            edition: None,
             extension: "mkv".to_string(),
             year: None,
         },
@@ -596,6 +686,132 @@ async fn test_same_destination_new_source_is_classified_as_updated() {
     assert_eq!(outcome.outcome, LinkWriteOutcome::Updated);
     assert_eq!(outcome.refresh_path, Some(lib_path.clone()));
     assert_eq!(fs::read_link(&target).unwrap(), PathBuf::from(&new_source));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_multi_version_same_target_new_source_is_classified_as_updated() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let lib_path = dir.path().join("Sample Movie {tmdb-550}");
+    fs::create_dir_all(&lib_path).unwrap();
+
+    let rd_dir = dir.path().join("rd");
+    fs::create_dir_all(&rd_dir).unwrap();
+    let old_source = rd_dir.join("old.mkv");
+    let new_source = rd_dir.join("new.mkv");
+    fs::write(&old_source, "old").unwrap();
+    fs::write(&new_source, "new").unwrap();
+
+    let mut m = sample_movie_match(&lib_path, &new_source);
+    m.source_item.quality = Some("2160p".to_string());
+    let linker = Linker::new_with_options(false, true, "", true).with_multi_version(true);
+    let target = linker.build_target_path(&m).unwrap();
+    std::os::unix::fs::symlink(&old_source, &target).unwrap();
+
+    let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+        .await
+        .unwrap();
+    db.insert_link(&LinkRecord {
+        id: None,
+        source_path: old_source.clone(),
+        target_path: target.clone(),
+        media_id: "tmdb-550".to_string(),
+        media_type: MediaType::Movie,
+        status: LinkStatus::Active,
+        created_at: None,
+        updated_at: None,
+    })
+    .await
+    .unwrap();
+
+    let mut existing_links = linker
+        .preload_existing_links_for_matches(&db, std::slice::from_ref(&m))
+        .await
+        .unwrap();
+    let mut readiness_cache = HashMap::new();
+
+    let outcome = linker
+        .create_link(
+            &m,
+            &target,
+            &db,
+            &mut existing_links,
+            None,
+            &mut readiness_cache,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.outcome, LinkWriteOutcome::Updated);
+    assert_eq!(outcome.refresh_path, Some(lib_path.clone()));
+    assert_eq!(fs::read_link(&target).unwrap(), PathBuf::from(&new_source));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_dead_link_sweep_removes_only_dead_multi_version_target() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let lib_path = dir.path().join("Sample Movie {tmdb-550}");
+    let rd_dir = dir.path().join("rd");
+    fs::create_dir_all(&lib_path).unwrap();
+    fs::create_dir_all(&rd_dir).unwrap();
+
+    let live_source = rd_dir.join("sample_movie_1080p.mkv");
+    let missing_source = rd_dir.join("sample_movie_2160p.mkv");
+    fs::write(&live_source, "video").unwrap();
+    let live_target = lib_path.join("Sample Movie - 1080p-a.mkv");
+    let dead_target = lib_path.join("Sample Movie - 2160p-b.mkv");
+    std::os::unix::fs::symlink(&live_source, &live_target).unwrap();
+    std::os::unix::fs::symlink(&missing_source, &dead_target).unwrap();
+
+    let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+        .await
+        .unwrap();
+    for (source_path, target_path) in [
+        (live_source.clone(), live_target.clone()),
+        (missing_source.clone(), dead_target.clone()),
+    ] {
+        db.insert_link(&LinkRecord {
+            id: None,
+            source_path,
+            target_path,
+            media_id: "tmdb-550".to_string(),
+            media_type: MediaType::Movie,
+            status: LinkStatus::Active,
+            created_at: None,
+            updated_at: None,
+        })
+        .await
+        .unwrap();
+    }
+
+    let linker = Linker::new(false, true, "");
+    let summary = linker
+        .check_dead_links_scoped(&db, Some(std::slice::from_ref(&lib_path)), None)
+        .await
+        .unwrap();
+
+    assert_eq!(summary.dead_marked, 1);
+    assert_eq!(summary.removed, 1);
+    assert!(live_target.is_symlink());
+    assert!(!dead_target.exists());
+    assert_eq!(fs::read_link(&live_target).unwrap(), live_source);
+    assert_eq!(
+        db.get_link_by_target_path(&live_target)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        LinkStatus::Active
+    );
+    assert_eq!(
+        db.get_link_by_target_path(&dead_target)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        LinkStatus::Dead
+    );
 }
 
 #[cfg(unix)]
