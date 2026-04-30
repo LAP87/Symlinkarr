@@ -468,6 +468,7 @@ fn apply_cached_import_resolution(
     resolution: CachedImportResolution,
 ) {
     candidate.explicit_media_id = Some(resolution.media_id);
+    candidate.resolved_content_type = resolution.content_type;
     candidate.resolved_title = Some(resolution.title);
     candidate.resolved_year = resolution.year;
     candidate.resolution_source = ImportResolutionSource::CachedMetadata;
@@ -487,7 +488,8 @@ async fn resolve_candidates_from_remote(
         return candidates;
     }
     let has_usable_lookup = match options.content_type {
-        ImportContentType::Movie | ImportContentType::Auto => tmdb.is_some(),
+        ImportContentType::Movie => tmdb.is_some(),
+        ImportContentType::Auto => tmdb.is_some() || tvdb.is_some(),
         ImportContentType::Tv | ImportContentType::Anime => tmdb.is_some() || tvdb.is_some(),
     };
     if !has_usable_lookup {
@@ -527,6 +529,7 @@ async fn resolve_candidates_from_remote(
                     }
                 }
                 candidate.explicit_media_id = Some(resolution.media_id.clone());
+                candidate.resolved_content_type = Some(resolution.content_type);
                 candidate.resolved_title = Some(resolution.metadata.title.clone());
                 candidate.resolved_year = resolution.metadata.year;
                 candidate.resolution_source = resolution.resolution_source;
@@ -568,6 +571,7 @@ async fn resolve_candidates_from_remote(
 #[derive(Debug, Clone)]
 struct RemoteImportResolution {
     media_id: String,
+    content_type: ImportContentReport,
     resolution_source: ImportResolutionSource,
     cache_key: String,
     metadata: ContentMetadata,
@@ -592,74 +596,134 @@ async fn remote_lookup_candidate(
     }
 
     match content_type {
-        ImportContentType::Movie | ImportContentType::Auto => {
+        ImportContentType::Movie => {
             let Some(tmdb) = tmdb else {
                 return Ok(RemoteLookupOutcome::NoMatch);
             };
-            let matches = tmdb.search_movie(query, candidate.year_hint).await?;
-            match select_tmdb_match(candidate, &matches) {
-                LookupMatchSelection::Unique(id) => Ok(matches
-                    .iter()
-                    .find(|m| m.id == id)
-                    .map(|selected| {
-                        RemoteLookupOutcome::Resolved(remote_resolution_from_tmdb_match(
-                            "movie",
-                            selected,
-                            ImportResolutionSource::TmdbLookup,
-                        ))
-                    })
-                    .unwrap_or(RemoteLookupOutcome::NoMatch)),
-                LookupMatchSelection::Ambiguous => Ok(RemoteLookupOutcome::Ambiguous),
-                LookupMatchSelection::None => Ok(RemoteLookupOutcome::NoMatch),
-            }
+            lookup_tmdb_movie(tmdb, candidate).await
         }
         ImportContentType::Tv | ImportContentType::Anime => {
-            if let Some(tvdb) = tvdb {
-                let matches = tvdb.search_series(query, candidate.year_hint).await?;
-                match select_tvdb_match(candidate, &matches) {
-                    LookupMatchSelection::Unique(id) => {
-                        if let Some(selected) = matches.iter().find(|m| m.id == id) {
-                            return Ok(RemoteLookupOutcome::Resolved(
-                                remote_resolution_from_tvdb_match(selected),
-                            ));
-                        }
-                    }
-                    LookupMatchSelection::Ambiguous => return Ok(RemoteLookupOutcome::Ambiguous),
-                    LookupMatchSelection::None => {}
-                }
-            }
-            let Some(tmdb) = tmdb else {
-                return Ok(RemoteLookupOutcome::NoMatch);
-            };
-            let matches = tmdb.search_tv(query, candidate.year_hint).await?;
-            match select_tmdb_match(candidate, &matches) {
-                LookupMatchSelection::Unique(id) => Ok(matches
-                    .iter()
-                    .find(|m| m.id == id)
-                    .map(|selected| {
-                        RemoteLookupOutcome::Resolved(remote_resolution_from_tmdb_match(
-                            "tv",
-                            selected,
-                            ImportResolutionSource::TmdbLookup,
-                        ))
-                    })
-                    .unwrap_or(RemoteLookupOutcome::NoMatch)),
-                LookupMatchSelection::Ambiguous => Ok(RemoteLookupOutcome::Ambiguous),
-                LookupMatchSelection::None => Ok(RemoteLookupOutcome::NoMatch),
-            }
+            lookup_tv_or_anime(tmdb, tvdb, candidate).await
         }
+        ImportContentType::Auto => match infer_auto_content_type(candidate) {
+            ImportContentReport::Tv | ImportContentReport::Anime => {
+                lookup_tv_or_anime(tmdb, tvdb, candidate).await
+            }
+            ImportContentReport::Movie | ImportContentReport::Auto => {
+                let Some(tmdb) = tmdb else {
+                    return Ok(RemoteLookupOutcome::NoMatch);
+                };
+                lookup_tmdb_movie(tmdb, candidate).await
+            }
+        },
     }
 }
 
+async fn lookup_tmdb_movie(
+    tmdb: &TmdbClient,
+    candidate: &ImportCandidateReport,
+) -> Result<RemoteLookupOutcome> {
+    let matches = tmdb
+        .search_movie(candidate.title_hint.trim(), candidate.year_hint)
+        .await?;
+    match select_tmdb_match(candidate, &matches) {
+        LookupMatchSelection::Unique(id) => Ok(matches
+            .iter()
+            .find(|m| m.id == id)
+            .map(|selected| {
+                RemoteLookupOutcome::Resolved(remote_resolution_from_tmdb_match(
+                    ImportContentReport::Movie,
+                    selected,
+                    ImportResolutionSource::TmdbLookup,
+                ))
+            })
+            .unwrap_or(RemoteLookupOutcome::NoMatch)),
+        LookupMatchSelection::Ambiguous => Ok(RemoteLookupOutcome::Ambiguous),
+        LookupMatchSelection::None => Ok(RemoteLookupOutcome::NoMatch),
+    }
+}
+
+async fn lookup_tv_or_anime(
+    tmdb: Option<&TmdbClient>,
+    tvdb: Option<&mut TvdbClient>,
+    candidate: &ImportCandidateReport,
+) -> Result<RemoteLookupOutcome> {
+    if let Some(tvdb) = tvdb {
+        let matches = tvdb
+            .search_series(candidate.title_hint.trim(), candidate.year_hint)
+            .await?;
+        match select_tvdb_match(candidate, &matches) {
+            LookupMatchSelection::Unique(id) => {
+                if let Some(selected) = matches.iter().find(|m| m.id == id) {
+                    return Ok(RemoteLookupOutcome::Resolved(
+                        remote_resolution_from_tvdb_match(selected),
+                    ));
+                }
+            }
+            LookupMatchSelection::Ambiguous => return Ok(RemoteLookupOutcome::Ambiguous),
+            LookupMatchSelection::None => {}
+        }
+    }
+
+    let Some(tmdb) = tmdb else {
+        return Ok(RemoteLookupOutcome::NoMatch);
+    };
+    let matches = tmdb
+        .search_tv(candidate.title_hint.trim(), candidate.year_hint)
+        .await?;
+    match select_tmdb_match(candidate, &matches) {
+        LookupMatchSelection::Unique(id) => Ok(matches
+            .iter()
+            .find(|m| m.id == id)
+            .map(|selected| {
+                RemoteLookupOutcome::Resolved(remote_resolution_from_tmdb_match(
+                    ImportContentReport::Tv,
+                    selected,
+                    ImportResolutionSource::TmdbLookup,
+                ))
+            })
+            .unwrap_or(RemoteLookupOutcome::NoMatch)),
+        LookupMatchSelection::Ambiguous => Ok(RemoteLookupOutcome::Ambiguous),
+        LookupMatchSelection::None => Ok(RemoteLookupOutcome::NoMatch),
+    }
+}
+
+fn infer_auto_content_type(candidate: &ImportCandidateReport) -> ImportContentReport {
+    let path_hint = candidate.source_path.to_string_lossy().to_ascii_lowercase();
+    if path_hint
+        .split(['/', '\\'])
+        .any(|part| matches!(part, "anime" | "anime movies" | "anime series"))
+    {
+        return ImportContentReport::Anime;
+    }
+    if path_hint.split(['/', '\\']).any(|part| {
+        matches!(
+            part,
+            "tv" | "show" | "shows" | "series" | "season" | "seasons"
+        ) || is_season_dir_name(part)
+    }) || episodic_group_key(&path_hint).is_some()
+    {
+        return ImportContentReport::Tv;
+    }
+
+    ImportContentReport::Movie
+}
+
 fn remote_resolution_from_tmdb_match(
-    media_kind: &str,
+    content_type: ImportContentReport,
     selected: &TmdbSearchMatch,
     resolution_source: ImportResolutionSource,
 ) -> RemoteImportResolution {
+    let cache_kind = match content_type {
+        ImportContentReport::Movie => "movie",
+        ImportContentReport::Tv | ImportContentReport::Anime => "tv",
+        ImportContentReport::Auto => "movie",
+    };
     RemoteImportResolution {
         media_id: format!("tmdb-{}", selected.id),
+        content_type,
         resolution_source,
-        cache_key: format!("tmdb:{media_kind}:{}", selected.id),
+        cache_key: format!("tmdb:{cache_kind}:{}", selected.id),
         metadata: ContentMetadata {
             title: selected.title.clone(),
             aliases: Vec::new(),
@@ -672,6 +736,7 @@ fn remote_resolution_from_tmdb_match(
 fn remote_resolution_from_tvdb_match(selected: &TvdbSearchMatch) -> RemoteImportResolution {
     RemoteImportResolution {
         media_id: format!("tvdb-{}", selected.id),
+        content_type: ImportContentReport::Tv,
         resolution_source: ImportResolutionSource::TvdbLookup,
         cache_key: format!("tvdb:series:{}", selected.id),
         metadata: ContentMetadata {
@@ -768,6 +833,7 @@ fn exact_tvdb_matches<'a>(
 #[derive(Debug, Clone)]
 struct CachedImportMetadata {
     media_id: String,
+    content_type: Option<ImportContentReport>,
     title: String,
     title_keys: Vec<String>,
     year: Option<u32>,
@@ -776,6 +842,8 @@ struct CachedImportMetadata {
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 struct CachedImportResolution {
     media_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    content_type: Option<ImportContentReport>,
     title: String,
     year: Option<u32>,
 }
@@ -804,6 +872,7 @@ async fn cache_import_resolution(
 ) -> Result<()> {
     let cached = CachedImportResolution {
         media_id: resolution.media_id.clone(),
+        content_type: Some(resolution.content_type),
         title: resolution.metadata.title.clone(),
         year: resolution.metadata.year,
     };
@@ -858,7 +927,8 @@ fn build_metadata_cache_index(
     entries
         .into_iter()
         .filter_map(|(cache_key, json)| {
-            let media_id = media_id_from_cache_key(&cache_key, content_type)?;
+            let (media_id, resolved_content_type) =
+                media_id_from_cache_key(&cache_key, content_type)?;
             let metadata = serde_json::from_str::<ContentMetadata>(&json).ok()?;
             let mut title_keys = Vec::new();
             title_keys.push(normalize_lookup_key(&metadata.title));
@@ -876,6 +946,7 @@ fn build_metadata_cache_index(
             }
             Some(CachedImportMetadata {
                 media_id,
+                content_type: Some(resolved_content_type),
                 title: metadata.title,
                 title_keys,
                 year: metadata.year,
@@ -884,7 +955,10 @@ fn build_metadata_cache_index(
         .collect()
 }
 
-fn media_id_from_cache_key(cache_key: &str, content_type: ImportContentType) -> Option<String> {
+fn media_id_from_cache_key(
+    cache_key: &str,
+    content_type: ImportContentType,
+) -> Option<(String, ImportContentReport)> {
     if matches!(
         content_type,
         ImportContentType::Movie | ImportContentType::Auto
@@ -893,7 +967,7 @@ fn media_id_from_cache_key(cache_key: &str, content_type: ImportContentType) -> 
         return cache_key
             .strip_prefix("tmdb:movie:")
             .filter(|id| id.chars().all(|c| c.is_ascii_digit()))
-            .map(|id| format!("tmdb-{id}"));
+            .map(|id| (format!("tmdb-{id}"), ImportContentReport::Movie));
     }
     if matches!(
         content_type,
@@ -903,7 +977,7 @@ fn media_id_from_cache_key(cache_key: &str, content_type: ImportContentType) -> 
         return cache_key
             .strip_prefix("tvdb:series:")
             .filter(|id| id.chars().all(|c| c.is_ascii_digit()))
-            .map(|id| format!("tvdb-{id}"));
+            .map(|id| (format!("tvdb-{id}"), ImportContentReport::Tv));
     }
     if matches!(
         content_type,
@@ -913,7 +987,7 @@ fn media_id_from_cache_key(cache_key: &str, content_type: ImportContentType) -> 
         return cache_key
             .strip_prefix("tmdb:tv:")
             .filter(|id| id.chars().all(|c| c.is_ascii_digit()))
-            .map(|id| format!("tmdb-{id}"));
+            .map(|id| (format!("tmdb-{id}"), ImportContentReport::Tv));
     }
     None
 }
@@ -943,6 +1017,7 @@ fn lookup_cached_resolution(
     if matches.len() == 1 {
         Some(CachedImportResolution {
             media_id: matches[0].media_id.clone(),
+            content_type: matches[0].content_type,
             title: matches[0].title.clone(),
             year: matches[0].year,
         })
@@ -1420,6 +1495,20 @@ fn destination_for_auto_candidate(
     options: &ImportOptions,
     rules_plan: Option<&ImportRulesPlan>,
 ) -> Option<PathBuf> {
+    match resolved_or_inferred_auto_content_type(candidate) {
+        ImportContentReport::Anime => {
+            return rules_plan
+                .and_then(|rules| rules.rules.destinations.anime.destination_for(candidate))
+                .or_else(|| options.anime_destination.clone());
+        }
+        ImportContentReport::Tv => {
+            return rules_plan
+                .and_then(|rules| rules.rules.destinations.tv.destination_for(candidate))
+                .or_else(|| options.tv_destination.clone());
+        }
+        ImportContentReport::Movie | ImportContentReport::Auto => {}
+    }
+
     let id = candidate.explicit_media_id.as_deref().unwrap_or_default();
     if id.starts_with("tvdb-") {
         return rules_plan
@@ -1746,8 +1835,20 @@ fn media_type_for_import_candidate(
         ImportContentType::Movie => Some(MediaType::Movie),
         ImportContentType::Tv | ImportContentType::Anime => Some(MediaType::Tv),
         ImportContentType::Auto => {
+            if matches!(
+                candidate.resolved_content_type,
+                Some(ImportContentReport::Tv | ImportContentReport::Anime)
+            ) {
+                return Some(MediaType::Tv);
+            }
+            if candidate.resolved_content_type == Some(ImportContentReport::Movie) {
+                return Some(MediaType::Movie);
+            }
             let id = candidate.explicit_media_id.as_deref()?;
-            if id.starts_with("tvdb-") {
+            if id.starts_with("tvdb-")
+                || (id.starts_with("tmdb-")
+                    && infer_auto_content_type(candidate) == ImportContentReport::Tv)
+            {
                 Some(MediaType::Tv)
             } else if id.starts_with("tmdb-") || id.starts_with("imdb-") {
                 Some(MediaType::Movie)
@@ -2100,6 +2201,7 @@ fn candidate_for_path(path: &Path, kind: ImportCandidateKind) -> ImportCandidate
         title_hint,
         year_hint,
         explicit_media_id,
+        resolved_content_type: None,
         resolved_title: None,
         resolved_year: None,
         probed_resolution: None,
@@ -2266,9 +2368,29 @@ fn summary_content_kind(
 
     match candidate.explicit_media_id.as_deref() {
         Some(id) if id.starts_with("tvdb-") => SummaryContentKind::Tv,
+        Some(id)
+            if id.starts_with("tmdb-")
+                && candidate.resolved_content_type == Some(ImportContentReport::Anime) =>
+        {
+            SummaryContentKind::Anime
+        }
+        Some(id)
+            if id.starts_with("tmdb-")
+                && candidate.resolved_content_type == Some(ImportContentReport::Tv) =>
+        {
+            SummaryContentKind::Tv
+        }
         Some(id) if id.starts_with("tmdb-") => SummaryContentKind::Movie,
         _ => SummaryContentKind::Unknown,
     }
+}
+
+fn resolved_or_inferred_auto_content_type(
+    candidate: &ImportCandidateReport,
+) -> ImportContentReport {
+    candidate
+        .resolved_content_type
+        .unwrap_or_else(|| infer_auto_content_type(candidate))
 }
 
 fn path_is_under_optional_root(path: &Path, root: Option<&Path>) -> bool {
@@ -3339,6 +3461,7 @@ mod tests {
         let db = Database::new(db_path.to_str().unwrap()).await.unwrap();
         let resolution = RemoteImportResolution {
             media_id: "tvdb-424536".to_string(),
+            content_type: ImportContentReport::Tv,
             resolution_source: ImportResolutionSource::TvdbLookup,
             cache_key: "tvdb:series:424536".to_string(),
             metadata: ContentMetadata {
@@ -3364,6 +3487,7 @@ mod tests {
 
         let cached = lookup_cached_resolution(&candidate, &index).unwrap();
         assert_eq!(cached.media_id, "tvdb-424536");
+        assert_eq!(cached.content_type, Some(ImportContentReport::Tv));
         assert_eq!(cached.title, "Frieren");
         assert_eq!(cached.year, Some(2023));
         let direct_cached = lookup_import_resolution_cache(&db, &candidate, ImportContentType::Tv)
@@ -3384,6 +3508,7 @@ mod tests {
         let db = Database::new(db_path.to_str().unwrap()).await.unwrap();
         let resolution = RemoteImportResolution {
             media_id: "tvdb-424536".to_string(),
+            content_type: ImportContentReport::Tv,
             resolution_source: ImportResolutionSource::TvdbLookup,
             cache_key: "tvdb:series:424536".to_string(),
             metadata: ContentMetadata {
@@ -3602,6 +3727,39 @@ mod tests {
         assert_eq!(
             report.candidates[0].target_path.as_deref(),
             Some(tv_destination.join("Show [tvdbid-12345]").as_path())
+        );
+    }
+
+    #[test]
+    fn auto_content_routes_tmdb_tv_hint_to_tv_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir
+            .path()
+            .join("rd")
+            .join("Shows")
+            .join("Show {tmdb-12345}");
+        let tv_destination = dir.path().join("tv");
+        let movie_destination = dir.path().join("movies");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("Show.S01E01.mkv"), b"").unwrap();
+
+        let mut options = import_options(
+            dir.path().join("rd").join("Shows"),
+            dir.path().join("generic"),
+            ImportMode::Preview,
+        );
+        options.content_type = ImportContentType::Auto;
+        options.destination = None;
+        options.tv_destination = Some(tv_destination.clone());
+        options.movie_destination = Some(movie_destination);
+
+        let report = report_without_db(&options);
+
+        assert_eq!(report.summary.tv, 1);
+        assert_eq!(report.summary.movies, 0);
+        assert_eq!(
+            report.candidates[0].target_path.as_deref(),
+            Some(tv_destination.join("Show {tmdb-12345}").as_path())
         );
     }
 

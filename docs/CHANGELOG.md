@@ -2,9 +2,38 @@
 
 ## Release Target
 
-- package version for this push: `1.1.0-rc.1`
-- posture: `v1.1 release candidate with provider import, multi-version links, deferred media-server refresh, and updated web controls`
+- package version for this push: `1.1.0-rc.2`
+- posture: `v1.1 release candidate with provider import, multi-version links, deferred media-server refresh, updated web controls, and RC review fixes`
 - intended use: local-first host or Docker installs, with Windows 11 users running through WSL2 or a Linux container
+
+## 2026-04-30 - v1.1.0-rc.2 Import Routing Review Fixes
+
+### Code Changes
+
+- fixed auto provider import routing so TMDB-tagged TV-looking items can route to TV destinations instead of being treated as movies.
+  - files: `src/commands/importer.rs`, `src/import_report.rs`
+- made auto remote import lookup use TVDB/TMDB-TV for TV/anime-looking candidates instead of always starting with TMDB movie search.
+  - files: `src/commands/importer.rs`
+- kept the multi-version filename suffix limited to movie targets for now, matching the documented movie-first behavior.
+  - files: `src/linker.rs`
+
+### Validation
+
+- `cargo fmt --all -- --check`
+  - result: passed locally
+- `cargo test --all-targets --locked`
+  - result: `798 passed; 0 failed; 1 ignored`
+- `cargo clippy --all-targets --all-features --locked -- -D warnings`
+  - result: passed locally
+- `cargo build --release --locked`
+  - result: passed locally, `symlinkarr --version` returned `symlinkarr 1.1.0-rc.2`
+- local packaging smoke using the same archive shape as `.github/workflows/release.yml`
+  - result: produced `dist/symlinkarr-v1.1.0-rc.2-linux-amd64.tar.gz` with sha256 `79e04196d8e64c3972149b65bbe9e5ac4b796283ba4598d378756f5174e8ffa8`
+- local Docker image `symlinkarr:1.1.0-rc.2`
+  - result: built locally as `sha256:a08c5180958e479ea3b3836f9fc83fd939320b241f0d7065fc9bdeb03deff587`, `symlinkarr --version` returned `symlinkarr 1.1.0-rc.2`
+- focused regression tests:
+  - `cargo test commands::importer::tests -- --nocapture`
+  - `cargo test linker::tests -- --nocapture`
 
 ## 2026-04-29 - v1.1.0-rc.1 Provider Import and Multi-Version RC
 

@@ -719,16 +719,6 @@ impl Linker {
                     &episode_title,
                     &m.source_item.extension,
                 );
-                let filename = if self.multi_version {
-                    append_version_label(
-                        &filename,
-                        &m.source_item.extension,
-                        &version_label(&m.source_item),
-                    )
-                } else {
-                    filename
-                };
-
                 Ok(season_dir.join(filename))
             }
             MediaType::Movie => {

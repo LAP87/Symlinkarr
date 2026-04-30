@@ -103,6 +103,8 @@ pub struct ImportCandidateReport {
     pub title_hint: String,
     pub year_hint: Option<u32>,
     pub explicit_media_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_content_type: Option<ImportContentReport>,
     pub resolved_title: Option<String>,
     pub resolved_year: Option<u32>,
     pub probed_resolution: Option<String>,

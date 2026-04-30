@@ -178,6 +178,23 @@ fn test_multi_version_label_includes_release_metadata() {
     assert!(filename.contains("2160p-remux-dv-hdr10-hevc-"));
 }
 
+#[test]
+fn test_multi_version_does_not_suffix_tv_episode_targets() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let lib_path = dir.path().join("Sample Show {tvdb-81189}");
+    let source_path = dir.path().join("rd").join("sample_show_s01e01_2160p.mkv");
+    let linker = Linker::new(false, true, DEFAULT_TEMPLATE).with_multi_version(true);
+
+    let mut m = sample_tv_match(&lib_path, &source_path, Some(1), Some(1));
+    m.source_item.quality = Some("2160p".to_string());
+    m.source_item.video_codec = Some("hevc".to_string());
+
+    let target = linker.build_target_path(&m).unwrap();
+    let filename = target.file_name().unwrap().to_string_lossy();
+
+    assert_eq!(filename, "Sample Show - S01E01 - Pilot.mkv");
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn test_multi_version_process_creates_and_then_skips_existing_versions() {
