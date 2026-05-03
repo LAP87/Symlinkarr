@@ -2,9 +2,27 @@
 
 ## Release Target
 
-- package version for this push: `1.1.0-rc.3`
-- posture: `v1.1 release candidate with live scheduler automation, provider import, multi-version links, deferred media-server refresh, and updated web controls`
+- package version for this push: `1.1.0-rc.4`
+- posture: `v1.1 release candidate with live scheduler automation, faster status/dashboard navigation, provider import, multi-version links, deferred media-server refresh, and updated web controls`
 - intended use: local-first host or Docker installs, with Windows 11 users running through WSL2 or a Linux container
+
+## 2026-05-04 - v1.1.0-rc.4 Status/Dashboard Latency Fix
+
+### Code Changes
+
+- bounded the Tautulli live playback check used by Status and Dashboard so a slow or unavailable Tautulli instance no longer stalls page rendering and navigation.
+  - files: `src/web/handlers.rs`
+- bumped the package version and Docker example to `1.1.0-rc.4` so the tag-driven release workflow publishes a matching GHCR image.
+  - files: `Cargo.toml`, `Cargo.lock`, `README.md`
+
+### Validation
+
+- `cargo fmt --all -- --check`
+  - result: passed locally
+- `cargo clippy --all-targets --all-features --locked -- -D warnings`
+  - result: passed locally
+- `cargo test --all-targets --locked`
+  - result: passed locally
 
 ## 2026-05-03 - v1.1.0-rc.3 Live Scheduler RC
 

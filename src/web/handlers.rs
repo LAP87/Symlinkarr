@@ -11,6 +11,7 @@ use chrono::{DateTime, Duration as ChronoDuration, NaiveDateTime, Utc};
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Component, Path as StdPath, PathBuf};
+use std::time::Duration;
 use tracing::{error, info};
 
 pub(crate) use admin::{
@@ -416,6 +417,7 @@ pub(crate) fn daemon_schedule_view(
 }
 
 const RECENT_QUEUE_JOB_LIMIT: usize = 6;
+const STATUS_STREAMING_GUARD_TIMEOUT: Duration = Duration::from_millis(900);
 
 fn format_operator_name(raw: &str) -> String {
     let mut chars = raw.chars();
@@ -606,8 +608,23 @@ async fn streaming_guard_view(state: &WebState) -> Option<StreamingGuardView> {
     }
 
     let tautulli = TautulliClient::new(&state.config.tautulli);
-    match tautulli.get_active_file_paths().await {
-        Ok(paths) => Some(StreamingGuardView {
+    match tokio::time::timeout(
+        STATUS_STREAMING_GUARD_TIMEOUT,
+        tautulli.get_active_file_paths(),
+    )
+    .await
+    {
+        Err(_) => Some(StreamingGuardView {
+            status_label: "Unavailable".to_string(),
+            status_badge_class: "badge-danger",
+            active_streams: 0,
+            protected_paths: Vec::new(),
+            error_message: Some(format!(
+                "Tautulli did not respond within {} ms; skipping live playback check for this page load.",
+                STATUS_STREAMING_GUARD_TIMEOUT.as_millis()
+            )),
+        }),
+        Ok(Ok(paths)) => Some(StreamingGuardView {
             status_label: if paths.is_empty() {
                 "Idle".to_string()
             } else {
@@ -622,7 +639,7 @@ async fn streaming_guard_view(state: &WebState) -> Option<StreamingGuardView> {
             protected_paths: paths.into_iter().take(6).collect(),
             error_message: None,
         }),
-        Err(err) => Some(StreamingGuardView {
+        Ok(Err(err)) => Some(StreamingGuardView {
             status_label: "Unavailable".to_string(),
             status_badge_class: "badge-danger",
             active_streams: 0,
