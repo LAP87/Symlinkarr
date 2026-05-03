@@ -32,6 +32,7 @@ use crate::db::{
 use crate::import_report::ImportSummary;
 use crate::media_servers::{DeferredRefreshSummary, LibraryInvalidationServerOutcome};
 use crate::models::LinkRecord;
+use crate::scheduler::SchedulerRunRecord;
 
 macro_rules! impl_template_into_response {
     ($($template:ty),+ $(,)?) => {
@@ -106,6 +107,32 @@ pub struct DeferredRefreshSummaryView {
 pub struct DeferredRefreshServerView {
     pub server: String,
     pub queued_targets: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct SchedulerRulePageView {
+    pub id: i64,
+    pub name: String,
+    pub event_type: String,
+    pub enabled: bool,
+    pub trigger_json: String,
+    pub run_window_json: String,
+    pub event_args_json: String,
+    pub priority: i64,
+    pub misfire_grace_minutes: i64,
+    pub next_due: Option<String>,
+    pub safety_label: String,
+}
+
+#[derive(Template)]
+#[template(path = "web/ui/scheduler.html")]
+pub struct SchedulerTemplate {
+    pub enabled_rules: usize,
+    pub next_due: Option<String>,
+    pub rules: Vec<SchedulerRulePageView>,
+    pub runs: Vec<SchedulerRunRecord>,
+    pub export_yaml: String,
+    pub error: Option<String>,
 }
 
 impl From<DeferredRefreshSummary> for DeferredRefreshSummaryView {
@@ -1361,6 +1388,7 @@ impl_template_into_response!(
     DashboardLatestRunTemplate,
     DashboardSummaryTemplate,
     DashboardActivityFeedTemplate,
+    SchedulerTemplate,
     StatusTemplate,
     ScanTemplate,
     ScanResultTemplate,

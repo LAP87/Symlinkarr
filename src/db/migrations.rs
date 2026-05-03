@@ -153,11 +153,76 @@ impl Database {
             15 => self.migration_v15_tx(tx).await,
             16 => self.migration_v16_tx(tx).await,
             17 => self.migration_v17_tx(tx).await,
+            18 => self.migration_v18_tx(tx).await,
             _ => anyhow::bail!(
-                "Unsupported schema migration version {}. This build only knows migrations 1 through 17",
+                "Unsupported schema migration version {}. This build only knows migrations 1 through 18",
                 version
             ),
         }
+    }
+
+    async fn migration_v18_tx(&self, tx: &mut Transaction<'_, Sqlite>) -> Result<()> {
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS scheduler_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                trigger_json TEXT NOT NULL,
+                run_window_json TEXT NOT NULL,
+                event_args_json TEXT NOT NULL DEFAULT '{}',
+                priority INTEGER NOT NULL DEFAULT 50,
+                misfire_grace_minutes INTEGER NOT NULL DEFAULT 60,
+                allow_destructive_auto INTEGER NOT NULL DEFAULT 0,
+                max_delete INTEGER,
+                safety_backup INTEGER NOT NULL DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+        )
+        .execute(&mut **tx)
+        .await?;
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS scheduler_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                rule_id INTEGER,
+                event_type TEXT NOT NULL,
+                planned_at DATETIME NOT NULL,
+                started_at DATETIME,
+                finished_at DATETIME,
+                status TEXT NOT NULL,
+                message TEXT,
+                output_refs_json TEXT,
+                FOREIGN KEY(rule_id) REFERENCES scheduler_rules(id) ON DELETE SET NULL
+            )",
+        )
+        .execute(&mut **tx)
+        .await?;
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS scheduler_state (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+        )
+        .execute(&mut **tx)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_scheduler_rules_enabled ON scheduler_rules(enabled)",
+        )
+        .execute(&mut **tx)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_scheduler_runs_rule ON scheduler_runs(rule_id, planned_at)",
+        )
+        .execute(&mut **tx)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_scheduler_runs_status ON scheduler_runs(status, planned_at)",
+        )
+        .execute(&mut **tx)
+        .await?;
+        Ok(())
     }
 
     /// Apply a migration using a fresh transaction; used by test helpers.
@@ -591,6 +656,26 @@ impl Database {
     #[cfg(test)]
     async fn migrate_down_one(&self, current_version: i64) -> Result<()> {
         match current_version {
+            18 => {
+                sqlx::query("DROP INDEX IF EXISTS idx_scheduler_runs_status")
+                    .execute(&self.pool)
+                    .await?;
+                sqlx::query("DROP INDEX IF EXISTS idx_scheduler_runs_rule")
+                    .execute(&self.pool)
+                    .await?;
+                sqlx::query("DROP INDEX IF EXISTS idx_scheduler_rules_enabled")
+                    .execute(&self.pool)
+                    .await?;
+                sqlx::query("DROP TABLE IF EXISTS scheduler_state")
+                    .execute(&self.pool)
+                    .await?;
+                sqlx::query("DROP TABLE IF EXISTS scheduler_runs")
+                    .execute(&self.pool)
+                    .await?;
+                sqlx::query("DROP TABLE IF EXISTS scheduler_rules")
+                    .execute(&self.pool)
+                    .await?;
+            }
             17 => {
                 sqlx::query("DROP TABLE IF EXISTS daemon_heartbeat")
                     .execute(&self.pool)

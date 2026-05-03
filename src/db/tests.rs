@@ -377,6 +377,9 @@ async fn test_migrations_can_move_down_and_up() {
     assert!(db.table_exists("link_events").await.unwrap());
     assert!(db.table_exists("acquisition_jobs").await.unwrap());
     assert!(db.table_exists("anime_search_overrides").await.unwrap());
+    assert!(db.table_exists("scheduler_rules").await.unwrap());
+    assert!(db.table_exists("scheduler_runs").await.unwrap());
+    assert!(db.table_exists("scheduler_state").await.unwrap());
 
     db.migrate_to_for_tests(2).await.unwrap();
     assert_eq!(db.current_schema_version().await.unwrap(), 2);
@@ -384,6 +387,7 @@ async fn test_migrations_can_move_down_and_up() {
     assert!(!db.table_exists("link_events").await.unwrap());
     assert!(!db.table_exists("acquisition_jobs").await.unwrap());
     assert!(!db.table_exists("anime_search_overrides").await.unwrap());
+    assert!(!db.table_exists("scheduler_rules").await.unwrap());
 
     db.migrate_to_for_tests(LATEST_SCHEMA_VERSION)
         .await
@@ -396,6 +400,7 @@ async fn test_migrations_can_move_down_and_up() {
     assert!(db.table_exists("link_events").await.unwrap());
     assert!(db.table_exists("acquisition_jobs").await.unwrap());
     assert!(db.table_exists("anime_search_overrides").await.unwrap());
+    assert!(db.table_exists("scheduler_rules").await.unwrap());
 }
 
 #[tokio::test]
@@ -482,6 +487,18 @@ async fn test_latest_migration_creates_anime_search_overrides_table() {
         .unwrap();
 
     assert!(db.table_exists("anime_search_overrides").await.unwrap());
+}
+
+#[tokio::test]
+async fn test_latest_migration_creates_scheduler_tables() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+        .await
+        .unwrap();
+
+    assert!(db.table_exists("scheduler_rules").await.unwrap());
+    assert!(db.table_exists("scheduler_runs").await.unwrap());
+    assert!(db.table_exists("scheduler_state").await.unwrap());
 }
 
 #[tokio::test]

@@ -794,6 +794,7 @@ impl BackupManager {
         Ok(summaries)
     }
 
+    #[allow(dead_code)]
     pub fn latest_scheduled_backup_timestamp(&self) -> Result<Option<DateTime<Utc>>> {
         Ok(self
             .list()?

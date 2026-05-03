@@ -13,6 +13,7 @@ mod links;
 mod maintenance;
 mod migrations;
 mod scan_runs;
+mod scheduler;
 #[cfg(test)]
 mod tests;
 mod types;
@@ -38,7 +39,7 @@ pub struct Database {
     db_path: PathBuf,
 }
 
-const LATEST_SCHEMA_VERSION: i64 = 17;
+const LATEST_SCHEMA_VERSION: i64 = 18;
 
 // SqlitePool is Clone (wraps Arc), so Database can safely be Clone
 impl Clone for Database {

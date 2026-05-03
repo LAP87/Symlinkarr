@@ -21,6 +21,7 @@ mod media_servers;
 mod models;
 mod provider_repair;
 mod repair;
+mod scheduler;
 mod source_scanner;
 mod startup;
 mod utils;

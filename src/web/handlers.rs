@@ -55,6 +55,7 @@ use crate::db::{
 };
 use crate::discovery::DiscoverSummary;
 use crate::media_servers::deferred_refresh_summary;
+use crate::scheduler::ScheduleRule;
 
 use super::templates::*;
 use super::{
@@ -1498,6 +1499,96 @@ pub async fn get_status(State(state): State<WebState>) -> impl IntoResponse {
         streaming_guard,
     };
     Html(template.render().unwrap_or_else(|e| e.to_string())).into_response()
+}
+
+/// GET /scheduler - Live scheduler rules and history
+pub async fn get_scheduler(State(state): State<WebState>) -> impl IntoResponse {
+    info!("Serving scheduler page");
+
+    let mut error = None;
+    let rules = match state.database.list_scheduler_rules().await {
+        Ok(rules) => rules,
+        Err(err) => {
+            error!("Failed to load scheduler rules: {}", err);
+            error = Some(err.to_string());
+            Vec::new()
+        }
+    };
+    let runs = match state.database.list_scheduler_runs(25).await {
+        Ok(runs) => runs,
+        Err(err) => {
+            error!("Failed to load scheduler runs: {}", err);
+            error = Some(err.to_string());
+            Vec::new()
+        }
+    };
+    let now = chrono::Local::now();
+    let mut nexts = Vec::new();
+    let rule_views = rules
+        .iter()
+        .map(|rule| {
+            let next_due = rule
+                .next_after(now)
+                .map(|dt| dt.format("%Y-%m-%d %H:%M:%S %Z").to_string());
+            if let Some(next) = next_due.clone() {
+                nexts.push(next);
+            }
+            scheduler_rule_page_view(rule, next_due)
+        })
+        .collect::<Vec<_>>();
+    nexts.sort();
+    let export_yaml = serde_yml::to_string(&serde_json::json!({
+        "version": 1,
+        "rules": rules.clone(),
+    }))
+    .unwrap_or_else(|err| format!("export_error: {}", err));
+
+    SchedulerTemplate {
+        enabled_rules: rules.iter().filter(|rule| rule.enabled).count(),
+        next_due: nexts.first().cloned(),
+        rules: rule_views,
+        runs,
+        export_yaml,
+        error,
+    }
+    .into_response()
+}
+
+fn scheduler_rule_page_view(
+    rule: &ScheduleRule,
+    next_due: Option<String>,
+) -> SchedulerRulePageView {
+    let trigger_json =
+        serde_json::to_string_pretty(&rule.trigger).unwrap_or_else(|_| "{}".to_string());
+    let run_window_json =
+        serde_json::to_string_pretty(&rule.run_window).unwrap_or_else(|_| "{}".to_string());
+    let event_args_json =
+        serde_json::to_string_pretty(&rule.event_args).unwrap_or_else(|_| "{}".to_string());
+    let safety_label = if rule.event_type.is_destructive() {
+        if rule.allow_destructive_auto && rule.max_delete.unwrap_or(0) > 0 {
+            format!("Destructive capped at {}", rule.max_delete.unwrap_or(0))
+        } else {
+            "Destructive blocked until safety is configured".to_string()
+        }
+    } else if rule.safety_backup {
+        "Safety backup enabled".to_string()
+    } else {
+        "Non-destructive".to_string()
+    };
+
+    SchedulerRulePageView {
+        id: rule.id.unwrap_or_default(),
+        name: rule.name.clone(),
+        event_type: rule.event_type.as_str().to_string(),
+        enabled: rule.enabled,
+        trigger_json,
+        run_window_json,
+        event_args_json,
+        priority: rule.priority,
+        misfire_grace_minutes: rule.misfire_grace_minutes,
+        next_due,
+        safety_label,
+    }
 }
 
 /// GET /health - Compatibility alias for the status page

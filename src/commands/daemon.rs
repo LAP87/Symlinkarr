@@ -1,12 +1,8 @@
-use std::time::Duration;
-
 use anyhow::Result;
-use chrono::{Local, NaiveDate, Timelike, Utc};
 use tracing::info;
 
 use crate::config::Config;
 use crate::db::Database;
-use crate::OutputFormat;
 
 async fn record_heartbeat(db: &Database, phase: &str, detail: Option<&str>) {
     if let Err(err) = db.record_daemon_heartbeat(phase, detail).await {
@@ -14,73 +10,9 @@ async fn record_heartbeat(db: &Database, phase: &str, detail: Option<&str>) {
     }
 }
 
-async fn sleep_with_heartbeat(interval: Duration, db: &Database, detail: &str) -> bool {
-    let tick = Duration::from_secs(interval.as_secs().clamp(1, 60));
-    let start = tokio::time::Instant::now();
-
-    loop {
-        let elapsed = start.elapsed();
-        if elapsed >= interval {
-            return false;
-        }
-
-        let remaining = interval.saturating_sub(elapsed);
-        let step = tick.min(remaining);
-        tokio::select! {
-            _ = tokio::time::sleep(step) => {
-                record_heartbeat(db, "sleeping", Some(detail)).await;
-            }
-            _ = tokio::signal::ctrl_c() => {
-                record_heartbeat(db, "stopping", Some("Shutdown signal received; stopping daemon loop")).await;
-                info!("Shutdown signal received; stopping daemon loop");
-                return true;
-            }
-        }
-    }
-}
-
-async fn run_housekeeping(cfg: &Config, db: &Database, last_vacuum_date: &mut Option<NaiveDate>) {
-    let now = Local::now();
-    let today = now.date_naive();
-    let should_vacuum = cfg.daemon.vacuum_enabled
-        && now.hour() >= u32::from(cfg.daemon.vacuum_hour_local)
-        && *last_vacuum_date != Some(today);
-
-    match db.housekeeping_with_vacuum(should_vacuum).await {
-        Ok(stats) => {
-            if should_vacuum {
-                *last_vacuum_date = Some(today);
-                info!(
-                    "Housekeeping: removed {} old scan_runs, {} link_events, {} completed jobs, {} expired API cache entries, and ran VACUUM",
-                    stats.scan_runs_deleted,
-                    stats.link_events_deleted,
-                    stats.old_jobs_deleted,
-                    stats.expired_api_cache_deleted
-                );
-            } else if stats.scan_runs_deleted
-                + stats.link_events_deleted
-                + stats.old_jobs_deleted
-                + stats.expired_api_cache_deleted
-                > 0
-            {
-                info!(
-                    "Housekeeping: removed {} old scan_runs, {} link_events, {} completed jobs, {} expired API cache entries",
-                    stats.scan_runs_deleted,
-                    stats.link_events_deleted,
-                    stats.old_jobs_deleted,
-                    stats.expired_api_cache_deleted
-                );
-            }
-        }
-        Err(e) => tracing::warn!("Housekeeping failed (non-fatal): {}", e),
-    }
-}
-
 pub(crate) async fn run_daemon(cfg: &Config, db: &Database) -> Result<()> {
-    let interval = Duration::from_secs(cfg.daemon.interval_minutes * 60);
-    let mut last_vacuum_date = None;
     info!(
-        "Symlinkarr daemon starting (interval: {} minutes)",
+        "Symlinkarr daemon starting with live scheduler (legacy scan interval bootstrap: {} minutes)",
         cfg.daemon.interval_minutes
     );
     record_heartbeat(
@@ -111,63 +43,6 @@ pub(crate) async fn run_daemon(cfg: &Config, db: &Database) -> Result<()> {
         });
     }
 
-    loop {
-        record_heartbeat(db, "housekeeping", Some("Running housekeeping")).await;
-        run_housekeeping(cfg, db, &mut last_vacuum_date).await;
-
-        if cfg.backup.enabled && cfg.backup.interval_hours > 0 {
-            record_heartbeat(db, "backup", Some("Checking scheduled backups")).await;
-            let bm = crate::backup::BackupManager::new(&cfg.backup);
-            let should_create_backup = match bm.latest_scheduled_backup_timestamp() {
-                Ok(Some(last_backup)) => {
-                    Utc::now().signed_duration_since(last_backup).num_hours()
-                        >= cfg.backup.interval_hours as i64
-                }
-                Ok(None) => true,
-                Err(e) => {
-                    tracing::warn!("Backup schedule check failed (non-fatal): {}", e);
-                    false
-                }
-            };
-
-            if should_create_backup {
-                match bm.create_backup(cfg, db, "daily").await {
-                    Ok(path) => info!("Scheduled Symlinkarr backup created: {}", path.display()),
-                    Err(e) => tracing::warn!("Scheduled Symlinkarr backup failed: {}", e),
-                }
-            }
-        }
-
-        if cfg.backup.enabled {
-            record_heartbeat(db, "backup", Some("Creating pre-scan safety snapshot")).await;
-            let bm = crate::backup::BackupManager::new(&cfg.backup);
-            if let Err(e) = bm.create_safety_snapshot(db, "daemon-scan").await {
-                tracing::warn!("Pre-scan backup failed: {}", e);
-            }
-        }
-
-        record_heartbeat(db, "scan", Some("Running daemon-origin scan")).await;
-        if let Err(e) = super::scan::run_scan_with_origin(
-            cfg,
-            db,
-            crate::db::ScanRunOrigin::Daemon,
-            false,
-            cfg.daemon.search_missing,
-            OutputFormat::Text,
-            None,
-        )
-        .await
-        {
-            tracing::error!("Scan cycle failed: {}", e);
-        }
-
-        let sleep_detail = format!("Next scan in {} minutes", cfg.daemon.interval_minutes);
-        info!("{}...", sleep_detail);
-        record_heartbeat(db, "sleeping", Some(&sleep_detail)).await;
-        if sleep_with_heartbeat(interval, db, &sleep_detail).await {
-            break;
-        }
-    }
-
-    Ok(())
+    record_heartbeat(db, "scheduler", Some("Starting live scheduler tick loop")).await;
+    crate::scheduler::run_scheduler_loop(cfg, db).await
 }

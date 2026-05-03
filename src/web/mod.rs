@@ -32,13 +32,11 @@ use self::auth::{
     invalid_browser_csrf_response,
 };
 pub(crate) use self::cleanup::{
-    clamp_link_list_limit, infer_cleanup_scope, latest_cleanup_report_created_at,
-    latest_cleanup_report_path, load_cleanup_report, resolve_cleanup_report_path,
+    clamp_link_list_limit, cleanup_audit_output_path, infer_cleanup_scope,
+    latest_cleanup_report_created_at, latest_cleanup_report_path, load_cleanup_report,
+    resolve_cleanup_report_path,
 };
-use self::cleanup::{
-    cleanup_audit_output_path, cleanup_libraries_label, cleanup_scope_label,
-    resolve_cleanup_libraries,
-};
+use self::cleanup::{cleanup_libraries_label, cleanup_scope_label, resolve_cleanup_libraries};
 use crate::cleanup_audit::{CleanupAuditor, CleanupScope};
 use crate::config::Config;
 use crate::db::Database;
@@ -697,6 +695,7 @@ fn create_router(state: WebState) -> Router {
         // Status & Health
         .route("/status", get(handlers::get_status))
         .route("/health", get(handlers::get_health))
+        .route("/scheduler", get(handlers::get_scheduler))
         // Scan
         .route("/scan", get(handlers::get_scan))
         .route("/scan/trigger", post(handlers::post_scan_trigger))

@@ -40,6 +40,7 @@ use super::{
 use cleanup::*;
 use misc::*;
 use scan::*;
+use scheduler::*;
 
 /// Create the API router
 pub fn create_router(state: WebState) -> Router<WebState> {
@@ -72,6 +73,28 @@ pub fn create_router(state: WebState) -> Router<WebState> {
         .route("/doctor", get(api_get_doctor))
         .route("/cache/invalidate", post(api_post_cache_invalidate))
         .route("/cache", axum::routing::delete(api_delete_cache))
+        .route(
+            "/scheduler/rules",
+            get(api_get_scheduler_rules).post(api_post_scheduler_rule),
+        )
+        .route(
+            "/scheduler/rules/{id}",
+            axum::routing::put(api_put_scheduler_rule),
+        )
+        .route(
+            "/scheduler/rules/{id}/enable",
+            post(api_post_scheduler_rule_enable),
+        )
+        .route(
+            "/scheduler/rules/{id}/run-now",
+            post(api_post_scheduler_rule_run_now),
+        )
+        .route("/scheduler/runs", get(api_get_scheduler_runs))
+        .route("/scheduler/preview", get(api_get_scheduler_preview))
+        .route(
+            "/scheduler/export",
+            get(api_get_scheduler_export).post(api_post_scheduler_import),
+        )
         .with_state(state)
 }
 
@@ -94,6 +117,7 @@ pub struct ApiScanRequest {
 mod cleanup;
 mod misc;
 mod scan;
+mod scheduler;
 
 #[cfg(test)]
 mod tests;

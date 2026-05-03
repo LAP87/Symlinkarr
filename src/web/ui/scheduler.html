@@ -1,0 +1,160 @@
+{% extends "web/ui/base.html" %}
+
+{% block title %}Scheduler - Symlinkarr{% endblock %}
+{% block nav_scheduler %}active{% endblock %}
+{% block body_class %}page-scheduler page-inspection{% endblock %}
+
+{% block content %}
+<div class="page-header page-header--split">
+    <div>
+        <div class="page-meta">
+            <p class="page-kicker">Automation</p>
+            <span class="page-taxonomy page-taxonomy--inspection">Scheduler</span>
+        </div>
+        <h1>Scheduler</h1>
+        <p class="page-lead">Manage live database-backed rules, upcoming runs, and scheduler history.</p>
+    </div>
+    <div class="header-badges">
+        <span class="badge badge-info">{{ enabled_rules }} enabled</span>
+        {% match next_due %}
+        {% when Some with (next) %}<span class="badge badge-success">Next {{ next }}</span>
+        {% when None %}<span class="badge badge-warning">No upcoming jobs</span>
+        {% endmatch %}
+    </div>
+</div>
+
+{% match error %}
+{% when Some with (message) %}
+<div class="alert alert-error">{{ message }}</div>
+{% when None %}{% endmatch %}
+
+<div class="split-grid">
+    <section class="card">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Overview</p>
+                <h2 class="section-title">Live rules</h2>
+            </div>
+        </div>
+        <div class="metric-grid metric-grid--compact">
+            <div class="metric-card"><span class="metric-label">Enabled rules</span><strong>{{ enabled_rules }}</strong></div>
+            <div class="metric-card">
+                <span class="metric-label">Next due</span>
+                <strong>{% match next_due %}{% when Some with (next) %}{{ next }}{% when None %}None{% endmatch %}</strong>
+            </div>
+            <div class="metric-card"><span class="metric-label">Recent runs</span><strong>{{ runs.len() }}</strong></div>
+        </div>
+    </section>
+
+    <section class="card">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Guided presets</p>
+                <h2 class="section-title">Common rule shapes</h2>
+            </div>
+        </div>
+        <div class="stack-list">
+            <div class="stack-list__item"><strong>Scan</strong><span class="text-muted">Interval rule with dry_run, search_missing, and library arguments.</span></div>
+            <div class="stack-list__item"><strong>Backup</strong><span class="text-muted">Interval or daily rule with a backup label.</span></div>
+            <div class="stack-list__item"><strong>Maintenance</strong><span class="text-muted">Daily quiet-window housekeeping and VACUUM.</span></div>
+        </div>
+    </section>
+</div>
+
+<section class="card">
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Rules</p>
+            <h2 class="section-title">Configured schedules</h2>
+        </div>
+    </div>
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Event</th>
+                    <th>Status</th>
+                    <th>Next due</th>
+                    <th>Priority</th>
+                    <th>Safety</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for rule in rules %}
+                <tr>
+                    <td><strong>{{ rule.name }}</strong><br><span class="text-muted">#{{ rule.id }}</span></td>
+                    <td><code>{{ rule.event_type }}</code></td>
+                    <td>{% if rule.enabled %}<span class="badge badge-success">Enabled</span>{% else %}<span class="badge badge-muted">Disabled</span>{% endif %}</td>
+                    <td>{% match rule.next_due %}{% when Some with (next) %}{{ next }}{% when None %}<span class="text-muted">None</span>{% endmatch %}</td>
+                    <td>{{ rule.priority }}</td>
+                    <td>{{ rule.safety_label }}</td>
+                </tr>
+                <tr>
+                    <td colspan="6">
+                        <details class="inline-details">
+                            <summary>Advanced JSON</summary>
+                            <div class="split-grid">
+                                <pre><code>{{ rule.trigger_json }}</code></pre>
+                                <pre><code>{{ rule.event_args_json }}</code></pre>
+                            </div>
+                            <pre><code>{{ rule.run_window_json }}</code></pre>
+                            <p class="text-muted">Misfire grace: {{ rule.misfire_grace_minutes }} minutes. API updates are available under <code>/api/v1/scheduler</code>.</p>
+                        </details>
+                    </td>
+                </tr>
+                {% endfor %}
+                {% if rules.len() == 0 %}
+                <tr><td colspan="6"><span class="text-muted">No scheduler rules exist yet. Starting the daemon will bootstrap legacy config schedules.</span></td></tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<section class="card">
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">History</p>
+            <h2 class="section-title">Recent runs</h2>
+        </div>
+    </div>
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Planned</th>
+                    <th>Event</th>
+                    <th>Status</th>
+                    <th>Finished</th>
+                    <th>Message</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for run in runs %}
+                <tr>
+                    <td>{{ run.planned_at }}</td>
+                    <td><code>{{ run.event_type.as_str() }}</code></td>
+                    <td><span class="badge {% if run.status == "succeeded" %}badge-success{% else if run.status == "failed" %}badge-danger{% else if run.status == "skipped" %}badge-warning{% else %}badge-info{% endif %}">{{ run.status }}</span></td>
+                    <td>{% match run.finished_at %}{% when Some with (ts) %}{{ ts }}{% when None %}<span class="text-muted">Running</span>{% endmatch %}</td>
+                    <td>{% match run.message %}{% when Some with (message) %}{{ message }}{% when None %}<span class="text-muted">No message</span>{% endmatch %}</td>
+                </tr>
+                {% endfor %}
+                {% if runs.len() == 0 %}
+                <tr><td colspan="5"><span class="text-muted">No scheduler runs recorded yet.</span></td></tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<section class="card advanced-only">
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Export</p>
+            <h2 class="section-title">Scheduler YAML</h2>
+        </div>
+    </div>
+    <pre><code>{{ export_yaml }}</code></pre>
+</section>
+{% endblock %}

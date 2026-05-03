@@ -2,9 +2,33 @@
 
 ## Release Target
 
-- package version for this push: `1.1.0-rc.2`
-- posture: `v1.1 release candidate with provider import, multi-version links, deferred media-server refresh, updated web controls, and RC review fixes`
+- package version for this push: `1.1.0-rc.3`
+- posture: `v1.1 release candidate with live scheduler automation, provider import, multi-version links, deferred media-server refresh, and updated web controls`
 - intended use: local-first host or Docker installs, with Windows 11 users running through WSL2 or a Linux container
+
+## 2026-05-03 - v1.1.0-rc.3 Live Scheduler RC
+
+### Code Changes
+
+- added a SQLite-backed live scheduler with persisted rules, run history, legacy config bootstrap, interval/date/repeat/cron trigger support, off-hours windows, misfire grace handling, and destructive-job safety validation.
+  - files: `src/scheduler.rs`, `src/db/scheduler.rs`, `src/db/migrations.rs`
+- replaced the fixed daemon scan loop with a 30-second scheduler tick while preserving daemon web startup and stale acquisition job recovery.
+  - files: `src/commands/daemon.rs`
+- added Scheduler web/API surfaces for rules, preview, run history, run-now, enable/disable, and YAML export/import.
+  - files: `src/web/api/scheduler.rs`, `src/web/ui/scheduler.html`, `src/web/handlers.rs`, `src/web/templates.rs`
+- bumped the package version and Docker example to `1.1.0-rc.3` so the tag-driven release workflow publishes a matching GHCR image.
+  - files: `Cargo.toml`, `Cargo.lock`, `README.md`
+
+### Validation
+
+- `cargo check`
+  - result: passed locally
+- `cargo test scheduler -- --nocapture`
+  - result: passed locally
+- `cargo test test_migrations_can_move_down_and_up -- --nocapture`
+  - result: passed locally
+- `cargo test`
+  - result: `805 passed; 0 failed; 1 ignored`
 
 ## 2026-04-30 - v1.1.0-rc.2 Import Routing Review Fixes
 
