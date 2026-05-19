@@ -179,7 +179,7 @@ fn test_multi_version_label_includes_release_metadata() {
 }
 
 #[test]
-fn test_multi_version_does_not_suffix_tv_episode_targets() {
+fn test_multi_version_suffixes_tv_episode_targets() {
     let dir = tempfile::TempDir::new().unwrap();
     let lib_path = dir.path().join("Sample Show {tvdb-81189}");
     let source_path = dir.path().join("rd").join("sample_show_s01e01_2160p.mkv");
@@ -192,7 +192,8 @@ fn test_multi_version_does_not_suffix_tv_episode_targets() {
     let target = linker.build_target_path(&m).unwrap();
     let filename = target.file_name().unwrap().to_string_lossy();
 
-    assert_eq!(filename, "Sample Show - S01E01 - Pilot.mkv");
+    assert!(filename.starts_with("Sample Show - S01E01 - Pilot - 2160p-hevc-"));
+    assert!(filename.ends_with(".mkv"));
 }
 
 #[cfg(unix)]
@@ -644,6 +645,78 @@ async fn test_correct_on_disk_symlink_backfills_missing_db_record() {
     let record = db.get_link_by_target_path(&target).await.unwrap().unwrap();
     assert_eq!(record.source_path, source);
     assert_eq!(record.status, LinkStatus::Active);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_process_matches_adopts_existing_tv_episode_path_for_same_source() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let lib_path = dir.path().join("Sample Show {tvdb-81189}");
+    let season_dir = lib_path.join("Season 01");
+    fs::create_dir_all(&season_dir).unwrap();
+
+    let rd_dir = dir.path().join("rd");
+    fs::create_dir_all(&rd_dir).unwrap();
+    let source = rd_dir.join("sample_show_s01e01.mkv");
+    fs::write(&source, "video").unwrap();
+
+    let existing_target = season_dir.join("Sample Show - S01E01 - Old Title.mkv");
+    std::os::unix::fs::symlink(&source, &existing_target).unwrap();
+
+    let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+        .await
+        .unwrap();
+    let linker = Linker::new(false, true, DEFAULT_TEMPLATE);
+    let m = sample_tv_match(&lib_path, &source, Some(1), Some(1));
+    let generated_target = linker.build_target_path(&m).unwrap();
+
+    let summary = linker.process_matches(&[m], &db, None).await.unwrap();
+
+    assert_eq!(summary.created, 0);
+    assert_eq!(summary.updated, 0);
+    assert_eq!(summary.skipped, 1);
+    assert!(existing_target.is_symlink());
+    assert!(!generated_target.exists());
+
+    let record = db
+        .get_link_by_target_path(&existing_target)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.source_path, source);
+    assert_eq!(record.status, LinkStatus::Active);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_process_matches_does_not_adopt_tv_episode_path_for_different_source() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let lib_path = dir.path().join("Sample Show {tvdb-81189}");
+    let season_dir = lib_path.join("Season 01");
+    fs::create_dir_all(&season_dir).unwrap();
+
+    let rd_dir = dir.path().join("rd");
+    fs::create_dir_all(&rd_dir).unwrap();
+    let old_source = rd_dir.join("old_s01e01.mkv");
+    let new_source = rd_dir.join("new_s01e01.mkv");
+    fs::write(&old_source, "old").unwrap();
+    fs::write(&new_source, "new").unwrap();
+
+    let existing_target = season_dir.join("Sample Show - S01E01 - Old Title.mkv");
+    std::os::unix::fs::symlink(&old_source, &existing_target).unwrap();
+
+    let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+        .await
+        .unwrap();
+    let linker = Linker::new(false, true, DEFAULT_TEMPLATE);
+    let m = sample_tv_match(&lib_path, &new_source, Some(1), Some(1));
+    let generated_target = linker.build_target_path(&m).unwrap();
+
+    let summary = linker.process_matches(&[m], &db, None).await.unwrap();
+
+    assert_eq!(summary.created, 1);
+    assert_eq!(fs::read_link(&existing_target).unwrap(), old_source);
+    assert_eq!(fs::read_link(&generated_target).unwrap(), new_source);
 }
 
 #[cfg(unix)]

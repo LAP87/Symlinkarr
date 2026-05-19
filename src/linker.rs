@@ -299,7 +299,23 @@ impl Linker {
                 ));
             }
 
-            let target_path = self.build_target_path(m)?;
+            let mut target_path = self.build_target_path(m)?;
+            if let Some(existing_target) =
+                self.find_existing_equivalent_tv_target(m, &target_path)?
+            {
+                if existing_target != target_path {
+                    debug!(
+                        "Adopting existing TV episode symlink path {:?} instead of creating {:?}",
+                        existing_target, target_path
+                    );
+                    target_path = existing_target;
+                    if !existing_links.contains_key(&target_path) {
+                        if let Some(link) = db.get_link_by_target_path(&target_path).await? {
+                            existing_links.insert(target_path.clone(), link);
+                        }
+                    }
+                }
+            }
 
             if !cached_source_exists(
                 &m.source_item.path,
@@ -693,6 +709,65 @@ impl Linker {
         preload_existing_links(db, &target_paths).await
     }
 
+    fn find_existing_equivalent_tv_target(
+        &self,
+        m: &MatchResult,
+        target_path: &Path,
+    ) -> Result<Option<PathBuf>> {
+        if m.library_item.media_type != MediaType::Tv {
+            return Ok(None);
+        }
+
+        let Some(season_dir) = target_path.parent() else {
+            return Ok(None);
+        };
+        let Some(season) = m.source_item.season else {
+            return Ok(None);
+        };
+        let Some(episode) = m.source_item.episode else {
+            return Ok(None);
+        };
+        if !season_dir.is_dir() {
+            return Ok(None);
+        }
+
+        let expected_token = format!("s{:02}e{:02}", season, episode);
+        let fallback_token = format!("s{}e{}", season, episode);
+        let expected_source = &m.source_item.path;
+
+        for entry in std::fs::read_dir(season_dir)? {
+            let entry = entry?;
+            let candidate = entry.path();
+            if candidate == target_path {
+                continue;
+            }
+
+            let Some(file_name) = candidate.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            let lower_name = file_name.to_ascii_lowercase();
+            if !lower_name.contains(&expected_token) && !lower_name.contains(&fallback_token) {
+                continue;
+            }
+
+            let Ok(meta) = std::fs::symlink_metadata(&candidate) else {
+                continue;
+            };
+            if !meta.file_type().is_symlink() {
+                continue;
+            }
+
+            let Ok(raw_target) = std::fs::read_link(&candidate) else {
+                continue;
+            };
+            if resolve_link_target(&candidate, &raw_target) == *expected_source {
+                return Ok(Some(candidate));
+            }
+        }
+
+        Ok(None)
+    }
+
     /// Build the target path for a symlink based on the naming template.
     pub(crate) fn build_target_path(&self, m: &MatchResult) -> Result<PathBuf> {
         let lib_path = &m.library_item.path;
@@ -719,6 +794,15 @@ impl Linker {
                     &episode_title,
                     &m.source_item.extension,
                 );
+                let filename = if self.multi_version {
+                    append_version_label(
+                        &filename,
+                        &m.source_item.extension,
+                        &version_label(&m.source_item),
+                    )
+                } else {
+                    filename
+                };
                 Ok(season_dir.join(filename))
             }
             MediaType::Movie => {

@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
+use std::hash::Hash;
 
 use tracing::warn;
 
@@ -10,9 +11,9 @@ use crate::utils::normalize;
 
 use super::{DestinationKey, MatchCandidate};
 
-pub(super) fn insert_or_replace(
-    by_destination: &mut HashMap<DestinationKey, MatchCandidate>,
-    key: DestinationKey,
+pub(super) fn insert_or_replace<K: Eq + Hash>(
+    by_destination: &mut HashMap<K, MatchCandidate>,
+    key: K,
     candidate: MatchCandidate,
 ) {
     match by_destination.get(&key) {

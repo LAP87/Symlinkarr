@@ -81,6 +81,12 @@ enum DestinationKey {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct VersionedDestinationKey {
+    destination: DestinationKey,
+    version_slot: String,
+}
+
 #[derive(Debug, Default)]
 struct MatchSkipDiagnostics {
     exact_id_incompatible: bool,
@@ -439,7 +445,7 @@ impl Matcher {
         // between multi-ep and single-ep source files for the same episode slot.
         let destination_started = Instant::now();
         let final_candidates = if self.multi_version {
-            expand_destination_slots(best_per_source)
+            reduce_versioned_destination_slots(best_per_source, library_items)
         } else {
             let mut by_destination: HashMap<DestinationKey, MatchCandidate> = HashMap::new();
 
@@ -826,27 +832,85 @@ fn match_source_slice(
     }
 }
 
-fn expand_destination_slots(candidates: Vec<MatchCandidate>) -> Vec<MatchCandidate> {
-    let mut expanded = Vec::new();
+fn reduce_versioned_destination_slots(
+    candidates: Vec<MatchCandidate>,
+    library_items: &[LibraryItem],
+) -> Vec<MatchCandidate> {
+    let mut by_destination: HashMap<VersionedDestinationKey, MatchCandidate> = HashMap::new();
 
     for candidate in candidates {
+        let item = &library_items[candidate.library_idx];
         let episode_slots = expand_episode_slots(&candidate.source_item);
+
         if episode_slots.is_empty() {
-            expanded.push(candidate);
+            let Some(destination) = destination_key(item, &candidate.source_item) else {
+                continue;
+            };
+            let key = VersionedDestinationKey {
+                destination,
+                version_slot: version_slot(&candidate.source_item),
+            };
+            insert_or_replace(&mut by_destination, key, candidate);
             continue;
         }
 
         for ep in episode_slots {
             let mut slot_source = candidate.source_item.clone();
             slot_source.episode = Some(ep);
-            expanded.push(MatchCandidate {
+
+            let Some(destination) = destination_key(item, &slot_source) else {
+                continue;
+            };
+
+            let key = VersionedDestinationKey {
+                destination,
+                version_slot: version_slot(&slot_source),
+            };
+            let slot_candidate = MatchCandidate {
                 source_item: slot_source,
                 ..candidate.clone()
-            });
+            };
+            insert_or_replace(&mut by_destination, key, slot_candidate);
         }
     }
 
-    expanded
+    by_destination.into_values().collect()
+}
+
+fn version_slot(source: &SourceItem) -> String {
+    let mut parts = Vec::new();
+
+    if let Some(quality) = normalized_version_part(source.quality.as_deref()) {
+        parts.push(quality);
+    }
+    if let Some(edition) = normalized_version_part(source.edition.as_deref()) {
+        parts.push(edition);
+    }
+    for hdr in &source.hdr_formats {
+        if let Some(hdr) = normalized_version_part(Some(hdr)) {
+            if !parts.contains(&hdr) {
+                parts.push(hdr);
+            }
+        }
+    }
+    if let Some(codec) = normalized_version_part(source.video_codec.as_deref()) {
+        parts.push(codec);
+    }
+
+    if parts.is_empty() {
+        "version".to_string()
+    } else {
+        parts.join("-")
+    }
+}
+
+fn normalized_version_part(value: Option<&str>) -> Option<String> {
+    let normalized = value?.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
 }
 
 fn resolve_source_for_library_item(

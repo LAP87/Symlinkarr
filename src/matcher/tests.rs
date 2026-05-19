@@ -178,15 +178,29 @@ fn test_destination_conflict_prefers_higher_quality_when_scores_tie() {
 }
 
 #[test]
-fn test_expand_destination_slots_keeps_multiple_versions() {
+fn test_multi_version_reducer_keeps_distinct_version_slots() {
+    let item = tv_item("Example Show", 1);
     let first = candidate_with_quality("/rd/show.s01e01.1080p.mkv", 0.90, Some("1080p"));
     let second = candidate_with_quality("/rd/show.s01e01.2160p.mkv", 0.90, Some("2160p"));
 
-    let expanded = expand_destination_slots(vec![first.clone(), second.clone()]);
+    let reduced = reduce_versioned_destination_slots(vec![first, second], &[item]);
 
-    assert_eq!(expanded.len(), 2);
-    assert_eq!(expanded[0].source_item.path, first.source_item.path);
-    assert_eq!(expanded[1].source_item.path, second.source_item.path);
+    assert_eq!(reduced.len(), 2);
+}
+
+#[test]
+fn test_multi_version_reducer_collapses_same_version_slot() {
+    let item = tv_item("Example Show", 1);
+    let lower_score =
+        candidate_with_quality("/rd/show.s01e01.release-a.1080p.mkv", 0.90, Some("1080p"));
+    let higher_score =
+        candidate_with_quality("/rd/show.s01e01.release-b.1080p.mkv", 0.95, Some("1080p"));
+
+    let reduced =
+        reduce_versioned_destination_slots(vec![lower_score, higher_score.clone()], &[item]);
+
+    assert_eq!(reduced.len(), 1);
+    assert_eq!(reduced[0].source_item.path, higher_score.source_item.path);
 }
 
 #[test]
