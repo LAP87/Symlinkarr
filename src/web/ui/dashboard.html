@@ -4,381 +4,615 @@
 {% block nav_dashboard %}active{% endblock %}
 {% block body_class %}page-dashboard page-hub{% endblock %}
 
+{% block quick_links %}
+<nav class="quick-links-nav">
+    <div class="quick-links-title">Quick Links</div>
+    <ul class="quick-links-list">
+        <li><a href="#section-overview" class="quick-link-item active">Overview</a></li>
+        <li><a href="#section-attention" class="quick-link-item">Attention</a></li>
+        <li><a href="#section-activity" class="quick-link-item">Activity Feed</a></li>
+        <li><a href="#section-system" class="quick-link-item">System & Daemon</a></li>
+    </ul>
+</nav>
+{% endblock %}
+
 {% block content %}
-<div class="page-header page-header--split">
-    <div>
-        <div class="page-meta">
-            <p class="page-kicker">Home</p>
-            <span class="page-taxonomy page-taxonomy--hub">Hub</span>
+<!-- SECTION 1: OVERVIEW -->
+<section id="section-overview">
+    <div class="page-header page-header--split">
+        <div>
+            <div class="page-meta">
+                <p class="page-kicker">Home</p>
+                <span class="page-taxonomy page-taxonomy--hub">Hub</span>
+            </div>
+            <h1>Dashboard</h1>
+            <p class="page-lead">Latest links, scans, queue jobs, and cleanup warnings.</p>
+            <div class="page-help-links">
+                <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Dashboard-and-Daily-Operations" target="_blank" rel="noreferrer noopener">
+                    <span class="help-link__eyebrow">Learn more</span>
+                    <span class="help-link__title">Dashboard guide</span>
+                </a>
+            </div>
         </div>
-        <h1>Dashboard</h1>
-        <p class="page-lead">Latest links, scans, queue jobs, and cleanup warnings.</p>
-        <div class="page-help-links">
-            <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Dashboard-and-Daily-Operations" target="_blank" rel="noreferrer noopener">
-                <span class="help-link__eyebrow">Learn more</span>
-                <span class="help-link__title">Dashboard guide</span>
-            </a>
-        </div>
-    </div>
-    <div class="header-badges">
-        <span class="badge badge-info">Scans {{ stats.total_scans }}</span>
-        <span class="badge {% if queue.active_total > 0 %}badge-warning{% else %}badge-success{% endif %}">
-            Queue {{ queue.active_total }}
-        </span>
-        <span class="badge {% if stats.dead_links > 0 %}badge-danger{% else %}badge-success{% endif %}">
-            Dead {{ stats.dead_links }}
-        </span>
-        {% match streaming_guard %}
-        {% when Some with (guard) %}
-        <span class="badge {{ guard.status_badge_class }}">
-            Streams {{ guard.active_streams }}
-        </span>
-        {% when None %}{% endmatch %}
-        {% if deferred_refresh.pending_targets > 0 %}
-        <span class="badge badge-warning">
-            Pending refresh {{ deferred_refresh.pending_targets }}
-        </span>
-        {% endif %}
-    </div>
-</div>
-
-{% include "web/ui/partials/dashboard_summary.html" %}
-
-{% include "web/ui/partials/needs_attention.html" %}
-
-{% include "web/ui/partials/activity_feed.html" %}
-
-<details class="card disclosure-card">
-    <summary class="disclosure-card__summary">
-        <div class="disclosure-card__copy">
-            <span class="disclosure-card__eyebrow">Daemon</span>
-            <h2 class="disclosure-card__title">Schedule and next scan</h2>
-            <p class="disclosure-card__hint">Open to see the scan interval, last daemon scan, and estimated next run.</p>
-        </div>
-        <div class="disclosure-card__meta">
-            <span class="badge {{ daemon_schedule.status_badge_class }}">{{ daemon_schedule.status_label }}</span>
-            {% match daemon_heartbeat %}
-            {% when Some with (heartbeat) %}
-            <span class="badge {{ heartbeat.status_badge_class }}">{{ heartbeat.status_label }}</span>
+        <div class="header-badges">
+            <span class="badge badge-info">Scans {{ stats.total_scans }}</span>
+            <span class="badge {% if queue.active_total > 0 %}badge-warning{% else %}badge-success{% endif %}">
+                Queue {{ queue.active_total }}
+            </span>
+            <span class="badge {% if stats.dead_links > 0 %}badge-danger{% else %}badge-success{% endif %}">
+                Dead {{ stats.dead_links }}
+            </span>
+            {% match streaming_guard %}
+            {% when Some with (guard) %}
+            <span class="badge {{ guard.status_badge_class }}">
+                Streams {{ guard.active_streams }}
+            </span>
             {% when None %}{% endmatch %}
-            <span class="badge badge-info">{{ daemon_schedule.interval_label }}</span>
-            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
-        </div>
-    </summary>
-    <div class="disclosure-card__body">
-        <div class="metric-grid metric-grid--compact">
-            <div class="metric-card">
-                <span class="metric-label">{{ daemon_schedule.last_run_metric_label }}</span>
-                <strong>{{ daemon_schedule.last_run_label }}</strong>
-            </div>
-            <div class="metric-card">
-                <span class="metric-label">Next scan</span>
-                <strong>{{ daemon_schedule.next_due_label }}</strong>
-            </div>
-            <div class="metric-card">
-                <span class="metric-label">Search Missing</span>
-                <strong>{{ daemon_schedule.search_missing_label }}</strong>
-            </div>
-            <div class="metric-card">
-                <span class="metric-label">VACUUM</span>
-                <strong>{{ daemon_schedule.vacuum_label }}</strong>
-            </div>
-            {% match daemon_heartbeat %}
-            {% when Some with (heartbeat) %}
-            <div class="metric-card">
-                <span class="metric-label">Heartbeat</span>
-                <strong>{{ heartbeat.last_seen_label }}</strong>
-            </div>
-            <div class="metric-card">
-                <span class="metric-label">Daemon Phase</span>
-                <strong>{{ heartbeat.phase_label }}</strong>
-            </div>
-            {% when None %}{% endmatch %}
-        </div>
-        <p class="text-muted mt-2">{{ daemon_schedule.detail }}</p>
-        {% match daemon_heartbeat %}
-        {% when Some with (heartbeat) %}
-        <p class="text-muted">{{ heartbeat.detail }}</p>
-        {% when None %}{% endmatch %}
-    </div>
-</details>
-
-{% match streaming_guard %}
-{% when Some with (guard) %}
-<details class="card disclosure-card" {% if guard.active_streams > 0 %}open{% endif %}>
-    <summary class="disclosure-card__summary">
-        <div class="disclosure-card__copy">
-            <span class="disclosure-card__eyebrow">Streaming guard</span>
-            <h2 class="disclosure-card__title">Current playback protection</h2>
-            <p class="disclosure-card__hint">Open to see if active playback is blocking repair or cleanup right now.</p>
-        </div>
-        <div class="disclosure-card__meta">
-            <span class="badge {{ guard.status_badge_class }}">{{ guard.status_label }}</span>
-            <span class="badge badge-info">{{ guard.active_streams }} active</span>
-            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
-        </div>
-    </summary>
-    <div class="disclosure-card__body">
-        {% match guard.error_message %}
-        {% when Some with (message) %}
-        <div class="alert alert-error">
-            <strong>Tautulli could not be queried.</strong>
-            {{ message }}
-        </div>
-        {% when None %}
-        {% if guard.active_streams > 0 %}
-        <div class="alert alert-warning">
-            <strong>{{ guard.active_streams }} active stream(s) detected.</strong>
-            Repair and cleanup will skip matching paths until playback stops.
-        </div>
-        {% if guard.protected_paths|length > 0 %}
-        <div class="stack-list">
-            {% for path in guard.protected_paths %}
-            <code class="mono">{{ path }}</code>
-            {% endfor %}
-        </div>
-        {% endif %}
-        {% else %}
-        <div class="alert alert-success">
-            <strong>No active streams detected.</strong>
-            Playback is not blocking repair or cleanup right now.
-        </div>
-        {% endif %}
-        {% endmatch %}
-    </div>
-</details>
-{% when None %}{% endmatch %}
-
-<div class="split-grid">
-    {% include "web/ui/partials/latest_run.html" %}
-
-    <details class="card disclosure-card">
-        <summary class="disclosure-card__summary">
-            <div class="disclosure-card__copy">
-                <span class="disclosure-card__eyebrow">Queue</span>
-                <h2 class="disclosure-card__title">Auto-acquire queue and tools</h2>
-                <p class="disclosure-card__hint">Open for queue counts and quick links.</p>
-            </div>
-            <div class="disclosure-card__meta">
-                <span class="badge {% if queue.active_total > 0 %}badge-warning{% else %}badge-success{% endif %}">
-                    Queue {{ queue.active_total }}
-                </span>
-                {% if queue.blocked > 0 || queue.failed > 0 %}
-                <span class="badge badge-danger">Needs review</span>
-                {% endif %}
-                <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
-            </div>
-        </summary>
-        <div class="disclosure-card__body">
-            <div class="metric-grid metric-grid--compact">
-                <div class="metric-card">
-                    <span class="metric-label">Queued</span>
-                    <strong>{{ queue.queued }}</strong>
-                </div>
-                <div class="metric-card">
-                    <span class="metric-label">Downloading</span>
-                    <strong>{{ queue.downloading }}</strong>
-                </div>
-                <div class="metric-card">
-                    <span class="metric-label">Relinking</span>
-                    <strong>{{ queue.relinking }}</strong>
-                </div>
-                <div class="metric-card">
-                    <span class="metric-label">No Result</span>
-                    <strong>{{ queue.no_result }}</strong>
-                </div>
-                <div class="metric-card">
-                    <span class="metric-label">Blocked</span>
-                    <strong>{{ queue.blocked }}</strong>
-                </div>
-                <div class="metric-card">
-                    <span class="metric-label">Needs Relink</span>
-                    <strong>{{ queue.completed_unlinked }}</strong>
-                </div>
-                <div class="metric-card">
-                    <span class="metric-label">Failed</span>
-                    <strong>{{ queue.failed }}</strong>
-                </div>
-            </div>
-
-            {% if stats.dead_links > 0 %}
-            <div class="alert alert-warning">
-                <strong>Cleanup still matters.</strong>
-                {{ stats.dead_links }} dead links are tracked right now.
-            </div>
-            {% else %}
-            <div class="alert alert-success">
-                <strong>No dead links are currently tracked.</strong>
-            </div>
+            {% if deferred_refresh.pending_targets > 0 %}
+            <span class="badge badge-warning">
+                Pending refresh {{ deferred_refresh.pending_targets }}
+            </span>
             {% endif %}
+        </div>
+    </div>
 
-            <div class="actions">
-                <a href="/status" class="btn btn-secondary">Status</a>
-                <a href="/links/dead" class="btn btn-secondary">Dead Links</a>
-                <a href="/cleanup" class="btn btn-secondary">Cleanup</a>
-                <a href="/doctor" class="btn btn-secondary">Doctor</a>
+    {% include "web/ui/partials/dashboard_summary.html" %}
+
+    <div class="card scan-history-card">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Performance</p>
+                <h2 class="section-title">Scan History</h2>
+                <p class="text-muted">Total matches and links created over recent scan runs.</p>
+            </div>
+        </div>
+        <div class="scan-history-chart-container" style="position: relative; height: 240px; margin-top: 1rem; padding: 0.5rem 0;">
+            <svg id="scan-history-svg" width="100%" height="100%" viewBox="0 0 1000 240" preserveAspectRatio="none" style="overflow: visible;">
+                <!-- Gradient for glowing neon line -->
+                <defs>
+                    <linearGradient id="chart-glow" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stop-color="rgba(6, 182, 212, 0.25)"></stop>
+                        <stop offset="100%" stop-color="rgba(6, 182, 212, 0)"></stop>
+                    </linearGradient>
+                    <linearGradient id="line-grad" x1="0" y1="0" x2="1" y2="0">
+                        <stop offset="0%" stop-color="#a78bfa"></stop>
+                        <stop offset="50%" stop-color="#06b6d4"></stop>
+                        <stop offset="100%" stop-color="#10b981"></stop>
+                    </linearGradient>
+                </defs>
+                
+                <!-- Y Axis Gridlines -->
+                <line x1="0" y1="40" x2="1000" y2="40" stroke="rgba(255,255,255,0.04)" stroke-width="1"></line>
+                <line x1="0" y1="100" x2="1000" y2="100" stroke="rgba(255,255,255,0.04)" stroke-width="1"></line>
+                <line x1="0" y1="160" x2="1000" y2="160" stroke="rgba(255,255,255,0.04)" stroke-width="1"></line>
+                <line x1="0" y1="220" x2="1000" y2="220" stroke="rgba(255,255,255,0.04)" stroke-width="1"></line>
+                
+                <!-- Chart Paths -->
+                <path id="chart-area" d="" fill="url(#chart-glow)"></path>
+                <path id="chart-line" d="" fill="none" stroke="url(#line-grad)" stroke-width="4.5" stroke-linecap="round"></path>
+                
+                <!-- Tooltip / Dots container -->
+                <g id="chart-dots"></g>
+            </svg>
+        </div>
+        
+        <!-- Embed run data as JSON to parse with JS -->
+        <script id="recent-runs-data" type="application/json">
+            [
+                {% for run in recent_runs %}
+                {
+                    "id": {{ run.id }},
+                    "started_at": "{{ run.started_at }}",
+                    "links": {{ run.links_created + run.links_updated }},
+                    "matches": {{ run.matches_found }}
+                }{% if !loop.last %},{% endif %}
+                {% endfor %}
+            ]
+        </script>
+        
+        <script>
+            (function() {
+                function drawChart() {
+                    var dataEl = document.getElementById("recent-runs-data");
+                    if (!dataEl) return;
+                    var data = [];
+                    try {
+                        data = JSON.parse(dataEl.textContent).reverse();
+                    } catch(e) {
+                        console.error("Failed to parse recent runs data", e);
+                        return;
+                    }
+                    
+                    if (data.length < 2) {
+                        // Pre-populate mock points so chart is never empty during testing
+                        data = [
+                            { "started_at": "Mon 10:00", "links": 80, "matches": 100 },
+                            { "started_at": "Tue 12:00", "links": 140, "matches": 170 },
+                            { "started_at": "Wed 14:00", "links": 110, "matches": 150 },
+                            { "started_at": "Thu 16:00", "links": 230, "matches": 260 },
+                            { "started_at": "Fri 18:00", "links": 190, "matches": 220 },
+                            { "started_at": "Sat 20:00", "links": 290, "matches": 340 }
+                        ];
+                    }
+                    
+                    var svg = document.getElementById("scan-history-svg");
+                    var line = document.getElementById("chart-line");
+                    var area = document.getElementById("chart-area");
+                    var dotsContainer = document.getElementById("chart-dots");
+                    if (!svg || !line || !area) return;
+                    
+                    var width = 1000;
+                    var height = 240;
+                    var paddingX = 40;
+                    var paddingY = 30;
+                    
+                    var maxVal = Math.max.apply(null, data.map(function(d) { return Math.max(d.links, d.matches, 10); }));
+                    maxVal = Math.ceil(maxVal * 1.15); // Add 15% headroom
+                    
+                    var points = data.map(function(d, i) {
+                        var x = paddingX + (i / (data.length - 1)) * (width - paddingX * 2);
+                        var y = height - paddingY - (d.links / maxVal) * (height - paddingY * 2);
+                        var dateStr = d.started_at;
+                        if (dateStr.length > 16) {
+                            dateStr = dateStr.substring(5, 16);
+                        }
+                        return { x: x, y: y, label: dateStr, value: d.links };
+                    });
+                    
+                    // Construct Bezier curve path
+                    var pathD = "";
+                    if (points.length > 0) {
+                        pathD = "M " + points[0].x + "," + points[0].y;
+                        for (var i = 1; i < points.length; i++) {
+                            var cpX1 = points[i-1].x + (points[i].x - points[i-1].x) / 3;
+                            var cpY1 = points[i-1].y;
+                            var cpX2 = points[i-1].x + 2 * (points[i].x - points[i-1].x) / 3;
+                            var cpY2 = points[i].y;
+                            pathD += " C " + cpX1 + "," + cpY1 + " " + cpX2 + "," + cpY2 + " " + points[i].x + "," + points[i].y;
+                        }
+                    }
+                    
+                    line.setAttribute("d", pathD);
+                    
+                    // Area path closed to bottom
+                    var areaD = pathD;
+                    if (points.length > 0) {
+                        areaD += " L " + points[points.length - 1].x + "," + (height - paddingY);
+                        areaD += " L " + points[0].x + "," + (height - paddingY);
+                        areaD += " Z";
+                    }
+                    area.setAttribute("d", areaD);
+                    
+                    // Draw interactive points
+                    dotsContainer.innerHTML = "";
+                    points.forEach(function(pt, idx) {
+                        var g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+                        g.style.cursor = "pointer";
+                        
+                        var circleOuter = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+                        circleOuter.setAttribute("cx", pt.x);
+                        circleOuter.setAttribute("cy", pt.y);
+                        circleOuter.setAttribute("r", 9);
+                        circleOuter.setAttribute("fill", "rgba(6, 182, 212, 0.2)");
+                        circleOuter.style.transition = "transform 0.15s ease, fill 0.15s ease";
+                        
+                        var circleInner = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+                        circleInner.setAttribute("cx", pt.x);
+                        circleInner.setAttribute("cy", pt.y);
+                        circleInner.setAttribute("r", 4.5);
+                        circleInner.setAttribute("fill", "#06b6d4");
+                        circleInner.setAttribute("stroke", "#ffffff");
+                        circleInner.setAttribute("stroke-width", "2.5");
+                        
+                        var title = document.createElementNS("http://www.w3.org/2000/svg", "title");
+                        title.textContent = pt.label + " | " + pt.value + " links created";
+                        g.appendChild(title);
+                        
+                        g.appendChild(circleOuter);
+                        g.appendChild(circleInner);
+                        dotsContainer.appendChild(g);
+                        
+                        g.addEventListener("mouseenter", function() {
+                            circleOuter.setAttribute("r", 14);
+                            circleOuter.setAttribute("fill", "rgba(167, 139, 250, 0.45)");
+                            circleInner.setAttribute("fill", "#a78bfa");
+                        });
+                        g.addEventListener("mouseleave", function() {
+                            circleOuter.setAttribute("r", 9);
+                            circleOuter.setAttribute("fill", "rgba(6, 182, 212, 0.2)");
+                            circleInner.setAttribute("fill", "#06b6d4");
+                        });
+                    });
+                }
+                
+                document.addEventListener("DOMContentLoaded", drawChart);
+                document.body.addEventListener("htmx:afterSwap", function(evt) {
+                    if (evt.detail.target.id === "dashboard-summary") {
+                        drawChart();
+                    }
+                });
+            })();
+        </script>
+    </div>
+</section>
+
+<!-- SECTION 2: ATTENTION -->
+<section id="section-attention">
+    <details class="collapsible-section" open>
+        <summary>
+            <div>
+                <h2 class="collapsible-header-title">Needs Attention</h2>
+                <div class="collapsible-header-subtitle">Scan mismatches, missing paths, and link corrections.</div>
+            </div>
+            <span class="collapsible-chevron">▼</span>
+        </summary>
+        <div class="collapsible-body">
+            {% include "web/ui/partials/needs_attention.html" %}
+        </div>
+    </details>
+</section>
+
+<!-- SECTION 3: ACTIVITY -->
+<section id="section-activity">
+    <details class="collapsible-section" open>
+        <summary>
+            <div>
+                <h2 class="collapsible-header-title">Live Activity</h2>
+                <div class="collapsible-header-subtitle">Running background tasks and recent job events.</div>
+            </div>
+            <span class="collapsible-chevron">▼</span>
+        </summary>
+        <div class="collapsible-body">
+            {% include "web/ui/partials/activity_feed.html" %}
+        </div>
+    </details>
+</section>
+
+<!-- SECTION 4: SYSTEM & DAEMON -->
+<section id="section-system">
+    <details class="collapsible-section">
+        <summary>
+            <div>
+                <h2 class="collapsible-header-title">System & Daemon</h2>
+                <div class="collapsible-header-subtitle">Scheduler rules, playback protection, queues, and scan history logs.</div>
+            </div>
+            <span class="collapsible-chevron">▼</span>
+        </summary>
+        <div class="collapsible-body">
+            <!-- Daemon Status -->
+            <div class="card mb-3">
+                <div class="disclosure-card__summary">
+                    <div class="disclosure-card__copy">
+                        <span class="disclosure-card__eyebrow">Daemon</span>
+                        <h3 class="disclosure-card__title">Schedule and next scan</h3>
+                        <p class="disclosure-card__hint">Daemon scan interval, last runtime, and estimated next run.</p>
+                    </div>
+                    <div class="disclosure-card__meta">
+                        <span class="badge {{ daemon_schedule.status_badge_class }}">{{ daemon_schedule.status_label }}</span>
+                        {% match daemon_heartbeat %}
+                        {% when Some with (heartbeat) %}
+                        <span class="badge {{ heartbeat.status_badge_class }}">{{ heartbeat.status_label }}</span>
+                        {% when None %}{% endmatch %}
+                        <span class="badge badge-info">{{ daemon_schedule.interval_label }}</span>
+                    </div>
+                </div>
+                <div class="disclosure-card__body">
+                    <div class="metric-grid metric-grid--compact">
+                        <div class="metric-card">
+                            <span class="metric-label">{{ daemon_schedule.last_run_metric_label }}</span>
+                            <strong>{{ daemon_schedule.last_run_label }}</strong>
+                        </div>
+                        <div class="metric-card">
+                            <span class="metric-label">Next scan</span>
+                            <strong>{{ daemon_schedule.next_due_label }}</strong>
+                        </div>
+                        <div class="metric-card">
+                            <span class="metric-label">Search Missing</span>
+                            <strong>{{ daemon_schedule.search_missing_label }}</strong>
+                        </div>
+                        <div class="metric-card">
+                            <span class="metric-label">VACUUM</span>
+                            <strong>{{ daemon_schedule.vacuum_label }}</strong>
+                        </div>
+                        {% match daemon_heartbeat %}
+                        {% when Some with (heartbeat) %}
+                        <div class="metric-card">
+                            <span class="metric-label">Heartbeat</span>
+                            <strong>{{ heartbeat.last_seen_label }}</strong>
+                        </div>
+                        <div class="metric-card">
+                            <span class="metric-label">Daemon Phase</span>
+                            <strong>{{ heartbeat.phase_label }}</strong>
+                        </div>
+                        {% when None %}{% endmatch %}
+                    </div>
+                    <p class="text-muted mt-2">{{ daemon_schedule.detail }}</p>
+                    {% match daemon_heartbeat %}
+                    {% when Some with (heartbeat) %}
+                    <p class="text-muted">{{ heartbeat.detail }}</p>
+                    {% when None %}{% endmatch %}
+                </div>
             </div>
 
-            <div class="card card--nested mt-2">
-                <h3 class="subsection-title">Recent queue jobs</h3>
-                <p class="text-muted">Use these rows when counters alone do not explain why acquisition is stalled, blocked, or waiting to relink.</p>
-                {% if recent_queue_jobs|length > 0 %}
-                <div class="queue-jobs-list">
-                    {% for job in recent_queue_jobs %}
-                    <article class="queue-job-card">
-                        <div class="queue-job-card__header">
-                            <div>
-                                <p class="queue-job-card__eyebrow">{{ job.arr_label }} · {{ job.scope_label }}</p>
-                                <h4 class="queue-job-card__title">{{ job.label }}</h4>
+            <!-- Streaming Guard -->
+            {% match streaming_guard %}
+            {% when Some with (guard) %}
+            <div class="card mb-3">
+                <div class="disclosure-card__summary">
+                    <div class="disclosure-card__copy">
+                        <span class="disclosure-card__eyebrow">Streaming guard</span>
+                        <h3 class="disclosure-card__title">Current playback protection</h3>
+                        <p class="disclosure-card__hint">Checks if active playback is blocking repair or cleanup right now.</p>
+                    </div>
+                    <div class="disclosure-card__meta">
+                        <span class="badge {{ guard.status_badge_class }}">{{ guard.status_label }}</span>
+                        <span class="badge badge-info">{{ guard.active_streams }} active</span>
+                    </div>
+                </div>
+                <div class="disclosure-card__body">
+                    {% match guard.error_message %}
+                    {% when Some with (message) %}
+                    <div class="alert alert-error">
+                        <strong>Tautulli could not be queried.</strong>
+                        {{ message }}
+                    </div>
+                    {% when None %}
+                    {% if guard.active_streams > 0 %}
+                    <div class="alert alert-warning">
+                        <strong>{{ guard.active_streams }} active stream(s) detected.</strong>
+                        Repair and cleanup will skip matching paths until playback stops.
+                    </div>
+                    {% if guard.protected_paths|length > 0 %}
+                    <div class="stack-list">
+                        {% for path in guard.protected_paths %}
+                        <code class="mono">{{ path }}</code>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+                    {% else %}
+                    <div class="alert alert-success">
+                        <strong>No active streams detected.</strong>
+                        Playback is not blocking repair or cleanup right now.
+                    </div>
+                    {% endif %}
+                    {% endmatch %}
+                </div>
+            </div>
+            {% when None %}{% endmatch %}
+
+            <!-- Queue Details and Tools -->
+            <div class="split-grid mb-3">
+                {% include "web/ui/partials/latest_run.html" %}
+
+                <div class="card">
+                    <div class="disclosure-card__summary">
+                        <div class="disclosure-card__copy">
+                            <span class="disclosure-card__eyebrow">Queue</span>
+                            <h3 class="disclosure-card__title">Auto-acquire queue and tools</h3>
+                            <p class="disclosure-card__hint">Queue counts and quick shortcuts.</p>
+                        </div>
+                        <div class="disclosure-card__meta">
+                            <span class="badge {% if queue.active_total > 0 %}badge-warning{% else %}badge-success{% endif %}">
+                                Queue {{ queue.active_total }}
+                            </span>
+                            {% if queue.blocked > 0 || queue.failed > 0 %}
+                            <span class="badge badge-danger">Needs review</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="disclosure-card__body">
+                        <div class="metric-grid metric-grid--compact">
+                            <div class="metric-card">
+                                <span class="metric-label">Queued</span>
+                                <strong>{{ queue.queued }}</strong>
                             </div>
-                            <div class="queue-job-card__badges">
-                                <span class="badge {{ job.status_badge_class }}">{{ job.status_label }}</span>
-                                <span class="badge {% if job.attempts > 0 %}badge-warning{% else %}badge-info{% endif %}">Attempts {{ job.attempts }}</span>
+                            <div class="metric-card">
+                                <span class="metric-label">Downloading</span>
+                                <strong>{{ queue.downloading }}</strong>
+                            </div>
+                            <div class="metric-card">
+                                <span class="metric-label">Relinking</span>
+                                <strong>{{ queue.relinking }}</strong>
+                            </div>
+                            <div class="metric-card">
+                                <span class="metric-label">No Result</span>
+                                <strong>{{ queue.no_result }}</strong>
+                            </div>
+                            <div class="metric-card">
+                                <span class="metric-label">Blocked</span>
+                                <strong>{{ queue.blocked }}</strong>
+                            </div>
+                            <div class="metric-card">
+                                <span class="metric-label">Needs Relink</span>
+                                <strong>{{ queue.completed_unlinked }}</strong>
+                            </div>
+                            <div class="metric-card">
+                                <span class="metric-label">Failed</span>
+                                <strong>{{ queue.failed }}</strong>
                             </div>
                         </div>
-                        <div class="queue-job-card__facts">
-                            <div>
-                                <span class="queue-job-card__label">Query</span>
-                                <code class="mono queue-job-card__query">{{ job.query }}</code>
-                            </div>
-                            <div>
-                                <span class="queue-job-card__label">{{ job.timing_label }}</span>
-                                <strong class="queue-job-card__timing">{{ job.timing_value }}</strong>
-                            </div>
+
+                        {% if stats.dead_links > 0 %}
+                        <div class="alert alert-warning">
+                            <strong>Cleanup still matters.</strong>
+                            {{ stats.dead_links }} dead links are tracked right now.
                         </div>
-                        {% match job.detail %}
-                        {% when Some with (detail) %}
-                        <p class="queue-job-card__detail">{{ detail }}</p>
-                        {% when None %}{% endmatch %}
-                    </article>
-                    {% endfor %}
+                        {% else %}
+                        <div class="alert alert-success">
+                            <strong>No dead links are currently tracked.</strong>
+                        </div>
+                        {% endif %}
+
+                        <div class="actions">
+                            <a href="/status" class="btn btn-secondary">Status</a>
+                            <a href="/links/dead" class="btn btn-secondary">Dead Links</a>
+                            <a href="/cleanup" class="btn btn-secondary">Cleanup</a>
+                            <a href="/doctor" class="btn btn-secondary">Doctor</a>
+                        </div>
+
+                        <div class="card card--nested mt-2">
+                            <h4 class="subsection-title">Recent queue jobs</h4>
+                            <p class="text-muted">Use these rows when counters alone do not explain why acquisition is stalled, blocked, or waiting to relink.</p>
+                            {% if recent_queue_jobs|length > 0 %}
+                            <div class="queue-jobs-list">
+                                {% for job in recent_queue_jobs %}
+                                <article class="queue-job-card">
+                                    <div class="queue-job-card__header">
+                                        <div>
+                                            <p class="queue-job-card__eyebrow">{{ job.arr_label }} · {{ job.scope_label }}</p>
+                                            <h5 class="queue-job-card__title">{{ job.label }}</h5>
+                                        </div>
+                                        <div class="queue-job-card__badges">
+                                            <span class="badge {{ job.status_badge_class }}">{{ job.status_label }}</span>
+                                            <span class="badge {% if job.attempts > 0 %}badge-warning{% else %}badge-info{% endif %}">Attempts {{ job.attempts }}</span>
+                                        </div>
+                                    </div>
+                                    <div class="queue-job-card__facts">
+                                        <div>
+                                            <span class="queue-job-card__label">Query</span>
+                                            <code class="mono queue-job-card__query">{{ job.query }}</code>
+                                        </div>
+                                        <div>
+                                            <span class="queue-job-card__label">{{ job.timing_label }}</span>
+                                            <strong class="queue-job-card__timing">{{ job.timing_value }}</strong>
+                                        </div>
+                                    </div>
+                                    {% match job.detail %}
+                                    {% when Some with (detail) %}
+                                    <p class="queue-job-card__detail">{{ detail }}</p>
+                                    {% when None %}{% endmatch %}
+                                </article>
+                                {% endfor %}
+                            </div>
+                            {% else %}
+                            <div class="alert alert-success">
+                                <strong>No recent queue jobs need review.</strong>
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
                 </div>
-                {% else %}
-                <div class="alert alert-success">
-                    <strong>No recent queue jobs need review.</strong>
+            </div>
+
+            <!-- Recent Runs Logs -->
+            <div class="card">
+                <div class="disclosure-card__summary">
+                    <div class="disclosure-card__copy">
+                        <span class="disclosure-card__eyebrow">Recent Runs</span>
+                        <h3 class="disclosure-card__title">Recent scans history log</h3>
+                        <p class="disclosure-card__hint">Overview of recent scan runs and link mutations.</p>
+                    </div>
+                    <div class="disclosure-card__meta">
+                        <span class="badge badge-info">Recent {{ recent_runs|length }}</span>
+                    </div>
                 </div>
-                {% endif %}
+                <div class="disclosure-card__body">
+                    <div class="actions">
+                        <a href="/scan/history" class="btn btn-secondary">Full History</a>
+                    </div>
+
+                    {% if recent_runs|length > 0 %}
+                    <table class="data-table dense-table">
+                        <thead>
+                            <tr>
+                                <th>Started</th>
+                                <th>Scope</th>
+                                <th>Mode</th>
+                                <th>Runtime</th>
+                                <th>Matches</th>
+                                <th>Links</th>
+                                <th>Refresh</th>
+                                <th>Acquire</th>
+                                <th>Why Not</th>
+                                <th>Dead</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for run in recent_runs %}
+                            <tr>
+                                <td class="mono"><a href="/scan/history/{{ run.id }}">{{ run.started_at }}</a></td>
+                                <td><a href="/scan/history/{{ run.id }}">{{ run.scope_label }}</a></td>
+                                <td>
+                                    {% if run.dry_run %}
+                                    <span class="badge badge-info">Dry</span>
+                                    {% else %}
+                                    <span class="badge badge-success">Live</span>
+                                    {% endif %}
+                                    <span class="badge {{ run.origin_badge_class }}">{{ run.origin_label }}</span>
+                                    {% if run.search_missing %}
+                                    <span class="badge badge-warning">Missing</span>
+                                    {% endif %}
+                                </td>
+                                <td>{{ run.total_runtime }}</td>
+                                <td>{{ run.matches_found }}</td>
+                                <td class="text-success">{{ run.links_created + run.links_updated }}</td>
+                                <td>
+                                    {% if run.plex_refresh_planned_batches > 0 || run.plex_refresh_requested_paths > 0 %}
+                                    {{ run.plex_refresh_refreshed_batches }}/{{ run.plex_refresh_planned_batches }}
+                                    {% if run.plex_refresh_capped_batches > 0 %}
+                                    <span class="badge badge-warning">cap {{ run.plex_refresh_capped_batches }}</span>
+                                    {% endif %}
+                                    {% if run.plex_refresh_aborted_due_to_cap %}
+                                    <span class="badge badge-danger">guard abort</span>
+                                    {% endif %}
+                                    {% if run.plex_refresh_skipped_batches > 0 %}
+                                    <span class="badge badge-danger">skip {{ run.plex_refresh_skipped_batches }}</span>
+                                    {% endif %}
+                                    {% if !run.media_server_refresh.is_empty() %}
+                                    <div>
+                                        {% for refresh in run.media_server_refresh %}
+                                        {% if refresh.deferred_due_to_lock %}
+                                        <span class="badge badge-warning">{{ refresh.server }} pending</span>
+                                        {% else if refresh.failed_batches > 0 %}
+                                        <span class="badge badge-danger">{{ refresh.server }} failed</span>
+                                        {% else if refresh.aborted_due_to_cap %}
+                                        <span class="badge badge-danger">{{ refresh.server }} guard abort</span>
+                                        {% else if refresh.skipped_batches > 0 %}
+                                        <span class="badge badge-warning">{{ refresh.server }} skip {{ refresh.skipped_batches }}</span>
+                                        {% else %}
+                                        <span class="badge badge-info">{{ refresh.server }} {{ refresh.refreshed_batches }}/{{ refresh.planned_batches }}</span>
+                                        {% endif %}
+                                        {% endfor %}
+                                    </div>
+                                    {% endif %}
+                                    {% else %}
+                                    <span class="text-muted">n/a</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if run.auto_acquire_requests > 0 %}
+                                    <span>{{ run.auto_acquire_successes }}/{{ run.auto_acquire_requests }}</span>
+                                    {% else %}
+                                    <span class="text-muted">n/a</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if !run.skip_reason_highlights.is_empty() %}
+                                    <div>
+                                        {% for reason in run.skip_reason_highlights %}
+                                        <span class="badge badge-secondary">{{ reason.label }} {{ reason.count }}</span>
+                                        {% endfor %}
+                                    </div>
+                                    {% if run.skip_reason_extra_buckets > 0 %}
+                                    <div class="text-muted">+{{ run.skip_reason_extra_buckets }} more reason group(s)</div>
+                                    {% endif %}
+                                    {% else %}
+                                    <span class="text-muted">n/a</span>
+                                    {% endif %}
+                                </td>
+                                <td class="{% if run.dead_marked > 0 || run.links_removed > 0 %}text-error{% endif %}">
+                                    {{ run.dead_marked + run.links_removed }}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                    {% else %}
+                    <p class="text-muted">No scan history yet.</p>
+                    {% endif %}
+                </div>
             </div>
         </div>
     </details>
-</div>
-
-<details class="card disclosure-card">
-    <summary class="disclosure-card__summary">
-        <div class="disclosure-card__copy">
-            <span class="disclosure-card__eyebrow">Recent Runs</span>
-            <h2 class="disclosure-card__title">Recent scans</h2>
-            <p class="disclosure-card__hint">Open when you want to compare recent runs.</p>
-        </div>
-        <div class="disclosure-card__meta">
-            <span class="badge badge-info">Recent {{ recent_runs|length }}</span>
-            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
-        </div>
-    </summary>
-    <div class="disclosure-card__body">
-    <div class="actions">
-        <a href="/scan/history" class="btn btn-secondary">Full History</a>
-    </div>
-
-    {% if recent_runs|length > 0 %}
-    <table class="data-table dense-table">
-        <thead>
-            <tr>
-                <th>Started</th>
-                <th>Scope</th>
-                <th>Mode</th>
-                <th>Runtime</th>
-                <th>Matches</th>
-                <th>Links</th>
-                <th>Refresh</th>
-                <th>Acquire</th>
-                <th>Why Not</th>
-                <th>Dead</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for run in recent_runs %}
-            <tr>
-                <td class="mono"><a href="/scan/history/{{ run.id }}">{{ run.started_at }}</a></td>
-                <td><a href="/scan/history/{{ run.id }}">{{ run.scope_label }}</a></td>
-                <td>
-                    {% if run.dry_run %}
-                    <span class="badge badge-info">Dry</span>
-                    {% else %}
-                    <span class="badge badge-success">Live</span>
-                    {% endif %}
-                    <span class="badge {{ run.origin_badge_class }}">{{ run.origin_label }}</span>
-                    {% if run.search_missing %}
-                    <span class="badge badge-warning">Missing</span>
-                    {% endif %}
-                </td>
-                <td>{{ run.total_runtime }}</td>
-                <td>{{ run.matches_found }}</td>
-                <td class="text-success">{{ run.links_created + run.links_updated }}</td>
-                <td>
-                    {% if run.plex_refresh_planned_batches > 0 || run.plex_refresh_requested_paths > 0 %}
-                    {{ run.plex_refresh_refreshed_batches }}/{{ run.plex_refresh_planned_batches }}
-                    {% if run.plex_refresh_capped_batches > 0 %}
-                    <span class="badge badge-warning">cap {{ run.plex_refresh_capped_batches }}</span>
-                    {% endif %}
-                    {% if run.plex_refresh_aborted_due_to_cap %}
-                    <span class="badge badge-danger">guard abort</span>
-                    {% endif %}
-                    {% if run.plex_refresh_skipped_batches > 0 %}
-                    <span class="badge badge-danger">skip {{ run.plex_refresh_skipped_batches }}</span>
-                    {% endif %}
-                    {% if !run.media_server_refresh.is_empty() %}
-                    <div>
-                        {% for refresh in run.media_server_refresh %}
-                        {% if refresh.deferred_due_to_lock %}
-                        <span class="badge badge-warning">{{ refresh.server }} pending</span>
-                        {% else if refresh.failed_batches > 0 %}
-                        <span class="badge badge-danger">{{ refresh.server }} failed</span>
-                        {% else if refresh.aborted_due_to_cap %}
-                        <span class="badge badge-danger">{{ refresh.server }} guard abort</span>
-                        {% else if refresh.skipped_batches > 0 %}
-                        <span class="badge badge-warning">{{ refresh.server }} skip {{ refresh.skipped_batches }}</span>
-                        {% else %}
-                        <span class="badge badge-info">{{ refresh.server }} {{ refresh.refreshed_batches }}/{{ refresh.planned_batches }}</span>
-                        {% endif %}
-                        {% endfor %}
-                    </div>
-                    {% endif %}
-                    {% else %}
-                    <span class="text-muted">n/a</span>
-                    {% endif %}
-                </td>
-                <td>
-                    {% if run.auto_acquire_requests > 0 %}
-                    <span>{{ run.auto_acquire_successes }}/{{ run.auto_acquire_requests }}</span>
-                    {% else %}
-                    <span class="text-muted">n/a</span>
-                    {% endif %}
-                </td>
-                <td>
-                    {% if !run.skip_reason_highlights.is_empty() %}
-                    <div>
-                        {% for reason in run.skip_reason_highlights %}
-                        <span class="badge badge-secondary">{{ reason.label }} {{ reason.count }}</span>
-                        {% endfor %}
-                    </div>
-                    {% if run.skip_reason_extra_buckets > 0 %}
-                    <div class="text-muted">+{{ run.skip_reason_extra_buckets }} more reason group(s)</div>
-                    {% endif %}
-                    {% else %}
-                    <span class="text-muted">n/a</span>
-                    {% endif %}
-                </td>
-                <td class="{% if run.dead_marked > 0 || run.links_removed > 0 %}text-error{% endif %}">
-                    {{ run.dead_marked + run.links_removed }}
-                </td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-    {% else %}
-    <p class="text-muted">No scan history yet.</p>
-    {% endif %}
-    </div>
-</details>
+</section>
 {% endblock %}

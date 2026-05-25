@@ -248,10 +248,16 @@ body {
   border: 1px solid transparent;
   border-left-width: 2px;
   border-radius: var(--radius-md);
-  transition: all 0.2s;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.nav-link:hover,
+.nav-link:hover {
+  background-color: var(--shell-hover-bg);
+  border-color: var(--shell-border-color);
+  color: var(--shell-text-primary);
+  transform: translateX(4px);
+}
+
 .nav-link.active {
   background-color: var(--shell-hover-bg);
   border-color: var(--shell-border-color);
@@ -313,6 +319,15 @@ html:not(.show-advanced) body:not(.page-requires-advanced) .advanced-only {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+  backdrop-filter: blur(12px) saturate(145%);
+  -webkit-backdrop-filter: blur(12px) saturate(145%);
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.25s ease, border-color 0.25s ease;
+}
+
+.card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.35), 0 0 25px rgba(var(--brand-primary-rgb), 0.08);
+  border-color: rgba(var(--brand-primary-rgb), 0.25);
 }
 
 .disclosure-card {
@@ -1648,8 +1663,8 @@ select.form-control {
 
 /* 2026-04 visual design pass */
 :root {
-  --font-ui: "Sora", "Segoe UI", sans-serif;
-  --font-display: "Fraunces", Georgia, serif;
+  --font-ui: "Plus Jakarta Sans", "Sora", "Segoe UI", sans-serif;
+  --font-display: "Outfit", "Fraunces", Georgia, serif;
   --font-mono: "IBM Plex Mono", "SFMono-Regular", monospace;
   --radius-sm: 12px;
   --radius-md: 18px;
@@ -3602,5 +3617,152 @@ body.page-links .page-header h1::before {
   .operator-toolbar__actions .btn {
     flex: 1 1 auto;
     justify-content: center;
+  }
+}
+
+/* Single-page Layout & Quick Links Styles */
+html {
+  scroll-behavior: smooth;
+}
+
+section[id] {
+  scroll-margin-top: 140px; /* offset for header + top margin */
+  margin-bottom: 2.5rem;
+}
+
+.quick-links-nav {
+  position: fixed;
+  top: 1.5rem;
+  right: 1.5rem;
+  z-index: 100;
+  width: 200px;
+  background: rgba(15, 18, 28, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-lg);
+  padding: 1rem;
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.42);
+  backdrop-filter: blur(12px) saturate(145%);
+  -webkit-backdrop-filter: blur(12px) saturate(145%);
+  transition: all 0.3s ease;
+}
+
+.quick-links-title {
+  font-family: var(--font-display);
+  font-size: 0.85rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-faint);
+  margin-bottom: 0.75rem;
+  padding-left: 0.5rem;
+}
+
+.quick-links-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.quick-link-item {
+  display: block;
+  font-family: var(--font-ui);
+  font-size: 0.88rem;
+  color: var(--text-secondary);
+  text-decoration: none;
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--radius-sm);
+  border-left: 2px solid transparent;
+  transition: all 0.2s ease;
+}
+
+.quick-link-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-primary);
+  padding-left: 0.95rem;
+}
+
+.quick-link-item.active {
+  background: rgba(var(--brand-primary-rgb), 0.12);
+  color: var(--brand-primary);
+  border-left-color: var(--brand-primary);
+  font-weight: 600;
+}
+
+/* Collapsible sections styling */
+details.collapsible-section {
+  background-color: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  margin-bottom: 2rem;
+  overflow: hidden;
+  box-shadow: var(--shadow-subtle);
+  transition: transform 0.25s ease, box-shadow 0.25s ease, border-color 0.25s ease;
+  backdrop-filter: blur(12px) saturate(145%);
+  -webkit-backdrop-filter: blur(12px) saturate(145%);
+}
+
+details.collapsible-section:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.35), 0 0 25px rgba(var(--brand-primary-rgb), 0.08);
+  border-color: rgba(var(--brand-primary-rgb), 0.25);
+}
+
+details.collapsible-section[open] {
+  border-color: var(--border-strong);
+}
+
+details.collapsible-section > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 1.5rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  user-select: none;
+  outline: none;
+}
+
+details.collapsible-section > summary::-webkit-details-marker {
+  display: none;
+}
+
+.collapsible-header-title {
+  font-family: var(--font-display);
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.collapsible-header-subtitle {
+  color: var(--text-faint);
+  font-size: 0.88rem;
+  margin-top: 0.25rem;
+}
+
+.collapsible-chevron {
+  font-size: 1.25rem;
+  color: var(--text-faint);
+  transition: transform 0.25s ease;
+}
+
+details.collapsible-section[open] > summary .collapsible-chevron {
+  transform: rotate(180deg);
+}
+
+.collapsible-body {
+  padding: 0 1.5rem 1.5rem;
+  border-top: 1px solid var(--border-color);
+  padding-top: 1.5rem;
+}
+
+@media (max-width: 1300px) {
+  /* Hide floating navigation on narrower screens to save width */
+  .quick-links-nav {
+    display: none !important;
   }
 }

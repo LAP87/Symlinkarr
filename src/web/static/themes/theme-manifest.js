@@ -172,6 +172,41 @@
 
     var themeDefinitions = [
         {
+            id: 'glass-neon',
+            name: 'Obsidian Neon (Glass)',
+            group: 'Premium',
+            mode: 'dark',
+            palette: {
+                text: '#f8fafc',
+                textSecondary: '#cbd5e1',
+                textFaint: '#94a3b8',
+                base: '#08090d',
+                bgSecondary: '#0c0e14',
+                bgTertiary: '#12141c',
+                cardBg: 'rgba(15, 18, 28, 0.45)',
+                cardBgElevated: 'rgba(23, 27, 41, 0.6)',
+                shellBg: '#090a0f',
+                shellHoverBg: '#121520',
+                shellPanelBg: 'rgba(0, 0, 0, 0.25)',
+                shellPanelBorder: 'rgba(255, 255, 255, 0.05)',
+                shellBorderColor: 'rgba(255, 255, 255, 0.06)',
+                shellBorderStrong: 'rgba(255, 255, 255, 0.15)',
+                primary: '#a78bfa',
+                brandPrimary: '#c084fc',
+                tool: '#06b6d4',
+                secondary: '#64748b',
+                success: '#10b981',
+                error: '#f43f5e',
+                info: '#38bdf8',
+                warning: '#f59e0b',
+                borderColor: 'rgba(255, 255, 255, 0.06)',
+                borderStrong: 'rgba(255, 255, 255, 0.12)',
+                btnPrimaryHover: '#7c3aed',
+                btnSecondaryHover: 'rgba(255, 255, 255, 0.08)',
+                gradientColors: ['#a78bfa', '#06b6d4', '#10b981'],
+            },
+        },
+        {
             id: 'auto',
             name: 'Auto',
             group: 'Core',
@@ -593,7 +628,7 @@
     });
 
     var defaults = {
-        dark: 'operator-dark',
+        dark: 'glass-neon',
         light: 'symlinkarr-light',
     };
 
