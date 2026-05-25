@@ -203,8 +203,12 @@
 
         <main class="main-content">
             <div class="main-shell">
-                {% block quick_links %}{% endblock %}
-                {% block content %}{% endblock %}
+                <div class="main-layout-container">
+                    <div class="main-layout-content">
+                        {% block content %}{% endblock %}
+                    </div>
+                    {% block quick_links %}{% endblock %}
+                </div>
 
                 <footer class="footer">
                     <div>

@@ -3630,12 +3630,25 @@ section[id] {
   margin-bottom: 2.5rem;
 }
 
+.main-layout-container {
+  display: flex;
+  gap: 2rem;
+  align-items: flex-start;
+  position: relative;
+  width: 100%;
+}
+
+.main-layout-content {
+  flex: 1;
+  min-width: 0;
+}
+
 .quick-links-nav {
-  position: fixed;
+  position: sticky;
   top: 1.5rem;
-  right: 1.5rem;
-  z-index: 100;
+  z-index: 10;
   width: 200px;
+  flex-shrink: 0;
   background: rgba(15, 18, 28, 0.65);
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: var(--radius-lg);

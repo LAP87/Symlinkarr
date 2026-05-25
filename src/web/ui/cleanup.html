@@ -4,6 +4,18 @@
 {% block nav_cleanup %}active{% endblock %}
 {% block body_class %}page-cleanup page-hub{% endblock %}
 
+{% block quick_links %}
+<nav class="quick-links-nav">
+    <div class="quick-links-title">Quick Links</div>
+    <ul class="quick-links-list">
+        <li><a href="#cleanup-audit" class="quick-link-item active">Run Audit</a></li>
+        <li><a href="#cleanup-report" class="quick-link-item">Latest Report</a></li>
+        <li><a href="#cleanup-advanced" class="quick-link-item">Apply Gate</a></li>
+        <li><a href="#cleanup-guide" class="quick-link-item">Cleanup Guide</a></li>
+    </ul>
+</nav>
+{% endblock %}
+
 {% block content %}
 <div class="page-header page-header--split">
     <div>
@@ -54,149 +66,164 @@
 </div>
 {% when None %}{% endmatch %}
 
-{% if libraries|length > 0 %}
-<div class="card operator-action-card">
-    <div class="section-head">
-        <div>
-            <p class="section-kicker">Audit</p>
-            <h2 class="section-title">Select libraries and scope</h2>
-            <p class="text-muted">This audit checks the selected libraries and writes a report you can review before deleting anything.</p>
+<!-- SECTION 1: RUN AUDIT -->
+<section id="cleanup-audit">
+    {% if libraries|length > 0 %}
+    <div class="card operator-action-card">
+        <div class="section-head">
+            <div>
+                <p class="section-kicker">Audit</p>
+                <h2 class="section-title">Select libraries and scope</h2>
+                <p class="text-muted">This audit checks the selected libraries and writes a report you can review before deleting anything.</p>
+            </div>
         </div>
-    </div>
-    <form action="/cleanup/audit" method="post" class="operator-scan-form">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <div class="form-group">
-            <p class="text-muted mb-1">Checked libraries define where the audit runs. Leave everything checked for a full pass, or narrow it down when you are chasing a specific folder or legacy cleanup problem.</p>
-            <div class="operator-option-grid">
-            {% for lib in libraries %}
-            <label class="toggle-row">
-                <input type="checkbox" name="libraries" value="{{ lib.name }}" checked>
-                <div>
-                    <strong>{{ lib.name }}</strong>
-                    <p class="text-muted mono">{{ lib.path.display() }}</p>
+        <form action="/cleanup/audit" method="post" class="operator-scan-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <div class="form-group">
+                <p class="text-muted mb-1">Checked libraries define where the audit runs. Leave everything checked for a full pass, or narrow it down when you are chasing a specific folder or legacy cleanup problem.</p>
+                <div class="operator-option-grid">
+                {% for lib in libraries %}
+                <label class="toggle-row">
+                    <input type="checkbox" name="libraries" value="{{ lib.name }}" checked>
+                    <div>
+                        <strong>{{ lib.name }}</strong>
+                        <p class="text-muted mono">{{ lib.path.display() }}</p>
+                    </div>
+                </label>
+                {% endfor %}
                 </div>
-            </label>
-            {% endfor %}
             </div>
-        </div>
 
-        <div class="operator-action-strip">
-            <button type="submit" class="btn btn-primary">
-                Start Audit and Build Report
-            </button>
-            <a href="/links/dead" class="btn btn-secondary">Review Dead Links</a>
-        </div>
-    </form>
-</div>
-{% endif %}
-
-{% match last_report %}
-{% when Some with (report) %}
-<div class="split-grid">
-    <section class="card hero-card hero-card--accent">
-        <p class="hero-label">Last Report</p>
-        <div class="hero-value">{{ report.total_findings }}</div>
-        <p class="hero-copy">This is the latest audit report. Open its preview, review the rows, then prune from that same preview.</p>
-        <div class="hero-inline-stats">
-            <span>{{ report.scope_label }} <strong>{{ report.created_at }}</strong></span>
-        </div>
-    </section>
-
-    <section class="card operator-remediation-card">
-        <div class="section-head">
-            <div>
-                <p class="section-kicker">Next Action</p>
-                <h2 class="section-title">Preview first, then apply</h2>
+            <div class="operator-action-strip">
+                <button type="submit" class="btn btn-primary">
+                    Start Audit and Build Report
+                </button>
+                <a href="/links/dead" class="btn btn-secondary">Review Dead Links</a>
             </div>
-        </div>
-        <ol class="steps-list text-muted">
-            <li>Open the preview for this exact report and review the findings.</li>
-            <li>If the preview still looks right, tick the confirmation checkbox on that page.</li>
-            <li>Apply cleanup from that same preview page.</li>
-        </ol>
-        <div class="metric-grid metric-grid--compact mt-2">
-            <div class="metric-card"><span class="metric-label">Critical</span><strong class="text-error">{{ report.critical }}</strong></div>
-            <div class="metric-card"><span class="metric-label">High</span><strong class="text-warning">{{ report.high }}</strong></div>
-            <div class="metric-card"><span class="metric-label">Warning</span><strong class="text-info">{{ report.warning }}</strong></div>
-        </div>
-        <div class="operator-action-strip mt-2">
-            <a href="/cleanup/prune?report={{ report.path.display() }}" class="btn btn-secondary">
-                Open Prune Preview
-            </a>
-        </div>
-    </section>
-</div>
-
-<details class="card disclosure-card advanced-only">
-    <summary class="disclosure-card__summary">
-        <div class="disclosure-card__copy">
-            <span class="disclosure-card__eyebrow">Apply Gate</span>
-            <h2 class="disclosure-card__title">Exact report path and apply safety</h2>
-            <p class="disclosure-card__hint">Open to verify that preview and apply use the same report file.</p>
-        </div>
-        <div class="disclosure-card__meta">
-            <span class="badge badge-info">Advanced</span>
-            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
-        </div>
-    </summary>
-    <div class="disclosure-card__body">
-        <p>Report file: <code class="mono">{{ report.path.display() }}</code></p>
-        <div class="actions">
-            <a href="/cleanup/prune?report={{ report.path.display() }}" class="btn btn-secondary">
-                Preview Prune Actions
-            </a>
-        </div>
-        <small class="text-muted">
-            Prune is permanent. Review the preview before applying it.
-        </small>
+        </form>
     </div>
-</details>
-{% when None %}
-    {% match last_report_path %}
-    {% when Some with (path) %}
-    <div class="card">
-        <div class="section-head">
-            <div>
-                <p class="section-kicker">History</p>
-                <h2 class="section-title">Last audit report</h2>
+    {% endif %}
+</section>
+
+<!-- SECTION 2: LATEST REPORT -->
+<section id="cleanup-report">
+    {% match last_report %}
+    {% when Some with (report) %}
+    <div class="split-grid">
+        <div class="card hero-card hero-card--accent">
+            <p class="hero-label">Last Report</p>
+            <div class="hero-value">{{ report.total_findings }}</div>
+            <p class="hero-copy">This is the latest audit report. Open its preview, review the rows, then prune from that same preview.</p>
+            <div class="hero-inline-stats">
+                <span>{{ report.scope_label }} <strong>{{ report.created_at }}</strong></span>
             </div>
         </div>
-        <p>Report file: <code class="mono">{{ path.display() }}</code></p>
-        <p class="text-muted mt-1">The report exists on disk but could not be parsed into a summary. Open the preview before applying prune.</p>
-        <div class="actions mt-2">
-            <a href="/cleanup/prune?report={{ path.display() }}" class="btn btn-secondary">
-                Open Prune Preview
-            </a>
+
+        <div class="card operator-remediation-card">
+            <div class="section-head">
+                <div>
+                    <p class="section-kicker">Next Action</p>
+                    <h2 class="section-title">Preview first, then apply</h2>
+                </div>
+            </div>
+            <ol class="steps-list text-muted">
+                <li>Open the preview for this exact report and review the findings.</li>
+                <li>If the preview still looks right, tick the confirmation checkbox on that page.</li>
+                <li>Apply cleanup from that same preview page.</li>
+            </ol>
+            <div class="metric-grid metric-grid--compact mt-2">
+                <div class="metric-card"><span class="metric-label">Critical</span><strong class="text-error">{{ report.critical }}</strong></div>
+                <div class="metric-card"><span class="metric-label">High</span><strong class="text-warning">{{ report.high }}</strong></div>
+                <div class="metric-card"><span class="metric-label">Warning</span><strong class="text-info">{{ report.warning }}</strong></div>
+            </div>
+            <div class="operator-action-strip mt-2">
+                <a href="/cleanup/prune?report={{ report.path.display() }}" class="btn btn-secondary">
+                    Open Prune Preview
+                </a>
+            </div>
         </div>
     </div>
     {% when None %}
+        {% match last_report_path %}
+        {% when Some with (path) %}
+        <div class="card">
+            <div class="section-head">
+                <div>
+                    <p class="section-kicker">History</p>
+                    <h2 class="section-title">Last audit report</h2>
+                </div>
+            </div>
+            <p>Report file: <code class="mono">{{ path.display() }}</code></p>
+            <p class="text-muted mt-1">The report exists on disk but could not be parsed into a summary. Open the preview before applying prune.</p>
+            <div class="actions mt-2">
+                <a href="/cleanup/prune?report={{ path.display() }}" class="btn btn-secondary">
+                    Open Prune Preview
+                </a>
+            </div>
+        </div>
+        {% when None %}
+        <div class="empty-state">
+            <p class="text-muted">No cleanup audits recorded yet. Run your first audit above.</p>
+        </div>
+        {% endmatch %}
     {% endmatch %}
-{% endmatch %}
+</section>
 
-<details class="card disclosure-card">
-    <summary class="disclosure-card__summary">
-        <div class="disclosure-card__copy">
-            <span class="disclosure-card__eyebrow">Guide</span>
-            <h2 class="disclosure-card__title">How cleanup works</h2>
-            <p class="disclosure-card__hint">Keep this collapsed unless you need the slower, step-by-step safety reminder.</p>
+<!-- SECTION 3: APPLY GATE -->
+<section id="cleanup-advanced">
+    {% match last_report %}
+    {% when Some with (report) %}
+    <details class="collapsible-section advanced-only">
+        <summary>
+            <div>
+                <h2 class="collapsible-header-title">Apply Gate</h2>
+                <div class="collapsible-header-subtitle">Exact report path and apply safety</div>
+            </div>
+            <span class="collapsible-chevron">▼</span>
+        </summary>
+        <div class="collapsible-body">
+            <div class="card">
+                <p>Report file: <code class="mono">{{ report.path.display() }}</code></p>
+                <div class="actions">
+                    <a href="/cleanup/prune?report={{ report.path.display() }}" class="btn btn-secondary">
+                        Preview Prune Actions
+                    </a>
+                </div>
+                <small class="text-muted">
+                    Prune is permanent. Review the preview before applying it.
+                </small>
+            </div>
         </div>
-        <div class="disclosure-card__meta">
-            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
-        </div>
-    </summary>
-    <div class="disclosure-card__body">
-        <ol class="steps-list">
-            <li><strong>Audit:</strong> Scan the selected libraries and write a report with candidate findings.</li>
-            <li><strong>Preview:</strong> Open prune preview to review the exact rows that would be removed.</li>
-            <li><strong>Apply:</strong> Confirm the preview and apply from that same page when it matches what you expect.</li>
-        </ol>
+    </details>
+    {% when None %}{% endmatch %}
+</section>
 
-        <h3 class="subsection-title mt-2">Finding severities</h3>
-        <ul class="severity-list">
-            <li><span class="badge badge-danger">Critical</span> Definitely problematic links, such as broken sources or out-of-range episodes.</li>
-            <li><span class="badge badge-warning">High</span> Likely problematic links that should be reviewed closely before pruning.</li>
-            <li><span class="badge badge-info">Warning</span> Context-only anomalies that may be worth checking, but are not automatic prune targets.</li>
-        </ul>
-    </div>
-</details>
+<!-- SECTION 4: CLEANUP GUIDE -->
+<section id="cleanup-guide">
+    <details class="collapsible-section">
+        <summary>
+            <div>
+                <h2 class="collapsible-header-title">How cleanup works</h2>
+                <div class="collapsible-header-subtitle">Step-by-step pipeline guidelines and severity classifications.</div>
+            </div>
+            <span class="collapsible-chevron">▼</span>
+        </summary>
+        <div class="collapsible-body">
+            <div class="card">
+                <ol class="steps-list">
+                    <li><strong>Audit:</strong> Scan the selected libraries and write a report with candidate findings.</li>
+                    <li><strong>Preview:</strong> Open prune preview to review the exact rows that would be removed.</li>
+                    <li><strong>Apply:</strong> Confirm the preview and apply from that same page when it matches what you expect.</li>
+                </ol>
+
+                <h3 class="subsection-title mt-2">Finding severities</h3>
+                <ul class="severity-list">
+                    <li><span class="badge badge-danger">Critical</span> Definitely problematic links, such as broken sources or out-of-range episodes.</li>
+                    <li><span class="badge badge-warning">High</span> Likely problematic links that should be reviewed closely before pruning.</li>
+                    <li><span class="badge badge-info">Warning</span> Context-only anomalies that may be worth checking, but are not automatic prune targets.</li>
+                </ul>
+            </div>
+        </div>
+    </details>
+</section>
 {% endblock %}
