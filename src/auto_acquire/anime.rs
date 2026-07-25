@@ -29,12 +29,55 @@ pub(super) fn rank_candidate_hits(
     search_query: &str,
     hits: Vec<ProwlarrResult>,
 ) -> Vec<ProwlarrResult> {
-    if normalize_arr_name(&request.arr) != "sonarranime" {
-        return hits;
+    if matches!(request.relink_check, RelinkCheck::SymlinkPath(_)) {
+        return rank_symlink_path_candidate_hits(request, hits);
     }
 
+    if normalize_arr_name(&request.arr) == "sonarranime" {
+        return rank_anime_candidate_hits(request, search_query, hits);
+    }
+
+    if let Some((season, episode)) = relink_season_episode(&request.relink_check) {
+        return rank_tv_candidate_hits(request, hits, season, episode);
+    }
+
+    match &request.relink_check {
+        RelinkCheck::MediaId(_) if normalize_arr_name(&request.arr) == "radarr" => {
+            rank_movie_candidate_hits(request, hits)
+        }
+        // A show-wide request has no episode/season identity to validate, so it
+        // must not reach Decypharr through the Prowlarr path.
+        _ => Vec::new(),
+    }
+}
+
+fn rank_symlink_path_candidate_hits(
+    request: &AutoAcquireRequest,
+    hits: Vec<ProwlarrResult>,
+) -> Vec<ProwlarrResult> {
+    if normalize_arr_name(&request.arr) == "radarr" {
+        return rank_movie_candidate_hits(request, hits);
+    }
+
+    let scanner = SourceScanner::new();
+    let slot = std::iter::once(request.query.as_str())
+        .chain(request.query_hints.iter().map(String::as_str))
+        .flat_map(|value| scanner.parse_release_title_variants(value))
+        .find_map(|(_, parsed)| Some((parsed.season?, parsed.episode?)));
+
+    match slot {
+        Some((season, episode)) => rank_tv_candidate_hits(request, hits, season, episode),
+        None => Vec::new(),
+    }
+}
+
+fn rank_anime_candidate_hits(
+    request: &AutoAcquireRequest,
+    search_query: &str,
+    hits: Vec<ProwlarrResult>,
+) -> Vec<ProwlarrResult> {
     let Some(context) = build_anime_request_context(request) else {
-        return hits;
+        return Vec::new();
     };
     let scanner = SourceScanner::new();
     let query_is_specific = query_has_specific_numbering(search_query);
@@ -71,15 +114,142 @@ pub(super) fn rank_candidate_hits(
         .collect()
 }
 
+fn rank_movie_candidate_hits(
+    request: &AutoAcquireRequest,
+    hits: Vec<ProwlarrResult>,
+) -> Vec<ProwlarrResult> {
+    let scanner = SourceScanner::new();
+    let request_tokens = request_title_tokens(&scanner, request);
+    let requested_year = requested_year(request);
+    rank_scored_hits(
+        hits.into_iter().filter_map(|hit| {
+            let title_tokens = normalized_tokens(&hit.title);
+            let title_set = title_tokens
+                .iter()
+                .map(String::as_str)
+                .collect::<HashSet<_>>();
+            let matched = title_overlap(&request_tokens, &title_set);
+            if matched == 0 || looks_like_tv_release(&scanner, &hit.title) {
+                return None;
+            }
+
+            let parsed_years = scanner
+                .parse_release_title_variants(&hit.title)
+                .into_iter()
+                .filter_map(|(_, parsed)| parsed.year)
+                .collect::<HashSet<_>>();
+            if requested_year
+                .is_some_and(|year| !parsed_years.is_empty() && !parsed_years.contains(&year))
+            {
+                return None;
+            }
+
+            let mut score = matched * 200;
+            if matched as usize == request_tokens.len() {
+                score += 220;
+            }
+            if requested_year.is_some_and(|year| parsed_years.contains(&year)) {
+                score += 120;
+            }
+            Some((score + hit_rank_bonus(&hit), hit))
+        }),
+        600,
+    )
+}
+
+fn rank_tv_candidate_hits(
+    request: &AutoAcquireRequest,
+    hits: Vec<ProwlarrResult>,
+    desired_season: u32,
+    desired_episode: u32,
+) -> Vec<ProwlarrResult> {
+    let scanner = SourceScanner::new();
+    let request_tokens = request_title_tokens(&scanner, request);
+    let upgrade = request.label.contains("upgrade");
+    let prefer_pack = request_prefers_season_pack(request);
+    rank_scored_hits(
+        hits.into_iter().filter_map(|hit| {
+            let title_tokens = normalized_tokens(&hit.title);
+            let title_set = title_tokens
+                .iter()
+                .map(String::as_str)
+                .collect::<HashSet<_>>();
+            let matched = title_overlap(&request_tokens, &title_set);
+            let score = tv_release_score(
+                &scanner,
+                &hit.title,
+                desired_season,
+                desired_episode,
+                upgrade,
+                prefer_pack,
+            )?;
+            (matched > 0).then_some((score + matched * 200 + hit_rank_bonus(&hit), hit))
+        }),
+        2_400,
+    )
+}
+
+fn rank_scored_hits(
+    hits: impl IntoIterator<Item = (i64, ProwlarrResult)>,
+    strong_identity_score: i64,
+) -> Vec<ProwlarrResult> {
+    let mut scored = hits.into_iter().collect::<Vec<_>>();
+    scored.sort_by(|(score_a, hit_a), (score_b, hit_b)| {
+        score_b
+            .cmp(score_a)
+            .then_with(|| hit_b.seeders.unwrap_or(0).cmp(&hit_a.seeders.unwrap_or(0)))
+            .then_with(|| hit_b.size.cmp(&hit_a.size))
+            .then_with(|| hit_a.title.cmp(&hit_b.title))
+    });
+
+    if let [top, runner_up, ..] = scored.as_slice() {
+        if top.0 < strong_identity_score && top.0 - runner_up.0 <= 80 {
+            debug!("Auto-acquire: rejecting ambiguous Prowlarr candidates without strong identity");
+            return Vec::new();
+        }
+    }
+
+    scored.into_iter().map(|(_, hit)| hit).collect()
+}
+
+fn hit_rank_bonus(hit: &ProwlarrResult) -> i64 {
+    i64::from(hit.seeders.unwrap_or(0).clamp(0, 200)) + size_score(hit.size)
+}
+
+fn title_overlap(request_tokens: &[String], title_tokens: &HashSet<&str>) -> i64 {
+    let meaningful = request_tokens
+        .iter()
+        .filter(|token| !matches!(token.as_str(), "a" | "an" | "and" | "for" | "of" | "the"))
+        .collect::<Vec<_>>();
+    let tokens = if meaningful.is_empty() {
+        request_tokens.iter().collect::<Vec<_>>()
+    } else {
+        meaningful
+    };
+    tokens
+        .iter()
+        .filter(|token| title_tokens.contains(token.as_str()))
+        .count() as i64
+}
+
+fn looks_like_tv_release(scanner: &SourceScanner, title: &str) -> bool {
+    scanner
+        .parse_release_title_variants(title)
+        .into_iter()
+        .any(|(_, parsed)| parsed.season.is_some() || parsed.episode.is_some())
+        || {
+            let normalized = crate::utils::normalize(title);
+            let tokens = normalized_tokens(title);
+            let token_set = tokens.iter().map(String::as_str).collect::<HashSet<_>>();
+            contains_complete_marker(&token_set)
+                || (1..=100).any(|season| season_token_matches(&token_set, &normalized, season))
+        }
+}
+
 pub(super) fn build_anime_request_context(
     request: &AutoAcquireRequest,
 ) -> Option<AnimeRequestContext> {
-    let RelinkCheck::MediaEpisode {
-        season, episode, ..
-    } = &request.relink_check
-    else {
-        return None;
-    };
+    let (season, episode) = relink_season_episode(&request.relink_check)?;
 
     let scanner = SourceScanner::new();
     let query_variants = scanner.parse_release_title_variants(&request.query);
@@ -87,7 +257,7 @@ pub(super) fn build_anime_request_context(
     let mut query_episode = None;
     let mut absolute_query_episode = None;
     let mut acceptable_episode_slots = Vec::new();
-    push_episode_slot(&mut acceptable_episode_slots, (*season, *episode));
+    push_episode_slot(&mut acceptable_episode_slots, (season, episode));
 
     for (kind, parsed) in query_variants {
         match (parsed.season, parsed.episode, kind) {
@@ -152,14 +322,15 @@ pub(super) fn build_anime_request_context(
     }
 
     Some(AnimeRequestContext {
-        desired_season: *season,
-        desired_episode: *episode,
+        desired_season: season,
+        desired_episode: episode,
         query_season,
         query_episode,
         absolute_query_episode,
         acceptable_episode_slots,
         title_tokens: request_title_tokens(&scanner, request),
         upgrade: request.label.contains("upgrade"),
+        prefer_pack: request_prefers_season_pack(request),
     })
 }
 
@@ -230,7 +401,10 @@ fn anime_hit_score(
         }
     }
 
-    if let Some(score) = anime_pack_score(context, &hit.title, title_matches) {
+    if let Some(mut score) = anime_pack_score(context, &hit.title, title_matches) {
+        if context.prefer_pack {
+            score += 1_500;
+        }
         best_score = Some(best_score.map_or(score, |best| best.max(score)));
     }
 
@@ -330,6 +504,42 @@ pub(super) fn anime_quality_bonus(quality: Option<&str>, upgrade: bool) -> i64 {
     } else {
         bonus / 2
     }
+}
+
+pub(super) fn tv_release_score(
+    scanner: &SourceScanner,
+    title: &str,
+    desired_season: u32,
+    desired_episode: u32,
+    upgrade: bool,
+    prefer_pack: bool,
+) -> Option<i64> {
+    let quality_bonus = if upgrade { 60 } else { 30 };
+    let mut best_score = None::<i64>;
+    for (_, parsed) in scanner.parse_release_title_variants(title) {
+        if let (Some(season), Some(episode)) = (parsed.season, parsed.episode) {
+            if season == desired_season && episode == desired_episode {
+                best_score = Some(best_score.map_or(2_400 + quality_bonus, |best| {
+                    best.max(2_400 + quality_bonus)
+                }));
+            }
+        }
+    }
+
+    let normalized = crate::utils::normalize(title);
+    let token_vec = normalized_tokens(title);
+    let token_set = token_vec.iter().map(String::as_str).collect::<HashSet<_>>();
+    if season_token_matches(&token_set, &normalized, desired_season)
+        && (episode_ranges(title)
+            .into_iter()
+            .any(|(start, end)| (start..=end).contains(&desired_episode))
+            || contains_complete_marker(&token_set))
+    {
+        let score = 1_450 + if prefer_pack { 1_500 } else { 0 };
+        best_score = Some(best_score.map_or(score, |best| best.max(score)));
+    }
+
+    best_score
 }
 
 pub(super) fn anime_pack_score(

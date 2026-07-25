@@ -1,6 +1,20 @@
+use super::dmm::rank_dmm_candidates;
 use super::*;
 use chrono::TimeZone;
 use std::collections::HashSet;
+
+fn active_episode_link(media_id: &str, season: u32, episode: u32) -> crate::models::LinkRecord {
+    crate::models::LinkRecord {
+        id: None,
+        source_path: PathBuf::from(format!("/source/S{season:02}E{episode:02}.mkv")),
+        target_path: PathBuf::from(format!("/library/S{season:02}E{episode:02}.mkv")),
+        media_id: media_id.to_string(),
+        media_type: crate::models::MediaType::Tv,
+        status: crate::models::LinkStatus::Active,
+        created_at: None,
+        updated_at: None,
+    }
+}
 
 #[test]
 fn failed_retry_backoff_values() {
@@ -182,6 +196,62 @@ fn parse_media_episode_value_roundtrips() {
 }
 
 #[test]
+fn parse_media_season_value_normalizes_episode_set() {
+    assert_eq!(
+        parse_media_season_value("tvdb-12345|2|3,1,3,2").unwrap(),
+        ("tvdb-12345".to_string(), 2, vec![1, 2, 3])
+    );
+    assert!(parse_media_season_value("tvdb-12345|2|").is_err());
+}
+
+#[test]
+fn media_season_seed_upgrades_legacy_anchor_job_in_place() {
+    let request = AutoAcquireRequest {
+        label: "Whole Show S02 season pack".to_string(),
+        query: "Whole Show S02 Complete".to_string(),
+        query_hints: Vec::new(),
+        imdb_id: Some("tt1234567".to_string()),
+        categories: vec![5000],
+        arr: "sonarr".to_string(),
+        library_filter: Some("Series".to_string()),
+        relink_check: RelinkCheck::MediaSeason {
+            media_id: "tvdb-11111".to_string(),
+            season: 2,
+            episodes: vec![1, 2, 3],
+        },
+    };
+
+    let seed = queue::request_to_seed(&request).unwrap();
+
+    assert_eq!(seed.request_key, "episode:tvdb-11111:2:1");
+    assert_eq!(seed.relink_kind, AcquisitionRelinkKind::MediaSeason);
+    assert_eq!(seed.relink_value, "tvdb-11111|2|1,2,3");
+}
+
+#[tokio::test]
+async fn media_season_relink_requires_every_episode() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+        .await
+        .unwrap();
+    let check = RelinkCheck::MediaSeason {
+        media_id: "tvdb-11111".to_string(),
+        season: 2,
+        episodes: vec![1, 2],
+    };
+
+    assert!(!relink_satisfied(&db, &check).await.unwrap());
+    db.insert_link(&active_episode_link("tvdb-11111", 2, 1))
+        .await
+        .unwrap();
+    assert!(!relink_satisfied(&db, &check).await.unwrap());
+    db.insert_link(&active_episode_link("tvdb-11111", 2, 2))
+        .await
+        .unwrap();
+    assert!(relink_satisfied(&db, &check).await.unwrap());
+}
+
+#[test]
 fn candidate_queries_include_label_and_yearless_fallbacks() {
     let request = AutoAcquireRequest {
         label: "The Darwin Incident (2026) S01E10 upgrade".to_string(),
@@ -297,6 +367,77 @@ fn fake_hit(title: &str, seeders: i32, size_gb: i64) -> ProwlarrResult {
 }
 
 #[test]
+fn symlink_path_self_heal_keeps_matching_tv_release() {
+    let request = AutoAcquireRequest {
+        label: "Example Show".to_string(),
+        query: "Example Show S01E02".to_string(),
+        query_hints: Vec::new(),
+        imdb_id: None,
+        categories: vec![5000],
+        arr: "sonarr".to_string(),
+        library_filter: Some("Series".to_string()),
+        relink_check: RelinkCheck::SymlinkPath(PathBuf::from(
+            "/library/Example Show/Season 01/Example Show - S01E02.mkv",
+        )),
+    };
+
+    let ranked = rank_candidate_hits(
+        &request,
+        &request.query,
+        vec![
+            fake_hit("Example.Show.S01E01.1080p", 100, 2),
+            fake_hit("Example.Show.S01E02.1080p", 10, 2),
+        ],
+    );
+
+    assert_eq!(ranked.len(), 1);
+    assert_eq!(ranked[0].title, "Example.Show.S01E02.1080p");
+}
+
+#[test]
+fn dmm_symlink_path_self_heal_uses_inferred_episode_slot() {
+    let request = AutoAcquireRequest {
+        label: "Example Show".to_string(),
+        query: "Example Show S01E02".to_string(),
+        query_hints: Vec::new(),
+        imdb_id: None,
+        categories: vec![5000],
+        arr: "sonarr".to_string(),
+        library_filter: Some("Series".to_string()),
+        relink_check: RelinkCheck::SymlinkPath(PathBuf::from(
+            "/library/Example Show/Season 01/Example Show - S01E02.mkv",
+        )),
+    };
+    let title_hit = DmmTitleCandidate {
+        title: "Example Show".to_string(),
+        imdb_id: "tt1234567".to_string(),
+        year: Some(2026),
+    };
+
+    let ranked = rank_dmm_candidates(
+        &request,
+        &request.query,
+        &title_hit,
+        vec![
+            DmmTorrentResult {
+                title: "Example.Show.S01E01.1080p".to_string(),
+                hash: "wrong".to_string(),
+                file_size: 2 * 1024 * 1024 * 1024,
+            },
+            DmmTorrentResult {
+                title: "Example.Show.S01E02.1080p".to_string(),
+                hash: "right".to_string(),
+                file_size: 2 * 1024 * 1024 * 1024,
+            },
+        ],
+        10,
+    );
+
+    assert_eq!(ranked.len(), 1);
+    assert_eq!(ranked[0].info_hash.as_deref(), Some("right"));
+}
+
+#[test]
 fn anime_ranking_prefers_exact_episode_over_packs() {
     let request = AutoAcquireRequest {
         label: "Frieren S01E15".to_string(),
@@ -323,6 +464,99 @@ fn anime_ranking_prefers_exact_episode_over_packs() {
     );
 
     assert_eq!(ranked[0].title, "[SubsPlease] Sousou no Frieren - 15");
+}
+
+#[test]
+fn whole_empty_anime_request_prefers_season_pack_over_episode() {
+    let request = AutoAcquireRequest {
+        label: "86: Eighty Six S01 season pack".to_string(),
+        query: "86: Eighty Six S01 Complete".to_string(),
+        query_hints: vec!["86: Eighty Six S01E01".to_string()],
+        imdb_id: Some("tt13718450".to_string()),
+        categories: vec![5070],
+        arr: "sonarr-anime".to_string(),
+        library_filter: Some("Anime".to_string()),
+        relink_check: RelinkCheck::MediaEpisode {
+            media_id: "tvdb-378609".to_string(),
+            season: 1,
+            episode: 1,
+        },
+    };
+
+    let ranked = rank_candidate_hits(
+        &request,
+        "86: Eighty Six S01 Complete",
+        vec![
+            fake_hit(
+                "86 EIGHTY-SIX AKA 86: Eighty Six S01E01 1080p BluRay",
+                20,
+                2,
+            ),
+            fake_hit("86 EIGHTY-SIX S01 01-23 Complete 1080p BluRay", 15, 24),
+        ],
+    );
+
+    assert_eq!(
+        ranked[0].title,
+        "86 EIGHTY-SIX S01 01-23 Complete 1080p BluRay"
+    );
+
+    let dmm_ranked = rank_dmm_anime_results(
+        &request,
+        "imdb:tt13718450",
+        vec![
+            DmmTorrentResult {
+                title: "86 EIGHTY-SIX AKA 86: Eighty Six S01E01 1080p BluRay".to_string(),
+                hash: "episode".to_string(),
+                file_size: 2 * 1024 * 1024 * 1024,
+            },
+            DmmTorrentResult {
+                title: "86 EIGHTY-SIX S01 01-23 Complete 1080p BluRay".to_string(),
+                hash: "pack".to_string(),
+                file_size: 24 * 1024 * 1024 * 1024,
+            },
+        ],
+    );
+
+    assert_eq!(dmm_ranked[0].hash, "pack");
+}
+
+#[test]
+fn dmm_season_relink_request_uses_tv_ranking() {
+    let request = AutoAcquireRequest {
+        label: "Whole Show S01 season pack".to_string(),
+        query: "Whole Show S01 Complete".to_string(),
+        query_hints: vec!["Whole Show S01E01".to_string()],
+        imdb_id: Some("tt1234567".to_string()),
+        categories: vec![5000],
+        arr: "sonarr".to_string(),
+        library_filter: Some("Series".to_string()),
+        relink_check: RelinkCheck::MediaSeason {
+            media_id: "tvdb-11111".to_string(),
+            season: 1,
+            episodes: vec![1, 2],
+        },
+    };
+    let title_hit = DmmTitleCandidate {
+        title: "Whole Show".to_string(),
+        imdb_id: "tt1234567".to_string(),
+        year: Some(2026),
+    };
+
+    let ranked = rank_dmm_candidates(
+        &request,
+        "imdb:tt1234567",
+        &title_hit,
+        vec![DmmTorrentResult {
+            title: "Whole.Show.S01.Complete.1080p".to_string(),
+            hash: "season-pack".to_string(),
+            file_size: 20 * 1024 * 1024 * 1024,
+        }],
+        10,
+    );
+
+    assert_eq!(ranked.len(), 1);
+    assert_eq!(ranked[0].info_hash.as_deref(), Some("season-pack"));
 }
 
 #[test]

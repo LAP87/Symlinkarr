@@ -1,3 +1,4 @@
+pub mod backfill;
 pub mod backup;
 pub mod bootstrap;
 pub mod cache;
@@ -6,7 +7,9 @@ pub mod config;
 pub mod daemon;
 pub mod discover;
 pub mod doctor;
+pub mod importer;
 pub mod queue;
+pub mod refresh;
 pub mod repair;
 pub mod report;
 pub mod restore;

@@ -4,6 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Symlinkarr{% endblock %}</title>
+    <link rel="icon" href="/static/favicon.ico" sizes="any">
+    <link rel="icon" type="image/png" href="/static/favicon-32x32.png" sizes="32x32">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/style.css">
     <style id="theme-vars"></style>
     <script src="/static/themes/theme-manifest.js"></script>
@@ -55,7 +60,9 @@
             <div class="sidebar-top">
                 <div class="sidebar-brand-row">
                     <a href="/" class="logo">
-                        <span class="logo-mark">SY</span>
+                        <span class="logo-mark" aria-hidden="true">
+                <img class="logo-mark__image" src="/static/symlinkarr-icon-nav.png" alt="">
+                        </span>
                         <span class="logo-copy">
                             <span class="logo-title">Symlinkarr</span>
                             <span class="logo-subtitle">Web UI</span>
@@ -100,6 +107,12 @@
                     </a>
                 </li>
                 <li class="nav-item">
+                    <a href="/scheduler" class="nav-link {% block nav_scheduler %}{% endblock %}">
+                        <span class="nav-link__icon">SD</span>
+                        <span class="nav-link__label">Scheduler</span>
+                    </a>
+                </li>
+                <li class="nav-item">
                     <a href="/links" class="nav-link {% block nav_links %}{% endblock %}">
                         <span class="nav-link__icon">LK</span>
                         <span class="nav-link__label">Links</span>
@@ -122,6 +135,12 @@
                     <a href="/discover" class="nav-link {% block nav_discover %}{% endblock %}">
                         <span class="nav-link__icon">DV</span>
                         <span class="nav-link__label">Discover</span>
+                    </a>
+                </li>
+                <li class="nav-item advanced-only">
+                    <a href="/import" class="nav-link {% block nav_import %}{% endblock %}">
+                        <span class="nav-link__icon">IM</span>
+                        <span class="nav-link__label">Import</span>
                     </a>
                 </li>
                 <li class="nav-section-label advanced-only">System</li>
@@ -184,7 +203,12 @@
 
         <main class="main-content">
             <div class="main-shell">
-                {% block content %}{% endblock %}
+                <div class="main-layout-container">
+                    <div class="main-layout-content">
+                        {% block content %}{% endblock %}
+                    </div>
+                    {% block quick_links %}{% endblock %}
+                </div>
 
                 <footer class="footer">
                     <div>
@@ -197,5 +221,45 @@
     </div>
 
     {% block scripts %}{% endblock %}
+    <script>
+        // Scroll spy for Quick Links navigation
+        (function() {
+            function updateScrollSpy() {
+                var nav = document.querySelector('.quick-links-nav');
+                if (!nav) return;
+                
+                var sections = document.querySelectorAll('section[id]');
+                var scrollPos = window.scrollY || document.documentElement.scrollTop || document.body.scrollTop;
+                
+                // Add offset for breathing room (header height and layout margins)
+                var activeId = null;
+                for (var i = 0; i < sections.length; i++) {
+                    var sec = sections[i];
+                    if (sec.offsetTop - 140 <= scrollPos) {
+                        activeId = sec.getAttribute('id');
+                    }
+                }
+                
+                if (activeId) {
+                    var links = nav.querySelectorAll('.quick-link-item');
+                    links.forEach(function(link) {
+                        var href = link.getAttribute('href');
+                        if (href === '#' + activeId) {
+                            link.classList.add('active');
+                        } else {
+                            link.classList.remove('active');
+                        }
+                    });
+                }
+            }
+            
+            window.addEventListener('scroll', updateScrollSpy);
+            window.addEventListener('resize', updateScrollSpy);
+            document.addEventListener('DOMContentLoaded', updateScrollSpy);
+            document.body.addEventListener('htmx:afterSwap', function() {
+                setTimeout(updateScrollSpy, 100);
+            });
+        })();
+    </script>
 </body>
 </html>

@@ -351,6 +351,9 @@ pub struct SymlinkConfig {
     /// Dry-run mode: log actions without creating symlinks
     #[serde(default)]
     pub dry_run: bool,
+    /// Keep multiple matched versions for the same movie or episode.
+    #[serde(default)]
+    pub multi_version: bool,
     /// Naming template for symlinked episodes
     #[serde(default = "default_naming_template")]
     pub naming_template: String,
@@ -417,6 +420,17 @@ pub struct DecypharrConfig {
     pub arr_name_anime: String,
 }
 
+impl DecypharrConfig {
+    /// Effective per-run acquisition cap. A configured value of 0 means unlimited.
+    pub fn effective_max_requests_per_run(&self) -> usize {
+        if self.max_requests_per_run == 0 {
+            usize::MAX
+        } else {
+            self.max_requests_per_run
+        }
+    }
+}
+
 /// Debrid Media Manager integration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DmmConfig {
@@ -470,6 +484,16 @@ pub struct TautulliConfig {
     pub api_key: String,
 }
 
+/// Media-server refresh behavior after Symlinkarr mutates links.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaRefreshMode {
+    #[default]
+    Immediate,
+    Deferred,
+    Disabled,
+}
+
 /// Plex integration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlexConfig {
@@ -482,6 +506,9 @@ pub struct PlexConfig {
     /// Enable Symlinkarr-triggered Plex refreshes after linking
     #[serde(default = "default_plex_refresh_enabled")]
     pub refresh_enabled: bool,
+    /// How Symlinkarr should handle refresh requests: immediate, deferred, or disabled
+    #[serde(default)]
+    pub refresh_mode: MediaRefreshMode,
     /// Delay between queued Plex refresh requests to avoid overloading Plex
     #[serde(default = "default_plex_refresh_delay_ms")]
     pub refresh_delay_ms: u64,
@@ -508,6 +535,9 @@ pub struct MediaBrowserConfig {
     /// Enable Symlinkarr-triggered invalidation after linking or cleanup
     #[serde(default = "default_media_browser_refresh_enabled")]
     pub refresh_enabled: bool,
+    /// How Symlinkarr should handle refresh requests: immediate, deferred, or disabled
+    #[serde(default)]
+    pub refresh_mode: MediaRefreshMode,
     /// Delay between queued invalidation requests
     #[serde(default = "default_media_browser_refresh_delay_ms")]
     pub refresh_delay_ms: u64,
@@ -825,11 +855,6 @@ impl Config {
                     .errors
                     .push("decypharr.max_in_flight must be greater than 0".to_string());
             }
-            if self.decypharr.max_requests_per_run == 0 {
-                report
-                    .errors
-                    .push("decypharr.max_requests_per_run must be greater than 0".to_string());
-            }
             if self.decypharr.queue_page_size == 0 {
                 report
                     .errors
@@ -999,7 +1024,9 @@ impl Config {
 
     /// Check if targeted Plex refresh is configured and enabled
     pub fn has_plex_refresh(&self) -> bool {
-        self.has_plex() && self.plex.refresh_enabled
+        self.has_plex()
+            && self.plex.refresh_enabled
+            && self.plex.refresh_mode != MediaRefreshMode::Disabled
     }
 
     /// Check if Emby is configured
@@ -1009,7 +1036,9 @@ impl Config {
 
     /// Check if Emby invalidation is configured and enabled
     pub fn has_emby_refresh(&self) -> bool {
-        self.has_emby() && self.emby.refresh_enabled
+        self.has_emby()
+            && self.emby.refresh_enabled
+            && self.emby.refresh_mode != MediaRefreshMode::Disabled
     }
 
     /// Check if Jellyfin is configured
@@ -1019,7 +1048,9 @@ impl Config {
 
     /// Check if Jellyfin invalidation is configured and enabled
     pub fn has_jellyfin_refresh(&self) -> bool {
-        self.has_jellyfin() && self.jellyfin.refresh_enabled
+        self.has_jellyfin()
+            && self.jellyfin.refresh_enabled
+            && self.jellyfin.refresh_mode != MediaRefreshMode::Disabled
     }
 
     /// Check if Radarr is configured

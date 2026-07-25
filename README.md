@@ -127,7 +127,7 @@ Example local stack:
 ```yaml
 services:
   symlinkarr:
-    image: ghcr.io/lap87/symlinkarr:1.0.0
+    image: ghcr.io/lap87/symlinkarr:rc
     container_name: symlinkarr
     restart: unless-stopped
     user: "1000:1000"
@@ -149,6 +149,9 @@ docker compose -f docker-compose.local.yml logs -f symlinkarr
 docker exec symlinkarr symlinkarr --config /app/config/config.yaml status --output json
 docker stop symlinkarr
 ```
+
+The floating `rc` tag follows the newest release candidate. Stable installs should use
+`latest`; exact-version tags remain available when a fixed deployment is preferred.
 
 If you are replacing another standalone tool, stop that container separately instead of editing its compose file unless both services truly belong to the same stack.
 
@@ -216,12 +219,16 @@ When old scheduled backups rotate out, their paired `.sqlite3` snapshots and app
 ```bash
 symlinkarr scan --dry-run
 symlinkarr scan --library Anime --search-missing
+symlinkarr backfill --arr sonarr-anime --dry-run
+symlinkarr backfill --arr all --search-missing
+symlinkarr backfill --arr sonarr-anime --item 86-eighty-six --dry-run --search-missing
 symlinkarr status --health
 symlinkarr status --health --output json
 symlinkarr cleanup audit --scope anime
 symlinkarr cleanup prune --report <REPORT.json>
 symlinkarr repair auto --dry-run
 symlinkarr discover list
+symlinkarr import --source /mnt/rd --movie-destination /library/movies --tv-destination /library/tv --anime-destination /library/anime --content-type auto --mode preview
 symlinkarr cache status
 symlinkarr cache invalidate tmdb:12345
 symlinkarr cache invalidate tmdb:tv:
@@ -232,6 +239,7 @@ If you are running from a source checkout, prepend `cargo run --` to the same co
 
 Advanced note: `cleanup remediate-anime` is for older anime libraries with mixed roots or Plex Hama AniDB/TVDB duplicates. Most setups do not need it.
 Discover note: `discover list` previews where source files would land for tagged folders that still look empty or underlinked. Web/API discover is read-only for now.
+Import note: `import` is for bootstrap/recovery when you already have RD/DMM/provider content but not the matching local library folders or Symlinkarr DB. See [Provider Source Import](docs/wiki/Provider-Source-Import.md).
 
 ## Why Use It
 

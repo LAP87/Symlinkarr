@@ -113,7 +113,7 @@ pub fn stable_idempotency_key(namespace: &str, value: &str) -> String {
     for byte in namespace
         .as_bytes()
         .iter()
-        .chain([b':'].iter())
+        .chain(b":".iter())
         .chain(value.as_bytes().iter())
     {
         hash ^= u64::from(*byte);

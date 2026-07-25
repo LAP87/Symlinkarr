@@ -1,5 +1,5 @@
 # --- Build stage ---
-FROM rust:1.94-bookworm AS builder
+FROM rust:bookworm AS builder
 
 WORKDIR /app
 COPY Cargo.toml Cargo.lock* askama.toml ./
@@ -12,7 +12,7 @@ RUN cargo build --release --locked
 FROM debian:bookworm-slim
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates && \
+    apt-get install -y --no-install-recommends ca-certificates ffmpeg mediainfo && \
     rm -rf /var/lib/apt/lists/*
 
 # Create app user

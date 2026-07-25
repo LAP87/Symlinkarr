@@ -235,7 +235,7 @@ pub(super) fn resolve_cleanup_libraries(
     Ok(canonical)
 }
 
-pub(super) fn cleanup_audit_output_path(
+pub(crate) fn cleanup_audit_output_path(
     config: &Config,
     scope: CleanupScope,
     selected_libraries: &[String],

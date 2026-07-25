@@ -181,7 +181,8 @@ pub(crate) async fn run_scan_with_origin(
         cfg.matching.mode,
         cfg.matching.metadata_mode,
         cfg.matching.metadata_concurrency,
-    );
+    )
+    .with_multi_version(cfg.symlink.multi_version);
 
     let matching_started = Instant::now();
     let MatchRunOutput {
@@ -204,6 +205,7 @@ pub(crate) async fn run_scan_with_origin(
         &cfg.symlink.naming_template,
         cfg.features.reconcile_links,
     )
+    .with_multi_version(cfg.symlink.multi_version)
     .with_source_readiness_from_config(cfg);
 
     let title_enrichment_started = Instant::now();
@@ -322,7 +324,7 @@ pub(crate) async fn run_scan_with_origin(
             .filter(|item| !matched_ids.contains(&item.id))
             .collect();
         let mut requests = Vec::new();
-        let max_grabs = cfg.decypharr.max_requests_per_run;
+        let max_grabs = cfg.decypharr.effective_max_requests_per_run();
 
         if !unmatched.is_empty() {
             user_println(format!(
@@ -701,6 +703,15 @@ async fn collect_source_items(
         }
         Ok((all_items, telemetry))
     }
+}
+
+pub(crate) async fn collect_source_items_for_matching(
+    cfg: &Config,
+    db: &Database,
+) -> Result<Vec<SourceItem>> {
+    collect_source_items(cfg, db)
+        .await
+        .map(|(items, _telemetry)| items)
 }
 
 fn build_missing_search_query(item: &LibraryItem) -> Option<String> {

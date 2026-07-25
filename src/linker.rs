@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use sha2::{Digest, Sha256};
 use tracing::{debug, info, warn};
 
 use self::naming::{sanitize_filename, truncate_filename_to_limit, truncate_str_bytes};
@@ -10,9 +11,10 @@ use crate::api::decypharr::{DecypharrClient, WebDavProbeError};
 use crate::config::Config;
 use crate::db::Database;
 use crate::models::{LinkRecord, LinkStatus, MatchResult, MediaType};
+use crate::source_scanner::SourceScanner;
 use crate::utils::{
-    cached_source_exists, cached_source_health, path_under_roots, user_println, PathHealth,
-    ProgressLine,
+    cached_source_exists, cached_source_health, path_under_roots, replace_symlink_atomically,
+    user_println, PathHealth, ProgressLine,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -234,6 +236,7 @@ pub struct Linker {
     strict_mode: bool,
     reconcile_links: bool,
     naming_template: String,
+    multi_version: bool,
     source_readiness_gate: Option<SourceReadinessGate>,
 }
 
@@ -254,8 +257,14 @@ impl Linker {
             strict_mode,
             reconcile_links,
             naming_template: naming_template.to_string(),
+            multi_version: false,
             source_readiness_gate: None,
         }
+    }
+
+    pub fn with_multi_version(mut self, enabled: bool) -> Self {
+        self.multi_version = enabled;
+        self
     }
 
     pub fn with_source_readiness_from_config(mut self, cfg: &Config) -> Self {
@@ -291,7 +300,23 @@ impl Linker {
                 ));
             }
 
-            let target_path = self.build_target_path(m)?;
+            let mut target_path = self.build_target_path(m)?;
+            if let Some(existing_target) =
+                self.find_existing_equivalent_tv_target(m, &target_path)?
+            {
+                if existing_target != target_path {
+                    debug!(
+                        "Adopting existing TV episode symlink path {:?} instead of creating {:?}",
+                        existing_target, target_path
+                    );
+                    target_path = existing_target;
+                    if !existing_links.contains_key(&target_path) {
+                        if let Some(link) = db.get_link_by_target_path(&target_path).await? {
+                            existing_links.insert(target_path.clone(), link);
+                        }
+                    }
+                }
+            }
 
             if !cached_source_exists(
                 &m.source_item.path,
@@ -618,12 +643,7 @@ impl Linker {
             // rename() over the target so readers never see a missing file.
             #[cfg(unix)]
             {
-                // Use short extension to stay under NAME_MAX (255) after truncation caps at 250.
-                let temp_path = target_path.with_extension("glt");
-                // Clean up any stale temp from a previous crash
-                let _ = std::fs::remove_file(&temp_path);
-                std::os::unix::fs::symlink(&m.source_item.path, &temp_path)?;
-                std::fs::rename(&temp_path, target_path)?;
+                replace_symlink_atomically(&m.source_item.path, target_path)?;
                 verify_link_target(target_path, &m.source_item.path)?;
             }
 
@@ -685,6 +705,69 @@ impl Linker {
         preload_existing_links(db, &target_paths).await
     }
 
+    fn find_existing_equivalent_tv_target(
+        &self,
+        m: &MatchResult,
+        target_path: &Path,
+    ) -> Result<Option<PathBuf>> {
+        if m.library_item.media_type != MediaType::Tv {
+            return Ok(None);
+        }
+
+        let Some(season_dir) = target_path.parent() else {
+            return Ok(None);
+        };
+        let Some(season) = m.source_item.season else {
+            return Ok(None);
+        };
+        let Some(episode) = m.source_item.episode else {
+            return Ok(None);
+        };
+        if !season_dir.is_dir() {
+            return Ok(None);
+        }
+
+        let expected_source = &m.source_item.path;
+        let scanner = SourceScanner::new();
+
+        for entry in std::fs::read_dir(season_dir)? {
+            let entry = entry?;
+            let candidate = entry.path();
+            if candidate == target_path {
+                continue;
+            }
+
+            let Some(file_name) = candidate.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            let has_exact_slot = scanner
+                .parse_release_title_variants(file_name)
+                .into_iter()
+                .any(|(_, parsed)| {
+                    parsed.season == Some(season) && parsed.episode == Some(episode)
+                });
+            if !has_exact_slot {
+                continue;
+            }
+
+            let Ok(meta) = std::fs::symlink_metadata(&candidate) else {
+                continue;
+            };
+            if !meta.file_type().is_symlink() {
+                continue;
+            }
+
+            let Ok(raw_target) = std::fs::read_link(&candidate) else {
+                continue;
+            };
+            if resolve_link_target(&candidate, &raw_target) == *expected_source {
+                return Ok(Some(candidate));
+            }
+        }
+
+        Ok(None)
+    }
+
     /// Build the target path for a symlink based on the naming template.
     pub(crate) fn build_target_path(&self, m: &MatchResult) -> Result<PathBuf> {
         let lib_path = &m.library_item.path;
@@ -711,7 +794,15 @@ impl Linker {
                     &episode_title,
                     &m.source_item.extension,
                 );
-
+                let filename = if self.multi_version {
+                    append_version_label(
+                        &filename,
+                        &m.source_item.extension,
+                        &version_label(&m.source_item),
+                    )
+                } else {
+                    filename
+                };
                 Ok(season_dir.join(filename))
             }
             MediaType::Movie => {
@@ -723,7 +814,13 @@ impl Linker {
                     .unwrap_or_default();
                 let san_title = sanitize_filename(&m.library_item.title);
                 let mut filename = format!("{}{}.{}", san_title, year_str, m.source_item.extension);
-                if filename.len() > 250 {
+                if self.multi_version {
+                    filename = append_version_label(
+                        &filename,
+                        &m.source_item.extension,
+                        &version_label(&m.source_item),
+                    );
+                } else if filename.len() > 250 {
                     let excess = filename.len() - 250;
                     let truncated_title =
                         truncate_str_bytes(&san_title, san_title.len().saturating_sub(excess));
@@ -954,6 +1051,65 @@ impl Linker {
             );
         }
     }
+}
+
+fn version_label(source: &crate::models::SourceItem) -> String {
+    #[cfg(unix)]
+    let path_bytes = {
+        use std::os::unix::ffi::OsStrExt;
+        source.path.as_os_str().as_bytes()
+    };
+    #[cfg(not(unix))]
+    let path_text = source.path.to_string_lossy();
+    #[cfg(not(unix))]
+    let path_bytes = path_text.as_bytes();
+
+    let digest = Sha256::digest(path_bytes);
+    let path_hash = digest[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let mut parts = Vec::new();
+    if let Some(quality) = source.quality.as_deref().map(sanitize_filename) {
+        if !quality.is_empty() {
+            parts.push(quality);
+        }
+    }
+    if let Some(edition) = source.edition.as_deref().map(sanitize_filename) {
+        if !edition.is_empty() {
+            parts.push(edition);
+        }
+    }
+    for hdr in &source.hdr_formats {
+        let hdr = sanitize_filename(hdr);
+        if !hdr.is_empty() && !parts.contains(&hdr) {
+            parts.push(hdr);
+        }
+    }
+    if let Some(codec) = source.video_codec.as_deref().map(sanitize_filename) {
+        if !codec.is_empty() {
+            parts.push(codec);
+        }
+    }
+    if parts.is_empty() {
+        parts.push("version".to_string());
+    }
+    parts.push(path_hash);
+
+    parts.join("-")
+}
+
+fn append_version_label(filename: &str, extension: &str, label: &str) -> String {
+    const LIMIT: usize = 250;
+
+    let suffix = format!(" - {}.{}", sanitize_filename(label), extension);
+    let stem = filename
+        .strip_suffix(&format!(".{}", extension))
+        .unwrap_or(filename);
+    let max_stem_len = LIMIT.saturating_sub(suffix.len());
+    let truncated_stem = truncate_str_bytes(stem, max_stem_len).trim_end();
+
+    format!("{}{}", truncated_stem, suffix)
 }
 
 async fn preload_existing_links(

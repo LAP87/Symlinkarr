@@ -1,5 +1,7 @@
+use std::collections::HashMap;
+
 use anyhow::Result;
-use sqlx::Row;
+use sqlx::{QueryBuilder, Row, Sqlite};
 
 use super::{escape_sql_like, Database};
 
@@ -16,6 +18,29 @@ impl Database {
         .await?;
 
         Ok(row.map(|r| r.get("response_json")))
+    }
+
+    pub async fn get_cached_many(&self, cache_keys: &[String]) -> Result<HashMap<String, String>> {
+        let mut cached = HashMap::new();
+        for chunk in cache_keys.chunks(500) {
+            if chunk.is_empty() {
+                continue;
+            }
+            let mut query: QueryBuilder<Sqlite> = QueryBuilder::new(
+                "SELECT cache_key, response_json FROM api_cache
+                 WHERE datetime(fetched_at, '+' || ttl_hours || ' hours') > datetime('now')
+                   AND cache_key IN (",
+            );
+            let mut separated = query.separated(", ");
+            for key in chunk {
+                separated.push_bind(key);
+            }
+            separated.push_unseparated(")");
+            for row in query.build().fetch_all(&self.pool).await? {
+                cached.insert(row.get("cache_key"), row.get("response_json"));
+            }
+        }
+        Ok(cached)
     }
 
     /// Store an API response in the cache.
@@ -64,6 +89,27 @@ impl Database {
             .await?
             .rows_affected();
         Ok(deleted)
+    }
+
+    /// Return cached title metadata entries that can be used for local-only lookups.
+    pub async fn get_metadata_cache_entries(&self) -> Result<Vec<(String, String)>> {
+        let rows = sqlx::query(
+            "SELECT cache_key, response_json FROM api_cache
+             WHERE (
+                cache_key LIKE 'tmdb:movie:%' ESCAPE '\\'
+                OR cache_key LIKE 'tmdb:tv:%' ESCAPE '\\'
+                OR cache_key LIKE 'tvdb:series:%' ESCAPE '\\'
+             )
+             AND cache_key NOT LIKE '%:external_ids:%' ESCAPE '\\'
+             AND datetime(fetched_at, '+' || ttl_hours || ' hours') > datetime('now')",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| (row.get("cache_key"), row.get("response_json")))
+            .collect())
     }
 
     /// Upsert an RD torrent record.

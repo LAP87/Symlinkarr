@@ -14,8 +14,10 @@ The actual page drafts live under [wiki/Home.md](wiki/Home.md) and the rest of [
 - [Backup and Restore](wiki/Backup-and-Restore.md)
 - [Configuration and Doctor](wiki/Configuration-and-Doctor.md)
 - [Discover and Queue](wiki/Discover-and-Queue.md)
+- [Provider Source Import](wiki/Provider-Source-Import.md)
 - [Anime Cleanup](wiki/Anime-Remediation.md)
 - [Media Server Refresh](wiki/Media-Server-Refresh-and-Deferred-Work.md)
+- [Symlinkarr vs CineSync](wiki/Symlinkarr-vs-CineSync.md)
 
 ## Why This Changed
 

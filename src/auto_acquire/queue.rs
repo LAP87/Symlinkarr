@@ -41,7 +41,7 @@ pub(super) async fn load_persistent_queue(
     Ok((pending, downloading, relinking))
 }
 
-fn request_to_seed(request: &AutoAcquireRequest) -> Result<AcquisitionJobSeed> {
+pub(super) fn request_to_seed(request: &AutoAcquireRequest) -> Result<AcquisitionJobSeed> {
     let (relink_kind, relink_value) = match &request.relink_check {
         RelinkCheck::MediaId(media_id) => (AcquisitionRelinkKind::MediaId, media_id.clone()),
         RelinkCheck::MediaEpisode {
@@ -52,6 +52,23 @@ fn request_to_seed(request: &AutoAcquireRequest) -> Result<AcquisitionJobSeed> {
             AcquisitionRelinkKind::MediaEpisode,
             format!("{}|{}|{}", media_id, season, episode),
         ),
+        RelinkCheck::MediaSeason {
+            media_id,
+            season,
+            episodes,
+        } => (
+            AcquisitionRelinkKind::MediaSeason,
+            format!(
+                "{}|{}|{}",
+                media_id,
+                season,
+                episodes
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+        ),
         RelinkCheck::SymlinkPath(path) => (
             AcquisitionRelinkKind::SymlinkPath,
             path.to_str()
@@ -61,7 +78,7 @@ fn request_to_seed(request: &AutoAcquireRequest) -> Result<AcquisitionJobSeed> {
     };
 
     Ok(AcquisitionJobSeed {
-        request_key: request_key(&request.relink_check)?,
+        request_key: auto_acquire_request_key(&request.relink_check)?,
         label: request.label.clone(),
         query: request.query.clone(),
         query_hints: request.query_hints.clone(),
@@ -71,22 +88,6 @@ fn request_to_seed(request: &AutoAcquireRequest) -> Result<AcquisitionJobSeed> {
         library_filter: request.library_filter.clone(),
         relink_kind,
         relink_value,
-    })
-}
-
-fn request_key(check: &RelinkCheck) -> Result<String> {
-    Ok(match check {
-        RelinkCheck::MediaId(media_id) => format!("media:{}", media_id),
-        RelinkCheck::MediaEpisode {
-            media_id,
-            season,
-            episode,
-        } => format!("episode:{}:{}:{}", media_id, season, episode),
-        RelinkCheck::SymlinkPath(path) => format!(
-            "symlink:{}",
-            path.to_str()
-                .ok_or_else(|| anyhow::anyhow!("Path is not valid UTF-8: {:?}", path))?
-        ),
     })
 }
 
@@ -105,6 +106,20 @@ fn job_to_request(job: &AcquisitionJobRecord) -> Result<AutoAcquireRequest> {
                 media_id,
                 season,
                 episode,
+            }
+        }
+        AcquisitionRelinkKind::MediaSeason => {
+            let (media_id, season, episodes) = parse_media_season_value(&job.relink_value)
+                .with_context(|| {
+                    format!(
+                        "corrupt media-season relink value '{}' in job {}",
+                        job.relink_value, job.id
+                    )
+                })?;
+            RelinkCheck::MediaSeason {
+                media_id,
+                season,
+                episodes,
             }
         }
         AcquisitionRelinkKind::SymlinkPath => {
@@ -300,6 +315,17 @@ pub(super) async fn submit_request(
                 reason_code: "auto_acquire_provider_pending",
                 release_title: None,
                 message,
+            }))
+        }
+        CandidateLookup::Rejected { queries } => {
+            return Ok(SubmitAttempt::Immediate(AutoAcquireOutcome {
+                status: AutoAcquireStatus::NoResult,
+                reason_code: "auto_acquire_no_result_candidates_rejected",
+                release_title: None,
+                message: format!(
+                    "Prowlarr returned only candidates rejected by the media validation gate for '{}' ({} query variant(s)); DMM returned no usable fallback",
+                    request.label, queries
+                ),
             }))
         }
         CandidateLookup::Empty => {

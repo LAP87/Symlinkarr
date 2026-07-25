@@ -98,6 +98,31 @@ fn is_same_origin_browser_mutation(headers: &HeaderMap) -> bool {
     false
 }
 
+fn request_host_allowed(headers: &HeaderMap, state: &WebState) -> bool {
+    if !state.config.web.binds_loopback_only() {
+        return true;
+    }
+
+    // Axum's in-process test router can omit Host. Real HTTP/1.1 requests are
+    // rejected by the server before this middleware when Host is absent.
+    let Some(host) = headers.get(HOST).and_then(header_value_str) else {
+        return true;
+    };
+    let Ok(authority) = host.parse::<axum::http::uri::Authority>() else {
+        return false;
+    };
+    let hostname = authority
+        .host()
+        .trim_end_matches('.')
+        .trim_start_matches('[')
+        .trim_end_matches(']');
+    hostname.eq_ignore_ascii_case("localhost")
+        || hostname
+            .parse::<std::net::IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false)
+}
+
 fn has_valid_browser_session(headers: &HeaderMap, state: &WebState) -> bool {
     request_cookie_value(headers, BROWSER_SESSION_COOKIE)
         .as_deref()
@@ -210,6 +235,24 @@ fn forbidden_origin_response(path: &str) -> axum::response::Response {
     (
         StatusCode::FORBIDDEN,
         "Cross-origin mutation blocked; submit the form from the same Symlinkarr origin.",
+    )
+        .into_response()
+}
+
+fn unexpected_host_response(path: &str) -> axum::response::Response {
+    if path.starts_with("/api/") {
+        return (
+            StatusCode::MISDIRECTED_REQUEST,
+            Json(json!({
+                "error": "request Host is not allowed for this loopback-only Symlinkarr instance"
+            })),
+        )
+            .into_response();
+    }
+
+    (
+        StatusCode::MISDIRECTED_REQUEST,
+        "Request Host is not allowed for this loopback-only Symlinkarr instance.",
     )
         .into_response()
 }
@@ -343,9 +386,18 @@ pub(super) async fn guard_browser_mutations(
     let has_browser_metadata = request_has_browser_metadata(request.headers());
     let has_valid_session = has_valid_browser_session(request.headers(), &state);
     let should_issue_session = method_receives_browser_session(&method) && !has_valid_session;
-    let enforce_browser_guard = state.browser_mutation_guard_enabled();
 
-    if enforce_browser_guard && method_requires_same_origin(&method) {
+    if !request_host_allowed(request.headers(), &state) {
+        warn!(
+            method = %method,
+            path,
+            host = host.unwrap_or("<missing>"),
+            "blocked request with unexpected Host on loopback-only bind"
+        );
+        return unexpected_host_response(request.uri().path());
+    }
+
+    if method_requires_same_origin(&method) {
         let require_browser_session = !is_api || has_browser_metadata;
 
         if has_browser_metadata && !is_same_origin_browser_mutation(request.headers()) {

@@ -1,0 +1,278 @@
+{% extends "web/ui/base.html" %}
+
+{% block title %}Import - Symlinkarr{% endblock %}
+{% block nav_import %}active{% endblock %}
+{% block body_class %}page-import page-inspection page-requires-advanced{% endblock %}
+
+{% block content %}
+<div class="page-header page-header--split">
+    <div>
+        <div class="page-meta">
+            <p class="page-kicker">Maintenance</p>
+            <span class="page-taxonomy page-taxonomy--inspection">Preview</span>
+        </div>
+        <h1>Import</h1>
+        <p class="page-lead">Preview and apply provider/source imports from the Web UI.</p>
+    </div>
+    <div class="header-badges">
+        <span class="badge badge-info">Preview First</span>
+        <span class="badge badge-secondary">Libraries {{ libraries|length }}</span>
+    </div>
+</div>
+
+<div class="alert alert-info">
+    <strong>Preview first.</strong>
+    Build the plan here, review candidates and warnings, then apply it from the same page when the result looks right.
+</div>
+
+{% match feedback %}
+{% when Some with (item) %}
+<div class="alert {% if item.success %}alert-success{% else %}alert-error{% endif %}">
+    <strong>{% if item.success %}Preview ready.{% else %}Preview failed.{% endif %}</strong>
+    {{ item.message }}
+</div>
+{% when None %}{% endmatch %}
+
+<section class="card">
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Source</p>
+            <h2 class="section-title">Provider import preview</h2>
+            <p class="section-copy">Use this for RD/DMM/provider roots, category folders, direct movie files, or direct show folders.</p>
+        </div>
+    </div>
+
+    <form action="/import/preview" method="post" class="stack-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+        <div class="form-grid">
+            <div class="form-group">
+                <label class="form-label" for="source">Source path</label>
+                <input id="source" name="source" class="form-control mono" value="{{ draft.source }}" placeholder="/mnt/rd">
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="destination">Single destination</label>
+                <input id="destination" name="destination" class="form-control mono" value="{{ draft.destination }}" placeholder="/library/imported">
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="movie_destination">Movie destination</label>
+                <input id="movie_destination" name="movie_destination" class="form-control mono" value="{{ draft.movie_destination }}" placeholder="/library/movies">
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="tv_destination">TV destination</label>
+                <input id="tv_destination" name="tv_destination" class="form-control mono" value="{{ draft.tv_destination }}" placeholder="/library/tv">
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="anime_destination">Anime destination</label>
+                <input id="anime_destination" name="anime_destination" class="form-control mono" value="{{ draft.anime_destination }}" placeholder="/library/anime">
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="rules">Rules XML</label>
+                <input id="rules" name="rules" class="form-control mono" value="{{ draft.rules }}" placeholder="/config/import-rules.xml">
+            </div>
+        </div>
+
+        <div class="form-grid">
+            <div class="form-group">
+                <label class="form-label" for="content_type">Content type</label>
+                <select id="content_type" name="content_type" class="form-control">
+                    <option value="auto" {% if draft.content_type == "auto" %}selected{% endif %}>Auto</option>
+                    <option value="movie" {% if draft.content_type == "movie" %}selected{% endif %}>Movie</option>
+                    <option value="tv" {% if draft.content_type == "tv" %}selected{% endif %}>TV</option>
+                    <option value="anime" {% if draft.content_type == "anime" %}selected{% endif %}>Anime</option>
+                </select>
+            </div>
+            <input type="hidden" name="mode" value="safe">
+            <div class="form-group">
+                <label class="form-label" for="lookup_mode">Lookup mode</label>
+                <select id="lookup_mode" name="lookup_mode" class="form-control">
+                    <option value="cache" {% if draft.lookup_mode == "cache" %}selected{% endif %}>Cache</option>
+                    <option value="remote" {% if draft.lookup_mode == "remote" %}selected{% endif %}>Remote</option>
+                    <option value="off" {% if draft.lookup_mode == "off" %}selected{% endif %}>Off</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="metadata_mode">Metadata mode</label>
+                <select id="metadata_mode" name="metadata_mode" class="form-control">
+                    <option value="fast" {% if draft.metadata_mode == "fast" %}selected{% endif %}>Fast</option>
+                    <option value="probe" {% if draft.metadata_mode == "probe" %}selected{% endif %}>Probe</option>
+                    <option value="strict" {% if draft.metadata_mode == "strict" %}selected{% endif %}>Strict</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="probe_tool">Probe tool</label>
+                <select id="probe_tool" name="probe_tool" class="form-control">
+                    <option value="auto" {% if draft.probe_tool == "auto" %}selected{% endif %}>Auto</option>
+                    <option value="ffprobe" {% if draft.probe_tool == "ffprobe" %}selected{% endif %}>ffprobe</option>
+                    <option value="mediainfo" {% if draft.probe_tool == "mediainfo" %}selected{% endif %}>mediainfo</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="confidence_filter">Candidate filter</label>
+                <select id="confidence_filter" name="confidence_filter" class="form-control">
+                    <option value="all" {% if draft.confidence_filter == "all" %}selected{% endif %}>All confidence levels</option>
+                    <option value="high" {% if draft.confidence_filter == "high" %}selected{% endif %}>High confidence</option>
+                    <option value="medium" {% if draft.confidence_filter == "medium" %}selected{% endif %}>Medium confidence</option>
+                    <option value="low" {% if draft.confidence_filter == "low" %}selected{% endif %}>Low confidence</option>
+                    <option value="ambiguous" {% if draft.confidence_filter == "ambiguous" %}selected{% endif %}>Ambiguous</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="max_lookups">Max lookups</label>
+                <input id="max_lookups" name="max_lookups" class="form-control" type="number" min="0" value="{{ draft.max_lookups }}">
+            </div>
+        </div>
+
+        <div class="operator-option-grid">
+            <label class="toggle-row">
+                <input type="checkbox" name="offline" value="true" {% if draft.offline %}checked{% endif %}>
+                <div>
+                    <strong>Offline</strong>
+                    <p class="text-muted">Use explicit IDs only.</p>
+                </div>
+            </label>
+            <label class="toggle-row">
+                <input type="checkbox" name="refresh_metadata" value="true" {% if draft.refresh_metadata %}checked{% endif %}>
+                <div>
+                    <strong>Refresh metadata</strong>
+                    <p class="text-muted">Requires remote lookup and bypasses cached ID resolution.</p>
+                </div>
+            </label>
+            <label class="toggle-row">
+                <input type="checkbox" name="folders_only" value="true" {% if draft.folders_only %}checked{% endif %}>
+                <div>
+                    <strong>Folders only</strong>
+                    <p class="text-muted">Preview ID-tagged folder creation instead of provider symlink targets.</p>
+                </div>
+            </label>
+            <label class="toggle-row" title="Force tries to include every candidate, including unresolved or low-confidence matches. It may create incorrect targets when provider filenames are ambiguous, but still never overwrites real files or removes provider content.">
+                <input type="checkbox" name="force" value="true" {% if draft.force %}checked{% endif %}>
+                <div>
+                    <strong>Force <span class="badge badge-warning">?</span></strong>
+                    <p class="text-muted">Try to include low-confidence and unresolved candidates.</p>
+                </div>
+            </label>
+        </div>
+
+        <div class="actions">
+            <button type="submit" class="btn btn-primary">Build Preview</button>
+        </div>
+    </form>
+</section>
+
+{% match result %}
+{% when Some with (data) %}
+<section class="card">
+    <div class="section-head">
+        <div>
+            <p class="section-kicker">Report</p>
+            <h2 class="section-title">{% if data.applied %}Import apply summary{% else %}Import {{ data.plan_label }} plan preview{% endif %}</h2>
+            <p class="section-copy">Source shape: {{ data.source_shape }}. Plan: {{ data.plan_label }}.</p>
+        </div>
+    </div>
+
+    <div class="metric-grid metric-grid--compact">
+        <div class="metric-card"><span class="metric-label">Candidates</span><strong>{{ data.summary.candidates }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Would create</span><strong>{{ data.summary.would_create }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Would update</span><strong>{{ data.summary.would_update }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Skipped</span><strong>{{ data.summary.skipped }}</strong></div>
+        <div class="metric-card"><span class="metric-label">High confidence</span><strong>{{ data.summary.high_confidence }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Needs lookup</span><strong>{{ data.summary.needs_lookup }}</strong></div>
+    </div>
+
+    {% if data.warnings|length > 0 %}
+    <div class="alert alert-warning mt-2">
+        <strong>Warnings</strong>
+        <ul>
+            {% for warning in data.warnings %}
+            <li>{{ warning }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+
+    {% if data.handoff|length > 0 %}
+    <div class="alert alert-info mt-2">
+        <strong>Follow-up</strong>
+        <ul>
+            {% for item in data.handoff %}
+            <li>{{ item }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+
+    {% if data.report_path != "-" %}
+    <div class="alert alert-info mt-2">
+        <strong>Report</strong>
+        <span class="mono">{{ data.report_path }}</span>
+    </div>
+    {% endif %}
+
+    {% if !data.applied %}
+    <form action="/import/apply" method="post" class="actions mt-2">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="source" value="{{ draft.source }}">
+        <input type="hidden" name="destination" value="{{ draft.destination }}">
+        <input type="hidden" name="movie_destination" value="{{ draft.movie_destination }}">
+        <input type="hidden" name="tv_destination" value="{{ draft.tv_destination }}">
+        <input type="hidden" name="anime_destination" value="{{ draft.anime_destination }}">
+        <input type="hidden" name="rules" value="{{ draft.rules }}">
+        <input type="hidden" name="content_type" value="{{ draft.content_type }}">
+        <input type="hidden" name="mode" value="safe">
+        <input type="hidden" name="lookup_mode" value="{{ draft.lookup_mode }}">
+        <input type="hidden" name="metadata_mode" value="{{ draft.metadata_mode }}">
+        <input type="hidden" name="probe_tool" value="{{ draft.probe_tool }}">
+        <input type="hidden" name="confidence_filter" value="{{ draft.confidence_filter }}">
+        <input type="hidden" name="max_lookups" value="{{ draft.max_lookups }}">
+        {% if draft.offline %}<input type="hidden" name="offline" value="true">{% endif %}
+        {% if draft.refresh_metadata %}<input type="hidden" name="refresh_metadata" value="true">{% endif %}
+        {% if draft.folders_only %}<input type="hidden" name="folders_only" value="true">{% endif %}
+        {% if draft.force %}<input type="hidden" name="force" value="true">{% endif %}
+        <button type="submit" class="btn btn-primary">{% if draft.force %}Apply Import with Force{% else %}Apply Import{% endif %}</button>
+    </form>
+    {% endif %}
+
+    <div class="section-head mt-2">
+        <div>
+            <p class="section-kicker">Review</p>
+            <h2 class="section-title">Candidate review table</h2>
+            <p class="section-copy">Showing {{ data.shown_candidates }} of {{ data.total_candidates }} candidate(s), filtered by {{ data.confidence_filter }} confidence.</p>
+        </div>
+    </div>
+
+    <div class="table-wrap mt-2">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Review</th>
+                    <th>Decision</th>
+                    <th>Action</th>
+                    <th>Confidence</th>
+                    <th>Title</th>
+                    <th>Media ID</th>
+                    <th>Source</th>
+                    <th>Target</th>
+                    <th>Reason</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in data.candidates %}
+                <tr class="{% if item.needs_review %}row-warning{% endif %}">
+                    <td>{% if item.needs_review %}<span class="badge badge-warning">Review</span>{% else %}<span class="badge badge-success">OK</span>{% endif %}</td>
+                    <td><span class="badge badge-secondary">{{ item.decision }}</span></td>
+                    <td>{{ item.action }}</td>
+                    <td>{{ item.confidence }}</td>
+                    <td>{{ item.title_hint }}</td>
+                    <td class="mono">{{ item.media_id }}</td>
+                    <td class="mono">{{ item.source_path }}</td>
+                    <td class="mono">{{ item.target_path }}</td>
+                    <td>{{ item.reason }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% when None %}{% endmatch %}
+{% endblock %}

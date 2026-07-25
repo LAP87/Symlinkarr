@@ -13,12 +13,15 @@ mod commands;
 mod config;
 mod db;
 mod discovery;
+mod import_report;
 mod library_scanner;
 mod linker;
 mod matcher;
 mod media_servers;
 mod models;
+mod provider_repair;
 mod repair;
+mod scheduler;
 mod source_scanner;
 mod startup;
 mod utils;
@@ -33,7 +36,10 @@ use crate::db::AcquisitionJobStatus;
 const ROOT_AFTER_HELP: &str = r#"Feature guide:
   scan      = look at your library and source mount, then create/update symlinks
   repair    = find dead symlinks and relink them to the best replacement
+  backfill  = fill empty Sonarr/Radarr folders from existing RD/DMM matches
   cleanup   = inspect dead/legacy links first, then prune only when confirmed
+  import    = bootstrap ID-tagged library folders from a provider/source mount
+  refresh   = drain deferred media-server refresh work
   discover  = preview source-to-target placements for tagged folders that still need clean links
   queue     = inspect or retry persistent auto-acquire jobs
   backup    = snapshot state and restore only from the configured backup directory
@@ -130,6 +136,50 @@ pub(crate) enum QueueRetryScope {
     CompletedUnlinked,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ImportMode {
+    Preview,
+    Safe,
+    Aggressive,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ImportContentType {
+    Movie,
+    Tv,
+    Anime,
+    Auto,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ImportMetadataMode {
+    Fast,
+    Probe,
+    Strict,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ImportProbeTool {
+    Auto,
+    Ffprobe,
+    Mediainfo,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ImportLookupMode {
+    Off,
+    Cache,
+    Remote,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum BackfillArr {
+    All,
+    Radarr,
+    Sonarr,
+    SonarrAnime,
+}
+
 #[derive(Subcommand)]
 enum Commands {
     /// Run a full scan → match → link cycle
@@ -194,6 +244,26 @@ enum Commands {
         #[arg(long)]
         library: Option<String>,
     },
+    /// Fill empty Sonarr/Radarr folders from existing RD/DMM matches
+    Backfill {
+        /// Which Arr instance to inspect
+        #[arg(long, value_enum, default_value_t = BackfillArr::All)]
+        arr: BackfillArr,
+        /// Show what would change without touching symlinks or the DB
+        #[arg(long)]
+        dry_run: bool,
+        /// Submit unmatched empty items through the configured Prowlarr/DMM + Decypharr flow
+        #[arg(long)]
+        search_missing: bool,
+        /// Restrict the run to one configured library name
+        #[arg(long)]
+        library: Option<String>,
+        /// Restrict the run to Arr items whose title, path, or media id contains this text
+        #[arg(long)]
+        item: Option<String>,
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        output: OutputFormat,
+    },
     /// Discover RD cache content not in your library
     Discover {
         #[command(subcommand)]
@@ -202,6 +272,71 @@ enum Commands {
         library: Option<String>,
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         output: OutputFormat,
+    },
+    /// Bootstrap ID-tagged library folders from a provider/source mount
+    Import {
+        /// Provider/source path to import from
+        #[arg(long)]
+        source: String,
+        /// Single destination root for scoped imports
+        #[arg(long)]
+        destination: Option<String>,
+        /// Movie destination root for broad auto imports
+        #[arg(long)]
+        movie_destination: Option<String>,
+        /// TV destination root for broad auto imports
+        #[arg(long)]
+        tv_destination: Option<String>,
+        /// Anime destination root for broad auto imports
+        #[arg(long)]
+        anime_destination: Option<String>,
+        /// Optional import-rules.xml path for custom destination routing
+        #[arg(long)]
+        rules: Option<String>,
+        /// Content type to import; auto allows mixed provider-root imports
+        #[arg(long, value_enum, default_value_t = ImportContentType::Auto)]
+        content_type: ImportContentType,
+        /// Import behavior mode
+        #[arg(long, value_enum, default_value_t = ImportMode::Preview)]
+        mode: ImportMode,
+        /// Metadata probing policy for stream-aware routing
+        #[arg(long, value_enum, default_value_t = ImportMetadataMode::Fast)]
+        metadata_mode: ImportMetadataMode,
+        /// Preferred media probe tool when metadata-mode requires probing
+        #[arg(long, value_enum, default_value_t = ImportProbeTool::Auto)]
+        probe_tool: ImportProbeTool,
+        /// Metadata ID lookup policy for unresolved imports
+        #[arg(long, value_enum, default_value_t = ImportLookupMode::Cache)]
+        lookup_mode: ImportLookupMode,
+        /// Disable cache and remote ID lookup; only explicit IDs in source paths are used
+        #[arg(long)]
+        offline: bool,
+        /// Bypass existing metadata cache for this run; use with --lookup-mode remote
+        #[arg(long)]
+        refresh_metadata: bool,
+        /// Maximum remote metadata lookups for this import run
+        #[arg(long, default_value_t = 50)]
+        max_lookups: usize,
+        /// JSON report path for this import run; defaults to ./symlinkarr-import-report-*.json
+        #[arg(long)]
+        report_path: Option<String>,
+        /// Skip interactive confirmation for write-capable modes
+        #[arg(long)]
+        yes: bool,
+        /// Create real ID-tagged folders only; do not create provider symlinks
+        #[arg(long)]
+        folders_only: bool,
+        /// Explicitly use default behavior: create provider symlinks
+        #[arg(long)]
+        create_links: bool,
+        /// Emit JSON instead of text
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        output: OutputFormat,
+    },
+    /// Drain deferred media-server refresh work
+    Refresh {
+        #[command(subcommand)]
+        action: RefreshAction,
     },
     /// Manage symlink backups
     Backup {
@@ -270,6 +405,15 @@ enum Commands {
         /// Pretty-print JSON output
         #[arg(long)]
         pretty: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum RefreshAction {
+    /// Drain queued deferred refresh targets now, ignoring deferred refresh mode for this run
+    Drain {
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        output: OutputFormat,
     },
 }
 
@@ -442,6 +586,51 @@ fn resolved_config_path(cli: &Cli) -> Option<std::path::PathBuf> {
         .find(|path| path.exists())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn build_import_options(
+    source: String,
+    destination: Option<String>,
+    movie_destination: Option<String>,
+    tv_destination: Option<String>,
+    anime_destination: Option<String>,
+    rules: Option<String>,
+    content_type: ImportContentType,
+    mode: ImportMode,
+    metadata_mode: ImportMetadataMode,
+    probe_tool: ImportProbeTool,
+    lookup_mode: ImportLookupMode,
+    offline: bool,
+    refresh_metadata: bool,
+    max_lookups: usize,
+    report_path: Option<String>,
+    yes: bool,
+    folders_only: bool,
+    create_links: bool,
+    output: OutputFormat,
+) -> commands::importer::ImportOptions {
+    commands::importer::ImportOptions {
+        source: std::path::PathBuf::from(source),
+        destination: destination.map(std::path::PathBuf::from),
+        movie_destination: movie_destination.map(std::path::PathBuf::from),
+        tv_destination: tv_destination.map(std::path::PathBuf::from),
+        anime_destination: anime_destination.map(std::path::PathBuf::from),
+        rules: rules.map(std::path::PathBuf::from),
+        content_type,
+        mode,
+        metadata_mode,
+        probe_tool,
+        lookup_mode,
+        offline,
+        refresh_metadata,
+        max_lookups,
+        report_path: report_path.map(std::path::PathBuf::from),
+        yes,
+        folders_only,
+        create_links,
+        output,
+    }
+}
+
 /// When config.yaml is missing, try to auto-restore from the latest backup.
 /// Guard: only runs if config.yaml genuinely does not exist anywhere on the search path.
 /// Returns Some(Config) if restore succeeded, None if no backup was found.
@@ -603,6 +792,85 @@ async fn main() -> Result<()> {
                 *list,
             );
         }
+        Commands::Import {
+            source,
+            destination,
+            movie_destination,
+            tv_destination,
+            anime_destination,
+            rules,
+            content_type,
+            mode,
+            metadata_mode,
+            probe_tool,
+            lookup_mode,
+            offline,
+            refresh_metadata,
+            max_lookups,
+            report_path,
+            yes,
+            folders_only,
+            create_links,
+            output,
+        } => {
+            init_minimal_logger();
+            let import_options = build_import_options(
+                source.clone(),
+                destination.clone(),
+                movie_destination.clone(),
+                tv_destination.clone(),
+                anime_destination.clone(),
+                rules.clone(),
+                *content_type,
+                *mode,
+                *metadata_mode,
+                *probe_tool,
+                *lookup_mode,
+                *offline,
+                *refresh_metadata,
+                *max_lookups,
+                report_path.clone(),
+                *yes,
+                *folders_only,
+                *create_links,
+                *output,
+            );
+            let cfg = config::Config::load(cli.config.clone()).ok();
+            let tmdb = cfg.as_ref().and_then(|cfg| {
+                if *lookup_mode == ImportLookupMode::Remote && cfg.has_tmdb() {
+                    Some(crate::api::tmdb::TmdbClient::new(
+                        &cfg.api.tmdb_api_key,
+                        Some(&cfg.api.tmdb_read_access_token),
+                        cfg.api.cache_ttl_hours,
+                    ))
+                } else {
+                    None
+                }
+            });
+            let mut tvdb = cfg.as_ref().and_then(|cfg| {
+                if *lookup_mode == ImportLookupMode::Remote && cfg.has_tvdb() {
+                    Some(crate::api::tvdb::TvdbClient::new(
+                        &cfg.api.tvdb_api_key,
+                        cfg.api.cache_ttl_hours,
+                    ))
+                } else {
+                    None
+                }
+            });
+            let db = match cfg.as_ref() {
+                Some(cfg) if std::path::Path::new(&cfg.db_path).exists() => {
+                    db::Database::new(&cfg.db_path).await.ok()
+                }
+                _ => None,
+            };
+            return commands::importer::run_import(
+                import_options,
+                db.as_ref(),
+                tmdb.as_ref(),
+                tvdb.as_mut(),
+            )
+            .await;
+        }
         _ => {}
     }
 
@@ -712,6 +980,28 @@ async fn main() -> Result<()> {
         Commands::Repair { action, library } => {
             commands::repair::run_repair(&cfg, &db, action, library.as_deref()).await?
         }
+        Commands::Backfill {
+            arr,
+            dry_run,
+            search_missing,
+            library,
+            item,
+            output,
+        } => {
+            commands::backfill::run_backfill(
+                &cfg,
+                &db,
+                commands::backfill::BackfillOptions {
+                    scope: arr,
+                    dry_run,
+                    search_missing,
+                    library_filter: library,
+                    item_filter: item,
+                    output,
+                },
+            )
+            .await?;
+        }
         Commands::Discover {
             action,
             library,
@@ -719,6 +1009,14 @@ async fn main() -> Result<()> {
         } => {
             commands::discover::run_discover(&cfg, &db, action, library.as_deref(), output).await?
         }
+        Commands::Import { .. } => {
+            unreachable!("import is handled before config loading")
+        }
+        Commands::Refresh { action } => match action {
+            RefreshAction::Drain { output } => {
+                commands::refresh::run_refresh_drain(&cfg, output).await?
+            }
+        },
         Commands::Backup { action, output } => {
             commands::backup::run_backup(&cfg, &db, action, output).await?
         }
@@ -798,6 +1096,215 @@ mod tests {
         match cli.command {
             Commands::Web { port } => assert_eq!(port, Some(9999)),
             _ => panic!("expected web command"),
+        }
+    }
+
+    #[test]
+    fn cli_accepts_refresh_drain_subcommand() {
+        let cli =
+            Cli::try_parse_from(["symlinkarr", "refresh", "drain", "--output", "json"]).unwrap();
+        match cli.command {
+            Commands::Refresh { action } => match action {
+                RefreshAction::Drain { output } => assert_eq!(output, OutputFormat::Json),
+            },
+            _ => panic!("expected refresh command"),
+        }
+    }
+
+    #[test]
+    fn cli_accepts_backfill_subcommand() {
+        let cli = Cli::try_parse_from([
+            "symlinkarr",
+            "backfill",
+            "--arr",
+            "sonarr-anime",
+            "--dry-run",
+            "--search-missing",
+            "--library",
+            "Anime",
+            "--output",
+            "json",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Backfill {
+                arr,
+                dry_run,
+                search_missing,
+                library,
+                item,
+                output,
+            } => {
+                assert_eq!(arr, BackfillArr::SonarrAnime);
+                assert!(dry_run);
+                assert!(search_missing);
+                assert_eq!(library.as_deref(), Some("Anime"));
+                assert!(item.is_none());
+                assert_eq!(output, OutputFormat::Json);
+            }
+            _ => panic!("expected backfill command"),
+        }
+    }
+
+    #[test]
+    fn cli_accepts_import_preview_with_rules() {
+        let cli = Cli::try_parse_from([
+            "symlinkarr",
+            "import",
+            "--source",
+            "/mnt/rd",
+            "--rules",
+            "/config/import-rules.xml",
+            "--content-type",
+            "auto",
+            "--mode",
+            "aggressive",
+            "--metadata-mode",
+            "probe",
+            "--probe-tool",
+            "mediainfo",
+            "--lookup-mode",
+            "remote",
+            "--max-lookups",
+            "12",
+            "--report-path",
+            "/tmp/import-report.json",
+            "--yes",
+            "--folders-only",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Import {
+                source,
+                rules,
+                content_type,
+                mode,
+                metadata_mode,
+                probe_tool,
+                lookup_mode,
+                max_lookups,
+                report_path,
+                yes,
+                folders_only,
+                create_links,
+                ..
+            } => {
+                assert_eq!(source, "/mnt/rd");
+                assert_eq!(rules.as_deref(), Some("/config/import-rules.xml"));
+                assert_eq!(content_type, ImportContentType::Auto);
+                assert_eq!(mode, ImportMode::Aggressive);
+                assert_eq!(metadata_mode, ImportMetadataMode::Probe);
+                assert_eq!(probe_tool, ImportProbeTool::Mediainfo);
+                assert_eq!(lookup_mode, ImportLookupMode::Remote);
+                assert_eq!(max_lookups, 12);
+                assert_eq!(report_path.as_deref(), Some("/tmp/import-report.json"));
+                assert!(yes);
+                assert!(folders_only);
+                assert!(!create_links);
+            }
+            _ => panic!("expected import command"),
+        }
+    }
+
+    #[test]
+    fn cli_accepts_import_offline_flag() {
+        let cli = Cli::try_parse_from([
+            "symlinkarr",
+            "import",
+            "--source",
+            "/mnt/rd",
+            "--destination",
+            "/library/movies",
+            "--content-type",
+            "movie",
+            "--offline",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Import { offline, .. } => assert!(offline),
+            _ => panic!("expected import command"),
+        }
+    }
+
+    #[test]
+    fn cli_accepts_import_refresh_metadata_flag() {
+        let cli = Cli::try_parse_from([
+            "symlinkarr",
+            "import",
+            "--source",
+            "/mnt/rd",
+            "--destination",
+            "/library/movies",
+            "--lookup-mode",
+            "remote",
+            "--refresh-metadata",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Import {
+                lookup_mode,
+                refresh_metadata,
+                ..
+            } => {
+                assert_eq!(lookup_mode, ImportLookupMode::Remote);
+                assert!(refresh_metadata);
+            }
+            _ => panic!("expected import command"),
+        }
+    }
+
+    #[test]
+    fn cli_import_write_modes_default_to_no_automation_confirmation() {
+        let cli = Cli::try_parse_from([
+            "symlinkarr",
+            "import",
+            "--source",
+            "/mnt/rd",
+            "--destination",
+            "/library/movies",
+            "--content-type",
+            "movie",
+            "--mode",
+            "safe",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Import { mode, yes, .. } => {
+                assert_eq!(mode, ImportMode::Safe);
+                assert!(!yes);
+            }
+            _ => panic!("expected import command"),
+        }
+    }
+
+    #[test]
+    fn cli_import_yes_flag_enables_noninteractive_write_automation() {
+        let cli = Cli::try_parse_from([
+            "symlinkarr",
+            "import",
+            "--source",
+            "/mnt/rd",
+            "--destination",
+            "/library/movies",
+            "--content-type",
+            "movie",
+            "--mode",
+            "aggressive",
+            "--yes",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Import { mode, yes, .. } => {
+                assert_eq!(mode, ImportMode::Aggressive);
+                assert!(yes);
+            }
+            _ => panic!("expected import command"),
         }
     }
 

@@ -63,6 +63,7 @@ impl Default for SymlinkConfig {
     fn default() -> Self {
         Self {
             dry_run: false,
+            multi_version: false,
             naming_template: default_naming_template(),
             verify_source_readability: default_true(),
             source_probe_timeout_ms: default_source_probe_timeout_ms(),
@@ -137,6 +138,7 @@ impl Default for PlexConfig {
             url: String::new(),
             token: String::new(),
             refresh_enabled: default_plex_refresh_enabled(),
+            refresh_mode: Default::default(),
             refresh_delay_ms: default_plex_refresh_delay_ms(),
             refresh_coalesce_threshold: default_plex_refresh_coalesce_threshold(),
             max_refresh_batches_per_run: default_plex_max_refresh_batches_per_run(),
@@ -175,6 +177,7 @@ impl Default for MediaBrowserConfig {
             url: String::new(),
             api_key: String::new(),
             refresh_enabled: default_media_browser_refresh_enabled(),
+            refresh_mode: Default::default(),
             refresh_delay_ms: default_media_browser_refresh_delay_ms(),
             refresh_batch_size: default_media_browser_refresh_batch_size(),
             max_refresh_batches_per_run: default_media_browser_max_refresh_batches_per_run(),

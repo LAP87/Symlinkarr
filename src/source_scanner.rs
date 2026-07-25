@@ -20,6 +20,23 @@ static ALT_SEASON_EPISODE_RE: LazyLock<Regex> =
 static QUALITY_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)(2160p|1080p|720p|480p|4[Kk])").unwrap());
 
+/// Matches common video codec release tags.
+static CODEC_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\b(x264|x265|hevc|h\.?264|h\.?265|av1)\b").unwrap());
+
+/// Matches common HDR release tags.
+static HDR_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(dolby[ ._-]?vision|dovi|dv|hdr10\+|hdr10|hdr)\b").unwrap()
+});
+
+/// Matches edition/source tags useful for version labels.
+static EDITION_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)\b(remux|proper|repack|extended|theatrical|unrated|directors?[ ._-]?cut|criterion)\b",
+    )
+    .unwrap()
+});
+
 /// Matches a 4-digit year in parentheses or standalone.
 static YEAR_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"[\.\s\(]?((?:19|20)\d{2})[\.\s\)\]]?").unwrap());
@@ -243,6 +260,10 @@ impl SourceScanner {
             .and_then(|c| c.get(1))
             .map(|m| m.as_str().to_string());
 
+        let video_codec = self.extract_video_codec(file_stem);
+        let hdr_formats = self.extract_hdr_formats(file_stem);
+        let edition = self.extract_edition(file_stem);
+
         // Extract year
         let year = self.extract_year(file_stem);
 
@@ -264,6 +285,9 @@ impl SourceScanner {
             episode,
             episode_end,
             quality,
+            video_codec,
+            hdr_formats,
+            edition,
             extension,
             year,
         })
@@ -317,6 +341,32 @@ impl SourceScanner {
                     None
                 }
             })
+    }
+
+    fn extract_video_codec(&self, filename: &str) -> Option<String> {
+        CODEC_RE
+            .captures(filename)
+            .and_then(|c| c.get(1))
+            .map(|m| normalize_codec_tag(m.as_str()))
+    }
+
+    fn extract_hdr_formats(&self, filename: &str) -> Vec<String> {
+        let mut formats = Vec::new();
+        for cap in HDR_RE.captures_iter(filename) {
+            if let Some(tag) = cap.get(1).map(|m| normalize_hdr_tag(m.as_str())) {
+                if !formats.contains(&tag) {
+                    formats.push(tag);
+                }
+            }
+        }
+        formats
+    }
+
+    fn extract_edition(&self, filename: &str) -> Option<String> {
+        EDITION_RE
+            .captures(filename)
+            .and_then(|c| c.get(1))
+            .map(|m| normalize_edition_tag(m.as_str()))
     }
 
     /// Extract the title portion of a filename.
@@ -433,6 +483,10 @@ impl SourceScanner {
                 })
             });
 
+        let video_codec = self.extract_video_codec(&cleaned);
+        let hdr_formats = self.extract_hdr_formats(&cleaned);
+        let edition = self.extract_edition(&cleaned);
+
         // Step 4: Extract year
         let year = self.extract_year(&cleaned);
 
@@ -455,6 +509,9 @@ impl SourceScanner {
             episode,
             episode_end,
             quality,
+            video_codec,
+            hdr_formats,
+            edition,
             extension,
             year,
         })
@@ -504,6 +561,34 @@ impl SourceScanner {
         let title = title.trim_end_matches(" -").trim_end_matches('-').trim();
 
         title.to_string()
+    }
+}
+
+fn normalize_codec_tag(tag: &str) -> String {
+    match tag.to_ascii_lowercase().replace('.', "").as_str() {
+        "h265" | "x265" | "hevc" => "hevc".to_string(),
+        "h264" | "x264" => "h264".to_string(),
+        "av1" => "av1".to_string(),
+        value => value.to_string(),
+    }
+}
+
+fn normalize_hdr_tag(tag: &str) -> String {
+    let normalized = tag.to_ascii_lowercase().replace([' ', '.', '_', '-'], "");
+    match normalized.as_str() {
+        "dolbyvision" | "dovi" | "dv" => "dv".to_string(),
+        "hdr10+" => "hdr10plus".to_string(),
+        "hdr10" => "hdr10".to_string(),
+        "hdr" => "hdr".to_string(),
+        value => value.to_string(),
+    }
+}
+
+fn normalize_edition_tag(tag: &str) -> String {
+    let normalized = tag.to_ascii_lowercase().replace([' ', '.', '_'], "-");
+    match normalized.as_str() {
+        "directors-cut" | "director-cut" => "directors-cut".to_string(),
+        value => value.to_string(),
     }
 }
 

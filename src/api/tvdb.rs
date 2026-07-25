@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::{de::DeserializeOwned, Deserialize};
+use serde_json::Value;
 use tracing::{debug, info, warn};
 
 use crate::api::http;
@@ -17,6 +18,13 @@ pub struct TvdbClient {
     api_key: String,
     token: Option<String>,
     cache_ttl: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TvdbSearchMatch {
+    pub id: u64,
+    pub title: String,
+    pub year: Option<u32>,
 }
 
 // --- TVDB API response types ---
@@ -72,6 +80,11 @@ struct TvdbSeasonType {
 #[derive(Debug, Deserialize)]
 struct TvdbEpisodesResponse {
     data: Option<TvdbEpisodesData>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TvdbSearchResponse {
+    data: Option<Vec<Value>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -135,6 +148,58 @@ impl TvdbClient {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ContentMetadata>> + Send + 'a>>
     {
         Box::pin(async move { self.get_series_metadata_inner(tvdb_id, db, false).await })
+    }
+
+    pub async fn search_series(
+        &mut self,
+        query: &str,
+        year: Option<u32>,
+    ) -> Result<Vec<TvdbSearchMatch>> {
+        self.search_series_inner(query, year, false).await
+    }
+
+    async fn search_series_inner(
+        &mut self,
+        query: &str,
+        year: Option<u32>,
+        retried: bool,
+    ) -> Result<Vec<TvdbSearchMatch>> {
+        if self.token.is_none() {
+            self.authenticate().await?;
+        }
+
+        let token = self
+            .token
+            .as_ref()
+            .context("TVDB authenticate succeeded but did not return a token")?;
+
+        let req = self
+            .client
+            .get(format!("{}/search", TVDB_BASE_URL))
+            .bearer_auth(token)
+            .query(&[
+                ("query", query),
+                ("type", "series"),
+                ("limit", "10"),
+                ("year", &year.map(|y| y.to_string()).unwrap_or_default()),
+            ]);
+        let resp = http::send_with_retry(req).await?;
+
+        if resp.status() == 401 {
+            if retried {
+                anyhow::bail!("TVDB authentication failed during series search");
+            }
+            self.authenticate().await?;
+            return Box::pin(self.search_series_inner(query, year, true)).await;
+        }
+
+        let response: TvdbSearchResponse = decode_tvdb_response(resp, "series search").await?;
+        Ok(response
+            .data
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(tvdb_search_match_from_value)
+            .collect())
     }
 
     fn get_series_metadata_inner<'a>(
@@ -288,6 +353,49 @@ impl TvdbClient {
     }
 }
 
+fn tvdb_search_match_from_value(value: Value) -> Option<TvdbSearchMatch> {
+    let id = value
+        .get("tvdb_id")
+        .or_else(|| value.get("tvdbId"))
+        .and_then(tvdb_id_from_value)
+        .or_else(|| value.get("id").and_then(tvdb_id_from_value))?;
+    let title = value
+        .get("name")
+        .or_else(|| value.get("title"))
+        .and_then(Value::as_str)?
+        .trim()
+        .to_string();
+    if title.is_empty() {
+        return None;
+    }
+    let year = value
+        .get("year")
+        .and_then(year_from_value)
+        .or_else(|| value.get("firstAired").and_then(year_from_value))
+        .or_else(|| value.get("first_aired").and_then(year_from_value));
+
+    Some(TvdbSearchMatch { id, title, year })
+}
+
+fn tvdb_id_from_value(value: &Value) -> Option<u64> {
+    if let Some(id) = value.as_u64() {
+        return Some(id);
+    }
+    let raw = value.as_str()?.trim();
+    raw.parse::<u64>().ok().or_else(|| {
+        raw.rsplit_once('-')
+            .and_then(|(_, suffix)| suffix.parse::<u64>().ok())
+    })
+}
+
+fn year_from_value(value: &Value) -> Option<u32> {
+    if let Some(year) = value.as_u64() {
+        return u32::try_from(year).ok();
+    }
+    let raw = value.as_str()?.trim();
+    raw.get(..4)?.parse::<u32>().ok()
+}
+
 async fn decode_tvdb_response<T: DeserializeOwned>(
     resp: reqwest::Response,
     operation: &str,
@@ -334,5 +442,23 @@ mod tests {
         assert!(!cached_metadata_is_negative(
             r#"{"title":"Frieren","aliases":[],"year":2023,"seasons":[]}"#
         ));
+    }
+
+    #[test]
+    fn parses_tvdb_search_match_from_flexible_json() {
+        let value = serde_json::json!({
+            "tvdb_id": "series-12345",
+            "name": "Example Show",
+            "firstAired": "2024-01-05",
+        });
+
+        assert_eq!(
+            tvdb_search_match_from_value(value),
+            Some(TvdbSearchMatch {
+                id: 12345,
+                title: "Example Show".to_string(),
+                year: Some(2024),
+            })
+        );
     }
 }

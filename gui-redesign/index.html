@@ -1,0 +1,763 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="obsidian">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Symlinkarr — UI redesign mockup</title>
+<script src="themes.js"></script>
+<script>
+  // apply saved theme before paint to avoid a flash
+  (function(){ try{ var t=localStorage.getItem('symlinkarr-theme'); if(t) document.documentElement.dataset.theme=t; }catch(e){} })();
+</script>
+<style>
+/* ============================================================
+   Symlinkarr — redesign mockup design system
+   Calm, dense, one accent, no glow/gradient slop.
+   ============================================================ */
+:root{
+  --bg:#15171c;
+  --surface:#1b1e24;
+  --surface-2:#21252c;
+  --surface-3:#272c34;
+  --line:rgba(255,255,255,.07);
+  --line-2:rgba(255,255,255,.12);
+  --text:#e2e6ec;
+  --dim:#98a0ac;
+  --faint:#69707c;
+  --accent:#4f9de8;
+  --accent-2:#3d86cc;
+  --accent-soft:rgba(79,157,232,.14);
+  --accent-line:rgba(79,157,232,.35);
+  --good:#46c26e;
+  --good-soft:rgba(70,194,110,.13);
+  --warn:#e0a53a;
+  --warn-soft:rgba(224,165,58,.14);
+  --bad:#e5654f;
+  --bad-soft:rgba(229,101,79,.14);
+  --r-sm:6px; --r-md:9px; --r-lg:13px;
+  --sidebar:236px;
+  --shadow:0 10px 30px rgba(0,0,0,.35);
+  --font:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%}
+body{
+  font-family:var(--font);
+  background:var(--bg);
+  color:var(--text);
+  font-size:14px;
+  line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+}
+a{color:inherit;text-decoration:none}
+button{font-family:inherit;cursor:pointer}
+svg{display:block}
+.icon{width:18px;height:18px;stroke:currentColor;stroke-width:1.75;fill:none;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.icon-sm{width:15px;height:15px}
+
+/* ---------- shell ---------- */
+.app{display:grid;grid-template-columns:var(--sidebar) 1fr;min-height:100vh}
+
+/* ---------- sidebar ---------- */
+.sidebar{
+  background:var(--surface);
+  border-right:1px solid var(--line);
+  display:flex;flex-direction:column;
+  padding:16px 12px;
+  position:sticky;top:0;height:100vh;
+}
+.brand{display:flex;align-items:center;gap:10px;padding:6px 8px 18px}
+.brand-mark{
+  width:34px;height:34px;border-radius:9px;flex:none;
+  object-fit:contain;box-shadow:0 2px 8px rgba(0,0,0,.3);
+}
+.brand-name{font-weight:650;letter-spacing:-.01em;font-size:15px}
+.brand-sub{font-size:11px;color:var(--faint);margin-top:-2px}
+
+.nav{display:flex;flex-direction:column;gap:2px;flex:1;overflow:auto}
+.nav-label{
+  font-size:10.5px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;
+  color:var(--faint);padding:14px 10px 5px;
+}
+.nav-item{
+  display:flex;align-items:center;gap:11px;
+  padding:8px 10px;border-radius:var(--r-sm);
+  color:var(--dim);font-weight:500;font-size:13.5px;
+  border:1px solid transparent;
+}
+.nav-item:hover{background:var(--surface-2);color:var(--text)}
+.nav-item.active{
+  background:var(--accent-soft);color:var(--text);
+  border-color:var(--accent-line);
+}
+.nav-item.active .icon{color:var(--accent)}
+.nav-item .badge{margin-left:auto}
+
+.side-foot{border-top:1px solid var(--line);padding-top:12px;margin-top:8px;display:flex;flex-direction:column;gap:8px}
+.side-status{display:flex;align-items:center;gap:8px;padding:4px 8px;font-size:12px;color:var(--dim)}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--good);box-shadow:0 0 0 3px var(--good-soft)}
+
+/* ---------- main ---------- */
+.main{min-width:0;display:flex;flex-direction:column}
+.topbar{
+  display:flex;align-items:center;gap:16px;
+  padding:16px 26px;border-bottom:1px solid var(--line);
+  position:sticky;top:0;background:color-mix(in srgb,var(--bg) 82%,transparent);
+  backdrop-filter:blur(8px);z-index:20;
+}
+.topbar h1{font-size:19px;font-weight:650;letter-spacing:-.015em}
+.topbar .sub{color:var(--faint);font-size:12.5px;margin-top:1px}
+.spacer{flex:1}
+
+.search{
+  display:flex;align-items:center;gap:8px;
+  background:var(--surface);border:1px solid var(--line);
+  border-radius:var(--r-sm);padding:7px 11px;width:220px;color:var(--faint);
+}
+.search input{background:none;border:none;outline:none;color:var(--text);width:100%;font-size:13px}
+.search:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.mobile-menu{display:none}
+.iconbtn{
+  width:34px;height:34px;border-radius:var(--r-sm);
+  background:var(--surface);border:1px solid var(--line);color:var(--dim);
+  display:grid;place-items:center;
+}
+.iconbtn:hover{color:var(--text);border-color:var(--line-2)}
+
+.content{padding:24px 26px 60px;max-width:1180px;width:100%}
+.view{display:none}
+.view.active{display:block;animation:fade .18s ease}
+@keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+
+/* ---------- buttons ---------- */
+.btn{
+  display:inline-flex;align-items:center;gap:7px;
+  padding:8px 13px;border-radius:var(--r-sm);font-size:13px;font-weight:550;
+  border:1px solid var(--line-2);background:var(--surface);color:var(--text);
+}
+.btn:hover{background:var(--surface-2);border-color:var(--line-2)}
+.btn-primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn-primary:hover{background:var(--accent-2);border-color:var(--accent-2)}
+.btn-ghost{background:transparent;border-color:transparent;color:var(--dim);padding:6px 9px}
+.btn-ghost:hover{background:var(--surface-2);color:var(--text)}
+.btn-danger{color:var(--bad);border-color:transparent;background:transparent}
+.btn-danger:hover{background:var(--bad-soft)}
+.btn .icon{width:16px;height:16px}
+
+/* ---------- dropdown ---------- */
+.menu{position:relative}
+.menu-pop{
+  position:absolute;right:0;top:calc(100% + 6px);z-index:40;
+  min-width:210px;background:var(--surface-2);
+  border:1px solid var(--line-2);border-radius:var(--r-md);
+  box-shadow:var(--shadow);padding:6px;display:none;
+}
+.menu.open .menu-pop{display:block;animation:fade .12s ease}
+.menu-item{
+  display:flex;align-items:center;gap:10px;width:100%;
+  padding:8px 10px;border-radius:var(--r-sm);border:none;background:none;
+  color:var(--text);font-size:13px;text-align:left;
+}
+.menu-item:hover{background:var(--surface-3)}
+.menu-item .icon{width:16px;height:16px;color:var(--dim)}
+.menu-item.danger{color:var(--bad)}
+.menu-item.danger .icon{color:var(--bad)}
+.menu-sep{height:1px;background:var(--line);margin:5px 4px}
+.menu-head{font-size:10.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--faint);padding:8px 10px 4px}
+
+/* ---------- cards ---------- */
+.card{
+  background:var(--surface);border:1px solid var(--line);
+  border-radius:var(--r-lg);padding:18px;
+}
+.card + .card{margin-top:16px}
+.card-head{display:flex;align-items:flex-start;gap:12px;margin-bottom:14px}
+.card-head h2{font-size:15px;font-weight:620;letter-spacing:-.01em}
+.card-head p{color:var(--faint);font-size:12.5px;margin-top:2px}
+.card-head .spacer{flex:1}
+
+.grid{display:grid;gap:16px}
+.grid-2{grid-template-columns:1fr 1fr}
+.grid-4{grid-template-columns:repeat(4,1fr)}
+
+/* ---------- stat tiles ---------- */
+.stat{
+  background:var(--surface);border:1px solid var(--line);
+  border-radius:var(--r-lg);padding:15px 16px;
+}
+.stat-top{display:flex;align-items:center;gap:9px;color:var(--dim);font-size:12.5px;font-weight:500}
+.stat-top .ico{width:28px;height:28px;border-radius:7px;display:grid;place-items:center;background:var(--surface-3)}
+.stat-top .ico .icon{width:15px;height:15px}
+.stat-val{font-size:26px;font-weight:680;letter-spacing:-.02em;margin-top:10px;font-variant-numeric:tabular-nums}
+.stat-meta{font-size:12px;color:var(--faint);margin-top:3px}
+.stat-meta b{color:var(--dim);font-weight:600}
+.i-good{color:var(--good)} .i-warn{color:var(--warn)} .i-bad{color:var(--bad)} .i-acc{color:var(--accent)}
+
+/* ---------- badges ---------- */
+.badge{
+  display:inline-flex;align-items:center;gap:5px;
+  padding:2px 8px;border-radius:100px;font-size:11.5px;font-weight:600;
+  background:var(--surface-3);color:var(--dim);border:1px solid var(--line);
+  font-variant-numeric:tabular-nums;
+}
+.badge.good{background:var(--good-soft);color:var(--good);border-color:transparent}
+.badge.warn{background:var(--warn-soft);color:var(--warn);border-color:transparent}
+.badge.bad{background:var(--bad-soft);color:var(--bad);border-color:transparent}
+.badge.acc{background:var(--accent-soft);color:var(--accent);border-color:transparent}
+
+/* ---------- table ---------- */
+.tbl-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:var(--r-md)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{
+  text-align:left;font-weight:600;color:var(--faint);font-size:11.5px;
+  text-transform:uppercase;letter-spacing:.04em;
+  padding:10px 14px;border-bottom:1px solid var(--line);background:var(--surface-2);
+}
+td{padding:11px 14px;border-bottom:1px solid var(--line);color:var(--dim)}
+tr:last-child td{border-bottom:none}
+tbody tr:hover td{background:var(--surface-2)}
+td strong{color:var(--text);font-weight:600}
+.mono{font-family:ui-monospace,'SF Mono',Menlo,monospace;font-size:12px;color:var(--dim)}
+.num{font-variant-numeric:tabular-nums;text-align:right}
+
+/* ---------- attention list ---------- */
+.att{display:flex;flex-direction:column}
+.att-row{display:flex;align-items:center;gap:13px;padding:13px 2px;border-bottom:1px solid var(--line)}
+.att-row:last-child{border-bottom:none}
+.att-ico{width:32px;height:32px;border-radius:8px;flex:none;display:grid;place-items:center}
+.att-ico.warn{background:var(--warn-soft);color:var(--warn)}
+.att-ico.bad{background:var(--bad-soft);color:var(--bad)}
+.att-body{flex:1;min-width:0}
+.att-body .t{font-weight:600;font-size:13.5px;color:var(--text)}
+.att-body .d{font-size:12.5px;color:var(--faint);margin-top:1px}
+
+/* ---------- sparkline ---------- */
+.spark{height:150px;width:100%}
+.spark-x{display:flex;justify-content:space-between;color:var(--faint);font-size:11px;margin-top:6px;padding:0 4px}
+
+/* ---------- settings layout ---------- */
+.settings{display:grid;grid-template-columns:190px 1fr;gap:24px}
+.set-rail{display:flex;flex-direction:column;gap:2px;position:sticky;top:88px;align-self:start}
+.set-tab{
+  display:flex;align-items:center;gap:10px;padding:8px 11px;border-radius:var(--r-sm);
+  color:var(--dim);font-size:13.5px;font-weight:500;border:1px solid transparent;
+}
+.set-tab:hover{background:var(--surface);color:var(--text)}
+.set-tab.active{background:var(--surface);color:var(--text);border-color:var(--line)}
+.set-tab.active .icon{color:var(--accent)}
+.set-panel{display:none}
+.set-panel.active{display:block;animation:fade .16s ease}
+
+/* form rows */
+.frow{display:grid;grid-template-columns:220px 1fr;gap:18px;padding:15px 0;border-bottom:1px solid var(--line);align-items:center}
+.frow:last-child{border-bottom:none}
+.frow-l .lbl{font-weight:550;font-size:13.5px}
+.frow-l .hint{color:var(--faint);font-size:12px;margin-top:2px}
+.inp,select.inp{
+  width:100%;max-width:340px;padding:8px 11px;font-size:13px;
+  background:var(--bg);border:1px solid var(--line-2);border-radius:var(--r-sm);
+  color:var(--text);outline:none;font-family:inherit;
+}
+.inp:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+select.inp{max-width:220px;cursor:pointer;appearance:none;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='none' stroke='%2398a0ac' stroke-width='2' viewBox='0 0 24 24'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 10px center;padding-right:30px}
+
+/* segmented toggle */
+.seg{display:inline-flex;background:var(--bg);border:1px solid var(--line-2);border-radius:var(--r-sm);padding:2px}
+.seg button{padding:6px 13px;border:none;background:none;color:var(--dim);border-radius:5px;font-size:12.5px;font-weight:550}
+.seg button.on{background:var(--accent);color:#fff}
+
+/* switch */
+.sw{width:38px;height:22px;border-radius:100px;background:var(--surface-3);border:1px solid var(--line-2);position:relative;flex:none}
+.sw::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:var(--faint);transition:.16s}
+.sw.on{background:var(--accent-soft);border-color:var(--accent-line)}
+.sw.on::after{left:18px;background:var(--accent)}
+
+/* validation alert */
+.alert{display:flex;gap:11px;padding:13px 15px;border-radius:var(--r-md);font-size:13px;border:1px solid}
+.alert .icon{flex:none;margin-top:1px}
+.alert.good{background:var(--good-soft);border-color:transparent;color:var(--text)}
+.alert.good .icon{color:var(--good)}
+.alert.warn{background:var(--warn-soft);border-color:transparent}
+.alert.warn .icon{color:var(--warn)}
+
+.pagehead{display:flex;align-items:center;gap:14px;margin-bottom:20px}
+.pagehead h2{font-size:17px;font-weight:640;letter-spacing:-.015em}
+.pagehead p{color:var(--faint);font-size:12.5px;margin-top:2px}
+
+.note{
+  margin:22px 26px 0;padding:11px 15px;border:1px dashed var(--line-2);border-radius:var(--r-md);
+  font-size:12.5px;color:var(--dim);background:var(--surface);display:flex;gap:9px;align-items:center;
+}
+.note .icon{color:var(--accent);flex:none}
+
+@media(max-width:900px){
+  .grid-4{grid-template-columns:1fr 1fr}
+  .grid-2{grid-template-columns:1fr}
+  .settings{grid-template-columns:1fr}
+  .set-rail{flex-direction:row;overflow-x:auto;position:static}
+  .app{grid-template-columns:1fr}
+  .mobile-menu{display:grid}
+  .sidebar{
+    display:flex;position:fixed;inset:0 auto 0 0;width:min(300px,88vw);
+    z-index:50;transform:translateX(-105%);transition:transform .18s ease;
+    box-shadow:18px 0 45px rgba(0,0,0,.45);
+  }
+  .app.nav-open .sidebar{transform:translateX(0)}
+}
+</style>
+<link rel="stylesheet" href="themes.css">
+</head>
+<body>
+<div class="app">
+  <!-- ===================== SIDEBAR ===================== -->
+  <aside class="sidebar" id="primary-nav">
+    <div class="brand">
+      <img class="brand-mark" src="symlinkarr-icon-nav.png" alt="Symlinkarr">
+      <div>
+        <div class="brand-name">Symlinkarr</div>
+        <div class="brand-sub">v1.1.0-rc.7</div>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <div class="nav-label">Overview</div>
+      <a href="#dashboard" class="nav-item active" data-view="dashboard" aria-current="page">
+        <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>
+        Dashboard
+      </a>
+      <a href="#dashboard" class="nav-item" data-view="dashboard">
+        <svg class="icon" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+        Status
+      </a>
+      <a href="#links" class="nav-item" data-view="links">
+        <svg class="icon" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/></svg>
+        Links <span class="badge">77,177</span>
+      </a>
+
+      <div class="nav-label">Pipeline</div>
+      <a href="#dashboard" class="nav-item" data-view="dashboard">
+        <svg class="icon" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-6.2-8.6"/><path d="M21 3v6h-6"/></svg>
+        Scan
+      </a>
+      <a href="#dashboard" class="nav-item" data-view="dashboard">
+        <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+        Scheduler
+      </a>
+
+      <div class="nav-label">Maintenance</div>
+      <a href="#dashboard" class="nav-item" data-view="dashboard">
+        <svg class="icon" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+        Cleanup
+      </a>
+      <a href="#dashboard" class="nav-item" data-view="dashboard">
+        <svg class="icon" viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18v3h3l6.3-6.3a4 4 0 0 0 5.4-5.4l-2.1 2.1-2.4-.6-.6-2.4z"/></svg>
+        Doctor
+      </a>
+
+      <div class="nav-label">System</div>
+      <a href="#dashboard" class="nav-item" data-view="dashboard">
+        <svg class="icon" viewBox="0 0 24 24"><path d="M21 8v13H3V8"/><rect x="1" y="3" width="22" height="5"/><path d="M10 12h4"/></svg>
+        Backup
+      </a>
+      <a href="#settings" class="nav-item" data-view="settings">
+        <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2V21a2 2 0 0 1-4 0v-.2A1.7 1.7 0 0 0 6.6 19l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 3 13.4H3a2 2 0 0 1 0-4h.2A1.7 1.7 0 0 0 5 6.6l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H10a1.7 1.7 0 0 0 1-1.6V2a2 2 0 0 1 4 0v.2a1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V10a1.7 1.7 0 0 0 1.6 1H22a2 2 0 0 1 0 4h-.2a1.7 1.7 0 0 0-1.4 1z"/></svg>
+        Settings
+      </a>
+    </nav>
+
+    <div class="side-foot">
+      <div class="side-status"><span class="dot"></span> Daemon healthy · idle</div>
+    </div>
+  </aside>
+
+  <!-- ===================== MAIN ===================== -->
+  <div class="main">
+    <header class="topbar">
+      <button type="button" class="iconbtn mobile-menu" aria-label="Open navigation" aria-controls="primary-nav" aria-expanded="false">
+        <svg class="icon" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      </button>
+      <div id="pt">
+        <h1>Dashboard</h1>
+        <div class="sub">Overview of links, scans and the acquire queue</div>
+      </div>
+      <div class="spacer"></div>
+      <div class="search">
+        <svg class="icon icon-sm" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
+        <input placeholder="Search links, titles…">
+      </div>
+      <div class="menu" id="themeMenu">
+        <button class="iconbtn" data-menu title="Theme">
+          <svg class="icon icon-sm" viewBox="0 0 24 24"><circle cx="13.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="10.5" r="2.5"/><circle cx="8.5" cy="7.5" r="2.5"/><circle cx="6.5" cy="12.5" r="2.5"/><path d="M12 2a10 10 0 1 0 0 20 2.5 2.5 0 0 0 2-4 2.5 2.5 0 0 1 2-4h1a3 3 0 0 0 3-3 10 10 0 0 0-8-9z"/></svg>
+        </button>
+        <div class="menu-pop" id="themePop" style="min-width:260px;max-height:420px;overflow:auto"></div>
+      </div>
+      <div class="menu" id="runMenu">
+        <button class="btn btn-primary" data-menu>
+          <svg class="icon" viewBox="0 0 24 24"><path d="M5 3l14 9-14 9V3z"/></svg>
+          Run scan
+          <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+        <div class="menu-pop">
+          <div class="menu-head">Scan scope</div>
+          <button class="menu-item"><svg class="icon" viewBox="0 0 24 24"><path d="M3 12h18M3 6h18M3 18h18"/></svg> All libraries</button>
+          <button class="menu-item"><svg class="icon" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/></svg> Movies</button>
+          <button class="menu-item"><svg class="icon" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/></svg> Series</button>
+          <button class="menu-item"><svg class="icon" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/></svg> Anime</button>
+          <div class="menu-sep"></div>
+          <button class="menu-item"><svg class="icon" viewBox="0 0 24 24"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg> Dry run (preview)</button>
+        </div>
+      </div>
+    </header>
+
+    <div class="content">
+
+      <!-- ============ DASHBOARD ============ -->
+      <section class="view active" id="v-dashboard">
+        <div class="grid grid-4" style="margin-bottom:16px">
+          <div class="stat">
+            <div class="stat-top"><span class="ico"><svg class="icon i-acc" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/></svg></span> Active links</div>
+            <div class="stat-val">77,177</div>
+            <div class="stat-meta">across 3 libraries</div>
+          </div>
+          <div class="stat">
+            <div class="stat-top"><span class="ico"><svg class="icon i-bad" viewBox="0 0 24 24"><path d="M18.4 5.6a9 9 0 1 0 0 12.8"/><path d="M23 4l-5 5-3-3"/></svg></span> Dead links</div>
+            <div class="stat-val">185</div>
+            <div class="stat-meta"><b>Cleanup</b> recommended</div>
+          </div>
+          <div class="stat">
+            <div class="stat-top"><span class="ico"><svg class="icon i-warn" viewBox="0 0 24 24"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></span> Acquire queue</div>
+            <div class="stat-val">71,216</div>
+            <div class="stat-meta"><b>65,173</b> queued · 1 downloading</div>
+          </div>
+          <div class="stat">
+            <div class="stat-top"><span class="ico"><svg class="icon i-good" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-6.2-8.6"/><path d="M21 3v6h-6"/></svg></span> Scans run</div>
+            <div class="stat-val">248</div>
+            <div class="stat-meta">last: <b>Jun 9, 22:10</b></div>
+          </div>
+        </div>
+
+        <div class="grid grid-2">
+          <div class="card">
+            <div class="card-head">
+              <div><h2>Scan history</h2><p>Links created over the last 12 runs</p></div>
+              <div class="spacer"></div>
+              <span class="badge acc">+18% vs prev</span>
+            </div>
+            <svg class="spark" id="spark" viewBox="0 0 600 150" preserveAspectRatio="none"></svg>
+            <div class="spark-x"><span>Jun 1</span><span>Jun 4</span><span>Jun 7</span><span>Jun 9</span></div>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <div><h2>Needs attention</h2><p>Worth checking before the next scan</p></div>
+            </div>
+            <div class="att">
+              <div class="att-row">
+                <span class="att-ico bad"><svg class="icon" viewBox="0 0 24 24"><path d="M18.4 5.6a9 9 0 1 0 0 12.8"/><path d="M23 4l-5 5-3-3"/></svg></span>
+                <div class="att-body"><div class="t">185 dead links tracked</div><div class="d">Sources removed from Real-Debrid — run Cleanup to prune.</div></div>
+                <button class="btn btn-ghost">Review</button>
+              </div>
+              <div class="att-row">
+                <span class="att-ico warn"><svg class="icon" viewBox="0 0 24 24"><path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+                <div class="att-body"><div class="t">2 anime searches unmatched</div><div class="d">Add a search override to guide the query.</div></div>
+                <button class="btn btn-ghost">Fix</button>
+              </div>
+              <div class="att-row">
+                <span class="att-ico warn"><svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v4l3 2"/></svg></span>
+                <div class="att-body"><div class="t">Queue backlog is large</div><div class="d">65,173 items queued — check the acquire budget.</div></div>
+                <button class="btn btn-ghost">Queue</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <div><h2>Recent runs</h2></div>
+            <div class="spacer"></div>
+            <div class="menu" id="tblMenu">
+              <button class="btn btn-ghost" data-menu><svg class="icon" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg></button>
+              <div class="menu-pop">
+                <button class="menu-item"><svg class="icon" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg> New scan</button>
+                <button class="menu-item"><svg class="icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5M12 15V3"/></svg> Export history</button>
+                <div class="menu-sep"></div>
+                <button class="menu-item"><svg class="icon" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg> Clear old runs</button>
+              </div>
+            </div>
+          </div>
+          <div class="tbl-wrap">
+            <table>
+              <thead><tr><th>Started</th><th>Scope</th><th>Mode</th><th class="num">Matches</th><th class="num">Links</th><th class="num">Dead</th><th>Runtime</th></tr></thead>
+              <tbody>
+                <tr><td class="mono">Jun 9, 22:10</td><td><strong>All</strong></td><td><span class="badge good">Live</span></td><td class="num">1,204</td><td class="num" style="color:var(--good)">312</td><td class="num">4</td><td>2m 41s</td></tr>
+                <tr><td class="mono">Jun 9, 20:05</td><td><strong>Anime</strong></td><td><span class="badge">Dry</span></td><td class="num">86</td><td class="num">0</td><td class="num">0</td><td>0m 52s</td></tr>
+                <tr><td class="mono">Jun 9, 18:00</td><td><strong>Movies</strong></td><td><span class="badge good">Live</span></td><td class="num">640</td><td class="num" style="color:var(--good)">128</td><td class="num">2</td><td>1m 18s</td></tr>
+                <tr><td class="mono">Jun 9, 16:00</td><td><strong>Series</strong></td><td><span class="badge good">Live</span></td><td class="num">910</td><td class="num" style="color:var(--good)">204</td><td class="num">12</td><td>3m 09s</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ LINKS ============ -->
+      <section class="view" id="v-links">
+        <div class="card">
+          <div class="card-head">
+            <div><h2>Links</h2><p>77,177 active symlinks</p></div>
+            <div class="spacer"></div>
+            <div class="seg" id="linkSeg">
+              <button class="on">All</button><button>Active</button><button>Dead</button><button>Unresolved</button>
+            </div>
+            <select class="inp" style="max-width:150px"><option>All libraries</option><option>Movies</option><option>Series</option><option>Anime</option></select>
+          </div>
+          <div class="tbl-wrap">
+            <table>
+              <thead><tr><th>Title</th><th>Library</th><th>Status</th><th>Source</th><th></th></tr></thead>
+              <tbody>
+                <tr><td><strong>Dune: Part Two (2024)</strong></td><td>Movies</td><td><span class="badge good">Active</span></td><td class="mono">/rd/__all__/dune.2.2160p…</td><td class="rowmenu"></td></tr>
+                <tr><td><strong>Frieren — S01E12</strong></td><td>Anime</td><td><span class="badge good">Active</span></td><td class="mono">/rd/__all__/frieren.s01…</td><td class="rowmenu"></td></tr>
+                <tr><td><strong>Severance — S02E01</strong></td><td>Series</td><td><span class="badge bad">Dead</span></td><td class="mono">/rd/__all__/severance…</td><td class="rowmenu"></td></tr>
+                <tr><td><strong>The Bear — S03E05</strong></td><td>Series</td><td><span class="badge warn">Unresolved</span></td><td class="mono">—</td><td class="rowmenu"></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ SETTINGS ============ -->
+      <section class="view" id="v-settings">
+        <div class="settings">
+          <nav class="set-rail" id="setRail">
+            <a href="#general" class="set-tab active" data-set="general" aria-current="page"><svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg> General</a>
+            <a href="#libraries" class="set-tab" data-set="libraries"><svg class="icon" viewBox="0 0 24 24"><path d="M4 19V5a2 2 0 0 1 2-2h9l5 5v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/></svg> Libraries</a>
+            <a href="#matching" class="set-tab" data-set="matching"><svg class="icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg> Matching</a>
+            <a href="#services" class="set-tab" data-set="services"><svg class="icon" viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><path d="M6 6h.01M6 18h.01"/></svg> Services</a>
+            <a href="#backup" class="set-tab" data-set="backup"><svg class="icon" viewBox="0 0 24 24"><path d="M21 8v13H3V8"/><rect x="1" y="3" width="22" height="5"/></svg> Backup</a>
+          </nav>
+
+          <div>
+            <!-- GENERAL -->
+            <div class="set-panel active" id="s-general">
+              <div class="pagehead">
+                <div style="flex:1"><h2>General</h2><p>Core runtime configuration Symlinkarr is using right now.</p></div>
+                <div class="menu" id="setMenu">
+                  <button class="btn" data-menu>Actions <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button>
+                  <div class="menu-pop">
+                    <button class="menu-item"><svg class="icon" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg> Validate config</button>
+                    <button class="menu-item"><svg class="icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5M12 15V3"/></svg> Export YAML</button>
+                    <button class="menu-item"><svg class="icon" viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4"/><path d="M3 18v3h3"/></svg> Reload from disk</button>
+                    <div class="menu-sep"></div>
+                    <button class="menu-item danger"><svg class="icon" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/></svg> Reset to defaults</button>
+                  </div>
+                </div>
+                <button class="btn btn-primary"><svg class="icon" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg> Save</button>
+              </div>
+
+              <div class="alert good" style="margin-bottom:18px">
+                <svg class="icon" viewBox="0 0 24 24"><path d="M22 11.1V12a10 10 0 1 1-5.9-9.1"/><path d="M22 4L12 14.01l-3-3"/></svg>
+                <div><strong>Configuration is valid.</strong> 3 libraries and 1 source verified · last checked 2 min ago.</div>
+              </div>
+
+              <div class="card">
+                <div class="frow">
+                  <div class="frow-l"><div class="lbl">Log level</div><div class="hint">Verbosity of the daemon and CLI output.</div></div>
+                  <div><select class="inp"><option>info</option><option>debug</option><option>warn</option><option>error</option></select></div>
+                </div>
+                <div class="frow">
+                  <div class="frow-l"><div class="lbl">Database path</div><div class="hint">SQLite file backing links and queue state.</div></div>
+                  <div><input class="inp" value="/app/data/symlinkarr.db"></div>
+                </div>
+                <div class="frow">
+                  <div class="frow-l"><div class="lbl">Daemon interval</div><div class="hint">How often the background scan runs.</div></div>
+                  <div style="display:flex;align-items:center;gap:8px"><input class="inp" style="max-width:90px" value="60"><span style="color:var(--faint)">minutes</span></div>
+                </div>
+                <div class="frow">
+                  <div class="frow-l"><div class="lbl">Search missing</div><div class="hint">Build auto-acquire requests for gaps during scans.</div></div>
+                  <div><span class="sw" data-switch></span></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- LIBRARIES -->
+            <div class="set-panel" id="s-libraries">
+              <div class="pagehead">
+                <div style="flex:1"><h2>Libraries &amp; sources</h2><p>Tagged library roots and Real-Debrid ingestion paths.</p></div>
+                <button class="btn btn-primary"><svg class="icon" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg> Add library</button>
+              </div>
+              <div class="card" style="padding:0">
+                <div class="tbl-wrap" style="border:none">
+                  <table>
+                    <thead><tr><th>Name</th><th>Path</th><th>Type</th><th>Depth</th><th></th></tr></thead>
+                    <tbody>
+                      <tr><td><strong>Movies</strong></td><td class="mono">/mnt/plex/film</td><td><span class="badge">movie</span></td><td>1</td><td class="rowmenu"></td></tr>
+                      <tr><td><strong>Series</strong></td><td class="mono">/mnt/plex/serier</td><td><span class="badge">tv</span></td><td>1</td><td class="rowmenu"></td></tr>
+                      <tr><td><strong>Anime</strong></td><td class="mono">/mnt/plex/anime</td><td><span class="badge acc">tv · anime</span></td><td>1</td><td class="rowmenu"></td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <div class="card">
+                <div class="card-head"><div><h2 style="font-size:14px">Sources</h2></div></div>
+                <div class="frow" style="padding-top:0;border:none">
+                  <div class="frow-l"><div class="lbl">RealDebrid</div><div class="hint">media_type: auto</div></div>
+                  <div><input class="inp" style="max-width:100%" value="/mnt/decypharr/realdebrid/__all__"></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- MATCHING -->
+            <div class="set-panel" id="s-matching">
+              <div class="pagehead"><div style="flex:1"><h2>Matching</h2><p>How files are matched to library items.</p></div><button class="btn btn-primary"><svg class="icon" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg> Save</button></div>
+              <div class="card">
+                <div class="frow">
+                  <div class="frow-l"><div class="lbl">Match mode</div><div class="hint">Strict avoids false positives; lenient links more.</div></div>
+                  <div class="seg"><button class="on">Strict</button><button>Balanced</button><button>Lenient</button></div>
+                </div>
+                <div class="frow">
+                  <div class="frow-l"><div class="lbl">Metadata mode</div><div class="hint">How much TMDB/TVDB enrichment to apply.</div></div>
+                  <div><select class="inp"><option>full</option><option>fast</option><option>offline</option></select></div>
+                </div>
+                <div class="frow">
+                  <div class="frow-l"><div class="lbl">Naming template</div><div class="hint">Destination filename pattern for symlinks.</div></div>
+                  <div><input class="inp mono" style="max-width:100%" value="{title} - S{season:02}E{episode:02} - {episode_title}"></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- SERVICES -->
+            <div class="set-panel" id="s-services">
+              <div class="pagehead"><div style="flex:1"><h2>Services</h2><p>Connected APIs. Secrets are read from files, never shown.</p></div></div>
+              <div class="card" style="padding:0">
+                <div class="tbl-wrap" style="border:none">
+                  <table>
+                    <thead><tr><th>Service</th><th>Status</th><th>Endpoint</th><th></th></tr></thead>
+                    <tbody>
+                      <tr><td><strong>Sonarr</strong></td><td><span class="badge good">Connected</span></td><td class="mono">http://sonarr:8989</td><td class="rowmenu"></td></tr>
+                      <tr><td><strong>Radarr</strong></td><td><span class="badge good">Connected</span></td><td class="mono">http://radarr:7878</td><td class="rowmenu"></td></tr>
+                      <tr><td><strong>Real-Debrid</strong></td><td><span class="badge good">Connected</span></td><td class="mono">secretfile ✓</td><td class="rowmenu"></td></tr>
+                      <tr><td><strong>Tautulli</strong></td><td><span class="badge warn">No streams</span></td><td class="mono">http://tautulli:8181</td><td class="rowmenu"></td></tr>
+                      <tr><td><strong>DMM</strong></td><td><span class="badge">Idle</span></td><td class="mono">debridmediamanager.com</td><td class="rowmenu"></td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            <!-- BACKUP -->
+            <div class="set-panel" id="s-backup">
+              <div class="pagehead"><div style="flex:1"><h2>Backup</h2><p>Automatic snapshots and restore points.</p></div><button class="btn btn-primary"><svg class="icon" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg> Backup now</button></div>
+              <div class="card">
+                <div class="frow">
+                  <div class="frow-l"><div class="lbl">Backup path</div></div>
+                  <div><input class="inp" style="max-width:100%" value="/app/data/backups"></div>
+                </div>
+                <div class="frow">
+                  <div class="frow-l"><div class="lbl">Keep restore points</div><div class="hint">Pre-destructive snapshots are kept separately.</div></div>
+                  <div style="display:flex;align-items:center;gap:8px"><input class="inp" style="max-width:80px" value="25"></div>
+                </div>
+                <div class="frow">
+                  <div class="frow-l"><div class="lbl">Enforce secure permissions</div><div class="hint">chmod 0600 on backup artifacts.</div></div>
+                  <div><span class="sw on" data-switch></span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </div>
+
+    <div class="note">
+      <svg class="icon icon-sm" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+      Redesign mockup — static preview in <code style="color:var(--accent)">gui-redesign/</code>. Nothing in <code style="color:var(--accent)">src/web/</code> is touched. Click the sidebar and the row/action menus.
+    </div>
+  </div>
+</div>
+
+<script>
+// view switching
+const views=document.querySelectorAll('.view'), navs=document.querySelectorAll('.nav-item[data-view]');
+const titles={dashboard:['Dashboard','Overview of links, scans and the acquire queue'],links:['Links','Browse and filter symlinks'],settings:['Settings','Configuration and connected services']};
+navs.forEach(n=>n.addEventListener('click',e=>{
+  e.preventDefault();
+  const v=n.dataset.view;
+  navs.forEach(x=>{x.classList.toggle('active',x===n);x.toggleAttribute('aria-current',x===n)});
+  views.forEach(x=>x.classList.toggle('active',x.id==='v-'+v));
+  const t=titles[v]; document.getElementById('pt').innerHTML=`<h1>${t[0]}</h1><div class="sub">${t[1]}</div>`;
+  document.querySelector('.app').classList.remove('nav-open');
+  document.querySelector('.mobile-menu').setAttribute('aria-expanded','false');
+}));
+const mobileMenu=document.querySelector('.mobile-menu');
+mobileMenu.addEventListener('click',()=>{
+  const open=document.querySelector('.app').classList.toggle('nav-open');
+  mobileMenu.setAttribute('aria-expanded',String(open));
+});
+// settings sub-tabs
+document.querySelectorAll('.set-tab').forEach(t=>t.addEventListener('click',e=>{
+  e.preventDefault();
+  document.querySelectorAll('.set-tab').forEach(x=>{x.classList.toggle('active',x===t);x.toggleAttribute('aria-current',x===t)});
+  document.querySelectorAll('.set-panel').forEach(p=>p.classList.toggle('active',p.id==='s-'+t.dataset.set));
+}));
+// dropdown menus
+document.querySelectorAll('.menu [data-menu]').forEach(b=>b.addEventListener('click',e=>{
+  e.stopPropagation(); const m=b.closest('.menu'); const open=m.classList.contains('open');
+  document.querySelectorAll('.menu').forEach(x=>x.classList.remove('open'));
+  m.classList.toggle('open',!open);
+}));
+document.addEventListener('click',()=>document.querySelectorAll('.menu').forEach(m=>m.classList.remove('open')));
+// row action menus (built dynamically)
+document.querySelectorAll('td.rowmenu').forEach(td=>{
+  td.style.textAlign='right';
+  td.innerHTML='<button class="btn btn-ghost" style="padding:4px 7px"><svg class="icon icon-sm" viewBox="0 0 24 24"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg></button>';
+});
+// segmented toggles
+document.querySelectorAll('.seg').forEach(s=>s.querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{
+  s.querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));
+})));
+// switches
+document.querySelectorAll('[data-switch]').forEach(s=>s.addEventListener('click',()=>s.classList.toggle('on')));
+// theme picker — built from themes.js manifest
+(function(){
+  const pop=document.getElementById('themePop');
+  const groups=window.SYMLINKARR_THEMES||[];
+  let saved='obsidian'; try{ saved=localStorage.getItem('symlinkarr-theme')||'obsidian'; }catch(e){}
+  function swatchDots(sw){ return sw.map(c=>`<span style="width:11px;height:11px;border-radius:50%;background:${c};box-shadow:inset 0 0 0 1px rgba(128,128,128,.35)"></span>`).join(''); }
+  function render(){
+    const cur=document.documentElement.dataset.theme;
+    pop.innerHTML=groups.map(g=>
+      `<div class="menu-head">${g.group}</div>`+
+      g.items.map(t=>`<button class="menu-item theme-opt" data-theme-id="${t.id}" ${t.id===cur?'aria-current="true"':''}>
+        <span style="display:flex;gap:3px">${swatchDots(t.swatches)}</span>
+        <span style="flex:1">${t.name}</span>
+        ${t.id===cur?'<svg class="icon icon-sm" viewBox="0 0 24 24" style="color:var(--accent)"><path d="M20 6L9 17l-5-5"/></svg>':''}
+      </button>`).join('')
+    ).join('');
+    pop.querySelectorAll('.theme-opt').forEach(b=>b.addEventListener('click',ev=>{
+      ev.stopPropagation();
+      const id=b.dataset.themeId;
+      document.documentElement.dataset.theme=id;
+      try{ localStorage.setItem('symlinkarr-theme',id); }catch(e){}
+      render();
+    }));
+  }
+  document.documentElement.dataset.theme=saved;
+  render();
+})();
+// sparkline
+(function(){
+  const data=[128,164,140,206,182,238,210,268,240,290,262,312];
+  const w=600,h=150,pad=12, max=Math.max(...data)*1.1, min=Math.min(...data)*0.9;
+  const pts=data.map((d,i)=>[pad+i/(data.length-1)*(w-pad*2), h-pad-(d-min)/(max-min)*(h-pad*2)]);
+  let dpath='M'+pts[0].join(',');
+  for(let i=1;i<pts.length;i++){const[x0,y0]=pts[i-1],[x1,y1]=pts[i];const cx=(x0+x1)/2;dpath+=` C${cx},${y0} ${cx},${y1} ${x1},${y1}`;}
+  const area=dpath+` L${pts[pts.length-1][0]},${h} L${pts[0][0]},${h} Z`;
+  document.getElementById('spark').innerHTML=
+    `<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--accent)" stop-opacity=".18"/><stop offset="1" stop-color="var(--accent)" stop-opacity="0"/></linearGradient></defs>`+
+    `<path d="${area}" fill="url(#g)"/><path d="${dpath}" fill="none" stroke="var(--accent)" stroke-width="2"/>`+
+    pts.map(p=>`<circle cx="${p[0]}" cy="${p[1]}" r="2.5" fill="var(--accent)"/>`).join('');
+})();
+</script>
+</body>
+</html>

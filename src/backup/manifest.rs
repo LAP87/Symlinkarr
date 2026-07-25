@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::io::Read;
 use std::path::{Component, Path};
 
@@ -97,7 +98,7 @@ pub(super) fn compute_manifest_checksum(manifest: &BackupManifest) -> Result<Str
     };
     let mut hasher = Sha256::new();
     hasher.update(&json);
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(digest_hex(hasher.finalize()))
 }
 
 pub(super) fn sha256_file(path: &Path) -> Result<String> {
@@ -111,7 +112,16 @@ pub(super) fn sha256_file(path: &Path) -> Result<String> {
         }
         hasher.update(&buf[..read]);
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(digest_hex(hasher.finalize()))
+}
+
+fn digest_hex(digest: impl AsRef<[u8]>) -> String {
+    let digest = digest.as_ref();
+    let mut output = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        write!(&mut output, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    output
 }
 
 pub(super) fn validate_managed_backup_file_name(file_name: &str) -> Result<()> {

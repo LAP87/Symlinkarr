@@ -11,14 +11,16 @@ use chrono::{DateTime, Duration as ChronoDuration, NaiveDateTime, Utc};
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Component, Path as StdPath, PathBuf};
+use std::time::Duration;
 use tracing::{error, info};
 
-#[cfg(test)]
-use admin::DiscoverQuery;
 pub(crate) use admin::{
-    get_backup, get_config, get_discover, get_discover_content, get_doctor, post_backup_create,
-    post_backup_restore, post_config_validate,
+    get_backup, get_config, get_discover, get_discover_content, get_doctor, get_import,
+    post_backup_create, post_backup_restore, post_config_validate, post_import_apply,
+    post_import_preview,
 };
+#[cfg(test)]
+use admin::{DiscoverQuery, ImportPreviewForm};
 #[cfg(test)]
 use cleanup::AnimeRemediationQuery;
 pub(crate) use cleanup::{
@@ -54,6 +56,7 @@ use crate::db::{
 };
 use crate::discovery::DiscoverSummary;
 use crate::media_servers::deferred_refresh_summary;
+use crate::scheduler::ScheduleRule;
 
 use super::templates::*;
 use super::{
@@ -414,6 +417,7 @@ pub(crate) fn daemon_schedule_view(
 }
 
 const RECENT_QUEUE_JOB_LIMIT: usize = 6;
+const STATUS_STREAMING_GUARD_TIMEOUT: Duration = Duration::from_millis(900);
 
 fn format_operator_name(raw: &str) -> String {
     let mut chars = raw.chars();
@@ -603,9 +607,31 @@ async fn streaming_guard_view(state: &WebState) -> Option<StreamingGuardView> {
         return None;
     }
 
+    let mut cache = state.streaming_guard_cache.lock().await;
+    if let Some((cached_at, view)) = cache.as_ref() {
+        if cached_at.elapsed() < std::time::Duration::from_secs(8) {
+            return view.clone();
+        }
+    }
+
     let tautulli = TautulliClient::new(&state.config.tautulli);
-    match tautulli.get_active_file_paths().await {
-        Ok(paths) => Some(StreamingGuardView {
+    let view = match tokio::time::timeout(
+        STATUS_STREAMING_GUARD_TIMEOUT,
+        tautulli.get_active_file_paths(),
+    )
+    .await
+    {
+        Err(_) => Some(StreamingGuardView {
+            status_label: "Unavailable".to_string(),
+            status_badge_class: "badge-danger",
+            active_streams: 0,
+            protected_paths: Vec::new(),
+            error_message: Some(format!(
+                "Tautulli did not respond within {} ms; skipping live playback check for this page load.",
+                STATUS_STREAMING_GUARD_TIMEOUT.as_millis()
+            )),
+        }),
+        Ok(Ok(paths)) => Some(StreamingGuardView {
             status_label: if paths.is_empty() {
                 "Idle".to_string()
             } else {
@@ -620,14 +646,16 @@ async fn streaming_guard_view(state: &WebState) -> Option<StreamingGuardView> {
             protected_paths: paths.into_iter().take(6).collect(),
             error_message: None,
         }),
-        Err(err) => Some(StreamingGuardView {
+        Ok(Err(err)) => Some(StreamingGuardView {
             status_label: "Unavailable".to_string(),
             status_badge_class: "badge-danger",
             active_streams: 0,
             protected_paths: Vec::new(),
             error_message: Some(err.to_string()),
         }),
-    }
+    };
+    *cache = Some((std::time::Instant::now(), view.clone()));
+    view
 }
 
 async fn acquisition_feed_items(
@@ -1218,10 +1246,6 @@ fn require_browser_csrf_token(
     submitted_token: &str,
     path: &str,
 ) -> Option<Response> {
-    if !state.browser_mutation_guard_enabled() {
-        return None;
-    }
-
     (!super::has_valid_browser_csrf_token(submitted_token, state))
         .then(|| super::invalid_browser_csrf_response(path))
 }
@@ -1497,6 +1521,96 @@ pub async fn get_status(State(state): State<WebState>) -> impl IntoResponse {
         streaming_guard,
     };
     Html(template.render().unwrap_or_else(|e| e.to_string())).into_response()
+}
+
+/// GET /scheduler - Live scheduler rules and history
+pub async fn get_scheduler(State(state): State<WebState>) -> impl IntoResponse {
+    info!("Serving scheduler page");
+
+    let mut error = None;
+    let rules = match state.database.list_scheduler_rules().await {
+        Ok(rules) => rules,
+        Err(err) => {
+            error!("Failed to load scheduler rules: {}", err);
+            error = Some(err.to_string());
+            Vec::new()
+        }
+    };
+    let runs = match state.database.list_scheduler_runs(25).await {
+        Ok(runs) => runs,
+        Err(err) => {
+            error!("Failed to load scheduler runs: {}", err);
+            error = Some(err.to_string());
+            Vec::new()
+        }
+    };
+    let now = chrono::Local::now();
+    let mut nexts = Vec::new();
+    let rule_views = rules
+        .iter()
+        .map(|rule| {
+            let next_due = rule
+                .next_after(now)
+                .map(|dt| dt.format("%Y-%m-%d %H:%M:%S %Z").to_string());
+            if let Some(next) = next_due.clone() {
+                nexts.push(next);
+            }
+            scheduler_rule_page_view(rule, next_due)
+        })
+        .collect::<Vec<_>>();
+    nexts.sort();
+    let export_yaml = serde_yml::to_string(&serde_json::json!({
+        "version": 1,
+        "rules": rules.clone(),
+    }))
+    .unwrap_or_else(|err| format!("export_error: {}", err));
+
+    SchedulerTemplate {
+        enabled_rules: rules.iter().filter(|rule| rule.enabled).count(),
+        next_due: nexts.first().cloned(),
+        rules: rule_views,
+        runs,
+        export_yaml,
+        error,
+    }
+    .into_response()
+}
+
+fn scheduler_rule_page_view(
+    rule: &ScheduleRule,
+    next_due: Option<String>,
+) -> SchedulerRulePageView {
+    let trigger_json =
+        serde_json::to_string_pretty(&rule.trigger).unwrap_or_else(|_| "{}".to_string());
+    let run_window_json =
+        serde_json::to_string_pretty(&rule.run_window).unwrap_or_else(|_| "{}".to_string());
+    let event_args_json =
+        serde_json::to_string_pretty(&rule.event_args).unwrap_or_else(|_| "{}".to_string());
+    let safety_label = if rule.event_type.is_destructive() {
+        if rule.allow_destructive_auto && rule.max_delete.unwrap_or(0) > 0 {
+            format!("Destructive capped at {}", rule.max_delete.unwrap_or(0))
+        } else {
+            "Destructive blocked until safety is configured".to_string()
+        }
+    } else if rule.safety_backup {
+        "Safety backup enabled".to_string()
+    } else {
+        "Non-destructive".to_string()
+    };
+
+    SchedulerRulePageView {
+        id: rule.id.unwrap_or_default(),
+        name: rule.name.clone(),
+        event_type: rule.event_type.as_str().to_string(),
+        enabled: rule.enabled,
+        trigger_json,
+        run_window_json,
+        event_args_json,
+        priority: rule.priority,
+        misfire_grace_minutes: rule.misfire_grace_minutes,
+        next_due,
+        safety_label,
+    }
 }
 
 /// GET /health - Compatibility alias for the status page

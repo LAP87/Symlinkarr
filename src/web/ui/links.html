@@ -10,7 +10,7 @@
         <p class="page-kicker">Inventory</p>
         <span class="page-taxonomy page-taxonomy--inspection">Links</span>
     </div>
-    <h1>&#128279; Links</h1>
+    <h1>Links</h1>
     <p class="page-lead">Browse and manage symlinks in the database.</p>
     <div class="page-help-links">
         <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Repair-and-Dead-Links" target="_blank" rel="noreferrer noopener">
@@ -20,17 +20,23 @@
     </div>
 </div>
 
-<div class="card" style="margin-bottom:1rem;">
-    <div class="filter-tabs">
-        <a href="/links?filter=active" class="filter-tab {% if filter == "active" %}active{% endif %}">
-            &#9989; Active
-        </a>
-        <a href="/links?filter=dead" class="filter-tab {% if filter == "dead" %}active{% endif %}">
-            &#128683; Dead
-        </a>
-        <a href="/links?filter=all" class="filter-tab {% if filter == "all" %}active{% endif %}">
-            All
-        </a>
+<div class="card operator-links-card">
+    <div class="operator-toolbar">
+        <div class="filter-tabs">
+            <a href="/links?filter=active" class="filter-tab {% if filter == "active" %}active{% endif %}">
+                Active
+            </a>
+            <a href="/links?filter=dead" class="filter-tab {% if filter == "dead" %}active{% endif %}">
+                Dead
+            </a>
+            <a href="/links?filter=all" class="filter-tab {% if filter == "all" %}active{% endif %}">
+                All
+            </a>
+        </div>
+        <div class="operator-toolbar__actions">
+            <a href="/links/dead" class="btn btn-secondary">View Dead Links</a>
+            <a href="/scan" class="btn btn-primary">Run New Scan</a>
+        </div>
     </div>
 
     {% if links|length > 0 %}
@@ -68,12 +74,7 @@
         </tbody>
     </table>
     {% else %}
-    <p class="text-muted">No links found for filter: <strong>{{ filter }}</strong>.</p>
+    <p class="text-muted operator-empty-state">No links found for filter: <strong>{{ filter }}</strong>.</p>
     {% endif %}
-</div>
-
-<div class="actions">
-    <a href="/links/dead" class="btn btn-secondary">&#128683; View Dead Links</a>
-    <a href="/scan" class="btn btn-primary">&#128269; Run New Scan</a>
 </div>
 {% endblock %}

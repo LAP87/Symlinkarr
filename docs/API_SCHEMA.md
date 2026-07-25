@@ -1150,6 +1150,23 @@ Notes:
 - `blocked_reason_summary` explains the top reasons prune refused to touch those rows automatically.
 - prune apply now fails with `400 Bad Request` when a report has zero actionable candidates left and only policy-blocked rows remain, instead of returning a success-shaped no-op.
 
+## Scheduler
+
+Scheduler rule endpoints:
+
+- `GET /api/v1/scheduler/rules` lists rules with their next due time.
+- `POST /api/v1/scheduler/rules` validates and creates one rule (`201 Created`).
+- `PUT /api/v1/scheduler/rules/:id` replaces a rule; an unknown ID returns `404`.
+- `POST /api/v1/scheduler/rules/:id/enable` accepts `{"enabled":true}`; an unknown ID returns `404`.
+- `POST /api/v1/scheduler/rules/:id/run-now` atomically claims a bounded background run and returns `202 Accepted` with `{"run_id":123}`. A concurrent manual scheduler job returns `409`.
+- `GET /api/v1/scheduler/runs` returns the latest 100 persisted runs.
+- `GET /api/v1/scheduler/preview?id=<id>&count=<1..20>` previews upcoming local times.
+- `GET /api/v1/scheduler/export` exports a YAML snapshot.
+- `POST /api/v1/scheduler/export` validates and atomically replaces the current rule set with a complete YAML snapshot.
+
+Scheduler import/export snapshots currently use `version: 1`. Unsupported versions
+and empty snapshots return `400 Bad Request` before any rule is written.
+
 ## `GET /api/v1/links`
 
 Returns active links by default, or dead links when `status=dead`.

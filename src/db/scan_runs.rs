@@ -3,9 +3,15 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use sqlx::Row;
 
+use crate::provider_repair::{
+    is_provider_repair_action, is_provider_repair_note, ORPHAN_FILESYSTEM_DEAD_SYMLINK,
+    REPAIR_FAILED_ACTION, SOURCE_MISSING_BEFORE_LINK, SOURCE_OR_TARGET_INVALID,
+    SOURCE_UNREADABLE_BEFORE_LINK,
+};
+
 use super::{
-    path_to_db_text, Database, LinkEventHistoryRecord, LinkEventRecord, ScanHistoryRecord,
-    ScanRunOrigin, ScanRunRecord, WebStats,
+    path_to_db_text, Database, LinkEventHistoryRecord, LinkEventRecord,
+    ProviderRepairCandidateRecord, ScanHistoryRecord, ScanRunOrigin, ScanRunRecord, WebStats,
 };
 
 impl Database {
@@ -369,6 +375,95 @@ impl Database {
                 })
             })
             .collect()
+    }
+
+    pub async fn get_provider_repair_candidates(
+        &self,
+        target_roots: Option<&[PathBuf]>,
+        limit: usize,
+    ) -> Result<Vec<ProviderRepairCandidateRecord>> {
+        let fetch_limit = limit.max(1).saturating_mul(50).min(5_000) as i64;
+        let rows = sqlx::query(
+            "SELECT event_at, action, target_path, source_path, media_id, note
+             FROM link_events
+             WHERE note IN (?, ?, ?, ?)
+                OR action IN (?)
+             ORDER BY event_at DESC, id DESC
+             LIMIT ?",
+        )
+        .bind(SOURCE_MISSING_BEFORE_LINK)
+        .bind(SOURCE_UNREADABLE_BEFORE_LINK)
+        .bind(SOURCE_OR_TARGET_INVALID)
+        .bind(ORPHAN_FILESYSTEM_DEAD_SYMLINK)
+        .bind(REPAIR_FAILED_ACTION)
+        .bind(fetch_limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut grouped: Vec<ProviderRepairCandidateRecord> = Vec::new();
+        let mut index: std::collections::HashMap<(String, String, String), usize> =
+            std::collections::HashMap::new();
+        for row in rows {
+            let target_path = PathBuf::from(row.get::<String, _>("target_path"));
+            if let Some(roots) = target_roots {
+                if !roots.iter().any(|root| target_path.starts_with(root)) {
+                    continue;
+                }
+            }
+
+            let source_path = row
+                .get::<Option<String>, _>("source_path")
+                .map(PathBuf::from);
+            let media_id = row.get::<Option<String>, _>("media_id");
+            let action = row.get::<String, _>("action");
+            let note = row.get::<Option<String>, _>("note");
+            let reason = note
+                .filter(|note| is_provider_repair_note(note))
+                .unwrap_or_else(|| action.clone());
+            if !is_provider_repair_note(&reason) && !is_provider_repair_action(&reason) {
+                continue;
+            }
+            let key = (
+                source_path
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_default(),
+                media_id.clone().unwrap_or_default(),
+                reason.clone(),
+            );
+
+            if let Some(existing_index) = index.get(&key).copied() {
+                let candidate = &mut grouped[existing_index];
+                candidate.occurrences += 1;
+                if candidate.sample_targets.len() < 5
+                    && !candidate
+                        .sample_targets
+                        .iter()
+                        .any(|path| path == &target_path)
+                {
+                    candidate.sample_targets.push(target_path);
+                }
+            } else {
+                index.insert(key, grouped.len());
+                grouped.push(ProviderRepairCandidateRecord {
+                    last_seen: row.get("event_at"),
+                    latest_action: action,
+                    source_path,
+                    media_id,
+                    reason,
+                    occurrences: 1,
+                    sample_targets: vec![target_path],
+                });
+            }
+        }
+
+        grouped.sort_by(|a, b| {
+            b.occurrences
+                .cmp(&a.occurrences)
+                .then_with(|| b.last_seen.cmp(&a.last_seen))
+        });
+        grouped.truncate(limit.max(1));
+        Ok(grouped)
     }
 
     fn row_to_scan_history_record(&self, row: &sqlx::sqlite::SqliteRow) -> ScanHistoryRecord {

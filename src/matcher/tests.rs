@@ -40,6 +40,9 @@ fn candidate(path: &str, score: f64) -> MatchCandidate {
             episode: Some(1),
             episode_end: None,
             quality: None,
+            video_codec: None,
+            hdr_formats: Vec::new(),
+            edition: None,
             extension: "mkv".to_string(),
             year: None,
         },
@@ -175,6 +178,32 @@ fn test_destination_conflict_prefers_higher_quality_when_scores_tie() {
 }
 
 #[test]
+fn test_multi_version_reducer_keeps_distinct_version_slots() {
+    let item = tv_item("Example Show", 1);
+    let first = candidate_with_quality("/rd/show.s01e01.1080p.mkv", 0.90, Some("1080p"));
+    let second = candidate_with_quality("/rd/show.s01e01.2160p.mkv", 0.90, Some("2160p"));
+
+    let reduced = reduce_versioned_destination_slots(vec![first, second], &[item]);
+
+    assert_eq!(reduced.len(), 2);
+}
+
+#[test]
+fn test_multi_version_reducer_collapses_same_version_slot() {
+    let item = tv_item("Example Show", 1);
+    let lower_score =
+        candidate_with_quality("/rd/show.s01e01.release-a.1080p.mkv", 0.90, Some("1080p"));
+    let higher_score =
+        candidate_with_quality("/rd/show.s01e01.release-b.1080p.mkv", 0.95, Some("1080p"));
+
+    let reduced =
+        reduce_versioned_destination_slots(vec![lower_score, higher_score.clone()], &[item]);
+
+    assert_eq!(reduced.len(), 1);
+    assert_eq!(reduced[0].source_item.path, higher_score.source_item.path);
+}
+
+#[test]
 fn test_candidate_prefilter_matches_relevant_library_indices() {
     let mut alias_map = HashMap::new();
     alias_map.insert(0usize, vec!["breaking bad".to_string()]);
@@ -192,6 +221,9 @@ fn test_candidate_prefilter_matches_relevant_library_indices() {
             episode: Some(1),
             episode_end: None,
             quality: None,
+            video_codec: None,
+            hdr_formats: Vec::new(),
+            edition: None,
             extension: "mkv".to_string(),
             year: None,
         },
@@ -218,6 +250,9 @@ fn test_candidate_prefilter_falls_back_to_all_when_no_token_hit() {
             episode: Some(1),
             episode_end: None,
             quality: None,
+            video_codec: None,
+            hdr_formats: Vec::new(),
+            edition: None,
             extension: "mkv".to_string(),
             year: None,
         },
@@ -244,6 +279,9 @@ fn test_candidate_prefilter_can_skip_global_fallback() {
             episode: Some(1),
             episode_end: None,
             quality: None,
+            video_codec: None,
+            hdr_formats: Vec::new(),
+            edition: None,
             extension: "mkv".to_string(),
             year: None,
         },
@@ -311,6 +349,9 @@ fn test_resolve_source_for_library_item_uses_anime_identity_for_absolute_numberi
         episode: Some(15),
         episode_end: None,
         quality: None,
+        video_codec: None,
+        hdr_formats: Vec::new(),
+        edition: None,
         extension: "mkv".to_string(),
         year: None,
     };
@@ -345,6 +386,9 @@ fn test_resolve_source_for_library_item_prefers_anime_identity_scene_mapping_ove
         episode: Some(15),
         episode_end: None,
         quality: None,
+        video_codec: None,
+        hdr_formats: Vec::new(),
+        edition: None,
         extension: "mkv".to_string(),
         year: None,
     };
@@ -824,6 +868,9 @@ fn test_expand_episode_slots_single() {
         episode: Some(5),
         episode_end: None,
         quality: None,
+        video_codec: None,
+        hdr_formats: Vec::new(),
+        edition: None,
         extension: "mkv".to_string(),
         year: None,
     };
@@ -839,6 +886,9 @@ fn test_expand_episode_slots_multi() {
         episode: Some(1),
         episode_end: Some(3),
         quality: None,
+        video_codec: None,
+        hdr_formats: Vec::new(),
+        edition: None,
         extension: "mkv".to_string(),
         year: None,
     };
@@ -854,6 +904,9 @@ fn test_expand_episode_slots_movie() {
         episode: None,
         episode_end: None,
         quality: None,
+        video_codec: None,
+        hdr_formats: Vec::new(),
+        edition: None,
         extension: "mkv".to_string(),
         year: Some(2024),
     };
@@ -869,6 +922,9 @@ fn test_expand_episode_slots_caps_pathological_range() {
         episode: Some(1),
         episode_end: Some(999),
         quality: None,
+        video_codec: None,
+        hdr_formats: Vec::new(),
+        edition: None,
         extension: "mkv".to_string(),
         year: None,
     };

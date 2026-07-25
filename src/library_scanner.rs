@@ -1,4 +1,5 @@
 use regex::Regex;
+use std::fs::FileType;
 use std::sync::LazyLock;
 use tracing::{info, warn};
 use walkdir::WalkDir;
@@ -40,7 +41,7 @@ impl LibraryScanner {
             .max_depth(lib.depth)
             .into_iter()
             .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().is_dir())
+            .filter(|e| is_library_item_dir(e.path(), e.file_type()))
         {
             if let Some(file_name) = entry.file_name().to_str() {
                 if let Some(item) = self.parse_folder(file_name, entry.path(), lib) {
@@ -106,6 +107,16 @@ impl LibraryScanner {
         );
         all_items
     }
+}
+
+fn is_library_item_dir(path: &std::path::Path, file_type: FileType) -> bool {
+    if file_type.is_dir() {
+        return true;
+    }
+    file_type.is_symlink()
+        && std::fs::metadata(path)
+            .map(|metadata| metadata.is_dir())
+            .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -178,6 +189,23 @@ mod tests {
         let results = scanner.scan_library(&lib);
 
         assert!(results.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_import_created_folder_symlink_is_included() {
+        let scanner = LibraryScanner::new();
+        let dir = TempDir::new().unwrap();
+        let source = dir.path().join("rd").join("Dune.2021 {tmdb-438631}");
+        fs::create_dir_all(&source).unwrap();
+        std::os::unix::fs::symlink(&source, dir.path().join("Dune.2021 {tmdb-438631}")).unwrap();
+
+        let lib = test_lib(dir.path(), MediaType::Movie);
+        let results = scanner.scan_library(&lib);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, MediaId::Tmdb(438631));
+        assert_eq!(results[0].path, dir.path().join("Dune.2021 {tmdb-438631}"));
     }
 
     #[test]

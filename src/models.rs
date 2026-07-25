@@ -90,6 +90,12 @@ pub struct SourceItem {
     /// Video quality (e.g., "1080p", "2160p")
     #[allow(dead_code)] // Populated by parser, not used in matching yet
     pub quality: Option<String>,
+    /// Video codec parsed from release tags (e.g., "hevc", "x264")
+    pub video_codec: Option<String>,
+    /// HDR/DV tags parsed from release tags
+    pub hdr_formats: Vec<String>,
+    /// Edition/source tag parsed from release tags (e.g., "remux", "extended")
+    pub edition: Option<String>,
     /// File extension (e.g., "mkv", "mp4")
     pub extension: String,
     /// Year (for movies, or to disambiguate)

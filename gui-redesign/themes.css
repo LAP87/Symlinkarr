@@ -1,0 +1,51 @@
+/* ============================================================
+   Symlinkarr theme pack — MODDABLE, old-school style.
+   Add a theme in 6 lines: copy a block below, change the 6
+   primitive colours (--bg --text --accent --good --warn --bad),
+   give it a [data-theme="your-id"] selector, then add one line
+   to themes.js so it shows up in the picker. Everything else
+   (surfaces, borders, dim text, soft badges) is derived.
+   ============================================================ */
+
+/* ---- derivation: applies to every theme, references its primitives ---- */
+:root,[data-theme]{
+  --elev:#ffffff;                                                   /* elevation tint */
+  --surface:  color-mix(in srgb, var(--bg) 95%, var(--elev));
+  --surface-2:color-mix(in srgb, var(--bg) 89%, var(--elev));
+  --surface-3:color-mix(in srgb, var(--bg) 82%, var(--elev));
+  --dim:      color-mix(in srgb, var(--text) 62%, var(--bg));
+  --faint:    color-mix(in srgb, var(--text) 40%, var(--bg));
+  --line:     color-mix(in srgb, transparent 92%, var(--text));
+  --line-2:   color-mix(in srgb, transparent 85%, var(--text));
+  --accent-2: color-mix(in srgb, var(--accent) 78%, #000);
+  --accent-soft:color-mix(in srgb, transparent 86%, var(--accent));
+  --accent-line:color-mix(in srgb, transparent 64%, var(--accent));
+  --good-soft:color-mix(in srgb, transparent 87%, var(--good));
+  --warn-soft:color-mix(in srgb, transparent 86%, var(--warn));
+  --bad-soft: color-mix(in srgb, transparent 86%, var(--bad));
+}
+
+/* ================= Core ================= */
+[data-theme="obsidian"]        { --bg:#15171c; --text:#e2e6ec; --accent:#4f9de8; --good:#46c26e; --warn:#e0a53a; --bad:#e5654f; }
+[data-theme="symlinkarr-dark"] { --bg:#181c24; --text:#f0eadf; --accent:#39b7c4; --good:#63c98d; --warn:#f4c96a; --bad:#f06a4a; }
+[data-theme="operator-dark"]   { --bg:#101419; --text:#e0e2e9; --accent:#3b82f6; --good:#10b981; --warn:#f59e0b; --bad:#f87171; }
+[data-theme="symlinkarr-light"]{ --bg:#f4efe6; --text:#1f2530; --accent:#1596a3; --good:#2d8a57; --warn:#b9862f; --bad:#c84f3a; }
+[data-theme="matrix"]          { --bg:#030706; --text:#d6ffe0; --accent:#6dff8b; --good:#86efac; --warn:#fef08a; --bad:#fb7185; }
+
+/* ================= Catppuccin ================= */
+[data-theme="catppuccin-latte"]     { --bg:#eff1f5; --text:#4c4f69; --accent:#8839ef; --good:#40a02b; --warn:#df8e1d; --bad:#d20f39; }
+[data-theme="catppuccin-frappe"]    { --bg:#303446; --text:#c6d0f5; --accent:#ca9ee6; --good:#a6d189; --warn:#e5c890; --bad:#e78284; }
+[data-theme="catppuccin-macchiato"] { --bg:#24273a; --text:#cad3f5; --accent:#c6a0f6; --good:#a6da95; --warn:#eed49f; --bad:#ed8796; }
+[data-theme="catppuccin-mocha"]     { --bg:#1e1e2e; --text:#cdd6f4; --accent:#cba6f7; --good:#a6e3a1; --warn:#f9e2af; --bad:#f38ba8; }
+
+/* ================= Editor picks ================= */
+[data-theme="tokyo-night"]     { --bg:#1a1b26; --text:#c0caf5; --accent:#7aa2f7; --good:#7af778; --warn:#e0af68; --bad:#f7768e; }
+[data-theme="kanagawa"]        { --bg:#1f2335; --text:#dcd7ba; --accent:#7aa2f7; --good:#9ece6a; --warn:#e0af68; --bad:#f7768e; }
+[data-theme="nord-frost"]      { --bg:#2e3440; --text:#eceff4; --accent:#88c0d0; --good:#a3be8c; --warn:#ebcb8b; --bad:#bf616a; }
+[data-theme="rose-pine"]       { --bg:#191724; --text:#e0def4; --accent:#c4a7e7; --good:#31748f; --warn:#f6c177; --bad:#eb6f92; }
+[data-theme="rose-pine-dawn"]  { --bg:#faf4ed; --text:#575279; --accent:#907aa9; --good:#618a3d; --warn:#ea9d34; --bad:#b4637a; }
+[data-theme="gruvbox-dark"]    { --bg:#282828; --text:#ebdbb2; --accent:#fabd2f; --good:#b8bb26; --warn:#fe8019; --bad:#fb4934; }
+[data-theme="gruvbox-light"]   { --bg:#fbf1c7; --text:#3c3836; --accent:#b57614; --good:#79740e; --warn:#af3a03; --bad:#9d0006; }
+[data-theme="one-dark"]        { --bg:#282c34; --text:#abb2bf; --accent:#61afef; --good:#98c379; --warn:#e5c07b; --bad:#e06c75; }
+[data-theme="one-light"]       { --bg:#fafafa; --text:#383a42; --accent:#4078f2; --good:#50a14f; --warn:#c18401; --bad:#e45649; }
+[data-theme="dracula"]         { --bg:#282a36; --text:#f8f8f2; --accent:#bd93f9; --good:#50fa7b; --warn:#f1fa8c; --bad:#ff5555; }

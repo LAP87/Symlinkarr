@@ -2,9 +2,139 @@
 
 ## Release Target
 
-- package version for this push: `1.0.0`
-- posture: `stable v1.0 release with downloadable binary artifacts and GHCR images`
+- package version for this push: `1.1.0-rc.7`
+- posture: `v1.1 release candidate with Arr backfill, fail-closed acquisition ranking, current dependencies, synchronized Docker release channels, and updated operator documentation`
 - intended use: local-first host or Docker installs, with Windows 11 users running through WSL2 or a Linux container
+
+## 2026-07-26 - v1.1.0-rc.7 Backfill, Acquisition Safety, and Release Sync
+
+### Code Changes
+
+- added the `backfill` CLI flow for monitored empty Radarr/Sonarr folders, including dry-run preview, existing-source relinking, bounded missing acquisition, media-server refresh, indexed link-state snapshots, and operator summaries.
+- made Prowlarr movie, TV, and anime acquisition ranking fail closed when title, year, season, episode, or pack identity is not strong enough; DMM remains the safe fallback.
+- made season-pack relink completion verify every requested episode while preserving request-key compatibility with earlier release candidates.
+- hardened Arr library-path containment by normalizing parent-directory components before accepting a target path.
+- hardened scheduler execution with schema v20 atomic run claims, O(1) interval advancement, cursor-correct cron/RRule behavior, bounded trigger validation, fail-closed safety backups, live daemon heartbeats, and per-rule failure isolation.
+- made scheduler snapshot import versioned, atomic, replacement-based, and idempotent; manual runs now return `202 Accepted` from a bounded background executor.
+- replaced deterministic symlink temp siblings with collision-free atomic Linux exchanges that refuse regular-file overwrites and concurrent target changes.
+- switched multi-version target identity to stable 64-bit SHA-256 path labels and fixed long-name and exact-episode edge cases.
+- removed import/backfill N+1 query paths, added bounded Sonarr fetch concurrency, batched import DB writes, and moved blocking import walks/probes/writes off Tokio workers.
+- enforced loopback Host validation, same-origin browser mutation sessions, form CSRF tokens, and IPv4/IPv6 loopback handling.
+- cached Tautulli playback status across dashboard fragments, restored keyboard focus visibility, readable body text, mobile touch targets, and a working mobile mockup navigation drawer.
+- updated direct and transitive Rust dependencies, including SQLx 0.9, Askama 0.16, quick-xml 0.41, sha2 0.11, tower-http 0.7, reqwest 0.13.4, Tokio 1.53, and Rayon 1.12.
+- adapted dynamic SQLite maintenance statements to SQLx 0.9's explicit SQL-safety boundary and preserved SHA-256 manifest compatibility under sha2 0.11.
+- aligned CI with current GitHub Actions, moved source Docker builds to the floating stable `rust:bookworm` builder, and refreshed the release runtime to Ubuntu 26.04.
+- separated Docker release channels: stable releases update `latest`, while prereleases update `rc`; synchronized the checked-in Compose example and deployment guidance with that policy.
+
+### Validation
+
+- `cargo test --all-targets --locked`
+  - result: `854 passed; 0 failed; 1 ignored`
+- `cargo clippy --all-targets --all-features --locked -- -D warnings`
+  - result: passed locally
+- `cargo audit`
+  - result: passed with no vulnerabilities
+- `npm audit`
+  - result: passed with no vulnerabilities
+
+## 2026-05-04 - v1.1.0-rc.4 Status/Dashboard Latency Fix
+
+### Code Changes
+
+- bounded the Tautulli live playback check used by Status and Dashboard so a slow or unavailable Tautulli instance no longer stalls page rendering and navigation.
+  - files: `src/web/handlers.rs`
+- bumped the package version and Docker example to `1.1.0-rc.4` so the tag-driven release workflow publishes a matching GHCR image.
+  - files: `Cargo.toml`, `Cargo.lock`, `README.md`
+
+### Validation
+
+- `cargo fmt --all -- --check`
+  - result: passed locally
+- `cargo clippy --all-targets --all-features --locked -- -D warnings`
+  - result: passed locally
+- `cargo test --all-targets --locked`
+  - result: passed locally
+
+## 2026-05-03 - v1.1.0-rc.3 Live Scheduler RC
+
+### Code Changes
+
+- added a SQLite-backed live scheduler with persisted rules, run history, legacy config bootstrap, interval/date/repeat/cron trigger support, off-hours windows, misfire grace handling, and destructive-job safety validation.
+  - files: `src/scheduler.rs`, `src/db/scheduler.rs`, `src/db/migrations.rs`
+- replaced the fixed daemon scan loop with a 30-second scheduler tick while preserving daemon web startup and stale acquisition job recovery.
+  - files: `src/commands/daemon.rs`
+- added Scheduler web/API surfaces for rules, preview, run history, run-now, enable/disable, and YAML export/import.
+  - files: `src/web/api/scheduler.rs`, `src/web/ui/scheduler.html`, `src/web/handlers.rs`, `src/web/templates.rs`
+- bumped the package version and Docker example to `1.1.0-rc.3` so the tag-driven release workflow publishes a matching GHCR image.
+  - files: `Cargo.toml`, `Cargo.lock`, `README.md`
+
+### Validation
+
+- `cargo check`
+  - result: passed locally
+- `cargo test scheduler -- --nocapture`
+  - result: passed locally
+- `cargo test test_migrations_can_move_down_and_up -- --nocapture`
+  - result: passed locally
+- `cargo test`
+  - result: `805 passed; 0 failed; 1 ignored`
+
+## 2026-04-30 - v1.1.0-rc.2 Import Routing Review Fixes
+
+### Code Changes
+
+- fixed auto provider import routing so TMDB-tagged TV-looking items can route to TV destinations instead of being treated as movies.
+  - files: `src/commands/importer.rs`, `src/import_report.rs`
+- made auto remote import lookup use TVDB/TMDB-TV for TV/anime-looking candidates instead of always starting with TMDB movie search.
+  - files: `src/commands/importer.rs`
+- kept the multi-version filename suffix limited to movie targets for now, matching the documented movie-first behavior.
+  - files: `src/linker.rs`
+
+### Validation
+
+- `cargo fmt --all -- --check`
+  - result: passed locally
+- `cargo test --all-targets --locked`
+  - result: `798 passed; 0 failed; 1 ignored`
+- `cargo clippy --all-targets --all-features --locked -- -D warnings`
+  - result: passed locally
+- `cargo build --release --locked`
+  - result: passed locally, `symlinkarr --version` returned `symlinkarr 1.1.0-rc.2`
+- local packaging smoke using the same archive shape as `.github/workflows/release.yml`
+  - result: produced `dist/symlinkarr-v1.1.0-rc.2-linux-amd64.tar.gz` with sha256 `79e04196d8e64c3972149b65bbe9e5ac4b796283ba4598d378756f5174e8ffa8`
+- local Docker image `symlinkarr:1.1.0-rc.2`
+  - result: built locally as `sha256:a08c5180958e479ea3b3836f9fc83fd939320b241f0d7065fc9bdeb03deff587`, `symlinkarr --version` returned `symlinkarr 1.1.0-rc.2`
+- focused regression tests:
+  - `cargo test commands::importer::tests -- --nocapture`
+  - `cargo test linker::tests -- --nocapture`
+
+## 2026-04-29 - v1.1.0-rc.1 Provider Import and Multi-Version RC
+
+### Code Changes
+
+- added provider source import for bootstrap/recovery runs, with preview, safe/force modes, direct-item and top-level folder handling, JSON reports, and matching web controls.
+  - files: `src/commands/importer.rs`, `src/import_report.rs`, `src/web/handlers/admin.rs`, `src/web/templates.rs`, `src/web/ui/import.html`
+- added provider repair reporting, multi-version symlink support, cache-backed matching updates, and clearer source/library scan behavior for imported libraries.
+  - files: `src/provider_repair.rs`, `src/linker.rs`, `src/matcher.rs`, `src/source_scanner.rs`, `src/library_scanner.rs`
+- added deferred media-server refresh controls so Plex, Emby, and Jellyfin notifications can be held back until the operator chooses to drain them.
+  - files: `src/commands/refresh.rs`, `src/media_servers/mod.rs`, `src/config.rs`, `src/web/handlers.rs`
+- updated Docker defaults, README, CLI help, and wiki pages for provider import, CineSync comparison notes, media-server refresh, and the v1.1 operator flow.
+  - files: `config.example.yaml`, `config.docker.yaml`, `README.md`, `docs/CLI_MANUAL.md`, `docs/wiki/*.md`
+
+### Validation
+
+- `cargo fmt --all -- --check`
+  - result: passed locally
+- `cargo test --all-targets --locked`
+  - result: `796 passed; 0 failed; 1 ignored`
+- `cargo clippy --all-targets --all-features --locked -- -D warnings`
+  - result: passed locally
+- `cargo build --release --locked`
+  - result: passed locally, `symlinkarr --version` returned `symlinkarr 1.1.0-rc.1`
+- local packaging smoke using the same archive shape as `.github/workflows/release.yml`
+  - result: produced `dist/symlinkarr-v1.1.0-rc.1-linux-amd64.tar.gz` with sha256 `a1c6a559d471c73d7e8af0d6c831265fe384eef294c3fbe1af0918b916c578be`
+- local Docker image `symlinkarr:1.1.0-rc.1`
+  - result: built locally as `sha256:742fcfaf17c2db46def119e8ef5408f691e83b3f6a923c54abcd7da305714e01`, `symlinkarr --version` returned `symlinkarr 1.1.0-rc.1`
 
 ## 2026-04-25 - v1.0 Final UI and Release Hygiene
 

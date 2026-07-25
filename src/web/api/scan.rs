@@ -91,6 +91,8 @@ pub(super) struct ApiPlexRefreshSummary {
 pub(super) struct ApiMediaServerRefreshServer {
     pub server: String,
     pub requested_targets: i64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub targets: Vec<String>,
     pub refresh: ApiPlexRefreshSummary,
 }
 
@@ -452,6 +454,11 @@ pub(super) fn media_server_refresh_from_record(
         .map(|entry| ApiMediaServerRefreshServer {
             server: entry.server.to_string(),
             requested_targets: entry.requested_targets as i64,
+            targets: entry
+                .targets
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect(),
             refresh: api_refresh_summary_from_telemetry(&entry.refresh),
         })
         .collect()
