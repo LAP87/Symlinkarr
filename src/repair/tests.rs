@@ -689,6 +689,48 @@ fn test_repair_candidates_skip_sources_already_active_for_same_media_id() {
     assert_eq!(candidates[0].path, new_source);
 }
 
+#[test]
+fn test_repair_candidate_allows_active_multi_episode_source_for_missing_slot() {
+    let source = PathBuf::from("/rd/Show.S01E01E02.1080p.mkv");
+    let dead_link = DeadLink {
+        symlink_path: PathBuf::from("/library/Show/Season 01/Show - S01E02.mkv"),
+        original_source: PathBuf::from("/rd/missing.mkv"),
+        media_id: "tvdb-1".to_string(),
+        media_type: MediaType::Tv,
+        content_type: ContentType::Tv,
+        meta: parse_trash_filename("Show - S01E02.mkv"),
+        original_size: None,
+    };
+    let active_links = vec![LinkRecord {
+        id: None,
+        source_path: source.clone(),
+        target_path: PathBuf::from("/library/Show/Season 01/Show - S01E01.mkv"),
+        media_id: "tvdb-1".to_string(),
+        media_type: MediaType::Tv,
+        status: LinkStatus::Active,
+        created_at: None,
+        updated_at: None,
+    }];
+    let mut candidates = vec![ReplacementCandidate {
+        path: source.clone(),
+        parsed_title: "Show".to_string(),
+        season: Some(1),
+        episode: Some(2),
+        quality: Some("1080p".to_string()),
+        file_size: 100,
+        score: 0.95,
+    }];
+
+    filter_repair_candidates_already_active(
+        &dead_link,
+        &mut candidates,
+        &active_sources_by_media_id(active_links),
+    );
+
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].path, source);
+}
+
 // ── Pure function unit tests ──────────────────────────────────────────────
 
 #[test]

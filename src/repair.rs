@@ -30,7 +30,9 @@ use crate::config::{ContentType, LibraryConfig};
 use crate::db::Database;
 use crate::models::{LinkRecord, LinkStatus, MediaType};
 use crate::source_scanner::SourceScanner;
-use crate::utils::{path_under_roots, PathHealth, ProgressLine, VIDEO_EXTENSIONS};
+use crate::utils::{
+    path_under_roots, replace_symlink_atomically, PathHealth, ProgressLine, VIDEO_EXTENSIONS,
+};
 
 /// Minimum score threshold for TV replacements (title + season + episode required)
 const TV_THRESHOLD: f64 = 0.75;
@@ -879,10 +881,7 @@ impl Repairer {
 
         // Mirror linker semantics: create a temp symlink first, then rename it
         // over the broken link so readers never observe a missing path.
-        let temp_path = symlink_path.with_extension("grt");
-        let _ = std::fs::remove_file(&temp_path);
-        std::os::unix::fs::symlink(new_source, &temp_path)?;
-        std::fs::rename(&temp_path, symlink_path)?;
+        replace_symlink_atomically(new_source, symlink_path)?;
         let repaired_target = std::fs::read_link(symlink_path)?;
         if repaired_target != *new_source {
             anyhow::bail!(
@@ -1083,7 +1082,7 @@ impl Repairer {
             None
         };
 
-        let active_sources_by_media_id =
+        let mut active_sources_by_media_id =
             active_sources_by_media_id(db.get_active_links_scoped(allowed_symlink_roots).await?);
         let total_dead = dead_links.len();
         let mut progress = ProgressLine::new("Repair progress:");
@@ -1298,6 +1297,16 @@ impl Repairer {
                     replacement,
                 }) = results.last()
                 {
+                    active_sources_by_media_id
+                        .entry(dead_link.media_id.clone())
+                        .or_default()
+                        .insert(replacement.clone());
+                }
+                if let Some(RepairResult::Repaired {
+                    dead_link,
+                    replacement,
+                }) = results.last()
+                {
                     let _ = db
                         .record_link_event_fields(
                             if dry_run {
@@ -1414,7 +1423,59 @@ fn filter_repair_candidates_already_active(
     let Some(active_sources) = active_sources_by_media_id.get(&dead_link.media_id) else {
         return;
     };
-    candidates.retain(|candidate| !active_sources.contains(&candidate.path));
+    let scanner = SourceScanner::new();
+    candidates.retain(|candidate| {
+        if !active_sources.contains(&candidate.path) {
+            return true;
+        }
+        let Some(file_name) = candidate.path.file_name().and_then(|name| name.to_str()) else {
+            return false;
+        };
+        let mut slots = scanner
+            .parse_release_title_variants(file_name)
+            .into_iter()
+            .filter_map(|(_, parsed)| Some((parsed.season?, parsed.episode?)))
+            .collect::<HashSet<_>>();
+        slots.extend(multi_episode_slots(file_name));
+        slots.len() > 1
+            && dead_link
+                .meta
+                .season
+                .zip(dead_link.meta.episode)
+                .is_some_and(|slot| slots.contains(&slot))
+    });
+}
+
+fn multi_episode_slots(file_name: &str) -> HashSet<(u32, u32)> {
+    let bytes = file_name.as_bytes();
+    let mut slots = HashSet::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        if !matches!(bytes[index], b'S' | b's') {
+            index += 1;
+            continue;
+        }
+        index += 1;
+        let season_start = index;
+        while index < bytes.len() && bytes[index].is_ascii_digit() {
+            index += 1;
+        }
+        let Ok(season) = file_name[season_start..index].parse::<u32>() else {
+            continue;
+        };
+        while index < bytes.len() && matches!(bytes[index], b'E' | b'e') {
+            index += 1;
+            let episode_start = index;
+            while index < bytes.len() && bytes[index].is_ascii_digit() {
+                index += 1;
+            }
+            let Ok(episode) = file_name[episode_start..index].parse::<u32>() else {
+                break;
+            };
+            slots.insert((season, episode));
+        }
+    }
+    slots
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────

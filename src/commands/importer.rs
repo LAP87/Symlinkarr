@@ -2,11 +2,11 @@ use std::collections::{BTreeSet, HashMap};
 use std::hash::{Hash, Hasher};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
 use regex::Regex;
-use std::sync::OnceLock;
 use walkdir::WalkDir;
 
 use crate::api::tmdb::{TmdbClient, TmdbSearchMatch};
@@ -19,7 +19,7 @@ use crate::import_report::{
     ImportWriteAction,
 };
 use crate::models::{ContentMetadata, LinkRecord, LinkStatus, MediaType};
-use crate::utils::VIDEO_EXTENSIONS;
+use crate::utils::{replace_symlink_atomically, VIDEO_EXTENSIONS};
 use crate::{
     ImportContentType, ImportLookupMode, ImportMetadataMode, ImportMode, ImportProbeTool,
     OutputFormat,
@@ -180,12 +180,17 @@ pub(crate) async fn build_import_report(
     let rules_summary = rules_plan.as_ref().map(|plan| plan.summary.clone());
     warn_for_populated_destinations(options, rules_plan.as_ref(), &mut warnings);
 
-    let mut candidates = collect_candidates(&options.source, source_shape).with_context(|| {
-        format!(
-            "failed to collect import candidates from {}",
-            options.source.display()
-        )
-    })?;
+    let source = options.source.clone();
+    let mut candidates =
+        tokio::task::spawn_blocking(move || collect_candidates(&source, source_shape))
+            .await
+            .context("import candidate collection worker failed")?
+            .with_context(|| {
+                format!(
+                    "failed to collect import candidates from {}",
+                    options.source.display()
+                )
+            })?;
     apply_probe_metadata(&mut candidates, options, db, &mut warnings).await;
     let candidates = resolve_candidates_from_cache(candidates, options, db).await;
     let candidates =
@@ -445,17 +450,37 @@ async fn resolve_candidates_from_import_cache(
     options: &ImportOptions,
     db: &Database,
 ) -> Vec<ImportCandidateReport> {
+    let keys = candidates
+        .iter()
+        .filter(|candidate| candidate.explicit_media_id.is_none())
+        .filter_map(|candidate| {
+            import_resolution_cache_key(
+                options.content_type,
+                &candidate.title_hint,
+                candidate.year_hint,
+            )
+        })
+        .collect::<Vec<_>>();
+    let cached = match db.get_cached_many(&keys).await {
+        Ok(cached) => cached,
+        Err(err) => {
+            tracing::warn!("Import resolution cache batch lookup failed: {}", err);
+            HashMap::new()
+        }
+    };
     let mut resolved = Vec::with_capacity(candidates.len());
     for mut candidate in candidates {
         if candidate.explicit_media_id.is_none() {
-            match lookup_import_resolution_cache(db, &candidate, options.content_type).await {
-                Ok(Some(resolution)) => apply_cached_import_resolution(&mut candidate, resolution),
-                Ok(None) => {}
-                Err(err) => tracing::warn!(
-                    "Import resolution cache lookup failed for {}: {}",
-                    candidate.title_hint,
-                    err
-                ),
+            if let Some(key) = import_resolution_cache_key(
+                options.content_type,
+                &candidate.title_hint,
+                candidate.year_hint,
+            ) {
+                if let Some(json) = cached.get(&key) {
+                    if let Ok(resolution) = serde_json::from_str::<CachedImportResolution>(json) {
+                        apply_cached_import_resolution(&mut candidate, resolution);
+                    }
+                }
             }
         }
         resolved.push(candidate);
@@ -848,6 +873,7 @@ struct CachedImportResolution {
     year: Option<u32>,
 }
 
+#[cfg(test)]
 async fn lookup_import_resolution_cache(
     db: &Database,
     candidate: &ImportCandidateReport,
@@ -1074,7 +1100,25 @@ async fn apply_probe_metadata(
     }
     let mut run_cache: HashMap<String, ProbeMetadata> = HashMap::new();
     for candidate in candidates {
-        let Some(video_path) = first_video_path_for_candidate(candidate) else {
+        let candidate_for_walk = candidate.clone();
+        let video_path = match tokio::task::spawn_blocking(move || {
+            first_video_path_for_candidate(&candidate_for_walk)
+        })
+        .await
+        {
+            Ok(path) => path,
+            Err(err) => {
+                if warnings.len() < 20 {
+                    warnings.push(format!(
+                        "Could not inspect {} for probe input: {}",
+                        candidate.source_path.display(),
+                        err
+                    ));
+                }
+                None
+            }
+        };
+        let Some(video_path) = video_path else {
             if options.metadata_mode == ImportMetadataMode::Strict {
                 candidate.decision = ImportDecision::Skipped;
                 candidate.action = ImportWriteAction::Skip;
@@ -1124,7 +1168,10 @@ async fn probe_media_file_cached(
         }
     }
 
-    let metadata = probe_media_file(path, probe_tool)?;
+    let probe_path = path.to_path_buf();
+    let metadata = tokio::task::spawn_blocking(move || probe_media_file(&probe_path, probe_tool))
+        .await
+        .context("import media probe worker failed")??;
     if let Some(db) = db {
         let json = serde_json::to_string(&metadata)?;
         if let Err(err) = db
@@ -1791,6 +1838,7 @@ pub(crate) async fn backfill_import_links(
     db: &Database,
     content_type: ImportContentType,
 ) {
+    let mut records = Vec::new();
     for candidate in &report.candidates {
         if !matches!(
             candidate.decision,
@@ -1817,10 +1865,42 @@ pub(crate) async fn backfill_import_links(
             created_at: None,
             updated_at: None,
         };
-        if let Err(err) = db.insert_link(&record).await {
+        records.push((target_path, record));
+    }
+
+    for chunk in records.chunks(500) {
+        let mut tx = match db.begin().await {
+            Ok(tx) => tx,
+            Err(err) => {
+                report.warnings.push(format!(
+                    "Failed to begin DB link backfill transaction: {}",
+                    err
+                ));
+                return;
+            }
+        };
+        let mut chunk_error = None;
+        for (_, record) in chunk {
+            if let Err(err) = db.insert_link_in_tx(record, &mut tx).await {
+                chunk_error = Some(err);
+                break;
+            }
+        }
+        if let Some(err) = chunk_error {
+            if let Err(rollback_err) = tx.rollback().await {
+                tracing::warn!("Import DB backfill rollback failed: {}", rollback_err);
+            }
             report.warnings.push(format!(
-                "Failed to backfill DB link record for {}: {}",
-                target_path.display(),
+                "Failed to backfill {} DB link record(s), starting at {}: {}",
+                chunk.len(),
+                chunk[0].0.display(),
+                err
+            ));
+        } else if let Err(err) = tx.commit().await {
+            report.warnings.push(format!(
+                "Failed to commit {} DB link record(s), starting at {}: {}",
+                chunk.len(),
+                chunk[0].0.display(),
                 err
             ));
         }
@@ -1873,12 +1953,10 @@ fn create_import_symlink(source_path: &Path, target_path: &Path) -> Result<()> {
         TargetState::NonSymlink => anyhow::bail!("target exists and is not a symlink"),
     }
 
-    let temp_path = temp_symlink_path(target_path);
-    let _ = std::fs::remove_file(&temp_path);
-    std::os::unix::fs::symlink(source_path, &temp_path)
-        .with_context(|| format!("failed to create temp symlink {}", temp_path.display()))?;
-    std::fs::rename(&temp_path, target_path)
-        .with_context(|| format!("failed to move temp symlink into {}", target_path.display()))?;
+    let source_path = std::path::absolute(source_path)
+        .with_context(|| format!("failed to resolve import source {}", source_path.display()))?;
+    std::os::unix::fs::symlink(&source_path, target_path)
+        .with_context(|| format!("failed to create symlink {}", target_path.display()))?;
     Ok(())
 }
 
@@ -1913,18 +1991,10 @@ fn replace_import_symlink(source_path: &Path, target_path: &Path) -> Result<()> 
         TargetState::NonSymlink => anyhow::bail!("target exists and is not a symlink"),
     }
 
-    let temp_path = temp_symlink_path(target_path);
-    let _ = std::fs::remove_file(&temp_path);
-    std::os::unix::fs::symlink(source_path, &temp_path)
-        .with_context(|| format!("failed to create temp symlink {}", temp_path.display()))?;
-    std::fs::rename(&temp_path, target_path)
-        .with_context(|| format!("failed to replace symlink {}", target_path.display()))?;
-    Ok(())
-}
-
-#[cfg(unix)]
-fn temp_symlink_path(target_path: &Path) -> PathBuf {
-    target_path.with_extension("sit")
+    let source_path = std::path::absolute(source_path)
+        .with_context(|| format!("failed to resolve import source {}", source_path.display()))?;
+    replace_symlink_atomically(&source_path, target_path)
+        .with_context(|| format!("failed to replace symlink {}", target_path.display()))
 }
 
 fn load_rules_plan(
@@ -3645,6 +3715,42 @@ mod tests {
 
         assert_eq!(report.summary.updated, 1);
         assert_eq!(std::fs::read_link(target).unwrap(), source);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_writes_preserve_existing_sit_sibling() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source");
+        let replacement = dir.path().join("replacement");
+        let previous = dir.path().join("previous");
+        let target = dir.path().join("Movie.mkv");
+        let sit_sibling = target.with_extension("sit");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&replacement).unwrap();
+        std::fs::create_dir_all(&previous).unwrap();
+        std::fs::write(&sit_sibling, b"keep me").unwrap();
+
+        create_import_symlink(&source, &target).unwrap();
+        assert_eq!(std::fs::read(&sit_sibling).unwrap(), b"keep me");
+
+        replace_import_symlink(&replacement, &target).unwrap();
+        assert_eq!(std::fs::read_link(&target).unwrap(), replacement);
+        assert_eq!(std::fs::read(&sit_sibling).unwrap(), b"keep me");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_writes_make_relative_sources_absolute() {
+        let dir = tempfile::tempdir().unwrap();
+        let relative_source = PathBuf::from("relative-import-source");
+        let target = dir.path().join("Movie.mkv");
+
+        create_import_symlink(&relative_source, &target).unwrap();
+
+        let stored = std::fs::read_link(target).unwrap();
+        assert!(stored.is_absolute());
+        assert!(stored.ends_with(&relative_source));
     }
 
     #[cfg(unix)]

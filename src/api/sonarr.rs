@@ -16,14 +16,28 @@ pub struct SonarrSeries {
     pub id: i64,
     #[serde(default)]
     pub title: String,
+    #[serde(default)]
+    pub path: String,
     #[serde(default, rename = "alternateTitles")]
     pub alternate_titles: Vec<SonarrAlternateTitle>,
     #[serde(default, rename = "tvdbId")]
     pub tvdb_id: i64,
     #[serde(default, rename = "tmdbId")]
     pub tmdb_id: i64,
+    #[serde(default, rename = "imdbId")]
+    pub imdb_id: String,
+    #[serde(default)]
+    pub monitored: bool,
+    #[serde(default)]
+    pub statistics: Option<SonarrSeriesStatistics>,
     #[serde(default, rename = "useSceneNumbering")]
     pub use_scene_numbering: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SonarrSeriesStatistics {
+    #[serde(default, rename = "episodeFileCount")]
+    pub episode_file_count: u32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -45,6 +59,8 @@ pub struct SonarrEpisode {
     pub season_number: u32,
     #[serde(default, rename = "episodeNumber")]
     pub episode_number: u32,
+    #[serde(default)]
+    pub title: String,
     #[allow(dead_code)]
     #[serde(default, rename = "absoluteEpisodeNumber")]
     pub absolute_episode_number: Option<u32>,
@@ -61,6 +77,10 @@ pub struct SonarrEpisode {
     pub episode_file_id: Option<i64>,
     #[serde(default, rename = "hasFile")]
     pub has_file: bool,
+    #[serde(default, rename = "airDateUtc")]
+    pub air_date_utc: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub monitored: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -1,6 +1,8 @@
 use super::*;
 use crate::models::{LinkRecord, LinkStatus, MediaType};
-use chrono::Utc;
+use crate::scheduler::{JobPriority, JobRunStatus, ScheduleRule, ScheduleTrigger, ScheduledEvent};
+use chrono::{Local, Utc};
+use serde_json::json;
 use sqlx::Row;
 
 fn sample_link(source: &str, target: &str) -> LinkRecord {
@@ -404,20 +406,31 @@ async fn test_migrations_can_move_down_and_up() {
 }
 
 #[tokio::test]
-async fn test_latest_migration_creates_links_status_target_index() {
+async fn test_latest_migration_creates_links_status_target_indexes() {
     let dir = tempfile::tempdir().unwrap();
     let db = Database::new(dir.path().join("test.db").to_str().unwrap())
         .await
         .unwrap();
 
     let index_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_links_status_target'",
-        )
-        .fetch_one(&db.pool)
-        .await
-        .unwrap();
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type = 'index'
+           AND name IN ('idx_links_status_target', 'idx_links_media_status_target')",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
 
-    assert_eq!(index_count, 1);
+    assert_eq!(index_count, 2);
+
+    let scheduler_index_sql: String = sqlx::query_scalar(
+        "SELECT sql FROM sqlite_master
+         WHERE type = 'index' AND name = 'idx_scheduler_runs_rule'",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert!(scheduler_index_sql.contains("UNIQUE INDEX"));
 }
 
 #[tokio::test]
@@ -1149,17 +1162,32 @@ async fn test_max_job_attempts_gate() {
         .await
         .unwrap();
 
-    // Set attempts = 5 via raw SQL to hit the MAX_JOB_ATTEMPTS boundary
-    sqlx::query("UPDATE acquisition_jobs SET attempts = 5 WHERE request_key = 'key-maxed'")
-        .execute(&db.pool)
-        .await
-        .unwrap();
+    // Set attempts = 5 via raw SQL to hit the MAX_JOB_ATTEMPTS boundary.
+    sqlx::query(
+        "UPDATE acquisition_jobs
+         SET attempts = 5, status = 'failed'
+         WHERE request_key = 'key-maxed'",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
 
     let manageable = db.get_manageable_acquisition_jobs().await.unwrap();
     assert!(
         manageable.is_empty(),
         "job with 5 attempts should be excluded"
     );
+
+    let retried = db
+        .retry_acquisition_jobs(&[AcquisitionJobStatus::Failed])
+        .await
+        .unwrap();
+    assert_eq!(retried, 1);
+
+    let manageable = db.get_manageable_acquisition_jobs().await.unwrap();
+    assert_eq!(manageable.len(), 1);
+    assert_eq!(manageable[0].request_key, "key-maxed");
+    assert_eq!(manageable[0].attempts, 0);
 }
 
 // ── Test 4: retry_acquisition_jobs by status ───────────────────────────────
@@ -2014,4 +2042,77 @@ async fn database_enables_foreign_keys() {
         .unwrap()
         .get(0);
     assert_eq!(enabled, 1);
+}
+
+fn test_scheduler_rule(name: &str) -> ScheduleRule {
+    ScheduleRule::new_bootstrap(
+        name,
+        ScheduledEvent::Scan,
+        ScheduleTrigger::Daily {
+            times: vec!["04:00".to_string()],
+        },
+        json!({}),
+        JobPriority::Normal,
+    )
+}
+
+#[tokio::test]
+async fn scheduler_import_is_atomic_when_any_rule_is_invalid() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+        .await
+        .unwrap();
+    let valid = test_scheduler_rule("valid");
+    let mut invalid = test_scheduler_rule("invalid");
+    invalid.trigger = ScheduleTrigger::Daily { times: Vec::new() };
+
+    assert!(db.create_scheduler_rules(&[valid, invalid]).await.is_err());
+    assert_eq!(db.scheduler_rule_count().await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn scheduler_run_claim_is_atomic_for_rule_and_planned_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+        .await
+        .unwrap();
+    let rule_id = db
+        .create_scheduler_rule(&test_scheduler_rule("claim"))
+        .await
+        .unwrap();
+    let planned_at = Local::now();
+    let (first, second) = tokio::join!(
+        db.try_create_scheduler_run(
+            Some(rule_id),
+            ScheduledEvent::Scan,
+            planned_at,
+            JobRunStatus::Running,
+            Some("first"),
+        ),
+        db.try_create_scheduler_run(
+            Some(rule_id),
+            ScheduledEvent::Scan,
+            planned_at,
+            JobRunStatus::Running,
+            Some("second"),
+        ),
+    );
+
+    let claimed = [first.unwrap(), second.unwrap()]
+        .into_iter()
+        .filter(Option::is_some)
+        .count();
+    assert_eq!(claimed, 1);
+}
+
+#[tokio::test]
+async fn scheduler_updates_report_missing_rules() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+        .await
+        .unwrap();
+    let rule = test_scheduler_rule("missing");
+
+    assert!(!db.update_scheduler_rule(99_999, &rule).await.unwrap());
+    assert!(!db.set_scheduler_rule_enabled(99_999, false).await.unwrap());
 }

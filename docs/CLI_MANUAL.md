@@ -74,6 +74,25 @@ symlinkarr scan --library Anime --search-missing
 symlinkarr scan --output json
 ```
 
+### `backfill`
+
+Fill empty Radarr/Sonarr/Sonarr Anime folders from Arr metadata instead of relying on ID tags in the folder name.
+
+```bash
+symlinkarr backfill [--arr all|radarr|sonarr|sonarr-anime] [--dry-run] [--search-missing] [--library <LIBRARY>] [--item <TEXT>] [--output text|json]
+```
+
+Examples:
+
+```bash
+symlinkarr backfill --arr sonarr-anime --dry-run
+symlinkarr backfill --arr all --search-missing
+symlinkarr backfill --library Anime --output json
+symlinkarr backfill --arr sonarr-anime --item 86-eighty-six --dry-run --search-missing
+```
+
+By default this only links files already visible in the configured RD/source mount. Add `--search-missing` to submit still-unmatched empty items through the configured Prowlarr/DMM + Decypharr flow. Use `--item` to restrict the run to Arr items whose title, path, or media id contains the supplied text.
+
 ### `status`
 
 Show database stats and optional health checks.
@@ -521,6 +540,7 @@ Notes:
 These top-level commands currently support `--output json`:
 
 - `scan`
+- `backfill`
 - `status`
 - `queue`
 - `cleanup`

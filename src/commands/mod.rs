@@ -1,3 +1,4 @@
+pub mod backfill;
 pub mod backup;
 pub mod bootstrap;
 pub mod cache;

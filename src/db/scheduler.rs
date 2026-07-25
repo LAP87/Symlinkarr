@@ -44,39 +44,75 @@ impl Database {
     }
 
     pub async fn create_scheduler_rule(&self, rule: &ScheduleRule) -> Result<i64> {
+        let mut ids = self
+            .create_scheduler_rules(std::slice::from_ref(rule))
+            .await?;
+        Ok(ids.remove(0))
+    }
+
+    pub async fn create_scheduler_rules(&self, rules: &[ScheduleRule]) -> Result<Vec<i64>> {
+        self.write_scheduler_rules(rules, false).await
+    }
+
+    pub async fn replace_scheduler_rules(&self, rules: &[ScheduleRule]) -> Result<Vec<i64>> {
+        self.write_scheduler_rules(rules, true).await
+    }
+
+    async fn write_scheduler_rules(
+        &self,
+        rules: &[ScheduleRule],
+        replace_existing: bool,
+    ) -> Result<Vec<i64>> {
+        let mut prepared = Vec::with_capacity(rules.len());
+        for rule in rules {
+            rule.validate()?;
+            prepared.push((
+                serde_json::to_string(&rule.trigger)?,
+                serde_json::to_string(&rule.run_window)?,
+                serde_json::to_string(&rule.event_args)?,
+            ));
+        }
+
+        let mut tx = self.pool.begin().await?;
+        if replace_existing {
+            sqlx::query("DELETE FROM scheduler_rules")
+                .execute(&mut *tx)
+                .await?;
+        }
+        let mut ids = Vec::with_capacity(rules.len());
+        for (rule, (trigger_json, run_window_json, event_args_json)) in rules.iter().zip(prepared) {
+            let result = sqlx::query(
+                "INSERT INTO scheduler_rules (
+                    name, event_type, enabled, trigger_json, run_window_json, event_args_json,
+                    priority, misfire_grace_minutes, allow_destructive_auto, max_delete, safety_backup
+                 )
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&rule.name)
+            .bind(rule.event_type.as_str())
+            .bind(rule.enabled)
+            .bind(trigger_json)
+            .bind(run_window_json)
+            .bind(event_args_json)
+            .bind(rule.priority)
+            .bind(rule.misfire_grace_minutes)
+            .bind(rule.allow_destructive_auto)
+            .bind(rule.max_delete)
+            .bind(rule.safety_backup)
+            .execute(&mut *tx)
+            .await?;
+            ids.push(result.last_insert_rowid());
+        }
+        tx.commit().await?;
+        Ok(ids)
+    }
+
+    pub async fn update_scheduler_rule(&self, id: i64, rule: &ScheduleRule) -> Result<bool> {
         rule.validate()?;
         let trigger_json = serde_json::to_string(&rule.trigger)?;
         let run_window_json = serde_json::to_string(&rule.run_window)?;
         let event_args_json = serde_json::to_string(&rule.event_args)?;
         let result = sqlx::query(
-            "INSERT INTO scheduler_rules (
-                name, event_type, enabled, trigger_json, run_window_json, event_args_json,
-                priority, misfire_grace_minutes, allow_destructive_auto, max_delete, safety_backup
-             )
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&rule.name)
-        .bind(rule.event_type.as_str())
-        .bind(rule.enabled)
-        .bind(trigger_json)
-        .bind(run_window_json)
-        .bind(event_args_json)
-        .bind(rule.priority)
-        .bind(rule.misfire_grace_minutes)
-        .bind(rule.allow_destructive_auto)
-        .bind(rule.max_delete)
-        .bind(rule.safety_backup)
-        .execute(&self.pool)
-        .await?;
-        Ok(result.last_insert_rowid())
-    }
-
-    pub async fn update_scheduler_rule(&self, id: i64, rule: &ScheduleRule) -> Result<()> {
-        rule.validate()?;
-        let trigger_json = serde_json::to_string(&rule.trigger)?;
-        let run_window_json = serde_json::to_string(&rule.run_window)?;
-        let event_args_json = serde_json::to_string(&rule.event_args)?;
-        sqlx::query(
             "UPDATE scheduler_rules
              SET name = ?, event_type = ?, enabled = ?, trigger_json = ?, run_window_json = ?,
                  event_args_json = ?, priority = ?, misfire_grace_minutes = ?,
@@ -98,11 +134,11 @@ impl Database {
         .bind(id)
         .execute(&self.pool)
         .await?;
-        Ok(())
+        Ok(result.rows_affected() == 1)
     }
 
-    pub async fn set_scheduler_rule_enabled(&self, id: i64, enabled: bool) -> Result<()> {
-        sqlx::query(
+    pub async fn set_scheduler_rule_enabled(&self, id: i64, enabled: bool) -> Result<bool> {
+        let result = sqlx::query(
             "UPDATE scheduler_rules
              SET enabled = ?, updated_at = CURRENT_TIMESTAMP
              WHERE id = ?",
@@ -111,17 +147,17 @@ impl Database {
         .bind(id)
         .execute(&self.pool)
         .await?;
-        Ok(())
+        Ok(result.rows_affected() == 1)
     }
 
-    pub async fn create_scheduler_run(
+    pub async fn try_create_scheduler_run(
         &self,
         rule_id: Option<i64>,
         event_type: ScheduledEvent,
         planned_at: DateTime<Local>,
         status: JobRunStatus,
         message: Option<&str>,
-    ) -> Result<i64> {
+    ) -> Result<Option<i64>> {
         let now = Local::now().to_rfc3339();
         let planned_at = planned_at.to_rfc3339();
         let started_at = matches!(status, JobRunStatus::Running).then_some(now.as_str());
@@ -131,7 +167,7 @@ impl Database {
         )
         .then_some(now.as_str());
         let result = sqlx::query(
-            "INSERT INTO scheduler_runs (
+            "INSERT OR IGNORE INTO scheduler_runs (
                 rule_id, event_type, planned_at, started_at, finished_at, status, message
              )
              VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -145,7 +181,7 @@ impl Database {
         .bind(message)
         .execute(&self.pool)
         .await?;
-        Ok(result.last_insert_rowid())
+        Ok((result.rows_affected() == 1).then(|| result.last_insert_rowid()))
     }
 
     pub async fn finish_scheduler_run(

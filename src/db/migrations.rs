@@ -120,8 +120,10 @@ impl Database {
     }
 
     pub(super) async fn column_exists(&self, table_name: &str, column_name: &str) -> Result<bool> {
-        let pragma = format!("PRAGMA table_info({})", table_name);
-        let rows = sqlx::query(&pragma).fetch_all(&self.pool).await?;
+        let rows = sqlx::query("SELECT name FROM pragma_table_info(?)")
+            .bind(table_name)
+            .fetch_all(&self.pool)
+            .await?;
         Ok(rows
             .iter()
             .any(|row| row.get::<String, _>("name") == column_name))
@@ -154,11 +156,49 @@ impl Database {
             16 => self.migration_v16_tx(tx).await,
             17 => self.migration_v17_tx(tx).await,
             18 => self.migration_v18_tx(tx).await,
+            19 => self.migration_v19_tx(tx).await,
+            20 => self.migration_v20_tx(tx).await,
             _ => anyhow::bail!(
-                "Unsupported schema migration version {}. This build only knows migrations 1 through 18",
+                "Unsupported schema migration version {}. This build only knows migrations 1 through 20",
                 version
             ),
         }
+    }
+
+    async fn migration_v20_tx(&self, tx: &mut Transaction<'_, Sqlite>) -> Result<()> {
+        sqlx::query(
+            "DELETE FROM scheduler_runs
+             WHERE rule_id IS NOT NULL
+               AND id NOT IN (
+                   SELECT MIN(id)
+                   FROM scheduler_runs
+                   WHERE rule_id IS NOT NULL
+                   GROUP BY rule_id, planned_at
+               )",
+        )
+        .execute(&mut **tx)
+        .await?;
+        sqlx::query("DROP INDEX IF EXISTS idx_scheduler_runs_rule")
+            .execute(&mut **tx)
+            .await?;
+        sqlx::query(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_scheduler_runs_rule
+             ON scheduler_runs(rule_id, planned_at)",
+        )
+        .execute(&mut **tx)
+        .await?;
+        Ok(())
+    }
+
+    async fn migration_v19_tx(&self, tx: &mut Transaction<'_, Sqlite>) -> Result<()> {
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_links_media_status_target
+             ON links(media_id, status, target_path)",
+        )
+        .execute(&mut **tx)
+        .await?;
+
+        Ok(())
     }
 
     async fn migration_v18_tx(&self, tx: &mut Transaction<'_, Sqlite>) -> Result<()> {
@@ -656,6 +696,22 @@ impl Database {
     #[cfg(test)]
     async fn migrate_down_one(&self, current_version: i64) -> Result<()> {
         match current_version {
+            20 => {
+                sqlx::query("DROP INDEX IF EXISTS idx_scheduler_runs_rule")
+                    .execute(&self.pool)
+                    .await?;
+                sqlx::query(
+                    "CREATE INDEX IF NOT EXISTS idx_scheduler_runs_rule
+                     ON scheduler_runs(rule_id, planned_at)",
+                )
+                .execute(&self.pool)
+                .await?;
+            }
+            19 => {
+                sqlx::query("DROP INDEX IF EXISTS idx_links_media_status_target")
+                    .execute(&self.pool)
+                    .await?;
+            }
             18 => {
                 sqlx::query("DROP INDEX IF EXISTS idx_scheduler_runs_status")
                     .execute(&self.pool)
@@ -757,9 +813,13 @@ impl Database {
 
                 for column in columns {
                     if self.column_exists("scan_runs", column).await? {
-                        sqlx::query(&format!("ALTER TABLE scan_runs DROP COLUMN {}", column))
-                            .execute(&self.pool)
-                            .await?;
+                        // `column` comes only from the fixed identifier allowlist above.
+                        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+                            "ALTER TABLE scan_runs DROP COLUMN \"{}\"",
+                            column
+                        )))
+                        .execute(&self.pool)
+                        .await?;
                     }
                 }
             }
@@ -798,9 +858,13 @@ impl Database {
 
                 for column in columns {
                     if self.column_exists("scan_runs", column).await? {
-                        sqlx::query(&format!("ALTER TABLE scan_runs DROP COLUMN {}", column))
-                            .execute(&self.pool)
-                            .await?;
+                        // `column` comes only from the fixed identifier allowlist above.
+                        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+                            "ALTER TABLE scan_runs DROP COLUMN \"{}\"",
+                            column
+                        )))
+                        .execute(&self.pool)
+                        .await?;
                     }
                 }
             }

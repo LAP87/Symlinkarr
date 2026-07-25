@@ -14,6 +14,16 @@ use crate::config::Config;
 use crate::db::{Database, ScanRunOrigin};
 use crate::OutputFormat;
 
+const MAX_SCHEDULE_TIMES: usize = 24;
+const MAX_INTERVAL_MINUTES: u64 = 10 * 365 * 24 * 60;
+const MAX_INTERVAL_HOURS: u64 = 10 * 365 * 24;
+const MAX_INTERVAL_DAYS: u64 = 10 * 365;
+const MAX_RRULE_INTERVAL: u64 = 10_000;
+const MAX_RRULE_COUNT: u64 = 1_000_000;
+const MAX_MISFIRE_GRACE_MINUTES: i64 = 10 * 365 * 24 * 60;
+const MAX_DELETE_CAP: i64 = 1_000_000;
+const MAX_RRULE_SCAN_DAYS: i64 = 36_525;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ScheduledEvent {
@@ -65,13 +75,6 @@ impl ScheduledEvent {
             _ => 60,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-#[allow(dead_code)]
-pub enum MisfirePolicy {
-    GraceThenSkip,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -236,6 +239,22 @@ impl ScheduleRule {
     }
 
     pub fn validate(&self) -> Result<()> {
+        if self.name.trim().is_empty() {
+            anyhow::bail!("Scheduler rule name cannot be empty");
+        }
+        if self.misfire_grace_minutes < 0 || self.misfire_grace_minutes > MAX_MISFIRE_GRACE_MINUTES
+        {
+            anyhow::bail!(
+                "misfire_grace_minutes must be between 0 and {}",
+                MAX_MISFIRE_GRACE_MINUTES
+            );
+        }
+        if self
+            .max_delete
+            .is_some_and(|cap| cap <= 0 || cap > MAX_DELETE_CAP)
+        {
+            anyhow::bail!("max_delete must be between 1 and {}", MAX_DELETE_CAP);
+        }
         validate_trigger(&self.trigger)?;
         validate_window(&self.run_window)?;
         if self.event_type.is_destructive() {
@@ -274,18 +293,10 @@ pub struct SchedulerRuleView {
     pub next_due: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[allow(dead_code)]
-pub struct SchedulerSummary {
-    pub enabled_rules: usize,
-    pub next_due: Option<String>,
-    pub recent_runs: Vec<SchedulerRunRecord>,
-}
-
 pub fn bootstrap_rules_from_config(cfg: &Config) -> Vec<ScheduleRule> {
     let mut rules = Vec::new();
     if cfg.daemon.interval_minutes > 0 {
-        rules.push(ScheduleRule::new_bootstrap(
+        let mut rule = ScheduleRule::new_bootstrap(
             "Legacy daemon scan",
             ScheduledEvent::Scan,
             ScheduleTrigger::Interval {
@@ -299,7 +310,9 @@ pub fn bootstrap_rules_from_config(cfg: &Config) -> Vec<ScheduleRule> {
                 "library": null
             }),
             JobPriority::Normal,
-        ));
+        );
+        rule.safety_backup = cfg.backup.enabled;
+        rules.push(rule);
     }
     if cfg.backup.enabled && cfg.backup.interval_hours > 0 {
         rules.push(ScheduleRule::new_bootstrap(
@@ -340,23 +353,6 @@ pub async fn ensure_bootstrap_rules(cfg: &Config, db: &Database) -> Result<()> {
     Ok(())
 }
 
-#[allow(dead_code)]
-pub async fn scheduler_summary(db: &Database) -> Result<SchedulerSummary> {
-    let rules = db.list_scheduler_rules().await?;
-    let now = Local::now();
-    let mut nexts: Vec<_> = rules
-        .iter()
-        .filter(|rule| rule.enabled)
-        .filter_map(|rule| rule.next_after(now))
-        .collect();
-    nexts.sort();
-    Ok(SchedulerSummary {
-        enabled_rules: rules.iter().filter(|rule| rule.enabled).count(),
-        next_due: nexts.first().map(format_local),
-        recent_runs: db.list_scheduler_runs(5).await?,
-    })
-}
-
 pub async fn run_scheduler_tick(cfg: &Config, db: &Database) -> Result<()> {
     ensure_bootstrap_rules(cfg, db).await?;
     let now = Local::now();
@@ -373,7 +369,7 @@ pub async fn run_scheduler_tick(cfg: &Config, db: &Database) -> Result<()> {
     for (rule, planned_at) in due {
         let age = now.signed_duration_since(planned_at).num_minutes();
         if age > rule.misfire_grace_minutes {
-            db.create_scheduler_run(
+            db.try_create_scheduler_run(
                 rule.id,
                 rule.event_type,
                 planned_at,
@@ -383,13 +379,38 @@ pub async fn run_scheduler_tick(cfg: &Config, db: &Database) -> Result<()> {
             .await?;
             continue;
         }
-        run_rule(cfg, db, &rule, planned_at).await?;
+        if let Err(err) = run_rule(cfg, db, &rule, planned_at).await {
+            warn!(
+                rule_id = rule.id,
+                rule_name = %rule.name,
+                "Scheduled rule failed; continuing with remaining due rules: {}",
+                err
+            );
+        }
     }
     Ok(())
 }
 
-pub async fn run_rule_now(cfg: &Config, db: &Database, rule: &ScheduleRule) -> Result<i64> {
-    run_rule(cfg, db, rule, Local::now()).await
+pub async fn claim_rule_now(db: &Database, rule: &ScheduleRule) -> Result<i64> {
+    rule.validate()?;
+    db.try_create_scheduler_run(
+        rule.id,
+        rule.event_type,
+        Local::now(),
+        JobRunStatus::Running,
+        Some("Started"),
+    )
+    .await?
+    .context("Scheduler run was already claimed")
+}
+
+pub async fn execute_claimed_rule(
+    cfg: &Config,
+    db: &Database,
+    rule: &ScheduleRule,
+    run_id: i64,
+) -> Result<()> {
+    finish_rule_run(cfg, db, rule, run_id).await.map(|_| ())
 }
 
 async fn run_rule(
@@ -397,18 +418,43 @@ async fn run_rule(
     db: &Database,
     rule: &ScheduleRule,
     planned_at: DateTime<Local>,
-) -> Result<i64> {
+) -> Result<Option<i64>> {
     rule.validate()?;
-    let run_id = db
-        .create_scheduler_run(
+    let Some(run_id) = db
+        .try_create_scheduler_run(
             rule.id,
             rule.event_type,
             planned_at,
             JobRunStatus::Running,
             Some("Started"),
         )
-        .await?;
-    let result = execute_event(cfg, db, rule).await;
+        .await?
+    else {
+        return Ok(None);
+    };
+    finish_rule_run(cfg, db, rule, run_id).await.map(Some)
+}
+
+async fn finish_rule_run(
+    cfg: &Config,
+    db: &Database,
+    rule: &ScheduleRule,
+    run_id: i64,
+) -> Result<i64> {
+    let result = async {
+        if rule.safety_backup {
+            if !cfg.backup.enabled {
+                anyhow::bail!("Safety backup is required by this rule but backups are disabled");
+            }
+            let manager = crate::backup::BackupManager::new(&cfg.backup);
+            manager
+                .create_safety_snapshot(db, &format!("scheduler-{}", rule.event_type.as_str()))
+                .await
+                .context("Required scheduler safety backup failed")?;
+        }
+        execute_event(cfg, db, rule).await
+    }
+    .await;
     match result {
         Ok(message) => {
             db.finish_scheduler_run(run_id, JobRunStatus::Succeeded, Some(&message), None)
@@ -427,12 +473,6 @@ async fn run_rule(
 async fn execute_event(cfg: &Config, db: &Database, rule: &ScheduleRule) -> Result<String> {
     match rule.event_type {
         ScheduledEvent::Scan => {
-            if cfg.backup.enabled {
-                let bm = crate::backup::BackupManager::new(&cfg.backup);
-                if let Err(err) = bm.create_safety_snapshot(db, "scheduled-scan").await {
-                    warn!("Scheduled pre-scan safety snapshot failed: {}", err);
-                }
-            }
             let dry_run = rule
                 .event_args
                 .get("dry_run")
@@ -551,7 +591,17 @@ async fn due_rules(
         if last_planned.is_none()
             && matches!(&rule.trigger, ScheduleTrigger::Interval { start: None, .. })
         {
-            due.push((rule, now));
+            let planned_at = rule
+                .created_at
+                .as_deref()
+                .and_then(|value| parse_persisted_timestamp(value).ok())
+                .unwrap_or_else(|| {
+                    now.with_nanosecond(0)
+                        .expect("zero nanoseconds are always valid")
+                });
+            if planned_at <= now {
+                due.push((rule, planned_at));
+            }
             continue;
         }
         let cursor = last_planned
@@ -571,8 +621,11 @@ fn validate_trigger(trigger: &ScheduleTrigger) -> Result<()> {
         ScheduleTrigger::Once { at } => {
             parse_local_datetime(at)?;
         }
-        ScheduleTrigger::Interval { every, .. } if *every == 0 => {
-            anyhow::bail!("Interval trigger requires every > 0");
+        ScheduleTrigger::Interval { every, unit, start } => {
+            interval_duration(*every, *unit)?;
+            if let Some(start) = start {
+                parse_local_datetime(start)?;
+            }
         }
         ScheduleTrigger::Daily { times } => validate_times(times)?,
         ScheduleTrigger::Weekly { weekdays, times } => {
@@ -580,6 +633,7 @@ fn validate_trigger(trigger: &ScheduleTrigger) -> Result<()> {
             validate_times(times)?;
         }
         ScheduleTrigger::Monthly { days, times } => {
+            validate_list_size("Monthly days", days.len(), 31)?;
             if days.iter().any(|day| !(1..=31).contains(day)) {
                 anyhow::bail!("Monthly day must be between 1 and 31");
             }
@@ -590,9 +644,24 @@ fn validate_trigger(trigger: &ScheduleTrigger) -> Result<()> {
             times,
             weekdays,
             month_days,
+            interval,
+            count,
+            until,
             ..
         } => {
             parse_local_datetime(start)?;
+            if interval.is_some_and(|value| value == 0 || value > MAX_RRULE_INTERVAL) {
+                anyhow::bail!(
+                    "RRule interval must be between 1 and {}",
+                    MAX_RRULE_INTERVAL
+                );
+            }
+            if count.is_some_and(|value| value == 0 || value > MAX_RRULE_COUNT) {
+                anyhow::bail!("RRule count must be between 1 and {}", MAX_RRULE_COUNT);
+            }
+            if let Some(until) = until {
+                parse_local_datetime(until)?;
+            }
             if let Some(times) = times {
                 validate_times(times)?;
             }
@@ -600,6 +669,7 @@ fn validate_trigger(trigger: &ScheduleTrigger) -> Result<()> {
                 validate_weekdays(weekdays)?;
             }
             if let Some(days) = month_days {
+                validate_list_size("RRule month_days", days.len(), 31)?;
                 if days.iter().any(|day| !(1..=31).contains(day)) {
                     anyhow::bail!("RRule month day must be between 1 and 31");
                 }
@@ -608,7 +678,6 @@ fn validate_trigger(trigger: &ScheduleTrigger) -> Result<()> {
         ScheduleTrigger::Cron { expression } => {
             Schedule::from_str(expression).context("Invalid cron expression")?;
         }
-        _ => {}
     }
     Ok(())
 }
@@ -632,6 +701,7 @@ fn validate_times(times: &[String]) -> Result<()> {
     if times.is_empty() {
         anyhow::bail!("At least one time is required");
     }
+    validate_list_size("Schedule times", times.len(), MAX_SCHEDULE_TIMES)?;
     for time in times {
         parse_time(time)?;
     }
@@ -642,29 +712,62 @@ fn validate_weekdays(weekdays: &[String]) -> Result<()> {
     if weekdays.is_empty() {
         anyhow::bail!("At least one weekday is required");
     }
+    validate_list_size("Schedule weekdays", weekdays.len(), 7)?;
     for day in weekdays {
         parse_weekday(day)?;
     }
     Ok(())
 }
 
+fn validate_list_size(label: &str, len: usize, max: usize) -> Result<()> {
+    if len > max {
+        anyhow::bail!("{} cannot contain more than {} values", label, max);
+    }
+    Ok(())
+}
+
+fn interval_duration(every: u64, unit: IntervalUnit) -> Result<ChronoDuration> {
+    if every == 0 {
+        anyhow::bail!("Interval trigger requires every > 0");
+    }
+    let max = match unit {
+        IntervalUnit::Minutes => MAX_INTERVAL_MINUTES,
+        IntervalUnit::Hours => MAX_INTERVAL_HOURS,
+        IntervalUnit::Days => MAX_INTERVAL_DAYS,
+    };
+    if every > max {
+        anyhow::bail!(
+            "Interval exceeds the supported maximum of {} {:?}",
+            max,
+            unit
+        );
+    }
+    let every = i64::try_from(every).context("Interval exceeds supported integer range")?;
+    match unit {
+        IntervalUnit::Minutes => ChronoDuration::try_minutes(every),
+        IntervalUnit::Hours => ChronoDuration::try_hours(every),
+        IntervalUnit::Days => ChronoDuration::try_days(every),
+    }
+    .context("Interval exceeds supported duration range")
+}
+
 fn next_for_trigger(trigger: &ScheduleTrigger, after: DateTime<Local>) -> Option<DateTime<Local>> {
     match trigger {
         ScheduleTrigger::Once { at } => parse_local_datetime(at).ok().filter(|dt| *dt > after),
         ScheduleTrigger::Interval { every, unit, start } => {
-            let step = match unit {
-                IntervalUnit::Minutes => ChronoDuration::minutes(*every as i64),
-                IntervalUnit::Hours => ChronoDuration::hours(*every as i64),
-                IntervalUnit::Days => ChronoDuration::days(*every as i64),
-            };
-            let mut next = start
+            let step = interval_duration(*every, *unit).ok()?;
+            let first = start
                 .as_deref()
                 .and_then(|value| parse_local_datetime(value).ok())
                 .unwrap_or(after + step);
-            while next <= after {
-                next += step;
+            if first > after {
+                return Some(first);
             }
-            Some(next)
+            let step_seconds = step.num_seconds();
+            let elapsed_seconds = after.signed_duration_since(first).num_seconds();
+            let skipped = elapsed_seconds.checked_div(step_seconds)?.checked_add(1)?;
+            let skipped = i32::try_from(skipped).ok()?;
+            first.checked_add_signed(step.checked_mul(skipped)?)
         }
         ScheduleTrigger::Daily { times } => next_by_days(after, 370, |date| {
             times
@@ -713,76 +816,92 @@ fn next_for_trigger(trigger: &ScheduleTrigger, after: DateTime<Local>) -> Option
             let times = times
                 .clone()
                 .unwrap_or_else(|| vec![format!("{:02}:{:02}", start.hour(), start.minute())]);
-            let weekdays = weekdays.as_ref().map(|days| {
-                days.iter()
-                    .filter_map(|day| parse_weekday(day).ok())
-                    .collect::<Vec<_>>()
+            let weekdays = weekdays
+                .as_ref()
+                .map(|days| {
+                    days.iter()
+                        .filter_map(|day| parse_weekday(day).ok())
+                        .collect::<Vec<_>>()
+                })
+                .or_else(|| {
+                    matches!(frequency, RRuleFrequency::Weekly).then(|| vec![start.weekday()])
+                });
+            let month_days = month_days.clone().or_else(|| {
+                matches!(frequency, RRuleFrequency::Monthly).then(|| vec![start.day()])
             });
-            let month_days = month_days.clone();
-            let interval = interval.unwrap_or(1).max(1) as i64;
+            let interval = i64::try_from(interval.unwrap_or(1).max(1)).ok()?;
             let mut seen = 0u64;
-            next_by_days(
-                after.max(start - ChronoDuration::seconds(1)),
-                3660,
-                |date| {
-                    let candidate_midnight =
-                        local_on_date(date, NaiveTime::from_hms_opt(0, 0, 0).unwrap());
-                    let Some(candidate_midnight) = candidate_midnight else {
-                        return Vec::new();
-                    };
-                    if candidate_midnight < start {
-                        return Vec::new();
-                    }
-                    if let Some(until) = until {
-                        if candidate_midnight > until {
-                            return Vec::new();
-                        }
-                    }
-                    let elapsed = candidate_midnight
-                        .signed_duration_since(start)
-                        .num_days()
-                        .max(0);
-                    let matches_frequency = match frequency {
-                        RRuleFrequency::Daily => elapsed % interval == 0,
-                        RRuleFrequency::Weekly => (elapsed / 7) % interval == 0,
-                        RRuleFrequency::Monthly => {
-                            let months = (date.year() - start.year()) as i64 * 12
-                                + date.month() as i64
-                                - start.month() as i64;
-                            months >= 0 && months % interval == 0
-                        }
-                    };
-                    if !matches_frequency {
+            let search_after = if count.is_some() {
+                start - ChronoDuration::seconds(1)
+            } else {
+                after.max(start - ChronoDuration::seconds(1))
+            };
+            let elapsed_to_cursor = after
+                .date_naive()
+                .signed_duration_since(search_after.date_naive())
+                .num_days()
+                .max(0);
+            let scan_days = elapsed_to_cursor
+                .saturating_add(3660)
+                .min(MAX_RRULE_SCAN_DAYS);
+            next_by_days_since(search_after, after, scan_days, |date| {
+                let candidate_midnight =
+                    local_on_date(date, NaiveTime::from_hms_opt(0, 0, 0).unwrap());
+                let Some(candidate_midnight) = candidate_midnight else {
+                    return Vec::new();
+                };
+                if date < start.date_naive() {
+                    return Vec::new();
+                }
+                if let Some(until) = until {
+                    if date > until.date_naive() {
                         return Vec::new();
                     }
-                    if let Some(days) = weekdays.as_ref() {
-                        if !days.contains(&date.weekday()) {
-                            return Vec::new();
-                        }
+                }
+                let elapsed = candidate_midnight
+                    .signed_duration_since(start)
+                    .num_days()
+                    .max(0);
+                let matches_frequency = match frequency {
+                    RRuleFrequency::Daily => elapsed % interval == 0,
+                    RRuleFrequency::Weekly => (elapsed / 7) % interval == 0,
+                    RRuleFrequency::Monthly => {
+                        let months = (date.year() - start.year()) as i64 * 12 + date.month() as i64
+                            - start.month() as i64;
+                        months >= 0 && months % interval == 0
                     }
-                    if let Some(days) = month_days.as_ref() {
-                        if !days.contains(&date.day()) {
-                            return Vec::new();
-                        }
+                };
+                if !matches_frequency {
+                    return Vec::new();
+                }
+                if let Some(days) = weekdays.as_ref() {
+                    if !days.contains(&date.weekday()) {
+                        return Vec::new();
                     }
-                    let candidates: Vec<_> = times
-                        .iter()
-                        .filter_map(|time| local_on_date(date, parse_time(time).ok()?))
-                        .filter(|dt| *dt >= start)
-                        .collect();
-                    seen += candidates.len() as u64;
-                    if count.is_some_and(|limit| seen > limit) {
-                        Vec::new()
-                    } else {
-                        candidates
+                }
+                if let Some(days) = month_days.as_ref() {
+                    if !days.contains(&date.day()) {
+                        return Vec::new();
                     }
-                },
-            )
+                }
+                let mut candidates: Vec<_> = times
+                    .iter()
+                    .filter_map(|time| local_on_date(date, parse_time(time).ok()?))
+                    .filter(|dt| *dt >= start)
+                    .filter(|dt| until.is_none_or(|limit| *dt <= limit))
+                    .collect();
+                candidates.sort();
+                if let Some(limit) = count {
+                    let remaining = limit.saturating_sub(seen) as usize;
+                    candidates.truncate(remaining);
+                }
+                seen = seen.saturating_add(candidates.len() as u64);
+                candidates
+            })
         }
-        ScheduleTrigger::Cron { expression } => Schedule::from_str(expression)
-            .ok()?
-            .upcoming(Local)
-            .find(|dt| *dt > after),
+        ScheduleTrigger::Cron { expression } => {
+            Schedule::from_str(expression).ok()?.after(&after).next()
+        }
     }
 }
 
@@ -790,11 +909,23 @@ fn next_by_days<F>(after: DateTime<Local>, max_days: i64, mut build: F) -> Optio
 where
     F: FnMut(NaiveDate) -> Vec<DateTime<Local>>,
 {
+    next_by_days_since(after, after, max_days, &mut build)
+}
+
+fn next_by_days_since<F>(
+    search_from: DateTime<Local>,
+    candidate_after: DateTime<Local>,
+    max_days: i64,
+    mut build: F,
+) -> Option<DateTime<Local>>
+where
+    F: FnMut(NaiveDate) -> Vec<DateTime<Local>>,
+{
     for offset in 0..=max_days {
-        let date = (after + ChronoDuration::days(offset)).date_naive();
+        let date = (search_from + ChronoDuration::days(offset)).date_naive();
         let mut candidates = build(date);
         candidates.sort();
-        if let Some(next) = candidates.into_iter().find(|dt| *dt > after) {
+        if let Some(next) = candidates.into_iter().find(|dt| *dt > candidate_after) {
             return Some(next);
         }
     }
@@ -857,6 +988,15 @@ pub fn parse_local_datetime(value: &str) -> Result<DateTime<Local>> {
     resolve_local(naive).with_context(|| format!("Local date/time does not exist: {}", value))
 }
 
+fn parse_persisted_timestamp(value: &str) -> Result<DateTime<Local>> {
+    if let Ok(dt) = DateTime::parse_from_rfc3339(value) {
+        return Ok(dt.with_timezone(&Local));
+    }
+    let naive = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S")
+        .with_context(|| format!("Invalid persisted timestamp: {}", value))?;
+    Ok(Utc.from_utc_datetime(&naive).with_timezone(&Local))
+}
+
 fn parse_time(value: &str) -> Result<NaiveTime> {
     NaiveTime::parse_from_str(value, "%H:%M:%S")
         .or_else(|_| NaiveTime::parse_from_str(value, "%H:%M"))
@@ -888,15 +1028,16 @@ fn resolve_local(naive: NaiveDateTime) -> Option<DateTime<Local>> {
     }
 }
 
-#[allow(dead_code)]
-fn format_local(dt: &DateTime<Local>) -> String {
-    dt.format("%Y-%m-%d %H:%M:%S %Z").to_string()
-}
-
 pub async fn run_scheduler_loop(cfg: &Config, db: &Database) -> Result<()> {
     ensure_bootstrap_rules(cfg, db).await?;
     info!("Scheduler loop starting (tick: 30 seconds)");
     loop {
+        if let Err(err) = db
+            .record_daemon_heartbeat("scheduler", Some("Scheduler tick loop is healthy"))
+            .await
+        {
+            warn!("Daemon heartbeat update failed (non-fatal): {}", err);
+        }
         if let Err(err) = run_scheduler_tick(cfg, db).await {
             warn!("Scheduler tick failed: {}", err);
         }
@@ -938,6 +1079,21 @@ mod tests {
         });
 
         let next = rule.next_after(local("2026-05-03 10:44:00")).unwrap();
+        assert_eq!(
+            next.format("%Y-%m-%d %H:%M:%S").to_string(),
+            "2026-05-03 10:45:00"
+        );
+    }
+
+    #[test]
+    fn interval_with_old_start_advances_arithmetically() {
+        let rule = test_rule(ScheduleTrigger::Interval {
+            every: 1,
+            unit: IntervalUnit::Minutes,
+            start: Some("1970-01-01 00:00:00".to_string()),
+        });
+
+        let next = rule.next_after(local("2026-05-03 10:44:30")).unwrap();
         assert_eq!(
             next.format("%Y-%m-%d %H:%M:%S").to_string(),
             "2026-05-03 10:45:00"
@@ -1014,5 +1170,139 @@ mod tests {
         assert!(rule.validate().is_err());
         rule.max_delete = Some(10);
         assert!(rule.validate().is_ok());
+    }
+
+    #[test]
+    fn interval_rejects_values_that_could_overflow_duration_math() {
+        let rule = test_rule(ScheduleTrigger::Interval {
+            every: u64::MAX,
+            unit: IntervalUnit::Days,
+            start: None,
+        });
+
+        assert!(rule.validate().is_err());
+        assert!(rule.next_after(Local::now()).is_none());
+    }
+
+    #[test]
+    fn schedule_lists_have_a_conservative_size_limit() {
+        let rule = test_rule(ScheduleTrigger::Daily {
+            times: vec!["01:00".to_string(); MAX_SCHEDULE_TIMES + 1],
+        });
+
+        assert!(rule.validate().is_err());
+    }
+
+    #[test]
+    fn rrule_count_is_honored_across_independent_next_after_calls() {
+        let rule = test_rule(ScheduleTrigger::RRule {
+            start: "2026-05-01 04:00:00".to_string(),
+            frequency: RRuleFrequency::Daily,
+            interval: Some(1),
+            count: Some(1),
+            until: None,
+            weekdays: None,
+            month_days: None,
+            times: None,
+        });
+
+        assert!(rule.next_after(local("2026-04-30 04:00:00")).is_some());
+        let exhausted = rule.next_after(local("2026-05-01 04:00:00"));
+        assert!(
+            exhausted.is_none(),
+            "unexpected next occurrence: {exhausted:?}"
+        );
+    }
+
+    #[test]
+    fn rrule_defaults_weekly_and_monthly_selectors_from_start() {
+        let weekly = test_rule(ScheduleTrigger::RRule {
+            start: "2026-05-01 04:00:00".to_string(),
+            frequency: RRuleFrequency::Weekly,
+            interval: None,
+            count: None,
+            until: None,
+            weekdays: None,
+            month_days: None,
+            times: None,
+        });
+        let monthly = test_rule(ScheduleTrigger::RRule {
+            start: "2026-05-15 04:00:00".to_string(),
+            frequency: RRuleFrequency::Monthly,
+            interval: None,
+            count: None,
+            until: None,
+            weekdays: None,
+            month_days: None,
+            times: None,
+        });
+
+        assert_eq!(
+            weekly
+                .next_after(local("2026-05-01 04:00:00"))
+                .unwrap()
+                .format("%Y-%m-%d %H:%M")
+                .to_string(),
+            "2026-05-08 04:00"
+        );
+        assert_eq!(
+            monthly
+                .next_after(local("2026-05-15 04:00:00"))
+                .unwrap()
+                .format("%Y-%m-%d %H:%M")
+                .to_string(),
+            "2026-06-15 04:00"
+        );
+    }
+
+    #[test]
+    fn rrule_until_applies_to_the_exact_candidate_time() {
+        let rule = test_rule(ScheduleTrigger::RRule {
+            start: "2026-05-01 20:00:00".to_string(),
+            frequency: RRuleFrequency::Daily,
+            interval: None,
+            count: None,
+            until: Some("2026-05-02 09:00:00".to_string()),
+            weekdays: None,
+            month_days: None,
+            times: None,
+        });
+
+        assert!(rule.next_after(local("2026-05-01 20:00:00")).is_none());
+    }
+
+    #[test]
+    fn cron_next_run_is_evaluated_from_the_supplied_cursor() {
+        let rule = test_rule(ScheduleTrigger::Cron {
+            expression: "0 0 4 * * * *".to_string(),
+        });
+
+        let next = rule.next_after(local("2020-05-03 03:59:00")).unwrap();
+        assert_eq!(
+            next.format("%Y-%m-%d %H:%M").to_string(),
+            "2020-05-03 04:00"
+        );
+    }
+
+    #[tokio::test]
+    async fn first_startless_interval_uses_persisted_rule_timestamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::new(dir.path().join("scheduler.db").to_str().unwrap())
+            .await
+            .unwrap();
+        let rule = test_rule(ScheduleTrigger::Interval {
+            every: 15,
+            unit: IntervalUnit::Minutes,
+            start: None,
+        });
+        db.create_scheduler_rule(&rule).await.unwrap();
+        let stored = db.list_scheduler_rules().await.unwrap().remove(0);
+        let expected = parse_persisted_timestamp(stored.created_at.as_deref().unwrap()).unwrap();
+
+        let first = due_rules(&db, Local::now()).await.unwrap();
+        let second = due_rules(&db, Local::now()).await.unwrap();
+
+        assert_eq!(first[0].1, expected);
+        assert_eq!(second[0].1, expected);
     }
 }

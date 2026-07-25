@@ -173,6 +173,7 @@ pub struct ProviderRepairCandidateRecord {
 pub enum AcquisitionRelinkKind {
     MediaId,
     MediaEpisode,
+    MediaSeason,
     SymlinkPath,
 }
 
@@ -181,6 +182,7 @@ impl AcquisitionRelinkKind {
         match self {
             Self::MediaId => "media_id",
             Self::MediaEpisode => "media_episode",
+            Self::MediaSeason => "media_season",
             Self::SymlinkPath => "symlink_path",
         }
     }
@@ -189,9 +191,10 @@ impl AcquisitionRelinkKind {
         match value {
             "media_id" => Ok(Self::MediaId),
             "media_episode" => Ok(Self::MediaEpisode),
+            "media_season" => Ok(Self::MediaSeason),
             "symlink_path" => Ok(Self::SymlinkPath),
             _ => anyhow::bail!(
-                "Unsupported acquisition relink kind '{}' in the database. Expected one of: media_id, media_episode, symlink_path",
+                "Unsupported acquisition relink kind '{}' in the database. Expected one of: media_id, media_episode, media_season, symlink_path",
                 value
             ),
         }

@@ -3323,7 +3323,7 @@ body.page-status .telemetry-item {
 
 body {
   background: var(--bg-primary);
-  font-size: 13px;
+  font-size: 16px;
 }
 
 .main-shell {
@@ -3404,7 +3404,7 @@ body.page-result .page-header {
 }
 
 .btn {
-  min-height: 34px;
+  min-height: 40px;
   padding: 0.48rem 0.78rem;
   border-color: var(--operator-line);
   font-size: 0.84rem;
@@ -3733,7 +3733,17 @@ details.collapsible-section > summary {
   justify-content: space-between;
   align-items: center;
   user-select: none;
-  outline: none;
+}
+
+details.collapsible-section > summary:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 3px;
+}
+
+@media (max-width: 760px) {
+  .btn {
+    min-height: 44px;
+  }
 }
 
 details.collapsible-section > summary::-webkit-details-marker {

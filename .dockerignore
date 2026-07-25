@@ -1,6 +1,10 @@
 .git
 .github
 .codex
+.antigravitycli
+.hermes
+graphify-out
+gui-redesign
 target
 target-*
 .tmpbuild

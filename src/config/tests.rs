@@ -471,7 +471,6 @@ fn validate_rejects_zero_decypharr_polling_settings() {
     cfg.decypharr.completion_timeout_minutes = 0;
     cfg.decypharr.relink_timeout_minutes = 0;
     cfg.decypharr.max_in_flight = 0;
-    cfg.decypharr.max_requests_per_run = 0;
     cfg.decypharr.queue_page_size = 0;
 
     let report = cfg.validate_runtime_settings();
@@ -491,7 +490,7 @@ fn validate_rejects_zero_decypharr_polling_settings() {
         .errors
         .iter()
         .any(|err| err.contains("decypharr.max_in_flight")));
-    assert!(report
+    assert!(!report
         .errors
         .iter()
         .any(|err| err.contains("decypharr.max_requests_per_run")));
@@ -499,6 +498,57 @@ fn validate_rejects_zero_decypharr_polling_settings() {
         .errors
         .iter()
         .any(|err| err.contains("decypharr.queue_page_size")));
+}
+
+#[test]
+fn validate_allows_zero_decypharr_max_requests_per_run_as_unlimited() {
+    let mut cfg = Config {
+        libraries: vec![LibraryConfig {
+            name: "Movies".to_string(),
+            path: PathBuf::from("/tmp/library"),
+            media_type: MediaType::Movie,
+            content_type: Some(ContentType::Movie),
+            depth: 1,
+        }],
+        sources: vec![SourceConfig {
+            name: "RD".to_string(),
+            path: PathBuf::from("/tmp/source"),
+            media_type: "auto".to_string(),
+        }],
+        api: ApiConfig::default(),
+        realdebrid: RealDebridConfig::default(),
+        decypharr: DecypharrConfig::default(),
+        dmm: DmmConfig::default(),
+        backup: BackupConfig::default(),
+        db_path: default_db_path(),
+        log_level: default_log_level(),
+        daemon: DaemonConfig::default(),
+        symlink: SymlinkConfig::default(),
+        matching: MatchingConfig::default(),
+        prowlarr: ProwlarrConfig::default(),
+        bazarr: BazarrConfig::default(),
+        tautulli: TautulliConfig::default(),
+        plex: PlexConfig::default(),
+        emby: MediaBrowserConfig::default(),
+        jellyfin: MediaBrowserConfig::default(),
+        radarr: RadarrConfig::default(),
+        sonarr: SonarrConfig::default(),
+        sonarr_anime: SonarrConfig::default(),
+        features: FeaturesConfig::default(),
+        security: SecurityConfig::default(),
+        cleanup: CleanupPolicyConfig::default(),
+        web: WebConfig::default(),
+        loaded_from: None,
+        secret_files: Vec::new(),
+    };
+    cfg.decypharr.max_requests_per_run = 0;
+
+    let report = cfg.validate_runtime_settings();
+
+    assert!(report
+        .errors
+        .iter()
+        .all(|err| !err.contains("decypharr.max_requests_per_run")));
 }
 
 #[test]

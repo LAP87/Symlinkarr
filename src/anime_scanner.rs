@@ -248,7 +248,7 @@ pub(crate) async fn build_anime_episode_requests(
     Ok(requests)
 }
 
-fn wanted_episode_is_searchable(record: &SonarrWantedMissingRecord) -> bool {
+pub(crate) fn wanted_episode_is_searchable(record: &SonarrWantedMissingRecord) -> bool {
     if let Some(air_date) = record.air_date_utc {
         if air_date > Utc::now() {
             return false;
@@ -258,11 +258,11 @@ fn wanted_episode_is_searchable(record: &SonarrWantedMissingRecord) -> bool {
     true
 }
 
-fn wanted_episode_has_supported_numbering(record: &SonarrWantedMissingRecord) -> bool {
+pub(crate) fn wanted_episode_has_supported_numbering(record: &SonarrWantedMissingRecord) -> bool {
     record.episode_number > 0
 }
 
-fn anime_query_hints(
+pub(crate) fn anime_query_hints(
     item: &LibraryItem,
     record: &SonarrWantedMissingRecord,
     anime_identity: Option<&AnimeIdentityGraph>,
@@ -288,7 +288,7 @@ fn anime_query_hints(
     hints
 }
 
-fn build_anime_missing_search_query(
+pub(crate) fn build_anime_missing_search_query(
     series: &SonarrSeries,
     record: &SonarrWantedMissingRecord,
     search_override: Option<&AnimeSearchOverrideRecord>,
@@ -456,12 +456,16 @@ mod tests {
         let series = SonarrSeries {
             id: 1,
             title: "The Yuzuki Family's Four Sons".to_string(),
+            path: String::new(),
             alternate_titles: vec![crate::api::sonarr::SonarrAlternateTitle {
                 title: "Yuzuki-san Chi no Yonkyoudai".to_string(),
                 scene_season_number: -1,
             }],
             tvdb_id: 434312,
             tmdb_id: 0,
+            imdb_id: String::new(),
+            monitored: true,
+            statistics: None,
             use_scene_numbering: true,
         };
         let record = SonarrWantedMissingRecord {
@@ -491,9 +495,13 @@ mod tests {
         let series = SonarrSeries {
             id: 2,
             title: "Jujutsu Kaisen".to_string(),
+            path: String::new(),
             alternate_titles: Vec::new(),
             tvdb_id: 0,
             tmdb_id: 0,
+            imdb_id: String::new(),
+            monitored: true,
+            statistics: None,
             use_scene_numbering: false,
         };
         let record = SonarrWantedMissingRecord {
@@ -523,9 +531,13 @@ mod tests {
         let series = SonarrSeries {
             id: 3,
             title: "Attack on Titan OAD".to_string(),
+            path: String::new(),
             alternate_titles: Vec::new(),
             tvdb_id: 0,
             tmdb_id: 0,
+            imdb_id: String::new(),
+            monitored: true,
+            statistics: None,
             use_scene_numbering: false,
         };
         let record = SonarrWantedMissingRecord {
@@ -555,9 +567,13 @@ mod tests {
         let series = SonarrSeries {
             id: 4,
             title: "Call of the Night".to_string(),
+            path: String::new(),
             alternate_titles: Vec::new(),
             tvdb_id: 0,
             tmdb_id: 0,
+            imdb_id: String::new(),
+            monitored: true,
+            statistics: None,
             use_scene_numbering: false,
         };
         let record = SonarrWantedMissingRecord {

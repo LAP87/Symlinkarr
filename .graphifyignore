@@ -1,0 +1,52 @@
+# Generated for safe Graphify indexing: code/docs only, no build/cache/secrets/runtime data.
+
+# VCS / agent state
+.git/
+.codex-run/
+.claude/
+.antigravitycli/
+
+# Dependencies / build outputs
+node_modules/
+target/
+target-*/
+dist/
+build/
+coverage/
+.pnpm-store/
+
+# Runtime/local data, external references, and backups
+data/
+backups/
+references/
+.docker-validate-data/
+.docker-validate-data-*/
+*.db
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
+*.log
+*.tmp
+
+# Secrets and local config
+.secrets/
+.env
+.env.*
+*.secret*
+*secret*
+config.yaml
+config.local.yaml
+config.test-web.yaml
+
+# Generated Graphify output
+graphify-out/
+
+# Large/minified/generated artifacts
+*.min.js
+*.min.css
+*.map
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+Cargo.lock

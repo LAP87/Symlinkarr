@@ -1557,6 +1557,7 @@ async fn import_preview_renders_candidate_without_writing_target() {
     let source = ctx._dir.path().join("rd").join("Movie.2024 {tmdb-123}.mkv");
     let destination = ctx._dir.path().join("imported");
     std::fs::write(&source, b"video").unwrap();
+    let csrf_token = ctx.state.browser_session_token().to_string();
 
     let body = render_body(
         post_import_preview(
@@ -1566,6 +1567,7 @@ async fn import_preview_renders_candidate_without_writing_target() {
                 destination: Some(destination.display().to_string()),
                 content_type: "movie".to_string(),
                 mode: "safe".to_string(),
+                csrf_token,
                 ..ImportPreviewForm::default()
             }),
         )
@@ -1587,6 +1589,7 @@ async fn import_apply_creates_target_and_writes_report() {
     let source = ctx._dir.path().join("rd").join("Movie.2024 {tmdb-123}.mkv");
     let destination = ctx._dir.path().join("imported");
     std::fs::write(&source, b"video").unwrap();
+    let csrf_token = ctx.state.browser_session_token().to_string();
 
     let body = render_body(
         post_import_apply(
@@ -1596,6 +1599,7 @@ async fn import_apply_creates_target_and_writes_report() {
                 destination: Some(destination.display().to_string()),
                 content_type: "movie".to_string(),
                 mode: "safe".to_string(),
+                csrf_token,
                 ..ImportPreviewForm::default()
             }),
         )
@@ -1621,6 +1625,7 @@ async fn import_preview_filters_candidate_review_table_by_confidence() {
     std::fs::create_dir_all(&unknown).unwrap();
     std::fs::write(known.join("Known.Movie.2024.mkv"), b"video").unwrap();
     std::fs::write(unknown.join("Unknown.Movie.2024.mkv"), b"video").unwrap();
+    let csrf_token = ctx.state.browser_session_token().to_string();
 
     let body = render_body(
         post_import_preview(
@@ -1631,6 +1636,7 @@ async fn import_preview_filters_candidate_review_table_by_confidence() {
                 content_type: "movie".to_string(),
                 mode: "safe".to_string(),
                 confidence_filter: Some("low".to_string()),
+                csrf_token,
                 ..ImportPreviewForm::default()
             }),
         )

@@ -179,6 +179,17 @@ fn test_multi_version_label_includes_release_metadata() {
 }
 
 #[test]
+fn test_multi_version_path_hash_is_stable_and_wide() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let lib_path = dir.path().join("Sample Movie {tmdb-550}");
+    let source_path = PathBuf::from("/rd/sample_movie_2160p.mkv");
+    let mut m = sample_movie_match(&lib_path, &source_path);
+    m.source_item.quality = Some("2160p".to_string());
+
+    assert_eq!(version_label(&m.source_item), "2160p-75ff00e71ac0724d");
+}
+
+#[test]
 fn test_multi_version_suffixes_tv_episode_targets() {
     let dir = tempfile::TempDir::new().unwrap();
     let lib_path = dir.path().join("Sample Show {tvdb-81189}");
@@ -194,6 +205,53 @@ fn test_multi_version_suffixes_tv_episode_targets() {
 
     assert!(filename.starts_with("Sample Show - S01E01 - Pilot - 2160p-hevc-"));
     assert!(filename.ends_with(".mkv"));
+}
+
+#[cfg(unix)]
+#[test]
+fn equivalent_tv_target_does_not_confuse_episode_one_with_episode_ten() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let lib_path = dir.path().join("Sample Show {tvdb-81189}");
+    let season_dir = lib_path.join("Season 01");
+    let source_path = dir.path().join("rd").join("show-pack.mkv");
+    std::fs::create_dir_all(&season_dir).unwrap();
+    std::fs::create_dir_all(source_path.parent().unwrap()).unwrap();
+    std::fs::write(&source_path, b"video").unwrap();
+    std::os::unix::fs::symlink(&source_path, season_dir.join("Sample Show - S01E10.mkv")).unwrap();
+    let linker = Linker::new(false, true, DEFAULT_TEMPLATE).with_multi_version(true);
+    let m = sample_tv_match(&lib_path, &source_path, Some(1), Some(1));
+    let target = linker.build_target_path(&m).unwrap();
+
+    assert!(linker
+        .find_existing_equivalent_tv_target(&m, &target)
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn test_long_multi_version_names_keep_unique_suffix_within_filename_limit() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let long_title = "A".repeat(300);
+    let lib_path = dir.path().join(format!("{} {{tmdb-550}}", long_title));
+    let source_path = dir.path().join("rd").join("long_movie_2160p.mkv");
+    let linker = Linker::new(false, true, "").with_multi_version(true);
+    let mut movie = sample_movie_match(&lib_path, &source_path);
+    movie.library_item.title = long_title.clone();
+    movie.source_item.quality = Some("2160p".to_string());
+
+    let movie_target = linker.build_target_path(&movie).unwrap();
+    let movie_name = movie_target.file_name().unwrap().to_string_lossy();
+    assert!(movie_name.len() <= 250);
+    assert!(movie_name.contains("2160p-"));
+
+    let tv_path = dir.path().join(format!("{} {{tvdb-81189}}", long_title));
+    let mut tv = sample_tv_match(&tv_path, &source_path, Some(1), Some(1));
+    tv.library_item.title = long_title;
+    tv.source_item.quality = Some("2160p".to_string());
+    let tv_target = linker.build_target_path(&tv).unwrap();
+    let tv_name = tv_target.file_name().unwrap().to_string_lossy();
+    assert!(tv_name.len() <= 250);
+    assert!(tv_name.contains("2160p-"));
 }
 
 #[cfg(unix)]

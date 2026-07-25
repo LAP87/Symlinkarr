@@ -7,6 +7,7 @@ use crate::config::{
 };
 use crate::db::{Database, ScanRunRecord};
 use crate::models::{LinkRecord, LinkStatus, MediaType};
+use crate::scheduler::{JobPriority, ScheduleRule, ScheduleTrigger, ScheduledEvent};
 use crate::web::{ActiveCleanupAuditJob, ActiveScanJob, LastCleanupAuditOutcome, LastScanOutcome};
 use axum::body::to_bytes;
 use axum::response::IntoResponse;
@@ -146,6 +147,18 @@ async fn test_state() -> WebState {
     .unwrap();
 
     WebState::new(cfg, db)
+}
+
+fn scheduler_rule(name: &str) -> ScheduleRule {
+    ScheduleRule::new_bootstrap(
+        name,
+        ScheduledEvent::Scan,
+        ScheduleTrigger::Daily {
+            times: vec!["04:00".to_string()],
+        },
+        serde_json::json!({}),
+        JobPriority::Normal,
+    )
 }
 
 #[tokio::test]
@@ -1257,6 +1270,93 @@ async fn api_post_cleanup_audit_rejects_when_background_audit_is_already_running
     assert!(json.running);
     assert_eq!(json.scope_label.as_deref(), Some("Anime"));
     assert_eq!(json.libraries_label.as_deref(), Some("Anime"));
+}
+
+#[tokio::test]
+async fn scheduler_update_and_enable_return_not_found_for_unknown_rule() {
+    let state = test_state().await;
+
+    let update = api_put_scheduler_rule(
+        State(state.clone()),
+        axum::extract::Path(99_999),
+        Json(scheduler_rule("missing")),
+    )
+    .await
+    .into_response();
+    assert_eq!(update.status(), StatusCode::NOT_FOUND);
+
+    let enable = api_post_scheduler_rule_enable(
+        State(state),
+        axum::extract::Path(99_999),
+        Json(SchedulerEnableRequest { enabled: false }),
+    )
+    .await
+    .into_response();
+    assert_eq!(enable.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn scheduler_import_rejects_unknown_version_before_writing() {
+    let state = test_state().await;
+    let body = serde_yml::to_string(&SchedulerExportSnapshot {
+        version: 2,
+        rules: vec![scheduler_rule("future")],
+    })
+    .unwrap();
+
+    let response = api_post_scheduler_import(State(state.clone()), body)
+        .await
+        .into_response();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(state.database.scheduler_rule_count().await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn scheduler_import_is_atomic_when_a_later_rule_is_invalid() {
+    let state = test_state().await;
+    let mut invalid = scheduler_rule("invalid");
+    invalid.trigger = ScheduleTrigger::Daily { times: Vec::new() };
+    let body = serde_yml::to_string(&SchedulerExportSnapshot {
+        version: 1,
+        rules: vec![scheduler_rule("valid"), invalid],
+    })
+    .unwrap();
+
+    let response = api_post_scheduler_import(State(state.clone()), body)
+        .await
+        .into_response();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(state.database.scheduler_rule_count().await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn scheduler_import_replaces_existing_rules_and_is_idempotent() {
+    let state = test_state().await;
+    state
+        .database
+        .create_scheduler_rule(&scheduler_rule("old"))
+        .await
+        .unwrap();
+    let body = serde_yml::to_string(&SchedulerExportSnapshot {
+        version: 1,
+        rules: vec![scheduler_rule("replacement")],
+    })
+    .unwrap();
+
+    let first = api_post_scheduler_import(State(state.clone()), body.clone())
+        .await
+        .into_response();
+    let second = api_post_scheduler_import(State(state.clone()), body)
+        .await
+        .into_response();
+
+    assert_eq!(first.status(), StatusCode::OK);
+    assert_eq!(second.status(), StatusCode::OK);
+    let rules = state.database.list_scheduler_rules().await.unwrap();
+    assert_eq!(rules.len(), 1);
+    assert_eq!(rules[0].name, "replacement");
 }
 
 #[tokio::test]

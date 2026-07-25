@@ -1,14 +1,137 @@
 use std::collections::HashMap;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
+
+use anyhow::{Context, Result};
 use unicode_normalization::UnicodeNormalization;
 
 /// Known video file extensions
 pub const VIDEO_EXTENSIONS: &[&str] = &[
     "mkv", "mp4", "avi", "wmv", "flv", "mov", "webm", "m4v", "ts", "m2ts", "mpg", "mpeg",
 ];
+
+#[cfg(unix)]
+pub(crate) fn create_unique_temp_symlink(
+    source_path: &Path,
+    target_path: &Path,
+) -> Result<PathBuf> {
+    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+    let parent = target_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("target has no parent: {}", target_path.display()))?;
+    let name = target_path
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("target has no file name: {}", target_path.display()))?
+        .to_string_lossy();
+
+    for _ in 0..100 {
+        let sequence = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let temp_path = parent.join(format!(
+            ".{name}.symlinkarr-{}-{sequence}.tmp",
+            std::process::id()
+        ));
+        match std::os::unix::fs::symlink(source_path, &temp_path) {
+            Ok(()) => return Ok(temp_path),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!("failed to create temp symlink {}", temp_path.display())
+                });
+            }
+        }
+    }
+
+    anyhow::bail!(
+        "failed to reserve a unique temp symlink beside {}",
+        target_path.display()
+    )
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn install_temp_symlink_atomically(temp_path: &Path, target_path: &Path) -> Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
+
+    fn renameat2(from: &Path, to: &Path, flags: libc::c_uint) -> io::Result<()> {
+        let from = CString::new(from.as_os_str().as_bytes())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains NUL"))?;
+        let to = CString::new(to.as_os_str().as_bytes())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains NUL"))?;
+        // SAFETY: both C strings are NUL-terminated and live for the duration
+        // of the syscall; AT_FDCWD makes both paths process-relative.
+        let result = unsafe {
+            libc::renameat2(
+                libc::AT_FDCWD,
+                from.as_ptr(),
+                libc::AT_FDCWD,
+                to.as_ptr(),
+                flags,
+            )
+        };
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+
+    match std::fs::symlink_metadata(target_path) {
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            renameat2(temp_path, target_path, libc::RENAME_NOREPLACE)
+                .with_context(|| format!("failed to install symlink {}", target_path.display()))
+        }
+        Err(err) => Err(err.into()),
+        Ok(metadata) if !metadata.file_type().is_symlink() => {
+            anyhow::bail!(
+                "Refusing to overwrite non-symlink target: {}",
+                target_path.display()
+            )
+        }
+        Ok(expected) => {
+            renameat2(temp_path, target_path, libc::RENAME_EXCHANGE)
+                .with_context(|| format!("failed to exchange symlink {}", target_path.display()))?;
+            let exchanged = std::fs::symlink_metadata(temp_path)?;
+            if exchanged.dev() != expected.dev() || exchanged.ino() != expected.ino() {
+                let rollback = renameat2(temp_path, target_path, libc::RENAME_EXCHANGE);
+                let _ = std::fs::remove_file(temp_path);
+                rollback.context("target changed concurrently and rollback failed")?;
+                anyhow::bail!(
+                    "Refusing concurrent symlink replacement at {}",
+                    target_path.display()
+                );
+            }
+            std::fs::remove_file(temp_path)?;
+            Ok(())
+        }
+    }
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+pub(crate) fn install_temp_symlink_atomically(temp_path: &Path, target_path: &Path) -> Result<()> {
+    if let Ok(metadata) = std::fs::symlink_metadata(target_path) {
+        if !metadata.file_type().is_symlink() {
+            anyhow::bail!(
+                "Refusing to overwrite non-symlink target: {}",
+                target_path.display()
+            );
+        }
+    }
+    std::fs::rename(temp_path, target_path)
+        .with_context(|| format!("failed to install symlink {}", target_path.display()))
+}
+
+#[cfg(unix)]
+pub(crate) fn replace_symlink_atomically(source_path: &Path, target_path: &Path) -> Result<()> {
+    let temp_path = create_unique_temp_symlink(source_path, target_path)?;
+    if let Err(err) = install_temp_symlink_atomically(&temp_path, target_path) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(err);
+    }
+    Ok(())
+}
 
 pub fn path_under_roots(path: &Path, roots: &[PathBuf]) -> bool {
     let normalized_path = normalize_prefix_check_path(path);
@@ -444,5 +567,29 @@ mod tests {
         assert!(!stdout_text_enabled());
         drop(outer);
         assert!(stdout_text_enabled());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn atomic_symlink_replace_preserves_unrelated_siblings_and_regular_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("first");
+        let second = dir.path().join("second");
+        let target = dir.path().join("Movie.mkv");
+        let sibling = target.with_extension("glt");
+        std::fs::write(&first, b"first").unwrap();
+        std::fs::write(&second, b"second").unwrap();
+        std::fs::write(&sibling, b"keep").unwrap();
+        std::os::unix::fs::symlink(&first, &target).unwrap();
+
+        replace_symlink_atomically(&second, &target).unwrap();
+
+        assert_eq!(std::fs::read_link(&target).unwrap(), second);
+        assert_eq!(std::fs::read(&sibling).unwrap(), b"keep");
+
+        let regular = dir.path().join("regular");
+        std::fs::write(&regular, b"do not overwrite").unwrap();
+        assert!(replace_symlink_atomically(&first, &regular).is_err());
+        assert_eq!(std::fs::read(&regular).unwrap(), b"do not overwrite");
     }
 }

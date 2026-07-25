@@ -15,9 +15,9 @@ use anime::{
     anime_pack_score, anime_quality_bonus, build_anime_request_context,
     has_conflicting_explicit_season, is_numbering_token, season_token_matches,
 };
-#[cfg(test)]
-use dmm::rank_dmm_movie_results;
 use dmm::{fetch_dmm_by_kind, search_dmm_candidates};
+#[cfg(test)]
+use dmm::{rank_dmm_anime_results, rank_dmm_movie_results};
 use queue::{load_persistent_queue, persist_terminal_outcome, submit_request};
 
 use crate::api::decypharr::{DecypharrClient, DecypharrTorrent};
@@ -59,7 +59,44 @@ pub enum RelinkCheck {
         season: u32,
         episode: u32,
     },
+    MediaSeason {
+        media_id: String,
+        season: u32,
+        episodes: Vec<u32>,
+    },
     SymlinkPath(PathBuf),
+}
+
+pub(crate) fn auto_acquire_request_key(check: &RelinkCheck) -> Result<String> {
+    Ok(match check {
+        RelinkCheck::MediaId(media_id) => format!("media:{}", media_id),
+        RelinkCheck::MediaEpisode {
+            media_id,
+            season,
+            episode,
+        } => format!("episode:{}:{}:{}", media_id, season, episode),
+        RelinkCheck::MediaSeason {
+            media_id,
+            season,
+            episodes,
+        } => {
+            let anchor = episodes.first().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Media-season relink check for {} season {} has no episodes",
+                    media_id,
+                    season
+                )
+            })?;
+            // Preserve the pre-rc7 anchor key so existing episode-based
+            // season-pack jobs are upgraded in place.
+            format!("episode:{}:{}:{}", media_id, season, anchor)
+        }
+        RelinkCheck::SymlinkPath(path) => format!(
+            "symlink:{}",
+            path.to_str()
+                .ok_or_else(|| anyhow::anyhow!("Path is not valid UTF-8: {:?}", path))?
+        ),
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -169,6 +206,7 @@ struct AnimeRequestContext {
     acceptable_episode_slots: Vec<(u32, u32)>,
     title_tokens: Vec<String>,
     upgrade: bool,
+    prefer_pack: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -186,6 +224,9 @@ enum CandidateLookup {
         candidates: Vec<DownloadCandidate>,
     },
     Pending(String),
+    Rejected {
+        queries: usize,
+    },
     Empty,
 }
 
@@ -633,10 +674,14 @@ async fn search_download_candidates(
     request: &AutoAcquireRequest,
     candidate_queries: &[String],
 ) -> Result<CandidateLookup> {
+    let mut rejected_queries = 0;
     if let Some(prowlarr) = prowlarr {
         for query in candidate_queries {
-            let hits = prowlarr.search_ranked(query, &request.categories).await?;
-            let hits = rank_candidate_hits(request, query, hits);
+            let raw_hits = prowlarr.search_ranked(query, &request.categories).await?;
+            let hits = rank_candidate_hits(request, query, raw_hits.clone());
+            if !raw_hits.is_empty() && hits.is_empty() {
+                rejected_queries += 1;
+            }
             let candidates = hits
                 .into_iter()
                 .filter_map(|hit| {
@@ -664,13 +709,23 @@ async fn search_download_candidates(
     }
 
     let Some(dmm) = dmm else {
+        if rejected_queries > 0 {
+            return Ok(CandidateLookup::Rejected {
+                queries: rejected_queries,
+            });
+        }
         if !cfg.has_dmm() {
             return Ok(CandidateLookup::Empty);
         }
         return Ok(CandidateLookup::Empty);
     };
 
-    search_dmm_candidates(cfg, dmm, dmm_session, request).await
+    match search_dmm_candidates(cfg, dmm, dmm_session, request).await? {
+        CandidateLookup::Empty if rejected_queries > 0 => Ok(CandidateLookup::Rejected {
+            queries: rejected_queries,
+        }),
+        lookup => Ok(lookup),
+    }
 }
 
 fn size_score(file_size: i64) -> i64 {
@@ -770,6 +825,31 @@ fn clean_request_label(label: &str) -> String {
             return cleaned;
         }
     }
+}
+
+fn request_prefers_season_pack(request: &AutoAcquireRequest) -> bool {
+    crate::utils::normalize(&request.label).contains("season pack")
+        || crate::utils::normalize(&request.query).contains("complete")
+}
+
+fn requested_year(request: &AutoAcquireRequest) -> Option<u32> {
+    let scanner = SourceScanner::new();
+    let cleaned_label = clean_request_label(&request.label);
+    for candidate in [request.query.as_str(), cleaned_label.as_str()] {
+        for (_, parsed) in scanner.parse_release_title_variants(candidate) {
+            if parsed.year.is_some() {
+                return parsed.year;
+            }
+        }
+    }
+    for hint in &request.query_hints {
+        for (_, parsed) in scanner.parse_release_title_variants(hint) {
+            if parsed.year.is_some() {
+                return parsed.year;
+            }
+        }
+    }
+    None
 }
 
 fn is_year_token(token: &str) -> bool {
@@ -967,7 +1047,7 @@ async fn run_relink_scans(
         }
     }
 
-    for filter in library_filters {
+    for filter in &library_filters {
         Box::pin(crate::commands::scan::run_scan_with_origin(
             cfg,
             db,
@@ -979,6 +1059,8 @@ async fn run_relink_scans(
         ))
         .await?;
     }
+
+    crate::commands::backfill::run_backfill_relink_for_filters(cfg, db, &library_filters).await?;
 
     Ok(())
 }
@@ -993,6 +1075,21 @@ async fn relink_satisfied(db: &Database, check: &RelinkCheck) -> Result<bool> {
         } => {
             db.has_active_link_for_episode(media_id, *season, *episode)
                 .await
+        }
+        RelinkCheck::MediaSeason {
+            media_id,
+            season,
+            episodes,
+        } => {
+            for episode in episodes {
+                if !db
+                    .has_active_link_for_episode(media_id, *season, *episode)
+                    .await?
+                {
+                    return Ok(false);
+                }
+            }
+            Ok(!episodes.is_empty())
         }
         RelinkCheck::SymlinkPath(path) => Ok(symlink_restored(path)),
     }
@@ -1236,6 +1333,46 @@ fn parse_media_episode_value(value: &str) -> Result<(String, u32, u32)> {
         anyhow::bail!("unexpected extra data in relink value '{}'", value);
     }
     Ok((media_id, season, episode))
+}
+
+fn parse_media_season_value(value: &str) -> Result<(String, u32, Vec<u32>)> {
+    let mut parts = value.split('|');
+    let media_id = parts
+        .next()
+        .filter(|part| !part.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("missing media id in relink value '{}'", value))?
+        .to_string();
+    let season = parts
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("missing season in relink value '{}'", value))?
+        .parse::<u32>()?;
+    let mut episodes = parts
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("missing episodes in relink value '{}'", value))?
+        .split(',')
+        .map(str::parse::<u32>)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    if parts.next().is_some() {
+        anyhow::bail!("unexpected extra data in relink value '{}'", value);
+    }
+    episodes.sort_unstable();
+    episodes.dedup();
+    if episodes.is_empty() {
+        anyhow::bail!("empty episode set in relink value '{}'", value);
+    }
+    Ok((media_id, season, episodes))
+}
+
+fn relink_season_episode(check: &RelinkCheck) -> Option<(u32, u32)> {
+    match check {
+        RelinkCheck::MediaEpisode {
+            season, episode, ..
+        } => Some((*season, *episode)),
+        RelinkCheck::MediaSeason {
+            season, episodes, ..
+        } => episodes.first().map(|episode| (*season, *episode)),
+        RelinkCheck::MediaId(_) | RelinkCheck::SymlinkPath(_) => None,
+    }
 }
 
 mod anime;

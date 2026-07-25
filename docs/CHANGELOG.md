@@ -2,9 +2,40 @@
 
 ## Release Target
 
-- package version for this push: `1.1.0-rc.4`
-- posture: `v1.1 release candidate with live scheduler automation, faster status/dashboard navigation, provider import, multi-version links, deferred media-server refresh, and updated web controls`
+- package version for this push: `1.1.0-rc.7`
+- posture: `v1.1 release candidate with Arr backfill, fail-closed acquisition ranking, current dependencies, synchronized Docker release channels, and updated operator documentation`
 - intended use: local-first host or Docker installs, with Windows 11 users running through WSL2 or a Linux container
+
+## 2026-07-26 - v1.1.0-rc.7 Backfill, Acquisition Safety, and Release Sync
+
+### Code Changes
+
+- added the `backfill` CLI flow for monitored empty Radarr/Sonarr folders, including dry-run preview, existing-source relinking, bounded missing acquisition, media-server refresh, indexed link-state snapshots, and operator summaries.
+- made Prowlarr movie, TV, and anime acquisition ranking fail closed when title, year, season, episode, or pack identity is not strong enough; DMM remains the safe fallback.
+- made season-pack relink completion verify every requested episode while preserving request-key compatibility with earlier release candidates.
+- hardened Arr library-path containment by normalizing parent-directory components before accepting a target path.
+- hardened scheduler execution with schema v20 atomic run claims, O(1) interval advancement, cursor-correct cron/RRule behavior, bounded trigger validation, fail-closed safety backups, live daemon heartbeats, and per-rule failure isolation.
+- made scheduler snapshot import versioned, atomic, replacement-based, and idempotent; manual runs now return `202 Accepted` from a bounded background executor.
+- replaced deterministic symlink temp siblings with collision-free atomic Linux exchanges that refuse regular-file overwrites and concurrent target changes.
+- switched multi-version target identity to stable 64-bit SHA-256 path labels and fixed long-name and exact-episode edge cases.
+- removed import/backfill N+1 query paths, added bounded Sonarr fetch concurrency, batched import DB writes, and moved blocking import walks/probes/writes off Tokio workers.
+- enforced loopback Host validation, same-origin browser mutation sessions, form CSRF tokens, and IPv4/IPv6 loopback handling.
+- cached Tautulli playback status across dashboard fragments, restored keyboard focus visibility, readable body text, mobile touch targets, and a working mobile mockup navigation drawer.
+- updated direct and transitive Rust dependencies, including SQLx 0.9, Askama 0.16, quick-xml 0.41, sha2 0.11, tower-http 0.7, reqwest 0.13.4, Tokio 1.53, and Rayon 1.12.
+- adapted dynamic SQLite maintenance statements to SQLx 0.9's explicit SQL-safety boundary and preserved SHA-256 manifest compatibility under sha2 0.11.
+- aligned CI with current GitHub Actions, moved source Docker builds to the floating stable `rust:bookworm` builder, and refreshed the release runtime to Ubuntu 26.04.
+- separated Docker release channels: stable releases update `latest`, while prereleases update `rc`; synchronized the checked-in Compose example and deployment guidance with that policy.
+
+### Validation
+
+- `cargo test --all-targets --locked`
+  - result: `854 passed; 0 failed; 1 ignored`
+- `cargo clippy --all-targets --all-features --locked -- -D warnings`
+  - result: passed locally
+- `cargo audit`
+  - result: passed with no vulnerabilities
+- `npm audit`
+  - result: passed with no vulnerabilities
 
 ## 2026-05-04 - v1.1.0-rc.4 Status/Dashboard Latency Fix
 

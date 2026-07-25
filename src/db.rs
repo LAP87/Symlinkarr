@@ -39,7 +39,7 @@ pub struct Database {
     db_path: PathBuf,
 }
 
-const LATEST_SCHEMA_VERSION: i64 = 18;
+const LATEST_SCHEMA_VERSION: i64 = 20;
 
 // SqlitePool is Clone (wraps Arc), so Database can safely be Clone
 impl Clone for Database {
@@ -111,8 +111,8 @@ impl Database {
             std::fs::remove_file(snapshot_path)?;
         }
 
-        let escaped = snapshot_path.to_string_lossy().replace('\'', "''");
-        sqlx::query(&format!("VACUUM INTO '{escaped}'"))
+        sqlx::query("VACUUM INTO ?")
+            .bind(snapshot_path.to_string_lossy().to_string())
             .execute(&self.pool)
             .await?;
 

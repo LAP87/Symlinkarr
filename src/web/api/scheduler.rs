@@ -35,6 +35,8 @@ pub struct SchedulerExportSnapshot {
     pub rules: Vec<ScheduleRule>,
 }
 
+const SCHEDULER_SNAPSHOT_VERSION: u32 = 1;
+
 pub async fn api_get_scheduler_rules(State(state): State<WebState>) -> impl IntoResponse {
     match state.database.list_scheduler_rules().await {
         Ok(rules) => {
@@ -70,7 +72,8 @@ pub async fn api_put_scheduler_rule(
     Json(rule): Json<ScheduleRule>,
 ) -> impl IntoResponse {
     match state.database.update_scheduler_rule(id, &rule).await {
-        Ok(()) => Json(serde_json::json!({ "id": id, "updated": true })).into_response(),
+        Ok(true) => Json(serde_json::json!({ "id": id, "updated": true })).into_response(),
+        Ok(false) => api_error(StatusCode::NOT_FOUND, "Scheduler rule not found"),
         Err(err) => api_error(StatusCode::BAD_REQUEST, err.to_string()),
     }
 }
@@ -85,7 +88,10 @@ pub async fn api_post_scheduler_rule_enable(
         .set_scheduler_rule_enabled(id, request.enabled)
         .await
     {
-        Ok(()) => Json(serde_json::json!({ "id": id, "enabled": request.enabled })).into_response(),
+        Ok(true) => {
+            Json(serde_json::json!({ "id": id, "enabled": request.enabled })).into_response()
+        }
+        Ok(false) => api_error(StatusCode::NOT_FOUND, "Scheduler rule not found"),
         Err(err) => api_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
     }
 }
@@ -99,8 +105,33 @@ pub async fn api_post_scheduler_rule_run_now(
         Ok(None) => return api_error(StatusCode::NOT_FOUND, "Scheduler rule not found"),
         Err(err) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
     };
-    match crate::scheduler::run_rule_now(&state.config, &state.database, &rule).await {
-        Ok(run_id) => Json(serde_json::json!({ "run_id": run_id })).into_response(),
+    let permit = match state.scheduler_jobs().try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => {
+            return api_error(
+                StatusCode::CONFLICT,
+                "Another scheduler job is already running",
+            )
+        }
+    };
+    match crate::scheduler::claim_rule_now(&state.database, &rule).await {
+        Ok(run_id) => {
+            let config = state.config.clone();
+            let database = state.database.clone();
+            tokio::spawn(async move {
+                let _permit = permit;
+                if let Err(err) =
+                    crate::scheduler::execute_claimed_rule(&config, &database, &rule, run_id).await
+                {
+                    tracing::error!(run_id, "Background scheduler run failed: {}", err);
+                }
+            });
+            (
+                StatusCode::ACCEPTED,
+                Json(serde_json::json!({ "run_id": run_id })),
+            )
+                .into_response()
+        }
         Err(err) => api_error(StatusCode::BAD_REQUEST, err.to_string()),
     }
 }
@@ -147,7 +178,10 @@ pub async fn api_get_scheduler_preview(
 pub async fn api_get_scheduler_export(State(state): State<WebState>) -> impl IntoResponse {
     match state.database.list_scheduler_rules().await {
         Ok(rules) => {
-            let snapshot = SchedulerExportSnapshot { version: 1, rules };
+            let snapshot = SchedulerExportSnapshot {
+                version: SCHEDULER_SNAPSHOT_VERSION,
+                rules,
+            };
             match serde_yml::to_string(&snapshot) {
                 Ok(body) => ([(CONTENT_TYPE, "application/yaml")], body).into_response(),
                 Err(err) => api_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
@@ -165,15 +199,33 @@ pub async fn api_post_scheduler_import(
         Ok(snapshot) => snapshot,
         Err(err) => return api_error(StatusCode::BAD_REQUEST, err.to_string()),
     };
-    let mut ids = Vec::new();
-    for mut rule in snapshot.rules {
-        rule.id = None;
-        match state.database.create_scheduler_rule(&rule).await {
-            Ok(id) => ids.push(id),
-            Err(err) => return api_error(StatusCode::BAD_REQUEST, err.to_string()),
-        }
+    if snapshot.version != SCHEDULER_SNAPSHOT_VERSION {
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "Unsupported scheduler snapshot version {}; expected {}",
+                snapshot.version, SCHEDULER_SNAPSHOT_VERSION
+            ),
+        );
     }
-    Json(serde_json::json!({ "created": ids.len(), "ids": ids })).into_response()
+    let rules: Vec<_> = snapshot
+        .rules
+        .into_iter()
+        .map(|mut rule| {
+            rule.id = None;
+            rule
+        })
+        .collect();
+    if rules.is_empty() {
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "Scheduler snapshot must contain at least one rule",
+        );
+    }
+    match state.database.replace_scheduler_rules(&rules).await {
+        Ok(ids) => Json(serde_json::json!({ "created": ids.len(), "ids": ids })).into_response(),
+        Err(err) => api_error(StatusCode::BAD_REQUEST, err.to_string()),
+    }
 }
 
 fn api_error(status: StatusCode, error: impl Into<String>) -> axum::response::Response {

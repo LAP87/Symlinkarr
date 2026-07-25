@@ -607,8 +607,15 @@ async fn streaming_guard_view(state: &WebState) -> Option<StreamingGuardView> {
         return None;
     }
 
+    let mut cache = state.streaming_guard_cache.lock().await;
+    if let Some((cached_at, view)) = cache.as_ref() {
+        if cached_at.elapsed() < std::time::Duration::from_secs(8) {
+            return view.clone();
+        }
+    }
+
     let tautulli = TautulliClient::new(&state.config.tautulli);
-    match tokio::time::timeout(
+    let view = match tokio::time::timeout(
         STATUS_STREAMING_GUARD_TIMEOUT,
         tautulli.get_active_file_paths(),
     )
@@ -646,7 +653,9 @@ async fn streaming_guard_view(state: &WebState) -> Option<StreamingGuardView> {
             protected_paths: Vec::new(),
             error_message: Some(err.to_string()),
         }),
-    }
+    };
+    *cache = Some((std::time::Instant::now(), view.clone()));
+    view
 }
 
 async fn acquisition_feed_items(
@@ -1237,10 +1246,6 @@ fn require_browser_csrf_token(
     submitted_token: &str,
     path: &str,
 ) -> Option<Response> {
-    if !state.browser_mutation_guard_enabled() {
-        return None;
-    }
-
     (!super::has_valid_browser_csrf_token(submitted_token, state))
         .then(|| super::invalid_browser_csrf_response(path))
 }

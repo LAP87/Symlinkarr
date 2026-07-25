@@ -420,6 +420,17 @@ pub struct DecypharrConfig {
     pub arr_name_anime: String,
 }
 
+impl DecypharrConfig {
+    /// Effective per-run acquisition cap. A configured value of 0 means unlimited.
+    pub fn effective_max_requests_per_run(&self) -> usize {
+        if self.max_requests_per_run == 0 {
+            usize::MAX
+        } else {
+            self.max_requests_per_run
+        }
+    }
+}
+
 /// Debrid Media Manager integration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DmmConfig {
@@ -843,11 +854,6 @@ impl Config {
                 report
                     .errors
                     .push("decypharr.max_in_flight must be greater than 0".to_string());
-            }
-            if self.decypharr.max_requests_per_run == 0 {
-                report
-                    .errors
-                    .push("decypharr.max_requests_per_run must be greater than 0".to_string());
             }
             if self.decypharr.queue_page_size == 0 {
                 report

@@ -240,6 +240,33 @@ impl Database {
             .await
     }
 
+    pub async fn get_active_links_for_media_ids(
+        &self,
+        media_ids: &[String],
+    ) -> Result<Vec<LinkRecord>> {
+        let mut records = Vec::new();
+        for chunk in media_ids.chunks(500) {
+            if chunk.is_empty() {
+                continue;
+            }
+            let mut query: QueryBuilder<Sqlite> = QueryBuilder::new(
+                "SELECT id, source_path, target_path, media_id, media_type, status,
+                        created_at, updated_at
+                 FROM links
+                 WHERE status = 'active' AND media_id IN (",
+            );
+            let mut separated = query.separated(", ");
+            for media_id in chunk {
+                separated.push_bind(media_id);
+            }
+            separated.push_unseparated(")");
+            for row in query.build().fetch_all(&self.pool).await? {
+                records.push(self.row_to_link_record(&row)?);
+            }
+        }
+        Ok(records)
+    }
+
     /// Check whether any active link exists for a media ID.
     pub async fn has_active_link_for_media(&self, media_id: &str) -> Result<bool> {
         let row = sqlx::query(
@@ -539,12 +566,12 @@ fn normalize_scoped_root_texts(
     Ok((!normalized.is_empty()).then_some(normalized))
 }
 
-fn push_target_root_like_clause(qb: &mut QueryBuilder<'_, Sqlite>, roots: &[String]) {
+fn push_target_root_like_clause(qb: &mut QueryBuilder<Sqlite>, roots: &[String]) {
     if roots.is_empty() {
         return;
     }
 
-    let has_where = qb.sql().contains(" WHERE ");
+    let has_where = qb.sql().as_str().contains(" WHERE ");
     if has_where {
         qb.push(" AND (");
     } else {

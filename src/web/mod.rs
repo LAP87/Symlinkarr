@@ -17,7 +17,7 @@ use axum::{
 use chrono::{DateTime, NaiveDateTime, Utc};
 use futures_util::FutureExt;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
 use tower_http::{services::ServeDir, trace::TraceLayer};
 use tracing::{error, info};
 
@@ -41,7 +41,7 @@ use crate::cleanup_audit::{CleanupAuditor, CleanupScope};
 use crate::config::Config;
 use crate::db::Database;
 
-const CONTENT_SECURITY_POLICY_VALUE: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'";
+const CONTENT_SECURITY_POLICY_VALUE: &str = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'";
 
 #[derive(Clone, Debug)]
 pub(crate) struct ActiveScanJob {
@@ -106,6 +106,9 @@ struct BackgroundJobState {
     last_repair_outcome: Option<LastRepairOutcome>,
 }
 
+type StreamingGuardCache =
+    Arc<Mutex<Option<(std::time::Instant, Option<templates::StreamingGuardView>)>>>;
+
 /// Shared application state passed to handlers
 #[derive(Clone)]
 pub struct WebState {
@@ -113,6 +116,8 @@ pub struct WebState {
     pub database: Arc<Database>,
     browser_session_token: Arc<String>,
     background_jobs: Arc<Mutex<BackgroundJobState>>,
+    scheduler_jobs: Arc<Semaphore>,
+    streaming_guard_cache: StreamingGuardCache,
 }
 
 impl WebState {
@@ -127,6 +132,8 @@ impl WebState {
             database: Arc::new(database),
             browser_session_token: Arc::new(generate_browser_session_token()?),
             background_jobs: Arc::new(Mutex::new(BackgroundJobState::default())),
+            scheduler_jobs: Arc::new(Semaphore::new(1)),
+            streaming_guard_cache: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -134,8 +141,8 @@ impl WebState {
         self.browser_session_token.as_str()
     }
 
-    fn browser_mutation_guard_enabled(&self) -> bool {
-        self.config.web.requires_remote_ack()
+    pub(crate) fn scheduler_jobs(&self) -> Arc<Semaphore> {
+        self.scheduler_jobs.clone()
     }
 
     pub(crate) async fn active_scan(&self) -> Option<ActiveScanJob> {

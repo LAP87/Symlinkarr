@@ -530,8 +530,38 @@ pub(crate) async fn post_import_apply(
             )
             .await
             {
-                Ok(mut report) => {
-                    let write_result = apply_import_plan(&mut report, &options);
+                Ok(report) => {
+                    let apply_options = options.clone();
+                    let (mut report, write_result) = match tokio::task::spawn_blocking(move || {
+                        let mut report = report;
+                        let result = apply_import_plan(&mut report, &apply_options);
+                        (report, result)
+                    })
+                    .await
+                    {
+                        Ok(result) => result,
+                        Err(err) => {
+                            feedback = Some(FormFeedbackView {
+                                success: false,
+                                message: format!(
+                                    "Import apply worker failed before completion: {}",
+                                    err
+                                ),
+                            });
+                            let template = ImportTemplate {
+                                libraries: state.config.libraries.clone(),
+                                draft,
+                                feedback,
+                                result,
+                                csrf_token: browser_csrf_token(&state),
+                            };
+                            return (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                Html(template.render().unwrap_or_else(|e| e.to_string())),
+                            )
+                                .into_response();
+                        }
+                    };
                     if write_result.is_ok() && !options.folders_only {
                         backfill_import_links(
                             &mut report,
@@ -540,7 +570,19 @@ pub(crate) async fn post_import_apply(
                         )
                         .await;
                     }
-                    let report_path = write_import_report(&report, options.report_path.as_deref());
+                    let report_for_write = report.clone();
+                    let report_path = options.report_path.clone();
+                    let report_path = match tokio::task::spawn_blocking(move || {
+                        write_import_report(&report_for_write, report_path.as_deref())
+                    })
+                    .await
+                    {
+                        Ok(result) => result,
+                        Err(err) => Err(anyhow::anyhow!(
+                            "import report writer worker failed: {}",
+                            err
+                        )),
+                    };
                     match (write_result, report_path) {
                         (Ok(()), Ok(path)) => {
                             feedback = Some(FormFeedbackView {

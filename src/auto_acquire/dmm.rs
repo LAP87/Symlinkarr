@@ -1,9 +1,8 @@
 use super::*;
 
 use super::anime::{
-    anime_pack_score, anime_parsed_variant_score, build_anime_request_context,
-    contains_complete_marker, episode_ranges, is_numbering_token, query_has_specific_numbering,
-    season_token_matches,
+    anime_pack_score, anime_parsed_variant_score, build_anime_request_context, is_numbering_token,
+    query_has_specific_numbering, tv_release_score,
 };
 
 pub(super) async fn search_dmm_candidates(
@@ -122,7 +121,7 @@ async fn fetch_dmm_candidates_for_imdb(
             let synthetic_title_hit = DmmTitleCandidate {
                 title: request.label.clone(),
                 imdb_id: imdb_id.to_string(),
-                year: dmm_requested_year(request),
+                year: requested_year(request),
             };
             let candidates = rank_dmm_candidates(
                 request,
@@ -146,21 +145,16 @@ async fn fetch_dmm_candidates_for_imdb(
 }
 
 fn build_dmm_lookup_plan(request: &AutoAcquireRequest) -> Option<DmmLookupPlan> {
+    let slot = request_season_episode(request);
     let kind = if normalize_arr_name(&request.arr) == "radarr" {
         DmmMediaKind::Movie
-    } else if matches!(
-        request.relink_check,
-        RelinkCheck::MediaEpisode { .. } | RelinkCheck::MediaId(_)
-    ) {
+    } else if slot.is_some() || matches!(request.relink_check, RelinkCheck::MediaId(_)) {
         DmmMediaKind::Show
     } else {
         return None;
     };
 
-    let season = match &request.relink_check {
-        RelinkCheck::MediaEpisode { season, .. } => Some(*season),
-        _ => None,
-    };
+    let season = slot.map(|(season, _)| season);
 
     let search_queries = build_dmm_search_queries(request, kind);
     (!search_queries.is_empty()).then_some(DmmLookupPlan {
@@ -227,19 +221,31 @@ fn strip_numbering_tokens(query: &str) -> String {
         .join(" ")
 }
 
-fn rank_dmm_candidates(
+pub(super) fn rank_dmm_candidates(
     request: &AutoAcquireRequest,
     search_query: &str,
     title_hit: &DmmTitleCandidate,
     results: Vec<DmmTorrentResult>,
     max_results: usize,
 ) -> Vec<DownloadCandidate> {
-    let ranked = if normalize_arr_name(&request.arr) == "sonarranime" {
-        rank_dmm_anime_results(request, search_query, results)
-    } else if matches!(request.relink_check, RelinkCheck::MediaEpisode { .. }) {
-        rank_dmm_tv_results(request, results)
+    let inferred_request = request_season_episode(request).and_then(|(season, episode)| {
+        matches!(request.relink_check, RelinkCheck::SymlinkPath(_)).then(|| {
+            let mut inferred = request.clone();
+            inferred.relink_check = RelinkCheck::MediaEpisode {
+                media_id: "self-heal".to_string(),
+                season,
+                episode,
+            };
+            inferred
+        })
+    });
+    let ranking_request = inferred_request.as_ref().unwrap_or(request);
+    let ranked = if normalize_arr_name(&ranking_request.arr) == "sonarranime" {
+        rank_dmm_anime_results(ranking_request, search_query, results)
+    } else if relink_season_episode(&ranking_request.relink_check).is_some() {
+        rank_dmm_tv_results(ranking_request, results)
     } else {
-        rank_dmm_movie_results(request, title_hit, results)
+        rank_dmm_movie_results(ranking_request, title_hit, results)
     };
 
     let mut deduped = Vec::new();
@@ -260,6 +266,16 @@ fn rank_dmm_candidates(
     }
 
     deduped
+}
+
+fn request_season_episode(request: &AutoAcquireRequest) -> Option<(u32, u32)> {
+    relink_season_episode(&request.relink_check).or_else(|| {
+        let scanner = SourceScanner::new();
+        std::iter::once(request.query.as_str())
+            .chain(request.query_hints.iter().map(String::as_str))
+            .flat_map(|value| scanner.parse_release_title_variants(value))
+            .find_map(|(_, parsed)| Some((parsed.season?, parsed.episode?)))
+    })
 }
 
 fn magnet_uri_from_hash(hash: &str) -> String {
@@ -302,7 +318,7 @@ pub(super) fn rank_dmm_movie_results(
     results: Vec<DmmTorrentResult>,
 ) -> Vec<DmmTorrentResult> {
     let query_tokens = dmm_query_title_tokens(request);
-    let requested_year = dmm_requested_year(request).or(title_hit.year);
+    let requested_year = requested_year(request).or(title_hit.year);
     let exact_imdb_hit = request.imdb_id.as_deref() == Some(title_hit.imdb_id.as_str());
     rank_by_score(
         results,
@@ -340,24 +356,31 @@ fn rank_dmm_tv_results(
     request: &AutoAcquireRequest,
     results: Vec<DmmTorrentResult>,
 ) -> Vec<DmmTorrentResult> {
-    let RelinkCheck::MediaEpisode {
-        season, episode, ..
-    } = &request.relink_check
-    else {
+    let Some((season, episode)) = relink_season_episode(&request.relink_check) else {
         return Vec::new();
     };
 
     let scanner = SourceScanner::new();
     let upgrade = request.label.contains("upgrade");
+    let prefer_pack = request_prefers_season_pack(request);
     rank_by_score(
         results,
-        |result| tv_result_score(&scanner, &result.title, *season, *episode, upgrade),
+        |result| {
+            tv_release_score(
+                &scanner,
+                &result.title,
+                season,
+                episode,
+                upgrade,
+                prefer_pack,
+            )
+        },
         |r| r.file_size,
         None,
     )
 }
 
-fn rank_dmm_anime_results(
+pub(super) fn rank_dmm_anime_results(
     request: &AutoAcquireRequest,
     search_query: &str,
     results: Vec<DmmTorrentResult>,
@@ -386,7 +409,10 @@ fn rank_dmm_anime_results(
                 }
             }
 
-            if let Some(score) = anime_pack_score(&context, &result.title, title_matches) {
+            if let Some(mut score) = anime_pack_score(&context, &result.title, title_matches) {
+                if context.prefer_pack {
+                    score += 1_500;
+                }
                 best_score = Some(best_score.map_or(score, |best| best.max(score)));
             }
 
@@ -401,61 +427,7 @@ fn rank_dmm_anime_results(
     )
 }
 
-fn tv_result_score(
-    scanner: &SourceScanner,
-    title: &str,
-    desired_season: u32,
-    desired_episode: u32,
-    upgrade: bool,
-) -> Option<i64> {
-    let quality_bonus = if upgrade { 60 } else { 30 };
-    let mut best_score = None::<i64>;
-    for (_, parsed) in scanner.parse_release_title_variants(title) {
-        if let (Some(season), Some(episode)) = (parsed.season, parsed.episode) {
-            if season == desired_season && episode == desired_episode {
-                best_score = Some(best_score.map_or(2_400 + quality_bonus, |best| {
-                    best.max(2_400 + quality_bonus)
-                }));
-            }
-        }
-    }
-
-    let normalized = crate::utils::normalize(title);
-    let token_vec = normalized_tokens(title);
-    let token_set = token_vec.iter().map(String::as_str).collect::<HashSet<_>>();
-    if season_token_matches(&token_set, &normalized, desired_season)
-        && (episode_ranges(title)
-            .into_iter()
-            .any(|(start, end)| (start..=end).contains(&desired_episode))
-            || contains_complete_marker(&token_set))
-    {
-        best_score = Some(best_score.map_or(1_450, |best| best.max(1_450)));
-    }
-
-    best_score
-}
-
 fn dmm_query_title_tokens(request: &AutoAcquireRequest) -> Vec<String> {
     let title = strip_numbering_tokens(&strip_year_tokens(&clean_request_label(&request.label)));
     normalized_tokens(&title)
-}
-
-fn dmm_requested_year(request: &AutoAcquireRequest) -> Option<u32> {
-    let scanner = SourceScanner::new();
-    let cleaned_label = clean_request_label(&request.label);
-    for candidate in [request.query.as_str(), cleaned_label.as_str()] {
-        for (_, parsed) in scanner.parse_release_title_variants(candidate) {
-            if parsed.year.is_some() {
-                return parsed.year;
-            }
-        }
-    }
-    for hint in &request.query_hints {
-        for (_, parsed) in scanner.parse_release_title_variants(hint) {
-            if parsed.year.is_some() {
-                return parsed.year;
-            }
-        }
-    }
-    None
 }

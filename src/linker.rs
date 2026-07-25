@@ -1,9 +1,9 @@
-use std::collections::{hash_map::DefaultHasher, BTreeMap, HashMap};
-use std::hash::{Hash, Hasher};
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use sha2::{Digest, Sha256};
 use tracing::{debug, info, warn};
 
 use self::naming::{sanitize_filename, truncate_filename_to_limit, truncate_str_bytes};
@@ -11,9 +11,10 @@ use crate::api::decypharr::{DecypharrClient, WebDavProbeError};
 use crate::config::Config;
 use crate::db::Database;
 use crate::models::{LinkRecord, LinkStatus, MatchResult, MediaType};
+use crate::source_scanner::SourceScanner;
 use crate::utils::{
-    cached_source_exists, cached_source_health, path_under_roots, user_println, PathHealth,
-    ProgressLine,
+    cached_source_exists, cached_source_health, path_under_roots, replace_symlink_atomically,
+    user_println, PathHealth, ProgressLine,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -642,12 +643,7 @@ impl Linker {
             // rename() over the target so readers never see a missing file.
             #[cfg(unix)]
             {
-                // Use short extension to stay under NAME_MAX (255) after truncation caps at 250.
-                let temp_path = target_path.with_extension("glt");
-                // Clean up any stale temp from a previous crash
-                let _ = std::fs::remove_file(&temp_path);
-                std::os::unix::fs::symlink(&m.source_item.path, &temp_path)?;
-                std::fs::rename(&temp_path, target_path)?;
+                replace_symlink_atomically(&m.source_item.path, target_path)?;
                 verify_link_target(target_path, &m.source_item.path)?;
             }
 
@@ -731,9 +727,8 @@ impl Linker {
             return Ok(None);
         }
 
-        let expected_token = format!("s{:02}e{:02}", season, episode);
-        let fallback_token = format!("s{}e{}", season, episode);
         let expected_source = &m.source_item.path;
+        let scanner = SourceScanner::new();
 
         for entry in std::fs::read_dir(season_dir)? {
             let entry = entry?;
@@ -745,8 +740,13 @@ impl Linker {
             let Some(file_name) = candidate.file_name().and_then(|value| value.to_str()) else {
                 continue;
             };
-            let lower_name = file_name.to_ascii_lowercase();
-            if !lower_name.contains(&expected_token) && !lower_name.contains(&fallback_token) {
+            let has_exact_slot = scanner
+                .parse_release_title_variants(file_name)
+                .into_iter()
+                .any(|(_, parsed)| {
+                    parsed.season == Some(season) && parsed.episode == Some(episode)
+                });
+            if !has_exact_slot {
                 continue;
             }
 
@@ -820,8 +820,7 @@ impl Linker {
                         &m.source_item.extension,
                         &version_label(&m.source_item),
                     );
-                }
-                if filename.len() > 250 {
+                } else if filename.len() > 250 {
                     let excess = filename.len() - 250;
                     let truncated_title =
                         truncate_str_bytes(&san_title, san_title.len().saturating_sub(excess));
@@ -1055,9 +1054,21 @@ impl Linker {
 }
 
 fn version_label(source: &crate::models::SourceItem) -> String {
-    let mut hasher = DefaultHasher::new();
-    source.path.hash(&mut hasher);
-    let path_hash = format!("{:08x}", hasher.finish() as u32);
+    #[cfg(unix)]
+    let path_bytes = {
+        use std::os::unix::ffi::OsStrExt;
+        source.path.as_os_str().as_bytes()
+    };
+    #[cfg(not(unix))]
+    let path_text = source.path.to_string_lossy();
+    #[cfg(not(unix))]
+    let path_bytes = path_text.as_bytes();
+
+    let digest = Sha256::digest(path_bytes);
+    let path_hash = digest[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     let mut parts = Vec::new();
     if let Some(quality) = source.quality.as_deref().map(sanitize_filename) {
         if !quality.is_empty() {

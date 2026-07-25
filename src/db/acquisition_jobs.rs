@@ -232,6 +232,7 @@ impl Database {
         let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(
             "UPDATE acquisition_jobs
              SET status = 'queued',
+                 attempts = 0,
                  error = NULL,
                  next_retry_at = NULL,
                  release_title = NULL,

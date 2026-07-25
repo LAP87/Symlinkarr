@@ -36,6 +36,7 @@ use crate::db::AcquisitionJobStatus;
 const ROOT_AFTER_HELP: &str = r#"Feature guide:
   scan      = look at your library and source mount, then create/update symlinks
   repair    = find dead symlinks and relink them to the best replacement
+  backfill  = fill empty Sonarr/Radarr folders from existing RD/DMM matches
   cleanup   = inspect dead/legacy links first, then prune only when confirmed
   import    = bootstrap ID-tagged library folders from a provider/source mount
   refresh   = drain deferred media-server refresh work
@@ -171,6 +172,14 @@ pub(crate) enum ImportLookupMode {
     Remote,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum BackfillArr {
+    All,
+    Radarr,
+    Sonarr,
+    SonarrAnime,
+}
+
 #[derive(Subcommand)]
 enum Commands {
     /// Run a full scan → match → link cycle
@@ -234,6 +243,26 @@ enum Commands {
         action: RepairAction,
         #[arg(long)]
         library: Option<String>,
+    },
+    /// Fill empty Sonarr/Radarr folders from existing RD/DMM matches
+    Backfill {
+        /// Which Arr instance to inspect
+        #[arg(long, value_enum, default_value_t = BackfillArr::All)]
+        arr: BackfillArr,
+        /// Show what would change without touching symlinks or the DB
+        #[arg(long)]
+        dry_run: bool,
+        /// Submit unmatched empty items through the configured Prowlarr/DMM + Decypharr flow
+        #[arg(long)]
+        search_missing: bool,
+        /// Restrict the run to one configured library name
+        #[arg(long)]
+        library: Option<String>,
+        /// Restrict the run to Arr items whose title, path, or media id contains this text
+        #[arg(long)]
+        item: Option<String>,
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        output: OutputFormat,
     },
     /// Discover RD cache content not in your library
     Discover {
@@ -951,6 +980,28 @@ async fn main() -> Result<()> {
         Commands::Repair { action, library } => {
             commands::repair::run_repair(&cfg, &db, action, library.as_deref()).await?
         }
+        Commands::Backfill {
+            arr,
+            dry_run,
+            search_missing,
+            library,
+            item,
+            output,
+        } => {
+            commands::backfill::run_backfill(
+                &cfg,
+                &db,
+                commands::backfill::BackfillOptions {
+                    scope: arr,
+                    dry_run,
+                    search_missing,
+                    library_filter: library,
+                    item_filter: item,
+                    output,
+                },
+            )
+            .await?;
+        }
         Commands::Discover {
             action,
             library,
@@ -1057,6 +1108,42 @@ mod tests {
                 RefreshAction::Drain { output } => assert_eq!(output, OutputFormat::Json),
             },
             _ => panic!("expected refresh command"),
+        }
+    }
+
+    #[test]
+    fn cli_accepts_backfill_subcommand() {
+        let cli = Cli::try_parse_from([
+            "symlinkarr",
+            "backfill",
+            "--arr",
+            "sonarr-anime",
+            "--dry-run",
+            "--search-missing",
+            "--library",
+            "Anime",
+            "--output",
+            "json",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Backfill {
+                arr,
+                dry_run,
+                search_missing,
+                library,
+                item,
+                output,
+            } => {
+                assert_eq!(arr, BackfillArr::SonarrAnime);
+                assert!(dry_run);
+                assert!(search_missing);
+                assert_eq!(library.as_deref(), Some("Anime"));
+                assert!(item.is_none());
+                assert_eq!(output, OutputFormat::Json);
+            }
+            _ => panic!("expected backfill command"),
         }
     }
 

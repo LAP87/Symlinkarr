@@ -622,13 +622,53 @@ async fn api_allows_same_origin_mutations() {
 }
 
 #[tokio::test]
-async fn local_only_ui_mutations_are_open_without_session_or_csrf() {
+async fn local_only_ui_mutations_require_browser_session() {
     let router = test_router().await;
     let (status, body) = post_form_with_headers(&router, "/config/validate", "", &[]).await;
 
+    assert_eq!(status, 403);
+    assert!(body.contains("Browser mutation blocked"));
+}
+
+#[tokio::test]
+async fn local_only_api_blocks_cross_origin_mutation() {
+    let router = test_router().await;
+    let (status, body) = post_json_with_headers(
+        &router,
+        "/api/v1/cleanup/audit",
+        serde_json::json!({ "scope": "anime" }),
+        &[
+            (header::HOST.as_str(), "127.0.0.1:8726"),
+            (header::ORIGIN.as_str(), "https://evil.example"),
+        ],
+    )
+    .await;
+
+    assert_eq!(status, 403);
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        json["error"],
+        "cross-origin mutation blocked; use the same origin as the web UI or a non-browser client without Origin/Referer headers"
+    );
+}
+
+#[tokio::test]
+async fn loopback_bind_rejects_dns_rebinding_host() {
+    let router = test_router().await;
+    let (status, _, body) =
+        get_html_with_headers(&router, "/", &[(header::HOST.as_str(), "attacker.example")]).await;
+
+    assert_eq!(status, 421);
+    assert!(body.contains("Request Host is not allowed"));
+}
+
+#[tokio::test]
+async fn loopback_bind_accepts_ipv6_loopback_host() {
+    let router = test_router().await;
+    let (status, _, _) =
+        get_html_with_headers(&router, "/", &[(header::HOST.as_str(), "[::1]:8726")]).await;
+
     assert_eq!(status, 200);
-    assert!(body.contains("action=\"/config/validate\""));
-    assert!(body.contains("Validate Config"));
 }
 
 #[tokio::test]
