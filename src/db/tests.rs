@@ -2106,6 +2106,66 @@ async fn scheduler_run_claim_is_atomic_for_rule_and_planned_time() {
 }
 
 #[tokio::test]
+async fn stale_scheduler_runs_are_failed_without_touching_fresh_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+        .await
+        .unwrap();
+    let rule_id = db
+        .create_scheduler_rule(&test_scheduler_rule("stale recovery"))
+        .await
+        .unwrap();
+    let stale_id = db
+        .try_create_scheduler_run(
+            Some(rule_id),
+            ScheduledEvent::Scan,
+            Local::now() - chrono::Duration::days(2),
+            JobRunStatus::Running,
+            Some("Started"),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let fresh_id = db
+        .try_create_scheduler_run(
+            Some(rule_id),
+            ScheduledEvent::Scan,
+            Local::now(),
+            JobRunStatus::Running,
+            Some("Started"),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    sqlx::query("UPDATE scheduler_runs SET started_at = ? WHERE id = ?")
+        .bind((Local::now() - chrono::Duration::days(2)).to_rfc3339())
+        .bind(stale_id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        db.fail_stale_scheduler_runs(Local::now() - chrono::Duration::hours(24))
+            .await
+            .unwrap(),
+        1
+    );
+
+    let runs = db.list_scheduler_runs(10).await.unwrap();
+    let stale = runs.iter().find(|run| run.id == stale_id).unwrap();
+    let fresh = runs.iter().find(|run| run.id == fresh_id).unwrap();
+    assert_eq!(stale.status, "failed");
+    assert!(stale.finished_at.is_some());
+    assert!(stale
+        .message
+        .as_deref()
+        .unwrap()
+        .contains("recovered as stale"));
+    assert_eq!(fresh.status, "running");
+    assert!(fresh.finished_at.is_none());
+}
+
+#[tokio::test]
 async fn scheduler_updates_report_missing_rules() {
     let dir = tempfile::tempdir().unwrap();
     let db = Database::new(dir.path().join("test.db").to_str().unwrap())

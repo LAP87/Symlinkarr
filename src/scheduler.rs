@@ -23,6 +23,8 @@ const MAX_RRULE_COUNT: u64 = 1_000_000;
 const MAX_MISFIRE_GRACE_MINUTES: i64 = 10 * 365 * 24 * 60;
 const MAX_DELETE_CAP: i64 = 1_000_000;
 const MAX_RRULE_SCAN_DAYS: i64 = 36_525;
+const STALE_SCHEDULER_RUN_HOURS: i64 = 24;
+const LEGACY_SCAN_SAFETY_SYNC_STATE: &str = "legacy_scan_safety_backup_synced";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -342,14 +344,57 @@ pub fn bootstrap_rules_from_config(cfg: &Config) -> Vec<ScheduleRule> {
 }
 
 pub async fn ensure_bootstrap_rules(cfg: &Config, db: &Database) -> Result<()> {
-    if db.scheduler_rule_count().await? > 0 {
+    if db.scheduler_rule_count().await? == 0 {
+        for rule in bootstrap_rules_from_config(cfg) {
+            db.create_scheduler_rule(&rule).await?;
+        }
+        db.set_scheduler_state("bootstrap_status", "created_from_legacy_config")
+            .await?;
+    }
+
+    sync_legacy_scan_safety_backup(cfg, db).await?;
+    Ok(())
+}
+
+async fn sync_legacy_scan_safety_backup(cfg: &Config, db: &Database) -> Result<()> {
+    if db
+        .get_scheduler_state(LEGACY_SCAN_SAFETY_SYNC_STATE)
+        .await?
+        .is_some()
+    {
         return Ok(());
     }
-    for rule in bootstrap_rules_from_config(cfg) {
-        db.create_scheduler_rule(&rule).await?;
+    if db.get_scheduler_state("bootstrap_status").await?.as_deref()
+        != Some("created_from_legacy_config")
+    {
+        return Ok(());
     }
-    db.set_scheduler_state("bootstrap_status", "created_from_legacy_config")
-        .await?;
+
+    for mut rule in db.list_scheduler_rules().await? {
+        if rule.name == "Legacy daemon scan" && rule.event_type == ScheduledEvent::Scan {
+            if rule.safety_backup != cfg.backup.enabled {
+                rule.safety_backup = cfg.backup.enabled;
+                if let Some(id) = rule.id {
+                    db.update_scheduler_rule(id, &rule).await?;
+                    info!(
+                        "Synchronized legacy daemon scan safety_backup={} from config",
+                        cfg.backup.enabled
+                    );
+                }
+            }
+            break;
+        }
+    }
+
+    db.set_scheduler_state(
+        LEGACY_SCAN_SAFETY_SYNC_STATE,
+        if cfg.backup.enabled {
+            "enabled"
+        } else {
+            "disabled"
+        },
+    )
+    .await?;
     Ok(())
 }
 
@@ -1030,6 +1075,15 @@ fn resolve_local(naive: NaiveDateTime) -> Option<DateTime<Local>> {
 
 pub async fn run_scheduler_loop(cfg: &Config, db: &Database) -> Result<()> {
     ensure_bootstrap_rules(cfg, db).await?;
+    let recovered = db
+        .fail_stale_scheduler_runs(Local::now() - ChronoDuration::hours(STALE_SCHEDULER_RUN_HOURS))
+        .await?;
+    if recovered > 0 {
+        warn!(
+            "Recovered {} scheduler run(s) left running for more than {} hours",
+            recovered, STALE_SCHEDULER_RUN_HOURS
+        );
+    }
     info!("Scheduler loop starting (tick: 30 seconds)");
     loop {
         if let Err(err) = db
@@ -1304,5 +1358,46 @@ mod tests {
 
         assert_eq!(first[0].1, expected);
         assert_eq!(second[0].1, expected);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_upgrades_legacy_scan_safety_backup_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::new(dir.path().join("scheduler.db").to_str().unwrap())
+            .await
+            .unwrap();
+        let mut cfg: Config = serde_json::from_value(json!({ "libraries": [] })).unwrap();
+        cfg.backup.enabled = true;
+
+        let mut legacy = ScheduleRule::new_bootstrap(
+            "Legacy daemon scan",
+            ScheduledEvent::Scan,
+            ScheduleTrigger::Interval {
+                every: 60,
+                unit: IntervalUnit::Minutes,
+                start: None,
+            },
+            json!({}),
+            JobPriority::Normal,
+        );
+        legacy.safety_backup = false;
+        db.create_scheduler_rule(&legacy).await.unwrap();
+        db.set_scheduler_state("bootstrap_status", "created_from_legacy_config")
+            .await
+            .unwrap();
+
+        ensure_bootstrap_rules(&cfg, &db).await.unwrap();
+        assert!(db.list_scheduler_rules().await.unwrap()[0].safety_backup);
+        assert_eq!(
+            db.get_scheduler_state(LEGACY_SCAN_SAFETY_SYNC_STATE)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("enabled")
+        );
+
+        cfg.backup.enabled = false;
+        ensure_bootstrap_rules(&cfg, &db).await.unwrap();
+        assert!(db.list_scheduler_rules().await.unwrap()[0].safety_backup);
     }
 }
