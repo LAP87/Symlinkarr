@@ -2,9 +2,25 @@
 
 ## Release Target
 
-- package version for this push: `1.1.0-rc.7`
+- package version for this push: `1.1.0-rc.8`
 - posture: `v1.1 release candidate with Arr backfill, fail-closed acquisition ranking, current dependencies, synchronized Docker release channels, and updated operator documentation`
 - intended use: local-first host or Docker installs, with Windows 11 users running through WSL2 or a Linux container
+
+## 2026-07-26 - v1.1.0-rc.8 Legacy Scheduler Upgrade
+
+### Code Changes
+
+- upgraded config-bootstrapped legacy scan rules exactly once so existing rc.3-rc.7 databases inherit the configured fail-closed safety-backup policy.
+- recovered scheduler runs left in `running` state for more than 24 hours as failed on daemon startup while preserving fresh in-flight runs.
+- refreshed release-only GitHub Actions to current Node 24-compatible major versions without pinning the Rust toolchain or Docker builder.
+
+### Validation
+
+- targeted legacy-rule upgrade and stale-run recovery regression tests passed.
+- `cargo test --all-targets --locked` passed with 856 tests and 1 ignored.
+- `cargo clippy --all-targets --all-features --locked -- -D warnings` passed.
+- `cargo audit` passed with no vulnerabilities.
+- `cargo build --release --locked` produced `symlinkarr 1.1.0-rc.8`.
 
 ## 2026-07-26 - v1.1.0-rc.7 Backfill, Acquisition Safety, and Release Sync
 

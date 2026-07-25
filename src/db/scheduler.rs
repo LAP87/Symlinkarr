@@ -220,6 +220,28 @@ impl Database {
         rows.into_iter().map(run_from_row).collect()
     }
 
+    pub async fn fail_stale_scheduler_runs(&self, started_before: DateTime<Local>) -> Result<u64> {
+        let now = Local::now().to_rfc3339();
+        let result = sqlx::query(
+            "UPDATE scheduler_runs
+             SET finished_at = ?,
+                 status = 'failed',
+                 message = CASE
+                     WHEN message IS NULL OR TRIM(message) = ''
+                         THEN 'Recovered stale scheduler run after daemon restart'
+                     ELSE message || '; recovered as stale after daemon restart'
+                 END
+             WHERE status = 'running'
+               AND started_at IS NOT NULL
+               AND julianday(started_at) < julianday(?)",
+        )
+        .bind(now)
+        .bind(started_before.to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
     pub async fn latest_scheduler_run_planned_at(&self, rule_id: i64) -> Result<Option<String>> {
         let row = sqlx::query(
             "SELECT planned_at
@@ -263,6 +285,14 @@ impl Database {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    pub async fn get_scheduler_state(&self, key: &str) -> Result<Option<String>> {
+        let row = sqlx::query("SELECT value FROM scheduler_state WHERE key = ?")
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|row| row.get("value")))
     }
 }
 
