@@ -471,16 +471,24 @@ pub(crate) async fn post_cleanup_anime_remediation_apply(
 
     let playback_guard = cleanup_report_path_streaming_guard_view(&state, &report_path, true).await;
 
-    match apply_anime_remediation_plan_with_refresh(
-        &state.config,
-        &state.database,
-        form.library.as_deref(),
-        &report_path,
-        Some(form.token.trim()),
-        form.max_delete,
-        true,
-    )
-    .await
+    match crate::operations::OperationCoordinator::new(state.database.as_ref().clone())
+        .run(
+            crate::operations::OperationRequest::new(
+                "anime_remediation_apply",
+                "web",
+                form.library.clone(),
+            ),
+            apply_anime_remediation_plan_with_refresh(
+                &state.config,
+                &state.database,
+                form.library.as_deref(),
+                &report_path,
+                Some(form.token.trim()),
+                form.max_delete,
+                true,
+            ),
+        )
+        .await
     {
         Ok((plan, outcome, safety_snapshot, invalidation)) => Html(
             AnimeRemediationResultTemplate {
@@ -506,19 +514,26 @@ pub(crate) async fn post_cleanup_anime_remediation_apply(
             .unwrap_or_else(|e| e.to_string()),
         )
         .into_response(),
-        Err(err) => Html(
-            AnimeRemediationResultTemplate {
-                success: false,
-                message: format!("Anime remediation apply failed: {}", err),
-                preview: None,
-                apply: None,
-                playback_guard,
-                csrf_token: browser_csrf_token(&state),
-            }
-            .render()
-            .unwrap_or_else(|e| e.to_string()),
+        Err(err) => (
+            if err.downcast_ref::<crate::db::OperationConflict>().is_some() {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::BAD_REQUEST
+            },
+            Html(
+                AnimeRemediationResultTemplate {
+                    success: false,
+                    message: format!("Anime remediation apply failed: {}", err),
+                    preview: None,
+                    apply: None,
+                    playback_guard,
+                    csrf_token: browser_csrf_token(&state),
+                }
+                .render()
+                .unwrap_or_else(|e| e.to_string()),
+            ),
         )
-        .into_response(),
+            .into_response(),
     }
 }
 
@@ -936,38 +951,51 @@ pub(crate) async fn post_cleanup_prune(
         }
     };
 
-    let (outcome, invalidation) = match apply_cleanup_prune_with_refresh(
-        &state.config,
-        &state.database,
-        CleanupPruneApplyArgs {
-            libraries: &selected,
-            report_path: &report_path,
-            include_legacy_anime_roots: false,
-            max_delete: None,
-            confirm_token: None,
-            emit_text: true,
-        },
-    )
-    .await
-    {
-        Ok(result) => result,
-        Err(e) => {
-            error!("Prune operation failed: {}", e);
-            return Html(
-                CleanupResultTemplate {
-                    success: false,
-                    message: format!("Prune failed: {}", e),
-                    active_cleanup_audit: None,
-                    last_cleanup_audit_outcome: None,
-                    report_path: None,
-                    report_summary: None,
-                }
-                .render()
-                .unwrap_or_else(|e| e.to_string()),
+    let (outcome, invalidation) =
+        match crate::operations::OperationCoordinator::new(state.database.as_ref().clone())
+            .run(
+                crate::operations::OperationRequest::new("cleanup_prune_apply", "web", None),
+                apply_cleanup_prune_with_refresh(
+                    &state.config,
+                    &state.database,
+                    CleanupPruneApplyArgs {
+                        libraries: &selected,
+                        report_path: &report_path,
+                        include_legacy_anime_roots: false,
+                        max_delete: None,
+                        confirm_token: None,
+                        emit_text: true,
+                    },
+                ),
             )
-            .into_response();
-        }
-    };
+            .await
+        {
+            Ok(result) => result,
+            Err(e) => {
+                error!("Prune operation failed: {}", e);
+                let status = if e.downcast_ref::<crate::db::OperationConflict>().is_some() {
+                    StatusCode::CONFLICT
+                } else {
+                    StatusCode::BAD_REQUEST
+                };
+                return (
+                    status,
+                    Html(
+                        CleanupResultTemplate {
+                            success: false,
+                            message: format!("Prune failed: {}", e),
+                            active_cleanup_audit: None,
+                            last_cleanup_audit_outcome: None,
+                            report_path: None,
+                            report_summary: None,
+                        }
+                        .render()
+                        .unwrap_or_else(|e| e.to_string()),
+                    ),
+                )
+                    .into_response();
+            }
+        };
 
     let mut message = if outcome.removed > 0 {
         format!(

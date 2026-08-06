@@ -32,17 +32,30 @@ pub(crate) async fn run_daemon(cfg: &Config, db: &Database) -> Result<()> {
     }
 
     // Start web UI in background if enabled
-    if cfg.has_web() {
+    let web_task = if cfg.has_web() {
         let web_cfg = cfg.clone();
         let web_db = db.clone();
         let port = cfg.web.port;
-        tokio::spawn(async move {
+        Some(tokio::spawn(async move {
             if let Err(e) = crate::web::serve(web_cfg, web_db, port).await {
                 tracing::error!("Web UI failed: {}", e);
             }
-        });
-    }
+        }))
+    } else {
+        None
+    };
 
     record_heartbeat(db, "scheduler", Some("Starting live scheduler tick loop")).await;
-    crate::scheduler::run_scheduler_loop(cfg, db).await
+    let scheduler_result = crate::scheduler::run_scheduler_loop(cfg, db).await;
+    if let Some(mut web_task) = web_task {
+        if scheduler_result.is_err() {
+            web_task.abort();
+        }
+        if let Err(err) = (&mut web_task).await {
+            if !err.is_cancelled() {
+                tracing::warn!("Web task ended unexpectedly: {}", err);
+            }
+        }
+    }
+    scheduler_result
 }

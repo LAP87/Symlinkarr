@@ -1621,6 +1621,22 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn relink_pass_inherits_outer_operation_without_reacquiring_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = test_config(1);
+        cfg.db_path = dir.path().join("backfill.db").display().to_string();
+        let db = Database::new(&cfg.db_path).await.unwrap();
+        crate::operations::OperationCoordinator::new(db.clone())
+            .run(
+                crate::operations::OperationRequest::new("backfill", "cli", None),
+                run_backfill_relink_for_filters(&cfg, &db, &[None]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(db.list_operation_runs(10).await.unwrap().len(), 1);
+    }
+
     fn missing_record(season: u32, episode: u32) -> SonarrWantedMissingRecord {
         SonarrWantedMissingRecord {
             series_id: 1,

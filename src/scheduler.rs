@@ -12,6 +12,7 @@ use tracing::{info, warn};
 
 use crate::config::Config;
 use crate::db::{Database, ScanRunOrigin};
+use crate::operations::{OperationCoordinator, OperationLease, OperationRequest};
 use crate::OutputFormat;
 
 const MAX_SCHEDULE_TIMES: usize = 24;
@@ -458,6 +459,18 @@ pub async fn execute_claimed_rule(
     finish_rule_run(cfg, db, rule, run_id).await.map(|_| ())
 }
 
+pub async fn execute_claimed_rule_with_lease(
+    cfg: &Config,
+    db: &Database,
+    rule: &ScheduleRule,
+    run_id: i64,
+    lease: OperationLease,
+) -> Result<()> {
+    finish_rule_run_with_lease(cfg, db, rule, run_id, Some(lease))
+        .await
+        .map(|_| ())
+}
+
 async fn run_rule(
     cfg: &Config,
     db: &Database,
@@ -486,20 +499,58 @@ async fn finish_rule_run(
     rule: &ScheduleRule,
     run_id: i64,
 ) -> Result<i64> {
-    let result = async {
-        if rule.safety_backup {
-            if !cfg.backup.enabled {
-                anyhow::bail!("Safety backup is required by this rule but backups are disabled");
-            }
-            let manager = crate::backup::BackupManager::new(&cfg.backup);
-            manager
-                .create_safety_snapshot(db, &format!("scheduler-{}", rule.event_type.as_str()))
-                .await
-                .context("Required scheduler safety backup failed")?;
+    let lease = match acquire_rule_operation(db, rule).await {
+        Ok(lease) => lease,
+        Err(err) => {
+            let message = err.to_string();
+            db.finish_scheduler_run(run_id, JobRunStatus::Failed, Some(&message), None)
+                .await?;
+            return Err(err);
         }
-        execute_event(cfg, db, rule).await
+    };
+    finish_rule_run_with_lease(cfg, db, rule, run_id, lease).await
+}
+
+pub(crate) async fn acquire_rule_operation(
+    db: &Database,
+    rule: &ScheduleRule,
+) -> Result<Option<OperationLease>> {
+    match operation_request_for_rule(rule) {
+        Some(request) => Ok(Some(
+            OperationCoordinator::new(db.clone())
+                .acquire(request)
+                .await?,
+        )),
+        None => Ok(None),
     }
-    .await;
+}
+
+async fn execute_rule_work(cfg: &Config, db: &Database, rule: &ScheduleRule) -> Result<String> {
+    if rule.safety_backup {
+        if !cfg.backup.enabled {
+            anyhow::bail!("Safety backup is required by this rule but backups are disabled");
+        }
+        let manager = crate::backup::BackupManager::new(&cfg.backup);
+        manager
+            .create_safety_snapshot(db, &format!("scheduler-{}", rule.event_type.as_str()))
+            .await
+            .context("Required scheduler safety backup failed")?;
+    }
+    execute_event(cfg, db, rule).await
+}
+
+async fn finish_rule_run_with_lease(
+    cfg: &Config,
+    db: &Database,
+    rule: &ScheduleRule,
+    run_id: i64,
+    lease: Option<OperationLease>,
+) -> Result<i64> {
+    let result = if let Some(lease) = lease {
+        OperationCoordinator::run_acquired(lease, execute_rule_work(cfg, db, rule)).await
+    } else {
+        execute_rule_work(cfg, db, rule).await
+    };
     match result {
         Ok(message) => {
             db.finish_scheduler_run(run_id, JobRunStatus::Succeeded, Some(&message), None)
@@ -513,6 +564,25 @@ async fn finish_rule_run(
             Err(err)
         }
     }
+}
+
+pub(crate) fn operation_request_for_rule(rule: &ScheduleRule) -> Option<OperationRequest> {
+    let scope = rule
+        .event_args
+        .get("library")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let kind = match rule.event_type {
+        ScheduledEvent::Scan => "scan",
+        ScheduledEvent::CleanupAudit => "cleanup_audit",
+        ScheduledEvent::RepairAuto => "repair_auto",
+        ScheduledEvent::CleanupPruneApply => "cleanup_prune_apply",
+        ScheduledEvent::AnimeRemediationApply => "anime_remediation_apply",
+        ScheduledEvent::Backup
+        | ScheduledEvent::HousekeepingVacuum
+        | ScheduledEvent::CacheRefresh => return None,
+    };
+    Some(OperationRequest::new(kind, "scheduler", scope))
 }
 
 async fn execute_event(cfg: &Config, db: &Database, rule: &ScheduleRule) -> Result<String> {

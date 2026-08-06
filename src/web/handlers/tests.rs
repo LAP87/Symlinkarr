@@ -306,6 +306,7 @@ async fn dashboard_renders_live_activity_feed() {
     let ctx = test_context().await;
     ctx.state
         .set_active_scan_for_test(Some(ActiveScanJob {
+            operation_id: 0,
             started_at: "2026-04-19 21:15:00 UTC".to_string(),
             scope_label: "Anime".to_string(),
             dry_run: true,
@@ -314,6 +315,7 @@ async fn dashboard_renders_live_activity_feed() {
         .await;
     ctx.state
         .set_last_cleanup_audit_outcome_for_test(Some(LastCleanupAuditOutcome {
+            operation_id: None,
             finished_at: "2026-04-19 21:18:00 UTC".to_string(),
             scope_label: "Anime".to_string(),
             libraries_label: "Anime".to_string(),
@@ -324,6 +326,7 @@ async fn dashboard_renders_live_activity_feed() {
         .await;
     ctx.state
         .set_last_repair_outcome_for_test(Some(LastRepairOutcome {
+            operation_id: None,
             finished_at: "2026-04-19 21:19:00 UTC".to_string(),
             scope_label: "All Libraries".to_string(),
             success: true,
@@ -355,6 +358,7 @@ async fn dashboard_activity_feed_fragment_renders_running_and_recent_work() {
     let ctx = test_context().await;
     ctx.state
         .set_active_cleanup_audit_for_test(Some(ActiveCleanupAuditJob {
+            operation_id: 0,
             started_at: "2026-04-19 21:16:00 UTC".to_string(),
             scope_label: "Anime".to_string(),
             libraries_label: "Anime".to_string(),
@@ -362,12 +366,14 @@ async fn dashboard_activity_feed_fragment_renders_running_and_recent_work() {
         .await;
     ctx.state
         .set_active_repair_for_test(Some(ActiveRepairJob {
+            operation_id: 0,
             started_at: "2026-04-19 21:17:00 UTC".to_string(),
             scope_label: "All Libraries".to_string(),
         }))
         .await;
     ctx.state
         .set_last_scan_outcome_for_test(Some(LastScanOutcome {
+            operation_id: None,
             finished_at: "2099-04-19 21:18:00 UTC".to_string(),
             scope_label: "Anime".to_string(),
             dry_run: false,
@@ -404,6 +410,8 @@ async fn dashboard_activity_feed_fragment_renders_running_and_recent_work() {
                 submitted_at: None,
                 completed_at: None,
                 increment_attempts: true,
+                increment_relink_attempts: false,
+                reset_relink_attempts: false,
             },
         )
         .await
@@ -492,12 +500,15 @@ async fn dashboard_needs_attention_fragment_renders_live_section() {
                 submitted_at: None,
                 completed_at: None,
                 increment_attempts: false,
+                increment_relink_attempts: false,
+                reset_relink_attempts: false,
             },
         )
         .await
         .unwrap();
     ctx.state
         .set_last_scan_outcome_for_test(Some(LastScanOutcome {
+            operation_id: None,
             finished_at: "2099-04-19 21:18:00 UTC".to_string(),
             scope_label: "Anime".to_string(),
             dry_run: false,
@@ -590,6 +601,8 @@ async fn dashboard_renders_needs_attention_priorities() {
                 submitted_at: None,
                 completed_at: None,
                 increment_attempts: false,
+                increment_relink_attempts: false,
+                reset_relink_attempts: false,
             },
         )
         .await
@@ -609,6 +622,7 @@ async fn dashboard_renders_needs_attention_priorities() {
     .unwrap();
     ctx.state
         .set_last_scan_outcome_for_test(Some(LastScanOutcome {
+            operation_id: None,
             finished_at: "2099-04-19 21:18:00 UTC".to_string(),
             scope_label: "Anime".to_string(),
             dry_run: false,
@@ -789,6 +803,7 @@ async fn scan_page_renders_active_background_scan_banner() {
     let ctx = test_context().await;
     ctx.state
         .set_active_scan_for_test(Some(ActiveScanJob {
+            operation_id: 0,
             started_at: "2026-03-29 23:59:00 UTC".to_string(),
             scope_label: "Anime".to_string(),
             dry_run: true,
@@ -811,6 +826,7 @@ async fn scan_page_renders_last_failed_background_scan_outcome() {
     let ctx = test_context().await;
     ctx.state
         .set_last_scan_outcome_for_test(Some(LastScanOutcome {
+            operation_id: None,
             finished_at: "2099-03-29 23:58:00 UTC".to_string(),
             scope_label: "Anime".to_string(),
             dry_run: false,
@@ -834,6 +850,7 @@ async fn scan_page_hides_stale_failed_background_outcome_when_newer_run_exists()
     let ctx = test_context().await;
     ctx.state
         .set_last_scan_outcome_for_test(Some(LastScanOutcome {
+            operation_id: None,
             finished_at: "2026-03-29 09:58:00 UTC".to_string(),
             scope_label: "Anime".to_string(),
             dry_run: false,
@@ -995,6 +1012,7 @@ async fn cleanup_page_renders_active_background_audit_banner() {
     let ctx = test_context().await;
     ctx.state
         .set_active_cleanup_audit_for_test(Some(ActiveCleanupAuditJob {
+            operation_id: 0,
             started_at: "2026-03-29 23:59:00 UTC".to_string(),
             scope_label: "Anime".to_string(),
             libraries_label: "Anime".to_string(),
@@ -1013,6 +1031,7 @@ async fn cleanup_page_renders_last_failed_background_audit_outcome() {
     let ctx = test_context().await;
     ctx.state
         .set_last_cleanup_audit_outcome_for_test(Some(LastCleanupAuditOutcome {
+            operation_id: None,
             finished_at: "2026-03-29 23:58:00 UTC".to_string(),
             scope_label: "Anime".to_string(),
             libraries_label: "Anime".to_string(),
@@ -1055,6 +1074,7 @@ async fn cleanup_page_hides_stale_failed_background_audit_outcome_when_newer_rep
 
     ctx.state
         .set_last_cleanup_audit_outcome_for_test(Some(LastCleanupAuditOutcome {
+            operation_id: None,
             finished_at: "2026-03-29 09:58:00 UTC".to_string(),
             scope_label: "Anime".to_string(),
             libraries_label: "Anime".to_string(),

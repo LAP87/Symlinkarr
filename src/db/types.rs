@@ -5,6 +5,41 @@ use chrono::{DateTime, Utc};
 
 use crate::models::MediaType;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperationRunRecord {
+    pub id: i64,
+    pub lock_key: String,
+    pub kind: String,
+    pub origin: String,
+    pub scope: Option<String>,
+    pub status: String,
+    pub started_at: String,
+    pub heartbeat_at: String,
+    pub finished_at: Option<String>,
+    pub message: Option<String>,
+    pub result_json: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperationConflict {
+    pub active: OperationRunRecord,
+}
+
+impl std::fmt::Display for OperationConflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Operation conflict: {} from {} for {} started {} is still running",
+            self.active.kind,
+            self.active.origin,
+            self.active.scope.as_deref().unwrap_or("all libraries"),
+            self.active.started_at
+        )
+    }
+}
+
+impl std::error::Error for OperationConflict {}
+
 /// Result of a housekeeping run (H-09).
 #[derive(Debug, Default)]
 pub struct HousekeepingStats {
@@ -277,7 +312,10 @@ pub struct AcquisitionJobRecord {
     pub release_title: Option<String>,
     pub info_hash: Option<String>,
     pub error: Option<String>,
+    /// Provider/search submission attempts. Kept separate from relink cycles.
     pub attempts: i64,
+    /// Completed-download relink cycles. This has an independent retry budget.
+    pub relink_attempts: i64,
     pub next_retry_at: Option<DateTime<Utc>>,
     pub submitted_at: Option<DateTime<Utc>>,
     pub completed_at: Option<DateTime<Utc>>,
@@ -293,6 +331,8 @@ pub struct AcquisitionJobUpdate {
     pub submitted_at: Option<DateTime<Utc>>,
     pub completed_at: Option<DateTime<Utc>>,
     pub increment_attempts: bool,
+    pub increment_relink_attempts: bool,
+    pub reset_relink_attempts: bool,
 }
 
 #[derive(Debug, Clone, Default)]

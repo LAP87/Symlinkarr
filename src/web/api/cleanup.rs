@@ -1,5 +1,13 @@
 use super::*;
 
+fn operation_error_status(err: &anyhow::Error) -> StatusCode {
+    if err.downcast_ref::<crate::db::OperationConflict>().is_some() {
+        StatusCode::CONFLICT
+    } else {
+        StatusCode::BAD_REQUEST
+    }
+}
+
 #[derive(Debug, Default, Clone, Deserialize)]
 pub(super) struct ApiAnimeRemediationQuery {
     pub plex_db: Option<String>,
@@ -436,7 +444,7 @@ pub(super) async fn api_post_anime_remediation_preview(
             }),
         ),
         Err(err) => (
-            StatusCode::BAD_REQUEST,
+            operation_error_status(&err),
             Json(ApiAnimeRemediationPreviewResponse {
                 success: false,
                 message: format!("Anime remediation preview failed: {}", err),
@@ -483,16 +491,24 @@ pub(super) async fn api_post_anime_remediation_apply(
         }
     };
 
-    match apply_anime_remediation_plan_with_refresh(
-        &state.config,
-        &state.database,
-        req.library.as_deref(),
-        &report_path,
-        Some(&req.token),
-        req.max_delete,
-        false,
-    )
-    .await
+    match crate::operations::OperationCoordinator::new(state.database.as_ref().clone())
+        .run(
+            crate::operations::OperationRequest::new(
+                "anime_remediation_apply",
+                "web",
+                req.library.clone(),
+            ),
+            apply_anime_remediation_plan_with_refresh(
+                &state.config,
+                &state.database,
+                req.library.as_deref(),
+                &report_path,
+                Some(&req.token),
+                req.max_delete,
+                false,
+            ),
+        )
+        .await
     {
         Ok((plan, outcome, safety_snapshot, invalidation)) => (
             StatusCode::OK,
@@ -514,7 +530,7 @@ pub(super) async fn api_post_anime_remediation_apply(
             }),
         ),
         Err(err) => (
-            StatusCode::BAD_REQUEST,
+            operation_error_status(&err),
             Json(ApiAnimeRemediationApplyResponse {
                 success: false,
                 message: format!("Anime remediation apply failed: {}", err),
@@ -774,19 +790,23 @@ pub(super) async fn api_post_cleanup_prune(
         }
     };
 
-    match apply_cleanup_prune_with_refresh(
-        &state.config,
-        &state.database,
-        CleanupPruneApplyArgs {
-            libraries: &selected,
-            report_path: &report_path,
-            include_legacy_anime_roots: false,
-            max_delete: req.max_delete,
-            confirm_token: Some(&req.token),
-            emit_text: false,
-        },
-    )
-    .await
+    match crate::operations::OperationCoordinator::new(state.database.as_ref().clone())
+        .run(
+            crate::operations::OperationRequest::new("cleanup_prune_apply", "web", None),
+            apply_cleanup_prune_with_refresh(
+                &state.config,
+                &state.database,
+                CleanupPruneApplyArgs {
+                    libraries: &selected,
+                    report_path: &report_path,
+                    include_legacy_anime_roots: false,
+                    max_delete: req.max_delete,
+                    confirm_token: Some(&req.token),
+                    emit_text: false,
+                },
+            ),
+        )
+        .await
     {
         Ok((outcome, invalidation)) => (
             StatusCode::OK,
@@ -807,7 +827,7 @@ pub(super) async fn api_post_cleanup_prune(
             }),
         ),
         Err(e) => (
-            StatusCode::BAD_REQUEST,
+            operation_error_status(&e),
             Json(ApiCleanupPruneResponse {
                 success: false,
                 message: format!("Prune failed: {}", e),

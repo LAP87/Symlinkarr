@@ -162,6 +162,31 @@ fn scheduler_rule(name: &str) -> ScheduleRule {
 }
 
 #[tokio::test]
+async fn scheduler_run_now_returns_conflict_before_background_spawn_and_fails_run_history() {
+    let state = test_state().await;
+    let mut rule = scheduler_rule("run-now conflict");
+    let id = state.database.create_scheduler_rule(&rule).await.unwrap();
+    rule.id = Some(id);
+    state
+        .database
+        .try_acquire_operation("library-operation", "scan", "web", Some("Anime"))
+        .await
+        .unwrap()
+        .unwrap();
+    let response = api_post_scheduler_rule_run_now(State(state.clone()), Path(id))
+        .await
+        .into_response();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let text = String::from_utf8_lossy(&body);
+    assert!(text.contains("scan"));
+    assert!(text.contains("web"));
+    assert!(text.contains("Anime"));
+    let runs = state.database.list_scheduler_runs(10).await.unwrap();
+    assert_eq!(runs[0].status, "failed");
+}
+
+#[tokio::test]
 async fn api_get_status_includes_daemon_observability() {
     let dir = tempfile::tempdir().unwrap();
     let mut cfg = test_config(dir.path());
@@ -542,6 +567,7 @@ async fn api_get_scan_history_respects_mode_and_limit_filters() {
 async fn api_get_scan_jobs_includes_active_background_scan() {
     let ctx = test_state().await;
     ctx.set_active_scan_for_test(Some(ActiveScanJob {
+        operation_id: 0,
         started_at: "2026-03-29 23:59:00 UTC".to_string(),
         scope_label: "Anime".to_string(),
         dry_run: true,
@@ -565,6 +591,7 @@ async fn api_get_scan_jobs_includes_active_background_scan() {
 async fn api_get_scan_status_includes_last_outcome() {
     let ctx = test_state().await;
     ctx.set_last_scan_outcome_for_test(Some(LastScanOutcome {
+        operation_id: None,
         finished_at: "2099-03-29 23:58:00 UTC".to_string(),
         scope_label: "Anime".to_string(),
         dry_run: false,
@@ -591,6 +618,7 @@ async fn api_get_scan_status_includes_last_outcome() {
 async fn api_get_scan_status_hides_stale_failed_outcome_when_newer_run_exists() {
     let ctx = test_state().await;
     ctx.set_last_scan_outcome_for_test(Some(LastScanOutcome {
+        operation_id: None,
         finished_at: "2026-03-29 09:58:00 UTC".to_string(),
         scope_label: "Anime".to_string(),
         dry_run: false,
@@ -611,13 +639,16 @@ async fn api_get_scan_status_hides_stale_failed_outcome_when_newer_run_exists() 
 #[tokio::test]
 async fn api_post_scan_rejects_when_background_scan_is_already_running() {
     let ctx = test_state().await;
-    ctx.set_active_scan_for_test(Some(ActiveScanJob {
-        started_at: "2026-03-29 23:59:00 UTC".to_string(),
-        scope_label: "Anime".to_string(),
-        dry_run: true,
-        search_missing: false,
-    }))
-    .await;
+    ctx.database
+        .try_acquire_operation(
+            "library-operation",
+            "repair_auto",
+            "scheduler",
+            Some("Anime"),
+        )
+        .await
+        .unwrap()
+        .unwrap();
 
     let response = api_post_scan(
         State(ctx),
@@ -635,9 +666,8 @@ async fn api_post_scan_rejects_when_background_scan_is_already_running() {
     let json: ApiScanResponse = serde_json::from_slice(&bytes).unwrap();
 
     assert!(!json.success);
-    assert!(json.running);
-    assert_eq!(json.scope_label.as_deref(), Some("Anime"));
-    assert!(json.message.contains("already running"));
+    assert!(json.message.contains("repair_auto"));
+    assert!(json.message.contains("scheduler"));
 }
 
 #[tokio::test]
@@ -1153,6 +1183,7 @@ async fn api_post_cleanup_audit_rejects_invalid_scope_with_bad_request() {
 async fn api_get_cleanup_audit_jobs_includes_active_background_audit() {
     let ctx = test_state().await;
     ctx.set_active_cleanup_audit_for_test(Some(ActiveCleanupAuditJob {
+        operation_id: 0,
         started_at: "2026-03-29 23:59:00 UTC".to_string(),
         scope_label: "Anime".to_string(),
         libraries_label: "Anime".to_string(),
@@ -1174,6 +1205,7 @@ async fn api_get_cleanup_audit_jobs_includes_active_background_audit() {
 async fn api_get_cleanup_audit_status_includes_last_outcome() {
     let ctx = test_state().await;
     ctx.set_last_cleanup_audit_outcome_for_test(Some(LastCleanupAuditOutcome {
+        operation_id: None,
         finished_at: "2026-03-29 23:58:00 UTC".to_string(),
         scope_label: "Anime".to_string(),
         libraries_label: "Anime".to_string(),
@@ -1223,6 +1255,7 @@ async fn api_get_cleanup_audit_status_hides_stale_failed_outcome_when_newer_repo
     std::fs::write(&report_path, serde_json::to_vec(&report).unwrap()).unwrap();
 
     ctx.set_last_cleanup_audit_outcome_for_test(Some(LastCleanupAuditOutcome {
+        operation_id: None,
         finished_at: "2026-03-29 09:58:00 UTC".to_string(),
         scope_label: "Anime".to_string(),
         libraries_label: "Anime".to_string(),
@@ -1245,12 +1278,11 @@ async fn api_get_cleanup_audit_status_hides_stale_failed_outcome_when_newer_repo
 #[tokio::test]
 async fn api_post_cleanup_audit_rejects_when_background_audit_is_already_running() {
     let ctx = test_state().await;
-    ctx.set_active_cleanup_audit_for_test(Some(ActiveCleanupAuditJob {
-        started_at: "2026-03-29 23:59:00 UTC".to_string(),
-        scope_label: "Anime".to_string(),
-        libraries_label: "Anime".to_string(),
-    }))
-    .await;
+    ctx.database
+        .try_acquire_operation("library-operation", "scan", "cli", Some("Anime"))
+        .await
+        .unwrap()
+        .unwrap();
 
     let response = api_post_cleanup_audit(
         State(ctx),
@@ -1266,10 +1298,8 @@ async fn api_post_cleanup_audit_rejects_when_background_audit_is_already_running
     let json: ApiCleanupAuditResponse = serde_json::from_slice(&bytes).unwrap();
 
     assert!(!json.success);
-    assert!(json.message.contains("Cleanup audit not started"));
-    assert!(json.running);
-    assert_eq!(json.scope_label.as_deref(), Some("Anime"));
-    assert_eq!(json.libraries_label.as_deref(), Some("Anime"));
+    assert!(json.message.contains("scan"));
+    assert!(json.message.contains("cli"));
 }
 
 #[tokio::test]

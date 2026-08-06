@@ -17,7 +17,7 @@ use axum::{
 use chrono::{DateTime, NaiveDateTime, Utc};
 use futures_util::FutureExt;
 use std::sync::Arc;
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::Mutex;
 use tower_http::{services::ServeDir, trace::TraceLayer};
 use tracing::{error, info};
 
@@ -40,11 +40,15 @@ use self::cleanup::{cleanup_libraries_label, cleanup_scope_label, resolve_cleanu
 use crate::cleanup_audit::{CleanupAuditor, CleanupScope};
 use crate::config::Config;
 use crate::db::Database;
+use crate::db::LIBRARY_OPERATION_LOCK;
+use crate::operations::{OperationCoordinator, OperationRequest};
 
 const CONTENT_SECURITY_POLICY_VALUE: &str = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'";
+const WEB_BACKGROUND_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[derive(Clone, Debug)]
 pub(crate) struct ActiveScanJob {
+    pub operation_id: i64,
     pub started_at: String,
     pub scope_label: String,
     pub dry_run: bool,
@@ -53,6 +57,7 @@ pub(crate) struct ActiveScanJob {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ActiveCleanupAuditJob {
+    pub operation_id: i64,
     pub started_at: String,
     pub scope_label: String,
     pub libraries_label: String,
@@ -60,12 +65,14 @@ pub(crate) struct ActiveCleanupAuditJob {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ActiveRepairJob {
+    pub operation_id: i64,
     pub started_at: String,
     pub scope_label: String,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct LastScanOutcome {
+    pub operation_id: Option<i64>,
     pub finished_at: String,
     pub scope_label: String,
     pub dry_run: bool,
@@ -76,6 +83,7 @@ pub(crate) struct LastScanOutcome {
 
 #[derive(Clone, Debug)]
 pub(crate) struct LastCleanupAuditOutcome {
+    pub operation_id: Option<i64>,
     pub finished_at: String,
     pub scope_label: String,
     pub libraries_label: String,
@@ -86,6 +94,7 @@ pub(crate) struct LastCleanupAuditOutcome {
 
 #[derive(Clone, Debug)]
 pub(crate) struct LastRepairOutcome {
+    pub operation_id: Option<i64>,
     pub finished_at: String,
     pub scope_label: String,
     pub success: bool,
@@ -106,6 +115,11 @@ struct BackgroundJobState {
     last_repair_outcome: Option<LastRepairOutcome>,
 }
 
+struct TrackedBackgroundTask {
+    operation_id: i64,
+    handle: tokio::task::JoinHandle<()>,
+}
+
 type StreamingGuardCache =
     Arc<Mutex<Option<(std::time::Instant, Option<templates::StreamingGuardView>)>>>;
 
@@ -116,7 +130,7 @@ pub struct WebState {
     pub database: Arc<Database>,
     browser_session_token: Arc<String>,
     background_jobs: Arc<Mutex<BackgroundJobState>>,
-    scheduler_jobs: Arc<Semaphore>,
+    background_tasks: Arc<Mutex<Vec<TrackedBackgroundTask>>>,
     streaming_guard_cache: StreamingGuardCache,
 }
 
@@ -132,7 +146,7 @@ impl WebState {
             database: Arc::new(database),
             browser_session_token: Arc::new(generate_browser_session_token()?),
             background_jobs: Arc::new(Mutex::new(BackgroundJobState::default())),
-            scheduler_jobs: Arc::new(Semaphore::new(1)),
+            background_tasks: Arc::new(Mutex::new(Vec::new())),
             streaming_guard_cache: Arc::new(Mutex::new(None)),
         })
     }
@@ -141,44 +155,127 @@ impl WebState {
         self.browser_session_token.as_str()
     }
 
-    pub(crate) fn scheduler_jobs(&self) -> Arc<Semaphore> {
-        self.scheduler_jobs.clone()
-    }
-
     pub(crate) async fn active_scan(&self) -> Option<ActiveScanJob> {
-        self.background_jobs.lock().await.active_scan.clone()
+        if let Some(job) = self.background_jobs.lock().await.active_scan.clone() {
+            return Some(job);
+        }
+        self.database
+            .active_operation(LIBRARY_OPERATION_LOCK)
+            .await
+            .ok()
+            .flatten()
+            .filter(|run| run.kind == "scan")
+            .map(|run| ActiveScanJob {
+                operation_id: run.id,
+                started_at: run.started_at,
+                scope_label: run.scope.unwrap_or_else(|| "All Libraries".to_string()),
+                dry_run: false,
+                search_missing: false,
+            })
     }
 
     pub(crate) async fn active_cleanup_audit(&self) -> Option<ActiveCleanupAuditJob> {
-        self.background_jobs
+        if let Some(job) = self
+            .background_jobs
             .lock()
             .await
             .active_cleanup_audit
             .clone()
+        {
+            return Some(job);
+        }
+        self.database
+            .active_operation(LIBRARY_OPERATION_LOCK)
+            .await
+            .ok()
+            .flatten()
+            .filter(|run| run.kind == "cleanup_audit")
+            .map(|run| ActiveCleanupAuditJob {
+                operation_id: run.id,
+                started_at: run.started_at,
+                scope_label: run.scope.unwrap_or_else(|| "All Libraries".to_string()),
+                libraries_label: "Registry recovery".to_string(),
+            })
     }
 
     pub(crate) async fn active_repair(&self) -> Option<ActiveRepairJob> {
-        self.background_jobs.lock().await.active_repair.clone()
+        if let Some(job) = self.background_jobs.lock().await.active_repair.clone() {
+            return Some(job);
+        }
+        self.database
+            .active_operation(LIBRARY_OPERATION_LOCK)
+            .await
+            .ok()
+            .flatten()
+            .filter(|run| matches!(run.kind.as_str(), "repair" | "repair_auto"))
+            .map(|run| ActiveRepairJob {
+                operation_id: run.id,
+                started_at: run.started_at,
+                scope_label: run.scope.unwrap_or_else(|| "All Libraries".to_string()),
+            })
     }
 
     pub(crate) async fn last_scan_outcome(&self) -> Option<LastScanOutcome> {
-        self.background_jobs.lock().await.last_scan_outcome.clone()
+        let outcome = self.background_jobs.lock().await.last_scan_outcome.clone();
+        let _ = outcome.as_ref().and_then(|outcome| outcome.operation_id);
+        outcome
     }
 
     pub(crate) async fn last_cleanup_audit_outcome(&self) -> Option<LastCleanupAuditOutcome> {
-        self.background_jobs
+        let outcome = self
+            .background_jobs
             .lock()
             .await
             .last_cleanup_audit_outcome
-            .clone()
+            .clone();
+        let _ = outcome.as_ref().and_then(|outcome| outcome.operation_id);
+        outcome
     }
 
     pub(crate) async fn last_repair_outcome(&self) -> Option<LastRepairOutcome> {
-        self.background_jobs
+        let outcome = self
+            .background_jobs
             .lock()
             .await
             .last_repair_outcome
-            .clone()
+            .clone();
+        let _ = outcome.as_ref().and_then(|outcome| outcome.operation_id);
+        outcome
+    }
+
+    async fn drain_background_tasks(&self) {
+        self.drain_background_tasks_with_grace(WEB_BACKGROUND_DRAIN_GRACE)
+            .await;
+    }
+
+    async fn drain_background_tasks_with_grace(&self, grace: std::time::Duration) {
+        let mut tasks = std::mem::take(&mut *self.background_tasks.lock().await);
+        let deadline = tokio::time::Instant::now() + grace;
+        for task in &mut tasks {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if tokio::time::timeout(remaining, &mut task.handle)
+                .await
+                .is_err()
+            {
+                task.handle.abort();
+                let _ = (&mut task.handle).await;
+                if let Err(err) = self
+                    .database
+                    .finish_operation(
+                        task.operation_id,
+                        "interrupted",
+                        Some("Interrupted after web shutdown grace period"),
+                        None,
+                    )
+                    .await
+                {
+                    error!(
+                        operation_id = task.operation_id,
+                        "Could not record interrupted web operation: {}", err
+                    );
+                }
+            }
+        }
     }
 
     pub(crate) async fn start_scan(
@@ -194,27 +291,14 @@ impl WebState {
         crate::commands::selected_libraries(self.config.as_ref(), library_filter.as_deref())
             .map_err(|err| err.to_string())?;
 
+        let mut operation = OperationCoordinator::new(self.database.as_ref().clone())
+            .acquire(OperationRequest::new("scan", "web", library_filter.clone()))
+            .await
+            .map_err(|err| err.to_string())?;
         let mut background_jobs = self.background_jobs.lock().await;
-        if let Some(job) = background_jobs.active_scan.clone() {
-            return Err(format!(
-                "A scan is already running for {} (started {}).",
-                job.scope_label, job.started_at
-            ));
-        }
-        if let Some(job) = background_jobs.active_cleanup_audit.clone() {
-            return Err(format!(
-                "A cleanup audit is already running for {} ({}) started {}.",
-                job.scope_label, job.libraries_label, job.started_at
-            ));
-        }
-        if let Some(job) = background_jobs.active_repair.clone() {
-            return Err(format!(
-                "A repair run is already running for {} (started {}).",
-                job.scope_label, job.started_at
-            ));
-        }
 
         let job = ActiveScanJob {
+            operation_id: operation.id(),
             started_at: Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string(),
             scope_label: library_filter
                 .clone()
@@ -228,8 +312,10 @@ impl WebState {
         let config = self.config.clone();
         let database = self.database.clone();
         let background_jobs = self.background_jobs.clone();
+        let background_tasks = self.background_tasks.clone();
         let background_job = job.clone();
-        tokio::spawn(async move {
+        let operation_id = operation.id();
+        let handle = tokio::spawn(async move {
             let result = std::panic::AssertUnwindSafe(async {
                 crate::commands::scan::run_scan_with_origin(
                     config.as_ref(),
@@ -245,6 +331,36 @@ impl WebState {
             .catch_unwind()
             .await;
 
+            match &result {
+                Ok(Ok((added, removed))) => {
+                    let summary =
+                        serde_json::json!({"added_or_updated": added, "removed": removed});
+                    if let Err(err) = operation
+                        .succeed(Some("Scan completed"), Some(&summary.to_string()))
+                        .await
+                    {
+                        error!("Could not finalize operation run: {}", err);
+                    }
+                }
+                Ok(Err(err)) => {
+                    if let Err(finalize_err) = operation.fail(&err.to_string()).await {
+                        error!("Could not finalize failed operation run: {}", finalize_err);
+                    }
+                }
+                Err(panic) => {
+                    let message = format!(
+                        "internal panic while running background scan: {}",
+                        panic_message_ref(panic)
+                    );
+                    if let Err(finalize_err) = operation.fail(&message).await {
+                        error!(
+                            "Could not finalize panicked operation run: {}",
+                            finalize_err
+                        );
+                    }
+                }
+            }
+
             let finished_at = Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string();
             let outcome = match result {
                 Ok(Ok((added, removed))) => {
@@ -258,6 +374,7 @@ impl WebState {
                         removed
                     );
                     LastScanOutcome {
+                        operation_id: Some(background_job.operation_id),
                         finished_at,
                         scope_label: background_job.scope_label.clone(),
                         dry_run: background_job.dry_run,
@@ -278,6 +395,7 @@ impl WebState {
                         err
                     );
                     LastScanOutcome {
+                        operation_id: Some(background_job.operation_id),
                         finished_at,
                         scope_label: background_job.scope_label.clone(),
                         dry_run: background_job.dry_run,
@@ -299,6 +417,7 @@ impl WebState {
                         message
                     );
                     LastScanOutcome {
+                        operation_id: Some(background_job.operation_id),
                         finished_at,
                         scope_label: background_job.scope_label.clone(),
                         dry_run: background_job.dry_run,
@@ -313,6 +432,12 @@ impl WebState {
             background_jobs.last_scan_outcome = Some(outcome);
             background_jobs.active_scan = None;
         });
+        let mut tasks = background_tasks.lock().await;
+        tasks.retain(|task| !task.handle.is_finished());
+        tasks.push(TrackedBackgroundTask {
+            operation_id,
+            handle,
+        });
 
         Ok(job)
     }
@@ -325,27 +450,18 @@ impl WebState {
         let canonical_libraries =
             resolve_cleanup_libraries(self.config.as_ref(), scope, &selected_libraries)?;
 
+        let mut operation = OperationCoordinator::new(self.database.as_ref().clone())
+            .acquire(OperationRequest::new(
+                "cleanup_audit",
+                "web",
+                Some(cleanup_scope_label(scope).to_string()),
+            ))
+            .await
+            .map_err(|err| err.to_string())?;
         let mut background_jobs = self.background_jobs.lock().await;
-        if let Some(job) = background_jobs.active_scan.clone() {
-            return Err(format!(
-                "A scan is already running for {} (started {}).",
-                job.scope_label, job.started_at
-            ));
-        }
-        if let Some(job) = background_jobs.active_cleanup_audit.clone() {
-            return Err(format!(
-                "A cleanup audit is already running for {} ({}) started {}.",
-                job.scope_label, job.libraries_label, job.started_at
-            ));
-        }
-        if let Some(job) = background_jobs.active_repair.clone() {
-            return Err(format!(
-                "A repair run is already running for {} (started {}).",
-                job.scope_label, job.started_at
-            ));
-        }
 
         let job = ActiveCleanupAuditJob {
+            operation_id: operation.id(),
             started_at: Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string(),
             scope_label: cleanup_scope_label(scope).to_string(),
             libraries_label: cleanup_libraries_label(&canonical_libraries),
@@ -356,8 +472,10 @@ impl WebState {
         let config = self.config.clone();
         let database = self.database.clone();
         let background_jobs = self.background_jobs.clone();
+        let background_tasks = self.background_tasks.clone();
         let background_job = job.clone();
-        tokio::spawn(async move {
+        let operation_id = operation.id();
+        let handle = tokio::spawn(async move {
             let result = std::panic::AssertUnwindSafe(async {
                 let auditor =
                     CleanupAuditor::new_with_progress(config.as_ref(), database.as_ref(), false);
@@ -378,6 +496,35 @@ impl WebState {
             .catch_unwind()
             .await;
 
+            match &result {
+                Ok(Ok(report_path)) => {
+                    let summary = serde_json::json!({"report_path": report_path});
+                    if let Err(err) = operation
+                        .succeed(Some("Cleanup audit completed"), Some(&summary.to_string()))
+                        .await
+                    {
+                        error!("Could not finalize operation run: {}", err);
+                    }
+                }
+                Ok(Err(err)) => {
+                    if let Err(finalize_err) = operation.fail(&err.to_string()).await {
+                        error!("Could not finalize failed operation run: {}", finalize_err);
+                    }
+                }
+                Err(panic) => {
+                    let message = format!(
+                        "internal panic while running background cleanup audit: {}",
+                        panic_message_ref(panic)
+                    );
+                    if let Err(finalize_err) = operation.fail(&message).await {
+                        error!(
+                            "Could not finalize panicked operation run: {}",
+                            finalize_err
+                        );
+                    }
+                }
+            }
+
             let finished_at = Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string();
             let outcome = match result {
                 Ok(Ok(report_path)) => {
@@ -388,6 +535,7 @@ impl WebState {
                         report_path.display()
                     );
                     LastCleanupAuditOutcome {
+                        operation_id: Some(background_job.operation_id),
                         finished_at,
                         scope_label: background_job.scope_label.clone(),
                         libraries_label: background_job.libraries_label.clone(),
@@ -402,6 +550,7 @@ impl WebState {
                         background_job.scope_label, background_job.libraries_label, err
                     );
                     LastCleanupAuditOutcome {
+                        operation_id: Some(background_job.operation_id),
                         finished_at,
                         scope_label: background_job.scope_label.clone(),
                         libraries_label: background_job.libraries_label.clone(),
@@ -420,6 +569,7 @@ impl WebState {
                         background_job.scope_label, background_job.libraries_label, message
                     );
                     LastCleanupAuditOutcome {
+                        operation_id: Some(background_job.operation_id),
                         finished_at,
                         scope_label: background_job.scope_label.clone(),
                         libraries_label: background_job.libraries_label.clone(),
@@ -434,32 +584,25 @@ impl WebState {
             background_jobs.last_cleanup_audit_outcome = Some(outcome);
             background_jobs.active_cleanup_audit = None;
         });
+        let mut tasks = background_tasks.lock().await;
+        tasks.retain(|task| !task.handle.is_finished());
+        tasks.push(TrackedBackgroundTask {
+            operation_id,
+            handle,
+        });
 
         Ok(job)
     }
 
     pub(crate) async fn start_repair(&self) -> std::result::Result<ActiveRepairJob, String> {
+        let mut operation = OperationCoordinator::new(self.database.as_ref().clone())
+            .acquire(OperationRequest::new("repair_auto", "web", None))
+            .await
+            .map_err(|err| err.to_string())?;
         let mut background_jobs = self.background_jobs.lock().await;
-        if let Some(job) = background_jobs.active_scan.clone() {
-            return Err(format!(
-                "A scan is already running for {} (started {}).",
-                job.scope_label, job.started_at
-            ));
-        }
-        if let Some(job) = background_jobs.active_cleanup_audit.clone() {
-            return Err(format!(
-                "A cleanup audit is already running for {} ({}) started {}.",
-                job.scope_label, job.libraries_label, job.started_at
-            ));
-        }
-        if let Some(job) = background_jobs.active_repair.clone() {
-            return Err(format!(
-                "A repair run is already running for {} (started {}).",
-                job.scope_label, job.started_at
-            ));
-        }
 
         let job = ActiveRepairJob {
+            operation_id: operation.id(),
             started_at: Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string(),
             scope_label: "All Libraries".to_string(),
         };
@@ -469,8 +612,10 @@ impl WebState {
         let config = self.config.clone();
         let database = self.database.clone();
         let background_jobs = self.background_jobs.clone();
+        let background_tasks = self.background_tasks.clone();
         let background_job = job.clone();
-        tokio::spawn(async move {
+        let operation_id = operation.id();
+        let handle = tokio::spawn(async move {
             let result = std::panic::AssertUnwindSafe(async {
                 crate::commands::repair::execute_repair_auto(
                     config.as_ref(),
@@ -483,6 +628,37 @@ impl WebState {
             })
             .catch_unwind()
             .await;
+
+            match &result {
+                Ok(Ok(results)) => {
+                    let (repaired, failed, skipped, stale) =
+                        crate::commands::repair::summarize_repair_results(results);
+                    let summary = serde_json::json!({"repaired": repaired, "failed": failed, "skipped": skipped, "stale": stale});
+                    if let Err(err) = operation
+                        .succeed(Some("Repair completed"), Some(&summary.to_string()))
+                        .await
+                    {
+                        error!("Could not finalize operation run: {}", err);
+                    }
+                }
+                Ok(Err(err)) => {
+                    if let Err(finalize_err) = operation.fail(&err.to_string()).await {
+                        error!("Could not finalize failed operation run: {}", finalize_err);
+                    }
+                }
+                Err(panic) => {
+                    let message = format!(
+                        "internal panic while running background repair: {}",
+                        panic_message_ref(panic)
+                    );
+                    if let Err(finalize_err) = operation.fail(&message).await {
+                        error!(
+                            "Could not finalize panicked operation run: {}",
+                            finalize_err
+                        );
+                    }
+                }
+            }
 
             let finished_at = Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string();
             let outcome = match result {
@@ -508,6 +684,7 @@ impl WebState {
                     );
 
                     LastRepairOutcome {
+                        operation_id: Some(background_job.operation_id),
                         finished_at,
                         scope_label: background_job.scope_label.clone(),
                         success: true,
@@ -524,6 +701,7 @@ impl WebState {
                         background_job.scope_label, err
                     );
                     LastRepairOutcome {
+                        operation_id: Some(background_job.operation_id),
                         finished_at,
                         scope_label: background_job.scope_label.clone(),
                         success: false,
@@ -544,6 +722,7 @@ impl WebState {
                         background_job.scope_label, message
                     );
                     LastRepairOutcome {
+                        operation_id: Some(background_job.operation_id),
                         finished_at,
                         scope_label: background_job.scope_label.clone(),
                         success: false,
@@ -559,6 +738,12 @@ impl WebState {
             let mut background_jobs = background_jobs.lock().await;
             background_jobs.last_repair_outcome = Some(outcome);
             background_jobs.active_repair = None;
+        });
+        let mut tasks = background_tasks.lock().await;
+        tasks.retain(|task| !task.handle.is_finished());
+        tasks.push(TrackedBackgroundTask {
+            operation_id,
+            handle,
         });
 
         Ok(job)
@@ -615,6 +800,16 @@ async fn tracked_dead_link_suffix(database: &Database) -> String {
 }
 
 fn panic_message(payload: Box<dyn std::any::Any + Send + 'static>) -> String {
+    if let Some(message) = payload.downcast_ref::<&'static str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "non-string panic payload".to_string()
+    }
+}
+
+fn panic_message_ref(payload: &Box<dyn std::any::Any + Send + 'static>) -> String {
     if let Some(message) = payload.downcast_ref::<&'static str>() {
         (*message).to_string()
     } else if let Some(message) = payload.downcast_ref::<String>() {
@@ -805,7 +1000,7 @@ pub async fn serve(config: Config, db: Database, port: u16) -> Result<()> {
     let state = WebState::try_new(config, db)?;
     let addr = format!("{}:{}", bind_address, port);
 
-    let router = create_router(state);
+    let router = create_router(state.clone());
 
     info!("Starting Symlinkarr web UI on {}", addr);
     if matches!(bind_address.as_str(), "0.0.0.0" | "::") {
@@ -821,6 +1016,7 @@ pub async fn serve(config: Config, db: Database, port: u16) -> Result<()> {
     axum::serve(listener, router)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
+    state.drain_background_tasks().await;
 
     Ok(())
 }

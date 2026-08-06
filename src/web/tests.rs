@@ -888,6 +888,7 @@ fn panic_message_extracts_string_payload() {
 #[test]
 fn failed_scan_outcome_is_hidden_when_newer_scan_run_exists() {
     let outcome = LastScanOutcome {
+        operation_id: None,
         finished_at: "2026-03-29 10:00:00 UTC".to_string(),
         scope_label: "Anime".to_string(),
         dry_run: false,
@@ -905,6 +906,7 @@ fn failed_scan_outcome_is_hidden_when_newer_scan_run_exists() {
 #[test]
 fn failed_cleanup_outcome_is_hidden_when_newer_report_exists() {
     let outcome = LastCleanupAuditOutcome {
+        operation_id: None,
         finished_at: "2026-03-29 10:00:00 UTC".to_string(),
         scope_label: "Anime".to_string(),
         libraries_label: "Anime".to_string(),
@@ -917,6 +919,118 @@ fn failed_cleanup_outcome_is_hidden_when_newer_report_exists() {
         &outcome,
         Some("2026-03-29 10:05:00 UTC")
     ));
+}
+
+#[tokio::test]
+async fn active_scan_falls_back_to_persistent_operation_registry_after_web_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = test_config(dir.path());
+    let db = Database::new(&cfg.db_path).await.unwrap();
+    let operation = db
+        .try_acquire_operation("library-operation", "scan", "scheduler", Some("Anime"))
+        .await
+        .unwrap()
+        .unwrap();
+    let state = WebState::new(cfg, db);
+    let active = state.active_scan().await.unwrap();
+    assert_eq!(active.operation_id, operation.id);
+    assert_eq!(active.scope_label, "Anime");
+}
+
+#[tokio::test]
+async fn scheduler_and_cli_operations_block_web_mutation_entry_points() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = test_config(dir.path());
+    let db = Database::new(&cfg.db_path).await.unwrap();
+    let state = WebState::new(cfg, db.clone());
+
+    let scheduled = db
+        .try_acquire_operation("library-operation", "scan", "scheduler", Some("Anime"))
+        .await
+        .unwrap()
+        .unwrap();
+    let repair_error = state.start_repair().await.unwrap_err();
+    assert!(repair_error.contains("scan"));
+    assert!(repair_error.contains("scheduler"));
+    db.finish_operation(scheduled.id, "succeeded", None, None)
+        .await
+        .unwrap();
+
+    let cli = db
+        .try_acquire_operation("library-operation", "cleanup", "cli", None)
+        .await
+        .unwrap()
+        .unwrap();
+    let audit_error = state
+        .start_cleanup_audit(CleanupScope::All, Vec::new())
+        .await
+        .unwrap_err();
+    assert!(audit_error.contains("cleanup"));
+    assert!(audit_error.contains("cli"));
+    db.finish_operation(cli.id, "succeeded", None, None)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn web_shutdown_drains_finished_task_and_interrupts_over_grace_task() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = test_config(dir.path());
+    let db = Database::new(&cfg.db_path).await.unwrap();
+    let state = WebState::new(cfg, db.clone());
+
+    let completed = db
+        .try_acquire_operation("library-operation", "scan", "web", None)
+        .await
+        .unwrap()
+        .unwrap();
+    db.finish_operation(completed.id, "succeeded", Some("done"), None)
+        .await
+        .unwrap();
+    state
+        .background_tasks
+        .lock()
+        .await
+        .push(TrackedBackgroundTask {
+            operation_id: completed.id,
+            handle: tokio::spawn(async {}),
+        });
+    state
+        .drain_background_tasks_with_grace(std::time::Duration::from_secs(1))
+        .await;
+    assert_eq!(
+        db.get_operation_run(completed.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        "succeeded"
+    );
+
+    let interrupted = db
+        .try_acquire_operation("library-operation", "repair_auto", "web", None)
+        .await
+        .unwrap()
+        .unwrap();
+    state
+        .background_tasks
+        .lock()
+        .await
+        .push(TrackedBackgroundTask {
+            operation_id: interrupted.id,
+            handle: tokio::spawn(std::future::pending()),
+        });
+    state
+        .drain_background_tasks_with_grace(std::time::Duration::ZERO)
+        .await;
+    assert_eq!(
+        db.get_operation_run(interrupted.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        "interrupted"
+    );
 }
 
 #[test]

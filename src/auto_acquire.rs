@@ -51,6 +51,12 @@ fn completed_unlinked_retry_minutes(attempts: i64) -> i64 {
     base.min(120)
 }
 
+/// Return the submission count that will be persisted for this queue pass.
+/// Reusing a Decypharr item is not a new provider submission.
+pub(super) fn effective_submission_attempts(previous: i64, is_new_submission: bool) -> i64 {
+    previous + i64::from(is_new_submission)
+}
+
 #[derive(Debug, Clone)]
 pub enum RelinkCheck {
     MediaId(String),
@@ -175,6 +181,7 @@ enum QueueGuard {
 struct QueuedAcquire {
     job_id: i64,
     attempts: i64,
+    relink_attempts: i64,
     request: AutoAcquireRequest,
 }
 
@@ -182,6 +189,7 @@ struct QueuedAcquire {
 struct SubmittedAcquire {
     job_id: i64,
     attempts: i64,
+    relink_attempts: i64,
     request: AutoAcquireRequest,
     arr: String,
     release_title: String,
@@ -332,6 +340,7 @@ pub async fn process_auto_acquire_queue(
                 .map(|request| QueuedAcquire {
                     job_id: 0,
                     attempts: 0,
+                    relink_attempts: 0,
                     request,
                 })
                 .collect::<VecDeque<_>>(),
@@ -375,8 +384,14 @@ pub async fn process_auto_acquire_queue(
                 Err(err) => {
                     let outcome = request_error_outcome(err);
                     if !dry_run {
-                        persist_terminal_outcome(db, queued.job_id, queued.attempts, &outcome)
-                            .await?;
+                        persist_terminal_outcome(
+                            db,
+                            queued.job_id,
+                            queued.attempts,
+                            queued.relink_attempts,
+                            &outcome,
+                        )
+                        .await?;
                     }
                     print_terminal_outcome(&queued.request, &outcome);
                     record_terminal_outcome(&mut summary, &outcome);
@@ -386,8 +401,14 @@ pub async fn process_auto_acquire_queue(
             match submit_attempt {
                 SubmitAttempt::Immediate(outcome) => {
                     if !dry_run {
-                        persist_terminal_outcome(db, queued.job_id, queued.attempts, &outcome)
-                            .await?;
+                        persist_terminal_outcome(
+                            db,
+                            queued.job_id,
+                            queued.attempts,
+                            queued.relink_attempts,
+                            &outcome,
+                        )
+                        .await?;
                     }
                     print_terminal_outcome(&queued.request, &outcome);
                     record_terminal_outcome(&mut summary, &outcome);
@@ -408,6 +429,8 @@ pub async fn process_auto_acquire_queue(
                                 submitted_at: None,
                                 completed_at: None,
                                 increment_attempts: false,
+                                increment_relink_attempts: false,
+                                reset_relink_attempts: false,
                             },
                         )
                         .await?;
@@ -425,7 +448,15 @@ pub async fn process_auto_acquire_queue(
                 SubmitAttempt::Submitted(mut submitted) => {
                     if !dry_run {
                         submitted.job_id = queued.job_id;
-                        submitted.attempts = queued.attempts;
+                        submitted.attempts = effective_submission_attempts(
+                            queued.attempts,
+                            !submitted.reused_existing,
+                        );
+                        submitted.relink_attempts = if submitted.reused_existing {
+                            queued.relink_attempts
+                        } else {
+                            0
+                        };
                         db.update_acquisition_job_state(
                             submitted.job_id,
                             &AcquisitionJobUpdate {
@@ -437,6 +468,8 @@ pub async fn process_auto_acquire_queue(
                                 submitted_at: Some(submitted.submitted_at),
                                 completed_at: None,
                                 increment_attempts: !submitted.reused_existing,
+                                increment_relink_attempts: false,
+                                reset_relink_attempts: !submitted.reused_existing,
                             },
                         )
                         .await?;
@@ -501,7 +534,7 @@ pub async fn process_auto_acquire_queue(
             let queue_snapshots = fetch_queue_snapshots(&decypharr, &downloading).await?;
             let mut still_downloading = Vec::new();
 
-            for submitted in downloading.drain(..) {
+            for mut submitted in downloading.drain(..) {
                 match inspect_submitted(cfg, db, &submitted, queue_snapshots.get(&submitted.arr))
                     .await?
                 {
@@ -523,6 +556,8 @@ pub async fn process_auto_acquire_queue(
                                 submitted_at: Some(submitted.submitted_at),
                                 completed_at: None,
                                 increment_attempts: false,
+                                increment_relink_attempts: false,
+                                reset_relink_attempts: false,
                             },
                         )
                         .await?;
@@ -537,6 +572,7 @@ pub async fn process_auto_acquire_queue(
                     }
                     SubmittedState::Completed => {
                         let completed_at = Utc::now();
+                        submitted.relink_attempts += 1;
                         db.update_acquisition_job_state(
                             submitted.job_id,
                             &AcquisitionJobUpdate {
@@ -548,6 +584,8 @@ pub async fn process_auto_acquire_queue(
                                 submitted_at: Some(submitted.submitted_at),
                                 completed_at: Some(completed_at),
                                 increment_attempts: false,
+                                increment_relink_attempts: true,
+                                reset_relink_attempts: false,
                             },
                         )
                         .await?;
@@ -583,6 +621,8 @@ pub async fn process_auto_acquire_queue(
                             submitted_at: Some(pending_link.submitted.submitted_at),
                             completed_at: Some(Utc::now()),
                             increment_attempts: false,
+                            increment_relink_attempts: false,
+                            reset_relink_attempts: false,
                         },
                     )
                     .await?;
@@ -611,12 +651,14 @@ pub async fn process_auto_acquire_queue(
                             next_retry_at: Some(
                                 Utc::now()
                                     + ChronoDuration::minutes(completed_unlinked_retry_minutes(
-                                        pending_link.submitted.attempts,
+                                        pending_link.submitted.relink_attempts,
                                     )),
                             ),
                             submitted_at: Some(pending_link.submitted.submitted_at),
                             completed_at: Some(pending_link.completed_at),
                             increment_attempts: false,
+                            increment_relink_attempts: false,
+                            reset_relink_attempts: false,
                         },
                     )
                     .await?;

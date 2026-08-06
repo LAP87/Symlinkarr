@@ -158,8 +158,10 @@ impl Database {
             18 => self.migration_v18_tx(tx).await,
             19 => self.migration_v19_tx(tx).await,
             20 => self.migration_v20_tx(tx).await,
+            21 => self.migration_v21_tx(tx).await,
+            22 => self.migration_v22_tx(tx).await,
             _ => anyhow::bail!(
-                "Unsupported schema migration version {}. This build only knows migrations 1 through 20",
+                "Unsupported schema migration version {}. This build only knows migrations 1 through 22",
                 version
             ),
         }
@@ -184,6 +186,54 @@ impl Database {
         sqlx::query(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_scheduler_runs_rule
              ON scheduler_runs(rule_id, planned_at)",
+        )
+        .execute(&mut **tx)
+        .await?;
+        Ok(())
+    }
+
+    async fn migration_v21_tx(&self, tx: &mut Transaction<'_, Sqlite>) -> Result<()> {
+        if !self
+            .column_exists("acquisition_jobs", "relink_attempts")
+            .await?
+        {
+            sqlx::query(
+                "ALTER TABLE acquisition_jobs
+                 ADD COLUMN relink_attempts INTEGER NOT NULL DEFAULT 0",
+            )
+            .execute(&mut **tx)
+            .await?;
+        }
+        Ok(())
+    }
+
+    async fn migration_v22_tx(&self, tx: &mut Transaction<'_, Sqlite>) -> Result<()> {
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS operation_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lock_key TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                origin TEXT NOT NULL,
+                scope TEXT,
+                status TEXT NOT NULL,
+                started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                heartbeat_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                finished_at DATETIME,
+                message TEXT,
+                result_json TEXT
+            )",
+        )
+        .execute(&mut **tx)
+        .await?;
+        sqlx::query(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_operation_runs_active_lock
+             ON operation_runs(lock_key) WHERE status = 'running'",
+        )
+        .execute(&mut **tx)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_operation_runs_history
+             ON operation_runs(lock_key, started_at DESC)",
         )
         .execute(&mut **tx)
         .await?;
@@ -696,6 +746,27 @@ impl Database {
     #[cfg(test)]
     async fn migrate_down_one(&self, current_version: i64) -> Result<()> {
         match current_version {
+            22 => {
+                sqlx::query("DROP INDEX IF EXISTS idx_operation_runs_history")
+                    .execute(&self.pool)
+                    .await?;
+                sqlx::query("DROP INDEX IF EXISTS idx_operation_runs_active_lock")
+                    .execute(&self.pool)
+                    .await?;
+                sqlx::query("DROP TABLE IF EXISTS operation_runs")
+                    .execute(&self.pool)
+                    .await?;
+            }
+            21 => {
+                if self
+                    .column_exists("acquisition_jobs", "relink_attempts")
+                    .await?
+                {
+                    sqlx::query("ALTER TABLE acquisition_jobs DROP COLUMN relink_attempts")
+                        .execute(&self.pool)
+                        .await?;
+                }
+            }
             20 => {
                 sqlx::query("DROP INDEX IF EXISTS idx_scheduler_runs_rule")
                     .execute(&self.pool)

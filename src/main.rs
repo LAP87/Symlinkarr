@@ -19,6 +19,7 @@ mod linker;
 mod matcher;
 mod media_servers;
 mod models;
+mod operations;
 mod provider_repair;
 mod repair;
 mod scheduler;
@@ -32,6 +33,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::commands::print_final_summary;
 use crate::db::AcquisitionJobStatus;
+use crate::operations::{OperationCoordinator, OperationRequest};
 
 const ROOT_AFTER_HELP: &str = r#"Feature guide:
   scan      = look at your library and source mount, then create/update symlinks
@@ -863,9 +865,24 @@ async fn main() -> Result<()> {
                 }
                 _ => None,
             };
+            if *mode != ImportMode::Preview {
+                if let Some(db) = db.as_ref() {
+                    return OperationCoordinator::new(db.clone())
+                        .run(
+                            OperationRequest::new("import_apply", "cli", None),
+                            commands::importer::run_import(
+                                import_options,
+                                Some(db),
+                                tmdb.as_ref(),
+                                tvdb.as_mut(),
+                            ),
+                        )
+                        .await;
+                }
+            }
             return commands::importer::run_import(
                 import_options,
-                db.as_ref(),
+                None,
                 tmdb.as_ref(),
                 tvdb.as_mut(),
             )
@@ -907,15 +924,20 @@ async fn main() -> Result<()> {
             library,
             output,
         } => {
-            let (created, dead) = commands::scan::run_scan(
-                &cfg,
-                &db,
-                dry_run,
-                search_missing,
-                output,
-                library.as_deref(),
-            )
-            .await?;
+            let scope = library.clone();
+            let (created, dead) = OperationCoordinator::new(db.clone())
+                .run(
+                    OperationRequest::new("scan", "cli", scope),
+                    commands::scan::run_scan(
+                        &cfg,
+                        &db,
+                        dry_run,
+                        search_missing,
+                        output,
+                        library.as_deref(),
+                    ),
+                )
+                .await?;
             if output == OutputFormat::Json {
                 commands::print_json(&serde_json::json!({
                     "added": created,
@@ -931,9 +953,13 @@ async fn main() -> Result<()> {
             output,
         } => {
             tracing::warn!("'dry-run' command is deprecated; use 'scan --dry-run'");
-            let (created, _dead) =
-                commands::scan::run_scan(&cfg, &db, true, false, output, library.as_deref())
-                    .await?;
+            let scope = library.clone();
+            let (created, _dead) = OperationCoordinator::new(db.clone())
+                .run(
+                    OperationRequest::new("scan", "cli", scope),
+                    commands::scan::run_scan(&cfg, &db, true, false, output, library.as_deref()),
+                )
+                .await?;
             if output == OutputFormat::Json {
                 commands::print_json(&serde_json::json!({ "added": created }));
             } else {
@@ -970,15 +996,25 @@ async fn main() -> Result<()> {
             library,
             output,
         } => {
-            let removed =
-                commands::cleanup::run_cleanup(&cfg, &db, action, library.as_deref(), output)
-                    .await?;
+            let scope = library.clone();
+            let removed = OperationCoordinator::new(db.clone())
+                .run(
+                    OperationRequest::new("cleanup", "cli", scope),
+                    commands::cleanup::run_cleanup(&cfg, &db, action, library.as_deref(), output),
+                )
+                .await?;
             if output != OutputFormat::Json {
                 print_final_summary(&db, None, removed).await?
             }
         }
         Commands::Repair { action, library } => {
-            commands::repair::run_repair(&cfg, &db, action, library.as_deref()).await?
+            let scope = library.clone();
+            OperationCoordinator::new(db.clone())
+                .run(
+                    OperationRequest::new("repair", "cli", scope),
+                    commands::repair::run_repair(&cfg, &db, action, library.as_deref()),
+                )
+                .await?
         }
         Commands::Backfill {
             arr,
@@ -988,19 +1024,30 @@ async fn main() -> Result<()> {
             item,
             output,
         } => {
-            commands::backfill::run_backfill(
-                &cfg,
-                &db,
-                commands::backfill::BackfillOptions {
-                    scope: arr,
-                    dry_run,
-                    search_missing,
-                    library_filter: library,
-                    item_filter: item,
-                    output,
-                },
-            )
-            .await?;
+            let scope = format!(
+                "arr={arr:?}, library={}, item={}, dry_run={}, search_missing={}",
+                library.as_deref().unwrap_or("all"),
+                item.as_deref().unwrap_or("all"),
+                dry_run,
+                search_missing
+            );
+            OperationCoordinator::new(db.clone())
+                .run(
+                    OperationRequest::new("backfill", "cli", Some(scope)),
+                    commands::backfill::run_backfill(
+                        &cfg,
+                        &db,
+                        commands::backfill::BackfillOptions {
+                            scope: arr,
+                            dry_run,
+                            search_missing,
+                            library_filter: library,
+                            item_filter: item,
+                            output,
+                        },
+                    ),
+                )
+                .await?;
         }
         Commands::Discover {
             action,

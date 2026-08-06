@@ -30,6 +30,7 @@ pub(super) async fn load_persistent_queue(
             | AcquisitionJobStatus::Failed => pending.push_back(QueuedAcquire {
                 job_id: job.id,
                 attempts: job.attempts,
+                relink_attempts: job.relink_attempts,
                 request: job_to_request(&job)?,
             }),
             AcquisitionJobStatus::Downloading => downloading.push(job_to_submitted(&job)?),
@@ -144,6 +145,7 @@ fn job_to_submitted(job: &AcquisitionJobRecord) -> Result<SubmittedAcquire> {
     Ok(SubmittedAcquire {
         job_id: job.id,
         attempts: job.attempts,
+        relink_attempts: job.relink_attempts,
         request: job_to_request(job)?,
         arr: job.arr.clone(),
         release_title: job
@@ -174,6 +176,7 @@ pub(super) async fn persist_terminal_outcome(
     db: &Database,
     job_id: i64,
     attempts: i64,
+    relink_attempts: i64,
     outcome: &AutoAcquireOutcome,
 ) -> Result<()> {
     let now = Utc::now();
@@ -191,6 +194,8 @@ pub(super) async fn persist_terminal_outcome(
                     submitted_at: None,
                     completed_at: None,
                     increment_attempts: true,
+                    increment_relink_attempts: false,
+                    reset_relink_attempts: false,
                 },
             )
             .await
@@ -207,6 +212,8 @@ pub(super) async fn persist_terminal_outcome(
                     submitted_at: None,
                     completed_at: None,
                     increment_attempts: false,
+                    increment_relink_attempts: false,
+                    reset_relink_attempts: false,
                 },
             )
             .await
@@ -223,6 +230,8 @@ pub(super) async fn persist_terminal_outcome(
                     submitted_at: None,
                     completed_at: Some(now),
                     increment_attempts: false,
+                    increment_relink_attempts: false,
+                    reset_relink_attempts: false,
                 },
             )
             .await
@@ -236,11 +245,15 @@ pub(super) async fn persist_terminal_outcome(
                     info_hash: None,
                     error: Some(outcome.message.clone()),
                     next_retry_at: Some(
-                        now + ChronoDuration::minutes(completed_unlinked_retry_minutes(attempts)),
+                        now + ChronoDuration::minutes(completed_unlinked_retry_minutes(
+                            relink_attempts,
+                        )),
                     ),
                     submitted_at: None,
                     completed_at: Some(now),
                     increment_attempts: false,
+                    increment_relink_attempts: false,
+                    reset_relink_attempts: false,
                 },
             )
             .await
@@ -254,11 +267,15 @@ pub(super) async fn persist_terminal_outcome(
                     info_hash: None,
                     error: Some(outcome.message.clone()),
                     next_retry_at: Some(
-                        now + ChronoDuration::minutes(failed_retry_minutes(attempts)),
+                        now + ChronoDuration::minutes(failed_retry_minutes(
+                            effective_submission_attempts(attempts, true),
+                        )),
                     ),
                     submitted_at: None,
                     completed_at: None,
                     increment_attempts: true,
+                    increment_relink_attempts: false,
+                    reset_relink_attempts: false,
                 },
             )
             .await
@@ -390,6 +407,7 @@ pub(super) async fn submit_request(
             return Ok(SubmitAttempt::Submitted(Box::new(SubmittedAcquire {
                 job_id: 0,
                 attempts: 0,
+                relink_attempts: 0,
                 request: request.clone(),
                 arr,
                 release_title: if existing.name.is_empty() {
@@ -408,6 +426,7 @@ pub(super) async fn submit_request(
                 return Ok(SubmitAttempt::Submitted(Box::new(SubmittedAcquire {
                     job_id: 0,
                     attempts: 0,
+                    relink_attempts: 0,
                     request: request.clone(),
                     arr,
                     release_title: candidate.title,

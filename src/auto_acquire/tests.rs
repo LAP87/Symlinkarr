@@ -25,6 +25,7 @@ fn failed_retry_backoff_values() {
     assert_eq!(failed_retry_minutes(5), 180); // capped
                                               // Edge: 0 or negative treated as attempt 1
     assert_eq!(failed_retry_minutes(0), 30);
+    assert_eq!(failed_retry_minutes(6), 180);
 }
 
 #[test]
@@ -36,6 +37,27 @@ fn completed_unlinked_retry_backoff_values() {
     assert_eq!(completed_unlinked_retry_minutes(5), 120); // capped
                                                           // Edge: 0 or negative treated as attempt 1
     assert_eq!(completed_unlinked_retry_minutes(0), 5);
+    assert_eq!(completed_unlinked_retry_minutes(6), 120);
+}
+
+#[test]
+fn effective_submission_attempts_distinguishes_new_and_reused_downloads() {
+    assert_eq!(effective_submission_attempts(0, true), 1);
+    assert_eq!(effective_submission_attempts(1, true), 2);
+    assert_eq!(effective_submission_attempts(2, false), 2);
+    assert_eq!(
+        failed_retry_minutes(effective_submission_attempts(1, true)),
+        90
+    );
+}
+
+#[test]
+fn reused_existing_relink_cycles_advance_their_own_backoff() {
+    let reused_submission_attempts = effective_submission_attempts(5, false);
+    assert_eq!(reused_submission_attempts, 5);
+    assert_eq!(completed_unlinked_retry_minutes(1), 5);
+    assert_eq!(completed_unlinked_retry_minutes(2), 15);
+    assert_eq!(completed_unlinked_retry_minutes(3), 45);
 }
 
 #[test]
