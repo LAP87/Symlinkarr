@@ -200,16 +200,18 @@ fn test_score_no_title_match() {
 
 // ── Filesystem tests ──
 
-#[test]
-fn test_scan_empty_dir_for_dead_symlinks() {
+#[tokio::test]
+async fn test_scan_empty_dir_for_dead_symlinks() {
     let repairer = Repairer::new();
     let dir = tempfile::TempDir::new().unwrap();
-    let dead = repairer.scan_for_dead_symlinks(&[dir.path().to_path_buf()]);
+    let dead = repairer
+        .scan_for_dead_symlinks(&[dir.path().to_path_buf()], &[])
+        .await;
     assert!(dead.is_empty());
 }
 
-#[test]
-fn test_scan_finds_dead_symlink_with_trash_name() {
+#[tokio::test]
+async fn test_scan_finds_dead_symlink_with_trash_name() {
     let repairer = Repairer::new();
     let dir = tempfile::TempDir::new().unwrap();
 
@@ -219,7 +221,9 @@ fn test_scan_finds_dead_symlink_with_trash_name() {
         .join("Breaking Bad (2008) - S01E03 - And the Bags in the River [WEBDL-1080p][x264].mkv");
     std::os::unix::fs::symlink("/nonexistent/file.mkv", &link_path).unwrap();
 
-    let dead = repairer.scan_for_dead_symlinks(&[dir.path().to_path_buf()]);
+    let dead = repairer
+        .scan_for_dead_symlinks(&[dir.path().to_path_buf()], &[])
+        .await;
     assert_eq!(dead.len(), 1);
 
     // Verify TRaSH parsing enriched the dead link
@@ -229,6 +233,69 @@ fn test_scan_finds_dead_symlink_with_trash_name() {
     assert_eq!(dead[0].meta.episode, Some(3));
     assert_eq!(dead[0].meta.quality, Some("1080p".to_string()));
     assert_eq!(dead[0].media_type, MediaType::Tv);
+    assert_eq!(
+        dead[0].original_source,
+        PathBuf::from("/nonexistent/file.mkv")
+    );
+}
+
+#[tokio::test]
+async fn test_scan_resolves_relative_target_against_link_parent() {
+    let repairer = Repairer::new();
+    let dir = tempfile::TempDir::new().unwrap();
+
+    // Alive relative symlink: resolves against the link's parent directory.
+    let alive_source = dir.path().join("alive-source.mkv");
+    std::fs::write(&alive_source, b"x").unwrap();
+    let alive_link = dir.path().join("Alive Movie (2020) [WEBDL-1080p].mkv");
+    std::os::unix::fs::symlink("alive-source.mkv", &alive_link).unwrap();
+
+    // Dead relative symlink: target does not exist under the link's parent.
+    let dead_link = dir.path().join("Dead Movie (2021) [WEBDL-1080p].mkv");
+    std::os::unix::fs::symlink("missing/source.mkv", &dead_link).unwrap();
+
+    let dead = repairer
+        .scan_for_dead_symlinks(&[dir.path().to_path_buf()], &[])
+        .await;
+    assert_eq!(dead.len(), 1);
+    assert_eq!(dead[0].symlink_path, dead_link);
+    // original_source must be the RESOLVED target, not the raw relative value.
+    assert_eq!(
+        dead[0].original_source,
+        dir.path().join("missing/source.mkv")
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_scan_skips_links_under_unreachable_source_root() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let repairer = Repairer::new();
+    let lib = tempfile::TempDir::new().unwrap();
+    let src = tempfile::TempDir::new().unwrap();
+    let src_root = src.path().to_path_buf();
+
+    let link_path = lib.path().join("Show (2020) - S01E01 - Pilot [WEBDL-1080p].mkv");
+    std::os::unix::fs::symlink(src_root.join("missing.mkv"), &link_path).unwrap();
+
+    // Simulate an unreachable source root (probe fails with an I/O error).
+    let original_perms = std::fs::metadata(&src_root).unwrap().permissions();
+    std::fs::set_permissions(&src_root, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let simulated = std::fs::read_dir(&src_root).is_err();
+
+    let dead = repairer
+        .scan_for_dead_symlinks(&[lib.path().to_path_buf()], std::slice::from_ref(&src_root))
+        .await;
+
+    std::fs::set_permissions(&src_root, original_perms).unwrap();
+
+    if !simulated {
+        // Running as root: permissions cannot make the root unreachable.
+        return;
+    }
+    // The link's source cannot be verified — it must NOT be classified dead.
+    assert!(dead.is_empty());
 }
 
 #[test]

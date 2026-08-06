@@ -296,7 +296,7 @@ fn test_resolve_anime_episode_mapping_single_season_bare_episode() {
     let metadata = metadata_with_seasons(&[(1, 12)]);
     assert_eq!(
         resolve_anime_episode_mapping(Some(&metadata), 3),
-        Some((1, 3))
+        AnimeEpisodeResolution::Resolved(1, 3)
     );
 }
 
@@ -305,26 +305,50 @@ fn test_resolve_anime_episode_mapping_multi_season_absolute_numbering() {
     let metadata = metadata_with_seasons(&[(1, 12), (2, 12)]);
     assert_eq!(
         resolve_anime_episode_mapping(Some(&metadata), 21),
-        Some((2, 9))
+        AnimeEpisodeResolution::Resolved(2, 9)
     );
 }
 
 #[test]
-fn test_resolve_anime_episode_mapping_prefers_unique_high_episode_local_match() {
+fn test_resolve_anime_episode_mapping_agreeing_interpretations_resolve() {
+    // Season-local (S1E60) and cumulative (episode 60 of 61 in S1) agree,
+    // so the mapping resolves even without an authoritative mapping.
+    let metadata = metadata_with_seasons(&[(1, 61), (2, 24)]);
+    assert_eq!(
+        resolve_anime_episode_mapping(Some(&metadata), 60),
+        AnimeEpisodeResolution::Resolved(1, 60)
+    );
+}
+
+#[test]
+fn test_resolve_anime_episode_mapping_conflicting_interpretations_are_ambiguous() {
+    // Episode 129 fits season 20 locally (S20E129) but also resolves
+    // cumulatively (S20E117). With no authoritative mapping to break the
+    // tie, the mapping must not guess.
     let metadata = metadata_with_seasons(&[(1, 12), (20, 130)]);
     assert_eq!(
         resolve_anime_episode_mapping(Some(&metadata), 129),
-        Some((20, 129))
+        AnimeEpisodeResolution::Ambiguous
     );
 }
 
 #[test]
 fn test_resolve_anime_scene_episode_mapping_falls_back_to_absolute_episode() {
+    let metadata = metadata_with_seasons(&[(1, 12), (2, 12)]);
+    let item = anime_item("Example Anime", 456);
+    assert_eq!(
+        resolve_anime_scene_episode_mapping(&item, Some(&metadata), None, 25, 21),
+        AnimeEpisodeResolution::Resolved(2, 9)
+    );
+}
+
+#[test]
+fn test_resolve_anime_scene_episode_mapping_propagates_ambiguity_from_absolute_fallback() {
     let metadata = metadata_with_seasons(&[(1, 12), (20, 130)]);
     let item = anime_item("Example Anime", 456);
     assert_eq!(
         resolve_anime_scene_episode_mapping(&item, Some(&metadata), None, 25, 129),
-        Some((20, 129))
+        AnimeEpisodeResolution::Ambiguous
     );
 }
 
@@ -334,7 +358,7 @@ fn test_resolve_anime_scene_episode_mapping_does_not_treat_in_season_numbers_as_
     let item = anime_item("Example Anime", 456);
     assert_eq!(
         resolve_anime_scene_episode_mapping(&item, Some(&metadata), None, 3, 129),
-        None
+        AnimeEpisodeResolution::Unresolved
     );
 }
 
@@ -369,8 +393,11 @@ fn test_resolve_source_for_library_item_uses_anime_identity_for_absolute_numberi
     )
     .unwrap();
 
-    let resolved =
-        resolve_source_for_library_item(&item, &parsed, Some(&metadata), Some(&graph)).unwrap();
+    let SourceResolution::Resolved(resolved) =
+        resolve_source_for_library_item(&item, &parsed, Some(&metadata), Some(&graph))
+    else {
+        panic!("expected resolved source");
+    };
     assert_eq!(resolved.season, Some(2));
     assert_eq!(resolved.episode, Some(3));
 }
@@ -406,10 +433,106 @@ fn test_resolve_source_for_library_item_prefers_anime_identity_scene_mapping_ove
     )
     .unwrap();
 
-    let resolved =
-        resolve_source_for_library_item(&item, &parsed, Some(&metadata), Some(&graph)).unwrap();
+    let SourceResolution::Resolved(resolved) =
+        resolve_source_for_library_item(&item, &parsed, Some(&metadata), Some(&graph))
+    else {
+        panic!("expected resolved source");
+    };
     assert_eq!(resolved.season, Some(2));
     assert_eq!(resolved.episode, Some(3));
+}
+
+#[test]
+fn test_resolve_source_for_library_item_authoritative_mapping_beats_ambiguity() {
+    // Metadata alone would make episode 129 ambiguous (S20E129 vs S20E117),
+    // but an authoritative anime-identity mapping resolves it.
+    let metadata = metadata_with_seasons(&[(1, 12), (20, 130)]);
+    let item = anime_item("Example Anime", 44444);
+    let parsed = SourceItem {
+        path: PathBuf::from("/rd/[SubsPlease] Example Anime - 129.mkv"),
+        parsed_title: "Example Anime".to_string(),
+        season: None,
+        episode: Some(129),
+        episode_end: None,
+        quality: None,
+        video_codec: None,
+        hdr_formats: Vec::new(),
+        edition: None,
+        extension: "mkv".to_string(),
+        year: None,
+    };
+    let graph = AnimeIdentityGraph::from_xml(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<anime-list>
+  <anime anidbid="103" tvdbid="44444" defaulttvdbseason="20">
+    <name>Example Anime</name>
+    <mapping-list>
+      <mapping anidbseason="1" tvdbseason="20">;129-117;</mapping>
+    </mapping-list>
+  </anime>
+</anime-list>
+"#,
+    )
+    .unwrap();
+
+    let SourceResolution::Resolved(resolved) =
+        resolve_source_for_library_item(&item, &parsed, Some(&metadata), Some(&graph))
+    else {
+        panic!("expected resolved source");
+    };
+    assert_eq!(resolved.season, Some(20));
+    assert_eq!(resolved.episode, Some(117));
+}
+
+#[test]
+fn test_resolve_source_for_library_item_ambiguous_absolute_numbering_skips() {
+    let metadata = metadata_with_seasons(&[(1, 12), (20, 130)]);
+    let item = anime_item("Example Anime", 55555);
+    let parsed = SourceItem {
+        path: PathBuf::from("/rd/[SubsPlease] Example Anime - 129.mkv"),
+        parsed_title: "Example Anime".to_string(),
+        season: None,
+        episode: Some(129),
+        episode_end: None,
+        quality: None,
+        video_codec: None,
+        hdr_formats: Vec::new(),
+        edition: None,
+        extension: "mkv".to_string(),
+        year: None,
+    };
+
+    assert!(matches!(
+        resolve_source_for_library_item(&item, &parsed, Some(&metadata), None),
+        SourceResolution::AmbiguousAnimeNumbering
+    ));
+}
+
+#[test]
+fn test_resolve_source_for_library_item_unambiguous_absolute_numbering_still_resolves() {
+    let metadata = metadata_with_seasons(&[(1, 12), (2, 12)]);
+    let item = anime_item("Example Anime", 55555);
+    let parsed = SourceItem {
+        path: PathBuf::from("/rd/[SubsPlease] Example Anime - 21.mkv"),
+        parsed_title: "Example Anime".to_string(),
+        season: None,
+        episode: Some(21),
+        episode_end: None,
+        quality: None,
+        video_codec: None,
+        hdr_formats: Vec::new(),
+        edition: None,
+        extension: "mkv".to_string(),
+        year: None,
+    };
+
+    let SourceResolution::Resolved(resolved) =
+        resolve_source_for_library_item(&item, &parsed, Some(&metadata), None)
+    else {
+        panic!("expected resolved source");
+    };
+    assert_eq!(resolved.season, Some(2));
+    assert_eq!(resolved.episode, Some(9));
 }
 
 #[test]
@@ -630,6 +753,48 @@ fn test_match_source_slice_records_no_library_candidates_reason() {
     assert!(chunk.best_per_source.is_empty());
     assert_eq!(
         chunk.skip_reasons.get("matcher_no_library_candidates"),
+        Some(&1)
+    );
+}
+
+#[test]
+fn test_match_source_slice_records_anime_ambiguous_numbering_reason() {
+    let library_items = vec![anime_item("Example Anime", 1234)];
+    let source_items = vec![SourceItem {
+        path: PathBuf::from("/rd/[SubsPlease] Example Anime - 129 (1080p).mkv"),
+        parsed_title: "Example Anime".to_string(),
+        season: None,
+        episode: Some(129),
+        episode_end: None,
+        quality: None,
+        video_codec: None,
+        hdr_formats: Vec::new(),
+        edition: None,
+        extension: "mkv".to_string(),
+        year: None,
+    }];
+
+    let mut alias_map = HashMap::new();
+    alias_map.insert(0usize, vec!["example anime".to_string()]);
+    let mut metadata_map = HashMap::new();
+    metadata_map.insert(0usize, Some(metadata_with_seasons(&[(1, 12), (20, 130)])));
+    let alias_token_index = build_alias_token_index(&alias_map);
+
+    let chunk = match_source_slice(
+        0,
+        &source_items,
+        &library_items,
+        &alias_map,
+        &metadata_map,
+        &alias_token_index,
+        MatchingMode::Strict,
+        true,
+        None,
+    );
+
+    assert!(chunk.best_per_source.is_empty());
+    assert_eq!(
+        chunk.skip_reasons.get("matcher_anime_ambiguous_numbering"),
         Some(&1)
     );
 }

@@ -222,6 +222,15 @@ async fn api_get_status_includes_daemon_observability() {
     assert!(daemon_heartbeat.detail.contains("Next scan in 60 minutes"));
 }
 
+/// Allow test Plex DBs under the temp dir and the workspace (for
+/// `tempdir_in`-based tests). Every caller sets the same value, so parallel
+/// tests do not conflict.
+fn allow_test_plex_db_locations() {
+    let allowed =
+        std::env::join_paths([std::env::temp_dir(), std::env::current_dir().unwrap()]).unwrap();
+    std::env::set_var(PLEX_DB_ENV_VAR, allowed);
+}
+
 async fn create_test_plex_duplicate_db(path: &Path) {
     let options = SqliteConnectOptions::from_str(path.to_str().unwrap())
         .unwrap()
@@ -1473,6 +1482,7 @@ async fn api_get_anime_remediation_returns_ranked_groups() {
     std::os::windows::fs::symlink_file("C:\\source-a.mkv", &legacy_target).unwrap();
 
     let plex_db_path = root.join("plex.db");
+    allow_test_plex_db_locations();
     create_test_plex_duplicate_db(&plex_db_path).await;
     let options = SqliteConnectOptions::from_str(plex_db_path.to_str().unwrap()).unwrap();
     let pool = SqlitePoolOptions::new()
@@ -1561,6 +1571,7 @@ async fn api_get_anime_remediation_can_export_filtered_tsv() {
     .unwrap();
 
     let plex_db_path = root.join("plex.db");
+    allow_test_plex_db_locations();
     create_test_plex_duplicate_db(&plex_db_path).await;
     let options = SqliteConnectOptions::from_str(plex_db_path.to_str().unwrap()).unwrap();
     let pool = SqlitePoolOptions::new()
@@ -1649,6 +1660,7 @@ async fn api_post_anime_remediation_preview_saves_plan_in_backup_dir() {
     std::os::unix::fs::symlink("/tmp/source-a.mkv", &legacy_target).unwrap();
 
     let plex_db_path = root.join("plex.db");
+    allow_test_plex_db_locations();
     create_test_plex_duplicate_db(&plex_db_path).await;
     let options = SqliteConnectOptions::from_str(plex_db_path.to_str().unwrap()).unwrap();
     let pool = SqlitePoolOptions::new()
@@ -1737,6 +1749,7 @@ async fn api_post_anime_remediation_apply_uses_saved_plan_and_quarantines_legacy
     std::os::unix::fs::symlink(&tracked_source, &legacy_target).unwrap();
 
     let plex_db_path = root.join("plex.db");
+    allow_test_plex_db_locations();
     create_test_plex_duplicate_db(&plex_db_path).await;
     let options = SqliteConnectOptions::from_str(plex_db_path.to_str().unwrap()).unwrap();
     let pool = SqlitePoolOptions::new()
@@ -1825,7 +1838,7 @@ async fn api_post_anime_remediation_preview_rejects_missing_plex_db() {
     let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let json: ApiAnimeRemediationPreviewResponse = serde_json::from_slice(&bytes).unwrap();
     assert!(!json.success);
-    assert!(json.message.contains("Plex DB path is required"));
+    assert!(json.message.contains("Plex DB not found"));
 }
 
 #[tokio::test]
@@ -1921,4 +1934,55 @@ async fn api_post_anime_remediation_apply_rejects_when_foreign_quarantine_disabl
     assert!(json
         .message
         .contains("cleanup.prune.quarantine_foreign=true"));
+}
+
+#[test]
+fn confine_plex_db_path_allows_default_and_sibling_and_rejects_outside() {
+    let allowed_dir = tempfile::tempdir().unwrap();
+    let outside_dir = tempfile::tempdir().unwrap();
+    let default_db = allowed_dir.path().join("com.plexapp.plugins.library.db");
+    let sibling_db = allowed_dir.path().join("library-copy.db");
+    let outside_db = outside_dir.path().join("whatever.db");
+    std::fs::write(&default_db, b"db").unwrap();
+    std::fs::write(&sibling_db, b"db").unwrap();
+    std::fs::write(&outside_db, b"db").unwrap();
+
+    let roots = vec![allowed_dir.path().canonicalize().unwrap()];
+
+    assert_eq!(
+        confine_plex_db_path(default_db.to_str().unwrap(), &roots).unwrap(),
+        default_db.canonicalize().unwrap()
+    );
+    assert_eq!(
+        confine_plex_db_path(sibling_db.to_str().unwrap(), &roots).unwrap(),
+        sibling_db.canonicalize().unwrap()
+    );
+
+    let err = confine_plex_db_path(outside_db.to_str().unwrap(), &roots).unwrap_err();
+    assert!(
+        err.contains("outside the allowed Plex database directories"),
+        "{err}"
+    );
+}
+
+#[test]
+fn confine_plex_db_path_rejects_absolute_paths_without_any_allowed_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("library.db");
+    std::fs::write(&db_path, b"db").unwrap();
+
+    let err = confine_plex_db_path(db_path.to_str().unwrap(), &[]).unwrap_err();
+    assert!(err.contains(PLEX_DB_ENV_VAR), "{err}");
+}
+
+#[test]
+fn confine_plex_db_path_rejects_missing_and_non_db_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let text_path = dir.path().join("notes.txt");
+    std::fs::write(&text_path, b"not a database").unwrap();
+    let roots = vec![dir.path().canonicalize().unwrap()];
+
+    let missing = dir.path().join("missing.db");
+    assert!(confine_plex_db_path(missing.to_str().unwrap(), &roots).is_err());
+    assert!(confine_plex_db_path(text_path.to_str().unwrap(), &roots).is_err());
 }

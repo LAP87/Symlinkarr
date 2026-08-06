@@ -26,6 +26,11 @@ fn default_plex_db_candidates() -> [&'static str; 3] {
     ]
 }
 
+/// Environment variable operators can set to allow a Plex DB outside the
+/// standard local paths. Accepts a PATH-style list of database files or the
+/// directories that contain them.
+pub(super) const PLEX_DB_ENV_VAR: &str = "SYMLINKARR_PLEX_DB";
+
 fn canonical_plex_db_path(path: PathBuf) -> Option<PathBuf> {
     if path
         .components()
@@ -47,15 +52,81 @@ fn canonical_plex_db_path(path: PathBuf) -> Option<PathBuf> {
     Some(canonical)
 }
 
-fn resolve_plex_db_path(query_path: Option<&str>) -> Option<PathBuf> {
-    if let Some(requested) = query_path.map(str::trim).filter(|value| !value.is_empty()) {
-        return canonical_plex_db_path(PathBuf::from(requested));
+fn configured_plex_db_roots() -> Vec<PathBuf> {
+    let Ok(value) = std::env::var(PLEX_DB_ENV_VAR) else {
+        return Vec::new();
+    };
+
+    std::env::split_paths(&value)
+        .filter_map(|entry| {
+            let canonical = entry.canonicalize().ok()?;
+            if canonical.is_dir() {
+                Some(canonical)
+            } else {
+                canonical.parent().map(StdPath::to_path_buf)
+            }
+        })
+        .collect()
+}
+
+fn allowed_plex_db_roots() -> Vec<PathBuf> {
+    let mut roots = configured_plex_db_roots();
+    for candidate in default_plex_db_candidates() {
+        if let Some(parent) = canonical_plex_db_path(PathBuf::from(candidate))
+            .as_deref()
+            .and_then(StdPath::parent)
+        {
+            let parent = parent.to_path_buf();
+            if !roots.contains(&parent) {
+                roots.push(parent);
+            }
+        }
+    }
+    roots
+}
+
+fn confine_plex_db_path(requested: &str, allowed_roots: &[PathBuf]) -> Result<PathBuf, String> {
+    let candidate = canonical_plex_db_path(PathBuf::from(requested))
+        .ok_or_else(|| format!("Plex DB not found or not a .db file: {}", requested))?;
+
+    if allowed_roots.is_empty() {
+        return Err(format!(
+            "Custom Plex DB paths are disabled because no Plex DB was found at a standard local path; set {} to the Plex database file or directory to allow one",
+            PLEX_DB_ENV_VAR
+        ));
+    }
+
+    if allowed_roots.iter().any(|root| candidate.starts_with(root)) {
+        Ok(candidate)
+    } else {
+        Err(format!(
+            "Plex DB path {} is outside the allowed Plex database directories; set {} to allow a custom location",
+            candidate.display(),
+            PLEX_DB_ENV_VAR
+        ))
+    }
+}
+
+fn default_plex_db_path() -> Option<PathBuf> {
+    if let Ok(value) = std::env::var(PLEX_DB_ENV_VAR) {
+        if let Some(path) = std::env::split_paths(&value).find_map(canonical_plex_db_path) {
+            return Some(path);
+        }
     }
 
     default_plex_db_candidates()
         .into_iter()
         .map(PathBuf::from)
         .find_map(canonical_plex_db_path)
+}
+
+fn resolve_plex_db_path(query_path: Option<&str>) -> Result<PathBuf, String> {
+    if let Some(requested) = query_path.map(str::trim).filter(|value| !value.is_empty()) {
+        return confine_plex_db_path(requested, &allowed_plex_db_roots());
+    }
+
+    default_plex_db_path()
+        .ok_or_else(|| "Plex DB path is required or must exist at a standard local path".to_string())
 }
 
 pub(super) async fn visible_last_cleanup_audit_outcome(
@@ -220,19 +291,20 @@ pub(crate) async fn get_cleanup_anime_remediation(
         }
     };
 
-    let Some(plex_db_path) = resolve_plex_db_path(query.plex_db.as_deref()) else {
-        return Html(
-            AnimeRemediationTemplate {
-                summary: None,
-                groups: vec![],
-                error_message: Some(
-                    "Plex DB path is required or must exist at a standard local path".to_string(),
-                ),
-                csrf_token: browser_csrf_token(&state),
-            }
-            .render()
-            .unwrap_or_else(|e| e.to_string()),
-        );
+    let plex_db_path = match resolve_plex_db_path(query.plex_db.as_deref()) {
+        Ok(path) => path,
+        Err(err) => {
+            return Html(
+                AnimeRemediationTemplate {
+                    summary: None,
+                    groups: vec![],
+                    error_message: Some(err),
+                    csrf_token: browser_csrf_token(&state),
+                }
+                .render()
+                .unwrap_or_else(|e| e.to_string()),
+            );
+        }
     };
 
     match build_anime_remediation_report(&state.config, &state.database, &plex_db_path, query.full)
@@ -357,20 +429,23 @@ pub(crate) async fn post_cleanup_anime_remediation_preview(
         return response;
     }
 
-    let Some(plex_db_path) = resolve_plex_db_path(form.plex_db.as_deref()) else {
-        return Html(
+    let plex_db_path = match resolve_plex_db_path(form.plex_db.as_deref()) {
+        Ok(path) => path,
+        Err(err) => {
+            return Html(
                 AnimeRemediationResultTemplate {
                     success: false,
-                    message: "Anime remediation preview failed: Plex DB path is required or must exist at a standard local path".to_string(),
+                    message: format!("Anime remediation preview failed: {}", err),
                     preview: None,
                     apply: None,
                     playback_guard: None,
                     csrf_token: browser_csrf_token(&state),
                 }
-            .render()
-            .unwrap_or_else(|e| e.to_string()),
-        )
-        .into_response();
+                .render()
+                .unwrap_or_else(|e| e.to_string()),
+            )
+            .into_response();
+        }
     };
 
     match preview_anime_remediation_plan(

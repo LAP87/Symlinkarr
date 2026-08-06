@@ -874,11 +874,18 @@ fn remove_backup_artifacts(manifest_path: &Path) -> Result<()> {
     if let Ok(json) = std::fs::read_to_string(manifest_path) {
         if let Ok(manifest) = serde_json::from_str::<BackupManifest>(&json) {
             if let Some(snapshot) = manifest.database_snapshot.as_ref() {
-                let path = manifest_path
-                    .parent()
-                    .unwrap_or_else(|| Path::new("."))
-                    .join(&snapshot.filename);
-                companion_paths.push(path);
+                if let Err(err) = validate_managed_backup_file_name(&snapshot.filename) {
+                    warn!(
+                        "Skipping unsafe database snapshot filename {:?} in {:?} during rotation: {}",
+                        snapshot.filename, manifest_path, err
+                    );
+                } else {
+                    let path = manifest_path
+                        .parent()
+                        .unwrap_or_else(|| Path::new("."))
+                        .join(&snapshot.filename);
+                    companion_paths.push(path);
+                }
             }
             if let Some(app_state) = manifest.app_state.as_ref() {
                 for artifact in app_state
@@ -886,6 +893,13 @@ fn remove_backup_artifacts(manifest_path: &Path) -> Result<()> {
                     .iter()
                     .chain(app_state.secret_snapshots.iter())
                 {
+                    if let Err(err) = validate_managed_backup_file_name(&artifact.filename) {
+                        warn!(
+                            "Skipping unsafe app state artifact filename {:?} in {:?} during rotation: {}",
+                            artifact.filename, manifest_path, err
+                        );
+                        continue;
+                    }
                     let artifact_path = manifest_path
                         .parent()
                         .unwrap_or_else(|| Path::new("."))

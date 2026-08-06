@@ -25,13 +25,14 @@ use trash::{trash_quality_regex, trash_season_episode_regex};
 use walkdir::WalkDir;
 
 use crate::cache::TorrentCache;
-use crate::commands::ensure_runtime_source_paths_healthy;
+use crate::commands::{ensure_runtime_source_paths_healthy, DIRECTORY_PROBE_TIMEOUT};
 use crate::config::{ContentType, LibraryConfig};
 use crate::db::Database;
 use crate::models::{LinkRecord, LinkStatus, MediaType};
 use crate::source_scanner::SourceScanner;
 use crate::utils::{
-    path_under_roots, replace_symlink_atomically, PathHealth, ProgressLine, VIDEO_EXTENSIONS,
+    path_under_roots, replace_symlink_atomically, resolve_link_target, unreachable_source_roots,
+    PathHealth, ProgressLine, VIDEO_EXTENSIONS,
 };
 
 /// Minimum score threshold for TV replacements (title + season + episode required)
@@ -452,9 +453,21 @@ impl Repairer {
     }
 
     /// Scan a directory for dead symlinks (filesystem-based detection).
-    pub fn scan_for_dead_symlinks(&self, library_paths: &[PathBuf]) -> Vec<DeadLink> {
+    ///
+    /// Before classifying a link as dead, each configured source root is
+    /// health-probed once (with timeout). Links whose resolved target lives
+    /// under an unreachable root (hung/disconnected FUSE mount) are skipped
+    /// rather than marked dead.
+    pub async fn scan_for_dead_symlinks(
+        &self,
+        library_paths: &[PathBuf],
+        source_roots: &[PathBuf],
+    ) -> Vec<DeadLink> {
+        let unreachable_roots =
+            unreachable_source_roots(source_roots, DIRECTORY_PROBE_TIMEOUT).await;
         let mut dead = Vec::new();
         let mut visited = 0usize;
+        let mut skipped_unreachable = 0usize;
         let mut last_progress = Instant::now();
         let mut progress = ProgressLine::new("Filesystem dead-link scan:");
 
@@ -480,18 +493,35 @@ impl Repairer {
 
                 // Check if it's a symlink
                 if let Ok(metadata) = std::fs::symlink_metadata(path) {
-                    if metadata.file_type().is_symlink() && !path.exists() {
-                        let target = std::fs::read_link(path).unwrap_or_default();
+                    if metadata.file_type().is_symlink() {
+                        let raw_target = std::fs::read_link(path).unwrap_or_default();
+                        let resolved_target = if raw_target.as_os_str().is_empty() {
+                            PathBuf::new()
+                        } else {
+                            resolve_link_target(path, &raw_target)
+                        };
+
+                        // Do not classify links as dead when their source root
+                        // is unreachable — a hung mount is not a missing file.
+                        if path_under_roots(&resolved_target, &unreachable_roots) {
+                            skipped_unreachable += 1;
+                            continue;
+                        }
+
+                        if resolved_target.exists() {
+                            continue;
+                        }
+
                         let symlink_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                         let meta = parse_trash_filename(symlink_name);
 
                         debug!(
                             "Dead symlink: {:?} → {:?} (parsed: {:?})",
-                            path, target, meta.title
+                            path, resolved_target, meta.title
                         );
                         dead.push(DeadLink {
                             symlink_path: path.to_path_buf(),
-                            original_source: target,
+                            original_source: resolved_target,
                             media_id: String::new(),
                             media_type: if meta.season.is_some() {
                                 MediaType::Tv
@@ -508,6 +538,12 @@ impl Repairer {
         }
 
         info!("Found {} dead symlinks via filesystem scan", dead.len());
+        if skipped_unreachable > 0 {
+            warn!(
+                "Skipped {} symlink(s) whose source root is unreachable; they were NOT marked dead. Restore/remount the source and re-run the scan.",
+                skipped_unreachable
+            );
+        }
         progress.finish(format!(
             "{} entries visited, {} dead found",
             visited,
@@ -516,13 +552,16 @@ impl Repairer {
         dead
     }
 
-    fn find_orphan_dead_links(
+    async fn find_orphan_dead_links(
         &self,
         libraries: &[LibraryConfig],
+        source_roots: &[PathBuf],
         known_targets: &HashSet<PathBuf>,
     ) -> Vec<DeadLink> {
         let library_paths: Vec<_> = libraries.iter().map(|lib| lib.path.clone()).collect();
-        let scanned_dead = self.scan_for_dead_symlinks(&library_paths);
+        let scanned_dead = self
+            .scan_for_dead_symlinks(&library_paths, source_roots)
+            .await;
         let mut orphaned = Vec::new();
 
         for mut dead_link in scanned_dead {
@@ -975,7 +1014,9 @@ impl Repairer {
             println!(
                 "   🔎 Scanning library roots for orphaned dead symlinks not tracked in DB..."
             );
-            let orphan_dead_links = self.find_orphan_dead_links(libraries, &known_dead_targets);
+            let orphan_dead_links = self
+                .find_orphan_dead_links(libraries, source_paths, &known_dead_targets)
+                .await;
             for dead_link in orphan_dead_links {
                 if known_dead_targets.insert(dead_link.symlink_path.clone()) {
                     if !dry_run {

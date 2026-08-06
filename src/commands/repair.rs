@@ -58,7 +58,10 @@ pub(crate) async fn run_repair(
             let repairer = repair::Repairer::new();
             let selected = selected_libraries(cfg, library_filter)?;
             let selected_library_paths: Vec<_> = selected.iter().map(|l| l.path.clone()).collect();
-            let dead = repairer.scan_for_dead_symlinks(&selected_library_paths);
+            let source_paths: Vec<_> = cfg.sources.iter().map(|s| s.path.clone()).collect();
+            let dead = repairer
+                .scan_for_dead_symlinks(&selected_library_paths, &source_paths)
+                .await;
 
             if dead.is_empty() {
                 println!("✅ No dead symlinks found!");

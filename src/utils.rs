@@ -133,6 +133,19 @@ pub(crate) fn replace_symlink_atomically(source_path: &Path, target_path: &Path)
     Ok(())
 }
 
+/// Resolve a symlink's raw `read_link` target to an absolute-ish path:
+/// relative targets are resolved against the symlink's parent directory.
+pub fn resolve_link_target(link_path: &Path, target: &Path) -> PathBuf {
+    if target.is_absolute() {
+        target.to_path_buf()
+    } else {
+        link_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(target)
+    }
+}
+
 pub fn path_under_roots(path: &Path, roots: &[PathBuf]) -> bool {
     let normalized_path = normalize_prefix_check_path(path);
     roots
@@ -302,6 +315,25 @@ pub async fn directory_path_health_with_timeout(path: PathBuf, timeout: Duration
     }
 }
 
+/// Probe each source root once (with timeout) and return the roots whose health
+/// blocks destructive operations (hung/disconnected mounts, I/O errors).
+/// `PathHealth::Missing` roots are NOT included: a missing path is a legitimate
+/// "gone" signal, whereas an unreachable mount must not be treated as missing.
+pub async fn unreachable_source_roots(source_roots: &[PathBuf], timeout: Duration) -> Vec<PathBuf> {
+    let mut unreachable = Vec::new();
+    for root in source_roots {
+        let health = directory_path_health_with_timeout(root.clone(), timeout).await;
+        if health.blocks_destructive_ops() {
+            tracing::warn!(
+                "Source root is unreachable; paths under it cannot be verified: {}",
+                health.describe(root)
+            );
+            unreachable.push(root.clone());
+        }
+    }
+    unreachable
+}
+
 fn classify_path_error(err: io::Error) -> PathHealth {
     match err.raw_os_error() {
         Some(enoent_or_enotdir) if enoent_or_enotdir == 2 || enoent_or_enotdir == 20 => {
@@ -426,6 +458,25 @@ mod tests {
             Path::new("/mnt/storage/film/Movie {tmdb-1}"),
             &roots
         ));
+    }
+
+    #[test]
+    fn resolve_link_target_keeps_absolute_targets() {
+        assert_eq!(
+            resolve_link_target(Path::new("/library/Movie/file.mkv"), Path::new("/mnt/rd/a.mkv")),
+            PathBuf::from("/mnt/rd/a.mkv")
+        );
+    }
+
+    #[test]
+    fn resolve_link_target_resolves_relative_against_link_parent() {
+        assert_eq!(
+            resolve_link_target(
+                Path::new("/library/Movie/file.mkv"),
+                Path::new("../sources/a.mkv")
+            ),
+            PathBuf::from("/library/Movie/../sources/a.mkv")
+        );
     }
 
     #[test]

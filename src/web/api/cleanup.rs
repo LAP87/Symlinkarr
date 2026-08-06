@@ -242,6 +242,11 @@ pub(super) fn default_plex_db_candidates() -> [&'static str; 3] {
     ]
 }
 
+/// Environment variable operators can set to allow a Plex DB outside the
+/// standard local paths. Accepts a PATH-style list of database files or the
+/// directories that contain them.
+pub(super) const PLEX_DB_ENV_VAR: &str = "SYMLINKARR_PLEX_DB";
+
 pub(super) fn canonical_plex_db_path(path: std::path::PathBuf) -> Option<std::path::PathBuf> {
     if path
         .components()
@@ -263,15 +268,84 @@ pub(super) fn canonical_plex_db_path(path: std::path::PathBuf) -> Option<std::pa
     Some(canonical)
 }
 
-pub(super) fn resolve_plex_db_path(query_path: Option<&str>) -> Option<std::path::PathBuf> {
-    if let Some(requested) = query_path.map(str::trim).filter(|value| !value.is_empty()) {
-        return canonical_plex_db_path(std::path::PathBuf::from(requested));
+fn configured_plex_db_roots() -> Vec<std::path::PathBuf> {
+    let Ok(value) = std::env::var(PLEX_DB_ENV_VAR) else {
+        return Vec::new();
+    };
+
+    std::env::split_paths(&value)
+        .filter_map(|entry| {
+            let canonical = entry.canonicalize().ok()?;
+            if canonical.is_dir() {
+                Some(canonical)
+            } else {
+                canonical.parent().map(std::path::Path::to_path_buf)
+            }
+        })
+        .collect()
+}
+
+pub(super) fn allowed_plex_db_roots() -> Vec<std::path::PathBuf> {
+    let mut roots = configured_plex_db_roots();
+    for candidate in default_plex_db_candidates() {
+        if let Some(parent) = canonical_plex_db_path(std::path::PathBuf::from(candidate))
+            .as_deref()
+            .and_then(std::path::Path::parent)
+        {
+            let parent = parent.to_path_buf();
+            if !roots.contains(&parent) {
+                roots.push(parent);
+            }
+        }
+    }
+    roots
+}
+
+pub(super) fn confine_plex_db_path(
+    requested: &str,
+    allowed_roots: &[std::path::PathBuf],
+) -> Result<std::path::PathBuf, String> {
+    let candidate = canonical_plex_db_path(std::path::PathBuf::from(requested))
+        .ok_or_else(|| format!("Plex DB not found or not a .db file: {}", requested))?;
+
+    if allowed_roots.is_empty() {
+        return Err(format!(
+            "Custom Plex DB paths are disabled because no Plex DB was found at a standard local path; set {} to the Plex database file or directory to allow one",
+            PLEX_DB_ENV_VAR
+        ));
+    }
+
+    if allowed_roots.iter().any(|root| candidate.starts_with(root)) {
+        Ok(candidate)
+    } else {
+        Err(format!(
+            "Plex DB path {} is outside the allowed Plex database directories; set {} to allow a custom location",
+            candidate.display(),
+            PLEX_DB_ENV_VAR
+        ))
+    }
+}
+
+pub(super) fn default_plex_db_path() -> Option<std::path::PathBuf> {
+    if let Ok(value) = std::env::var(PLEX_DB_ENV_VAR) {
+        if let Some(path) = std::env::split_paths(&value).find_map(canonical_plex_db_path) {
+            return Some(path);
+        }
     }
 
     default_plex_db_candidates()
         .into_iter()
         .map(std::path::PathBuf::from)
         .find_map(canonical_plex_db_path)
+}
+
+pub(super) fn resolve_plex_db_path(query_path: Option<&str>) -> Result<std::path::PathBuf, String> {
+    if let Some(requested) = query_path.map(str::trim).filter(|value| !value.is_empty()) {
+        return confine_plex_db_path(requested, &allowed_plex_db_roots());
+    }
+
+    default_plex_db_path()
+        .ok_or_else(|| "Plex DB path is required or must exist at a standard local path".to_string())
 }
 
 /// GET /api/v1/report/anime-remediation
@@ -293,15 +367,8 @@ pub(super) async fn api_get_anime_remediation(
         )
     })?;
 
-    let Some(plex_db_path) = resolve_plex_db_path(query.plex_db.as_deref()) else {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ApiErrorResponse {
-                error: "Plex DB path is required or must exist at a standard local path"
-                    .to_string(),
-            }),
-        ));
-    };
+    let plex_db_path = resolve_plex_db_path(query.plex_db.as_deref())
+        .map_err(|err| (StatusCode::BAD_REQUEST, Json(ApiErrorResponse { error: err })))?;
 
     let full = query.full.unwrap_or(false);
     let wants_tsv = matches!(query.format.as_deref(), Some("tsv"));
@@ -391,23 +458,26 @@ pub(super) async fn api_post_anime_remediation_preview(
     State(state): State<WebState>,
     Json(req): Json<ApiAnimeRemediationPreviewRequest>,
 ) -> impl IntoResponse {
-    let Some(plex_db_path) = resolve_plex_db_path(req.plex_db.as_deref()) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ApiAnimeRemediationPreviewResponse {
-                success: false,
-                message: "Anime remediation preview failed: Plex DB path is required or must exist at a standard local path".to_string(),
-                report_path: String::new(),
-                plex_db_path: String::new(),
-                title_filter: req.title.clone(),
-                total_groups: 0,
-                eligible_groups: 0,
-                blocked_groups: 0,
-                cleanup_candidates: 0,
-                confirmation_token: String::new(),
-                blocked_reason_summary: Vec::new(),
-            }),
-        );
+    let plex_db_path = match resolve_plex_db_path(req.plex_db.as_deref()) {
+        Ok(path) => path,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ApiAnimeRemediationPreviewResponse {
+                    success: false,
+                    message: format!("Anime remediation preview failed: {}", err),
+                    report_path: String::new(),
+                    plex_db_path: String::new(),
+                    title_filter: req.title.clone(),
+                    total_groups: 0,
+                    eligible_groups: 0,
+                    blocked_groups: 0,
+                    cleanup_candidates: 0,
+                    confirmation_token: String::new(),
+                    blocked_reason_summary: Vec::new(),
+                }),
+            );
+        }
     };
 
     match preview_anime_remediation_plan(

@@ -274,11 +274,13 @@ async fn build_report(
         full_anime_duplicates,
     )
     .await?;
+    let source_roots: Vec<_> = cfg.sources.iter().map(|src| src.path.clone()).collect();
     let path_compare = build_path_compare(
         &selected_libraries,
         &selected_roots,
         &link_records,
         plex_db_path,
+        &source_roots,
     )
     .await?;
     let provider_repair = build_provider_repair_output(db, Some(&selected_roots)).await?;
@@ -515,6 +517,9 @@ fn emit_text_report(report: &ReportOutput, anime_remediation_tsv_path: Option<&P
     }
     if let Some(all_three) = report.path_compare.all_three {
         panel_kv_row("  In all three:", all_three);
+    }
+    if let Some(sample) = &report.path_compare.unreachable_sources {
+        panel_kv_row("  Unreachable sources:", sample.count);
     }
 
     panel_border('╠', '═', '╣');

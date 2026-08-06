@@ -188,6 +188,15 @@ async fn test_context() -> TestWebContext {
     }
 }
 
+/// Allow test Plex DBs under the temp dir and the workspace (for
+/// `tempdir_in`-based tests). Every caller sets the same value, so parallel
+/// tests do not conflict.
+fn allow_test_plex_db_locations() {
+    let allowed =
+        std::env::join_paths([std::env::temp_dir(), std::env::current_dir().unwrap()]).unwrap();
+    std::env::set_var(cleanup::PLEX_DB_ENV_VAR, allowed);
+}
+
 async fn create_test_plex_duplicate_db(path: &Path) {
     let options = SqliteConnectOptions::from_str(path.to_str().unwrap())
         .unwrap()
@@ -1127,6 +1136,7 @@ async fn anime_remediation_page_renders_ranked_groups() {
     std::os::windows::fs::symlink_file("C:\\source-a.mkv", &legacy_target).unwrap();
 
     let plex_db_path = root.join("plex.db");
+    allow_test_plex_db_locations();
     create_test_plex_duplicate_db(&plex_db_path).await;
     let options = SqliteConnectOptions::from_str(plex_db_path.to_str().unwrap()).unwrap();
     let pool = SqlitePoolOptions::new()
@@ -1209,6 +1219,7 @@ async fn anime_remediation_preview_page_renders_saved_plan_and_apply_gate() {
     std::os::windows::fs::symlink_file(&tracked_source, &legacy_target).unwrap();
 
     let plex_db_path = root.join("plex.db");
+    allow_test_plex_db_locations();
     create_test_plex_duplicate_db(&plex_db_path).await;
     let options = SqliteConnectOptions::from_str(plex_db_path.to_str().unwrap()).unwrap();
     let pool = SqlitePoolOptions::new()
@@ -1256,6 +1267,28 @@ async fn anime_remediation_preview_page_renders_saved_plan_and_apply_gate() {
     assert!(!body.contains("Confirmation token"));
 }
 
+#[tokio::test]
+async fn anime_remediation_preview_page_rejects_unresolvable_plex_db() {
+    let ctx = test_context().await;
+    let csrf_token = ctx.state.browser_session_token().to_string();
+    let body = render_body(
+        post_cleanup_anime_remediation_preview(
+            State(ctx.state.clone()),
+            Form(AnimeRemediationPreviewForm {
+                plex_db: Some("/definitely/missing/plex.db".to_string()),
+                title: None,
+                library: Some("Anime".to_string()),
+                csrf_token,
+            }),
+        )
+        .await,
+    )
+    .await;
+
+    assert!(body.contains("Anime remediation preview failed"));
+    assert!(body.contains("Plex DB not found"));
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn anime_remediation_apply_page_renders_quarantine_result() {
@@ -1293,6 +1326,7 @@ async fn anime_remediation_apply_page_renders_quarantine_result() {
     std::os::unix::fs::symlink(&tracked_source, &legacy_target).unwrap();
 
     let plex_db_path = root.join("plex.db");
+    allow_test_plex_db_locations();
     create_test_plex_duplicate_db(&plex_db_path).await;
     let options = SqliteConnectOptions::from_str(plex_db_path.to_str().unwrap()).unwrap();
     let pool = SqlitePoolOptions::new()

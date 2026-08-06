@@ -1155,6 +1155,21 @@ pub async fn run_scheduler_loop(cfg: &Config, db: &Database) -> Result<()> {
         );
     }
     info!("Scheduler loop starting (tick: 30 seconds)");
+    // Create the signal futures once so a signal delivered while a tick is
+    // running is still observed on the next select instead of being dropped.
+    let ctrl_c = tokio::signal::ctrl_c();
+    tokio::pin!(ctrl_c);
+    #[cfg(unix)]
+    let mut sigterm =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .context("Failed to install SIGTERM handler")?;
+    let sigterm = async move {
+        #[cfg(unix)]
+        sigterm.recv().await;
+        #[cfg(not(unix))]
+        std::future::pending::<()>().await;
+    };
+    tokio::pin!(sigterm);
     loop {
         if let Err(err) = db
             .record_daemon_heartbeat("scheduler", Some("Scheduler tick loop is healthy"))
@@ -1167,8 +1182,12 @@ pub async fn run_scheduler_loop(cfg: &Config, db: &Database) -> Result<()> {
         }
         tokio::select! {
             _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
-            _ = tokio::signal::ctrl_c() => {
-                info!("Shutdown signal received; stopping scheduler loop");
+            _ = &mut ctrl_c => {
+                info!("Ctrl-C received; stopping scheduler loop");
+                break;
+            }
+            _ = &mut sigterm => {
+                info!("SIGTERM received; stopping scheduler loop");
                 break;
             }
         }
@@ -1257,7 +1276,26 @@ mod tests {
         });
 
         let next = rule.next_after(local("2026-05-03 03:59:00")).unwrap();
-        assert_eq!(next.format("%H:%M").to_string(), "04:00");
+        assert_eq!(
+            next.format("%Y-%m-%d %H:%M").to_string(),
+            "2026-05-03 04:00"
+        );
+    }
+
+    #[test]
+    fn cron_returns_missed_occurrence_for_past_cursor() {
+        let rule = test_rule(ScheduleTrigger::Cron {
+            // Every minute, on the minute.
+            expression: "0 * * * * * *".to_string(),
+        });
+
+        let now = Local::now();
+        let next = rule.next_after(now - ChronoDuration::days(1)).unwrap();
+        assert!(
+            next <= now,
+            "expected the missed occurrence to be due, got {}",
+            next
+        );
     }
 
     #[test]

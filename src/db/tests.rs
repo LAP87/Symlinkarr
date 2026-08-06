@@ -2435,12 +2435,29 @@ async fn database_enables_foreign_keys() {
         .await
         .unwrap();
 
-    let enabled: i64 = sqlx::query("PRAGMA foreign_keys")
-        .fetch_one(&db.pool)
-        .await
-        .unwrap()
-        .get(0);
-    assert_eq!(enabled, 1);
+    // Hold every pooled connection simultaneously so we verify the settings are
+    // applied per-connection (not just to whichever connection a pool query grabs).
+    let max_connections = db.pool.options().get_max_connections();
+    let mut connections = Vec::new();
+    for _ in 0..max_connections {
+        connections.push(db.pool.acquire().await.unwrap());
+    }
+
+    for conn in &mut connections {
+        let enabled: i64 = sqlx::query("PRAGMA foreign_keys")
+            .fetch_one(&mut **conn)
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(enabled, 1);
+
+        let busy_timeout: i64 = sqlx::query("PRAGMA busy_timeout")
+            .fetch_one(&mut **conn)
+            .await
+            .unwrap()
+            .get(0);
+        assert!(busy_timeout > 0);
+    }
 }
 
 fn test_scheduler_rule(name: &str) -> ScheduleRule {
