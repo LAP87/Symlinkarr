@@ -43,7 +43,14 @@ use crate::db::Database;
 use crate::db::LIBRARY_OPERATION_LOCK;
 use crate::operations::{OperationCoordinator, OperationRequest};
 
-const CONTENT_SECURITY_POLICY_VALUE: &str = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'";
+// NOTE: script-src 'unsafe-inline' can be dropped once the remaining page-level inline
+// <script> blocks move to static files (UI overhaul phase B). Files still carrying
+// executable inline scripts: src/web/ui/dashboard.html, src/web/ui/scan.html,
+// src/web/ui/backup.html, src/web/ui/prune_preview.html,
+// src/web/ui/anime_remediation_result.html. (base.html is already clean; JSON data
+// blocks via <script type="application/json"> do not execute and are unaffected.)
+// style-src 'unsafe-inline' stays for the #theme-vars style element and inline style attributes.
+const CONTENT_SECURITY_POLICY_VALUE: &str = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'";
 const WEB_BACKGROUND_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[derive(Clone, Debug)]

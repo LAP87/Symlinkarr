@@ -2060,7 +2060,6 @@ body::after {
 .card {
   position: relative;
   isolation: isolate;
-  overflow: hidden;
   padding: 1.35rem 1.45rem;
   margin-bottom: 1.35rem;
   border-radius: 24px;
@@ -3244,7 +3243,8 @@ body.page-status .telemetry-item {
 }
 
 .table-wrap {
-  overflow: hidden;
+  /* Wide tables must scroll horizontally instead of clipping. */
+  overflow-x: auto;
 }
 
 .data-table th {
@@ -3788,4 +3788,289 @@ details.collapsible-section[open] > summary .collapsible-chevron {
   .quick-links-nav {
     display: none !important;
   }
+}
+
+/* ============================================================
+   2026-08 operator calm pass (UI overhaul phase A)
+   Mockup-aligned foundation: system font stack, hairline
+   borders, softer radii (6/9/13), no glow, calm pill badges,
+   dense tables with tabular numbers. Component rules only —
+   theme token names are untouched.
+   ============================================================ */
+:root {
+  --font-ui: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-display: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-accent: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
+  --radius-sm: 6px;
+  --radius-md: 9px;
+  --radius-lg: 13px;
+  --hairline: color-mix(in srgb, var(--border-color) 55%, transparent);
+  --hairline-strong: color-mix(in srgb, var(--border-strong) 65%, transparent);
+  --accent-soft: rgba(var(--brand-primary-rgb), 0.13);
+  --accent-line: rgba(var(--brand-primary-rgb), 0.35);
+}
+
+body {
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* --- typography: no shouting headlines --- */
+.logo-title,
+.page-header h1,
+.hero-value,
+.metric-card strong {
+  font-family: var(--font-ui);
+  text-transform: none;
+}
+
+.page-header h1 {
+  font-size: clamp(1.4rem, 2vw, 1.75rem);
+  font-weight: 650;
+  letter-spacing: -0.015em;
+  line-height: 1.2;
+}
+
+.logo-title {
+  font-size: 1.02rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.section-kicker,
+.metric-label,
+.hero-label,
+.page-kicker,
+.nav-section-label,
+.form-label,
+.help-link__eyebrow,
+.sidebar-intro__eyebrow,
+.action-context,
+.queue-job-card__eyebrow,
+.queue-job-card__label,
+.key-value-label,
+.theme-option__meta {
+  font-weight: 600;
+  letter-spacing: 0.07em;
+}
+
+/* --- hairline borders, calm surfaces --- */
+.card,
+body.page-dashboard .split-grid > .card,
+body.page-dashboard details.card,
+body.page-status .card,
+body.page-scan .card,
+body.page-cleanup .card,
+.hero-card,
+body.page-dashboard .hero-card--health,
+body.page-cleanup .hero-card--accent {
+  border: 1px solid var(--hairline);
+  background: var(--card-bg);
+  box-shadow: none;
+}
+
+.card,
+.hero-card,
+details.collapsible-section {
+  border-radius: var(--radius-lg);
+}
+
+.card:hover,
+details.collapsible-section:hover {
+  transform: none;
+  box-shadow: none;
+  border-color: var(--hairline-strong);
+}
+
+details.collapsible-section {
+  border-color: var(--hairline);
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.hero-card--accent,
+.hero-card--health,
+.hero-card--queue,
+.hero-card--refresh,
+body.page-scan .operator-action-card,
+body.page-cleanup .operator-action-card,
+body.page-cleanup .operator-remediation-card {
+  border-top-width: 2px;
+}
+
+.metric-card,
+.telemetry-item,
+body.page-status .metric-card,
+body.page-status .telemetry-item {
+  background: var(--card-bg);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  box-shadow: none;
+  padding: 0.95rem 1rem;
+}
+
+.metric-card strong {
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.attention-item,
+.activity-item,
+.queue-job-card,
+.toggle-row,
+.help-link {
+  border-color: var(--hairline);
+  box-shadow: none;
+}
+
+.help-link:hover,
+.btn:hover {
+  transform: none;
+}
+
+.sidebar-intro,
+.sidebar-meta {
+  border-color: var(--shell-panel-border);
+  border-radius: var(--radius-md);
+}
+
+/* --- buttons: flat, small radius, no lift --- */
+.btn {
+  border-radius: var(--radius-sm);
+  box-shadow: none;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+/* --- badges: calm tinted pills --- */
+.badge {
+  border-radius: 999px;
+  padding: 0.18rem 0.55rem;
+  font-family: var(--font-ui);
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  text-transform: none;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.35;
+}
+
+.badge-success,
+.badge-warning,
+.badge-danger,
+.badge-info {
+  border-color: transparent;
+}
+
+.page-taxonomy {
+  border-radius: 999px;
+  letter-spacing: 0.08em;
+}
+
+/* --- tables: dense, hairline rows, tabular numbers --- */
+.data-table {
+  font-size: 0.84rem;
+}
+
+.data-table th,
+.data-table td {
+  padding: 0.55rem 0.8rem;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.data-table th {
+  background: var(--bg-tertiary);
+  color: var(--text-faint);
+  font-family: var(--font-ui);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.data-table tbody tr:hover {
+  background: color-mix(in srgb, var(--text-primary) 5%, transparent);
+}
+
+.data-table td,
+.metric-card strong,
+.telemetry-item strong,
+.hero-value,
+.hero-inline-stats strong,
+.card-value {
+  font-variant-numeric: tabular-nums;
+}
+
+.table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--card-bg);
+}
+
+.operator-links-card {
+  overflow-x: auto;
+}
+
+/* --- sidebar nav: line icons, restrained active state --- */
+.nav-link {
+  min-height: 38px;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font-size: 0.9rem;
+}
+
+.nav-link:hover {
+  background: color-mix(in srgb, var(--shell-hover-bg) 72%, transparent);
+  border-color: var(--shell-border-color);
+}
+
+.nav-link.active {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+}
+
+.nav-link__icon {
+  width: 1.25rem;
+  height: 1.25rem;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  color: var(--shell-text-faint);
+}
+
+.nav-link__icon svg {
+  display: block;
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.nav-link.active .nav-link__icon,
+.nav-link:hover .nav-link__icon {
+  background: transparent;
+  border-color: transparent;
+  color: var(--brand-primary);
+}
+
+/* --- filter tabs and inputs pick up the new radii --- */
+.filter-tab {
+  border-radius: var(--radius-sm);
+}
+
+.quick-links-nav {
+  border: 1px solid var(--hairline);
+  background: var(--card-bg);
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
