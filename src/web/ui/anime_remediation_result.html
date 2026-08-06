@@ -276,7 +276,7 @@
         <input type="hidden" name="token" value="{{ data.confirmation_token }}">
         <div class="form-group">
             <label class="toggle-row">
-                <input type="checkbox" id="confirm-anime-remediation" required>
+                <input type="checkbox" id="confirm-anime-remediation" data-enables="apply-anime-remediation-btn" required>
                 <div>
                     <strong>I reviewed this saved plan and want to apply this legacy anime cleanup.</strong>
                     <p class="text-muted">The browser will apply only the saved report shown above.</p>
@@ -293,11 +293,6 @@
             <a href="/cleanup/anime-remediation" class="btn btn-secondary">&#128065; Re-open Backlog</a>
         </div>
     </form>
-    <script>
-        document.getElementById('confirm-anime-remediation').addEventListener('change', function() {
-            document.getElementById('apply-anime-remediation-btn').disabled = !this.checked;
-        });
-    </script>
 </section>
 {% when None %}
 {% endmatch %}
@@ -362,4 +357,8 @@
 </div>
 {% endmatch %}
 {% endmatch %}
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/confirm-gate.js" defer></script>
 {% endblock %}

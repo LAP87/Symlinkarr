@@ -800,7 +800,7 @@ async fn scan_page_renders_phase_telemetry_and_acquire_summary() {
     assert!(body.contains("Search Missing"));
     assert!(!body.contains("name=\"dry_run\" value=\"true\" checked"));
     assert!(body.contains("Candidate Slots"));
-    assert!(body.contains("1024"));
+    assert!(body.contains("1,024"));
     assert!(body.contains("4/6"));
     assert!(body.contains("Media refresh was limited"));
     assert!(body.contains("Plex guard abort"));

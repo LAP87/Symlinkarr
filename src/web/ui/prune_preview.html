@@ -260,7 +260,7 @@
         <input type="hidden" name="report" value="{{ path.display() }}">
         <div class="form-group">
             <label class="toggle-row">
-                <input type="checkbox" id="confirm-prune" required>
+                <input type="checkbox" id="confirm-prune" data-enables="apply-btn" required>
                 <div>
                     <strong>I have reviewed the findings above and want to apply this cleanup.</strong>
                     <p class="text-muted">{{ actionable_candidates }} links will be cleaned up. This cannot be undone.</p>
@@ -274,11 +274,6 @@
             <a href="/cleanup" class="btn btn-secondary">Back to Cleanup</a>
         </div>
     </form>
-    <script>
-        document.getElementById('confirm-prune').addEventListener('change', function() {
-            document.getElementById('apply-btn').disabled = !this.checked;
-        });
-    </script>
     {% else %}
     <div class="alert alert-info">
         <strong>Nothing to apply.</strong> All findings are either informational or blocked. No cleanup actions are needed right now.
@@ -308,4 +303,8 @@
     <a href="/" class="btn">Dashboard</a>
 </div>
 {% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/confirm-gate.js" defer></script>
 {% endblock %}

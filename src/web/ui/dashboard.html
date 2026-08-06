@@ -35,12 +35,12 @@
             </div>
         </div>
         <div class="header-badges">
-            <span class="badge badge-info">Scans {{ stats.total_scans }}</span>
+            <span class="badge badge-info">Scans {{ stats.total_scans|thousands }}</span>
             <span class="badge {% if queue.active_total > 0 %}badge-warning{% else %}badge-success{% endif %}">
-                Queue {{ queue.active_total }}
+                Queue {{ queue.active_total|thousands }}
             </span>
             <span class="badge {% if stats.dead_links > 0 %}badge-danger{% else %}badge-success{% endif %}">
-                Dead {{ stats.dead_links }}
+                Dead {{ stats.dead_links|thousands }}
             </span>
             {% match streaming_guard %}
             {% when Some with (guard) %}
@@ -50,7 +50,7 @@
             {% when None %}{% endmatch %}
             {% if deferred_refresh.pending_targets > 0 %}
             <span class="badge badge-warning">
-                Pending refresh {{ deferred_refresh.pending_targets }}
+                Pending refresh {{ deferred_refresh.pending_targets|thousands }}
             </span>
             {% endif %}
         </div>
@@ -66,36 +66,26 @@
                 <p class="text-muted">Total matches and links created over recent scan runs.</p>
             </div>
         </div>
-        <div class="scan-history-chart-container" style="position: relative; height: 240px; margin-top: 1rem; padding: 0.5rem 0;">
-            <svg id="scan-history-svg" width="100%" height="100%" viewBox="0 0 1000 240" preserveAspectRatio="none" style="overflow: visible;">
-                <!-- Gradient for glowing neon line -->
-                <defs>
-                    <linearGradient id="chart-glow" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stop-color="rgba(6, 182, 212, 0.25)"></stop>
-                        <stop offset="100%" stop-color="rgba(6, 182, 212, 0)"></stop>
-                    </linearGradient>
-                    <linearGradient id="line-grad" x1="0" y1="0" x2="1" y2="0">
-                        <stop offset="0%" stop-color="#a78bfa"></stop>
-                        <stop offset="50%" stop-color="#06b6d4"></stop>
-                        <stop offset="100%" stop-color="#10b981"></stop>
-                    </linearGradient>
-                </defs>
-                
-                <!-- Y Axis Gridlines -->
-                <line x1="0" y1="40" x2="1000" y2="40" stroke="rgba(255,255,255,0.04)" stroke-width="1"></line>
-                <line x1="0" y1="100" x2="1000" y2="100" stroke="rgba(255,255,255,0.04)" stroke-width="1"></line>
-                <line x1="0" y1="160" x2="1000" y2="160" stroke="rgba(255,255,255,0.04)" stroke-width="1"></line>
-                <line x1="0" y1="220" x2="1000" y2="220" stroke="rgba(255,255,255,0.04)" stroke-width="1"></line>
-                
-                <!-- Chart Paths -->
-                <path id="chart-area" d="" fill="url(#chart-glow)"></path>
-                <path id="chart-line" d="" fill="none" stroke="url(#line-grad)" stroke-width="4.5" stroke-linecap="round"></path>
-                
-                <!-- Tooltip / Dots container -->
+        <div class="scan-history-chart-container" {% if recent_runs|length < 2 %}hidden{% endif %}>
+            <svg id="scan-history-svg" width="100%" height="100%" viewBox="0 0 1000 240" preserveAspectRatio="none">
+                <!-- Y axis gridlines (theme-aware via CSS) -->
+                <line class="chart-grid" x1="0" y1="40" x2="1000" y2="40"></line>
+                <line class="chart-grid" x1="0" y1="100" x2="1000" y2="100"></line>
+                <line class="chart-grid" x1="0" y1="160" x2="1000" y2="160"></line>
+                <line class="chart-grid" x1="0" y1="220" x2="1000" y2="220"></line>
+
+                <!-- Chart paths -->
+                <path id="chart-area" d=""></path>
+                <path id="chart-line" d=""></path>
+
+                <!-- Tooltip / dots container -->
                 <g id="chart-dots"></g>
             </svg>
         </div>
-        
+        <div id="scan-history-empty" class="empty-state" {% if recent_runs|length >= 2 %}hidden{% endif %}>
+            Run your first scans to see history here.
+        </div>
+
         <!-- Embed run data as JSON to parse with JS -->
         <script id="recent-runs-data" type="application/json">
             [
@@ -108,130 +98,6 @@
                 }{% if !loop.last %},{% endif %}
                 {% endfor %}
             ]
-        </script>
-        
-        <script>
-            (function() {
-                function drawChart() {
-                    var dataEl = document.getElementById("recent-runs-data");
-                    if (!dataEl) return;
-                    var data = [];
-                    try {
-                        data = JSON.parse(dataEl.textContent).reverse();
-                    } catch(e) {
-                        console.error("Failed to parse recent runs data", e);
-                        return;
-                    }
-                    
-                    if (data.length < 2) {
-                        // Pre-populate mock points so chart is never empty during testing
-                        data = [
-                            { "started_at": "Mon 10:00", "links": 80, "matches": 100 },
-                            { "started_at": "Tue 12:00", "links": 140, "matches": 170 },
-                            { "started_at": "Wed 14:00", "links": 110, "matches": 150 },
-                            { "started_at": "Thu 16:00", "links": 230, "matches": 260 },
-                            { "started_at": "Fri 18:00", "links": 190, "matches": 220 },
-                            { "started_at": "Sat 20:00", "links": 290, "matches": 340 }
-                        ];
-                    }
-                    
-                    var svg = document.getElementById("scan-history-svg");
-                    var line = document.getElementById("chart-line");
-                    var area = document.getElementById("chart-area");
-                    var dotsContainer = document.getElementById("chart-dots");
-                    if (!svg || !line || !area) return;
-                    
-                    var width = 1000;
-                    var height = 240;
-                    var paddingX = 40;
-                    var paddingY = 30;
-                    
-                    var maxVal = Math.max.apply(null, data.map(function(d) { return Math.max(d.links, d.matches, 10); }));
-                    maxVal = Math.ceil(maxVal * 1.15); // Add 15% headroom
-                    
-                    var points = data.map(function(d, i) {
-                        var x = paddingX + (i / (data.length - 1)) * (width - paddingX * 2);
-                        var y = height - paddingY - (d.links / maxVal) * (height - paddingY * 2);
-                        var dateStr = d.started_at;
-                        if (dateStr.length > 16) {
-                            dateStr = dateStr.substring(5, 16);
-                        }
-                        return { x: x, y: y, label: dateStr, value: d.links };
-                    });
-                    
-                    // Construct Bezier curve path
-                    var pathD = "";
-                    if (points.length > 0) {
-                        pathD = "M " + points[0].x + "," + points[0].y;
-                        for (var i = 1; i < points.length; i++) {
-                            var cpX1 = points[i-1].x + (points[i].x - points[i-1].x) / 3;
-                            var cpY1 = points[i-1].y;
-                            var cpX2 = points[i-1].x + 2 * (points[i].x - points[i-1].x) / 3;
-                            var cpY2 = points[i].y;
-                            pathD += " C " + cpX1 + "," + cpY1 + " " + cpX2 + "," + cpY2 + " " + points[i].x + "," + points[i].y;
-                        }
-                    }
-                    
-                    line.setAttribute("d", pathD);
-                    
-                    // Area path closed to bottom
-                    var areaD = pathD;
-                    if (points.length > 0) {
-                        areaD += " L " + points[points.length - 1].x + "," + (height - paddingY);
-                        areaD += " L " + points[0].x + "," + (height - paddingY);
-                        areaD += " Z";
-                    }
-                    area.setAttribute("d", areaD);
-                    
-                    // Draw interactive points
-                    dotsContainer.innerHTML = "";
-                    points.forEach(function(pt, idx) {
-                        var g = document.createElementNS("http://www.w3.org/2000/svg", "g");
-                        g.style.cursor = "pointer";
-                        
-                        var circleOuter = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-                        circleOuter.setAttribute("cx", pt.x);
-                        circleOuter.setAttribute("cy", pt.y);
-                        circleOuter.setAttribute("r", 9);
-                        circleOuter.setAttribute("fill", "rgba(6, 182, 212, 0.2)");
-                        circleOuter.style.transition = "transform 0.15s ease, fill 0.15s ease";
-                        
-                        var circleInner = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-                        circleInner.setAttribute("cx", pt.x);
-                        circleInner.setAttribute("cy", pt.y);
-                        circleInner.setAttribute("r", 4.5);
-                        circleInner.setAttribute("fill", "#06b6d4");
-                        circleInner.setAttribute("stroke", "#ffffff");
-                        circleInner.setAttribute("stroke-width", "2.5");
-                        
-                        var title = document.createElementNS("http://www.w3.org/2000/svg", "title");
-                        title.textContent = pt.label + " | " + pt.value + " links created";
-                        g.appendChild(title);
-                        
-                        g.appendChild(circleOuter);
-                        g.appendChild(circleInner);
-                        dotsContainer.appendChild(g);
-                        
-                        g.addEventListener("mouseenter", function() {
-                            circleOuter.setAttribute("r", 14);
-                            circleOuter.setAttribute("fill", "rgba(167, 139, 250, 0.45)");
-                            circleInner.setAttribute("fill", "#a78bfa");
-                        });
-                        g.addEventListener("mouseleave", function() {
-                            circleOuter.setAttribute("r", 9);
-                            circleOuter.setAttribute("fill", "rgba(6, 182, 212, 0.2)");
-                            circleInner.setAttribute("fill", "#06b6d4");
-                        });
-                    });
-                }
-                
-                document.addEventListener("DOMContentLoaded", drawChart);
-                document.body.addEventListener("htmx:afterSwap", function(evt) {
-                    if (evt.detail.target.id === "dashboard-summary") {
-                        drawChart();
-                    }
-                });
-            })();
         </script>
     </div>
 </section>
@@ -393,7 +259,7 @@
                         </div>
                         <div class="disclosure-card__meta">
                             <span class="badge {% if queue.active_total > 0 %}badge-warning{% else %}badge-success{% endif %}">
-                                Queue {{ queue.active_total }}
+                                Queue {{ queue.active_total|thousands }}
                             </span>
                             {% if queue.blocked > 0 || queue.failed > 0 %}
                             <span class="badge badge-danger">Needs review</span>
@@ -404,38 +270,38 @@
                         <div class="metric-grid metric-grid--compact">
                             <div class="metric-card">
                                 <span class="metric-label">Queued</span>
-                                <strong>{{ queue.queued }}</strong>
+                                <strong>{{ queue.queued|thousands }}</strong>
                             </div>
                             <div class="metric-card">
                                 <span class="metric-label">Downloading</span>
-                                <strong>{{ queue.downloading }}</strong>
+                                <strong>{{ queue.downloading|thousands }}</strong>
                             </div>
                             <div class="metric-card">
                                 <span class="metric-label">Relinking</span>
-                                <strong>{{ queue.relinking }}</strong>
+                                <strong>{{ queue.relinking|thousands }}</strong>
                             </div>
                             <div class="metric-card">
                                 <span class="metric-label">No Result</span>
-                                <strong>{{ queue.no_result }}</strong>
+                                <strong>{{ queue.no_result|thousands }}</strong>
                             </div>
                             <div class="metric-card">
                                 <span class="metric-label">Blocked</span>
-                                <strong>{{ queue.blocked }}</strong>
+                                <strong>{{ queue.blocked|thousands }}</strong>
                             </div>
                             <div class="metric-card">
                                 <span class="metric-label">Needs Relink</span>
-                                <strong>{{ queue.completed_unlinked }}</strong>
+                                <strong>{{ queue.completed_unlinked|thousands }}</strong>
                             </div>
                             <div class="metric-card">
                                 <span class="metric-label">Failed</span>
-                                <strong>{{ queue.failed }}</strong>
+                                <strong>{{ queue.failed|thousands }}</strong>
                             </div>
                         </div>
 
                         {% if stats.dead_links > 0 %}
                         <div class="alert alert-warning">
                             <strong>Cleanup still matters.</strong>
-                            {{ stats.dead_links }} dead links are tracked right now.
+                            {{ stats.dead_links|thousands }} dead links are tracked right now.
                         </div>
                         {% else %}
                         <div class="alert alert-success">
@@ -544,8 +410,8 @@
                                     {% endif %}
                                 </td>
                                 <td>{{ run.total_runtime }}</td>
-                                <td>{{ run.matches_found }}</td>
-                                <td class="text-success">{{ run.links_created + run.links_updated }}</td>
+                                <td>{{ run.matches_found|thousands }}</td>
+                                <td class="text-success">{{ (run.links_created + run.links_updated)|thousands }}</td>
                                 <td>
                                     {% if run.plex_refresh_planned_batches > 0 || run.plex_refresh_requested_paths > 0 %}
                                     {{ run.plex_refresh_refreshed_batches }}/{{ run.plex_refresh_planned_batches }}
@@ -601,7 +467,7 @@
                                     {% endif %}
                                 </td>
                                 <td class="{% if run.dead_marked > 0 || run.links_removed > 0 %}text-error{% endif %}">
-                                    {{ run.dead_marked + run.links_removed }}
+                                    {{ (run.dead_marked + run.links_removed)|thousands }}
                                 </td>
                             </tr>
                             {% endfor %}
@@ -615,4 +481,8 @@
         </div>
     </details>
 </section>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/dashboard-chart.js" defer></script>
 {% endblock %}

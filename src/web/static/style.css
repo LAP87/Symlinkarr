@@ -4074,3 +4074,151 @@ body.page-status .telemetry-item {
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
 }
+
+/* --- config page: settings rail + definition rows (UI overhaul phase B) --- */
+.settings-layout {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  gap: 1.5rem;
+  align-items: start;
+}
+
+.settings-rail {
+  position: sticky;
+  top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-rail__link {
+  display: block;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: 0.88rem;
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.settings-rail__link:hover {
+  background: var(--card-bg);
+  border-color: var(--hairline);
+  color: var(--text-primary);
+}
+
+.settings-rail__link.active {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--text-primary);
+}
+
+.settings-content {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  min-width: 0;
+}
+
+.def-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.def-row {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 1.1rem;
+  align-items: center;
+  padding: 0.85rem 0;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.def-row:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.def-row__label {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.def-row__hint {
+  margin-top: 2px;
+  font-size: 0.78rem;
+  color: var(--text-faint);
+}
+
+.def-row__value {
+  font-size: 0.88rem;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 900px) {
+  .settings-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-rail {
+    position: static;
+    flex-direction: row;
+    overflow-x: auto;
+  }
+
+  .def-row {
+    grid-template-columns: 1fr;
+    gap: 0.35rem;
+  }
+}
+
+/* --- dashboard scan-history chart: theme-aware, single accent color --- */
+.scan-history-chart-container {
+  position: relative;
+  height: 240px;
+  margin-top: 1rem;
+  padding: 0.5rem 0;
+}
+
+.scan-history-chart-container svg {
+  overflow: visible;
+}
+
+.scan-history-chart-container .chart-grid {
+  stroke: var(--hairline);
+  stroke-width: 1;
+}
+
+#chart-area {
+  fill: rgba(var(--brand-primary-rgb), 0.08);
+}
+
+#chart-line {
+  fill: none;
+  stroke: rgba(var(--brand-primary-rgb), 0.75);
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+
+.chart-dot {
+  cursor: pointer;
+}
+
+.chart-dot__halo {
+  fill: rgba(var(--brand-primary-rgb), 0.16);
+  transition: fill 0.15s ease;
+}
+
+.chart-dot:hover .chart-dot__halo {
+  fill: rgba(var(--brand-primary-rgb), 0.32);
+}
+
+.chart-dot__core {
+  fill: rgb(var(--brand-primary-rgb));
+  stroke: var(--card-bg);
+  stroke-width: 2;
+}

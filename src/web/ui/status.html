@@ -39,10 +39,10 @@
     </div>
     <div class="header-badges">
         <span class="badge {% if queue.active_total > 0 %}badge-warning{% else %}badge-success{% endif %}">
-            Queue {{ queue.active_total }}
+            Queue {{ queue.active_total|thousands }}
         </span>
         <span class="badge {% if stats.dead_links > 0 %}badge-danger{% else %}badge-success{% endif %}">
-            Dead {{ stats.dead_links }}
+            Dead {{ stats.dead_links|thousands }}
         </span>
     </div>
 </div>
@@ -112,15 +112,15 @@
             <div class="metric-grid">
                 <div class="metric-card">
                     <span class="metric-label">Active Links</span>
-                    <strong class="text-success">{{ stats.active_links }}</strong>
+                    <strong class="text-success">{{ stats.active_links|thousands }}</strong>
                 </div>
                 <div class="metric-card">
                     <span class="metric-label">Dead Links</span>
-                    <strong class="{% if stats.dead_links > 0 %}text-error{% else %}text-success{% endif %}">{{ stats.dead_links }}</strong>
+                    <strong class="{% if stats.dead_links > 0 %}text-error{% else %}text-success{% endif %}">{{ stats.dead_links|thousands }}</strong>
                 </div>
                 <div class="metric-card">
                     <span class="metric-label">Total Scans</span>
-                    <strong>{{ stats.total_scans }}</strong>
+                    <strong>{{ stats.total_scans|thousands }}</strong>
                 </div>
                 <div class="metric-card">
                     <span class="metric-label">Last Scan</span>
@@ -141,13 +141,13 @@
             </div>
 
             <div class="metric-grid metric-grid--compact">
-                <div class="metric-card"><span class="metric-label">Queued</span><strong>{{ queue.queued }}</strong></div>
-                <div class="metric-card"><span class="metric-label">Downloading</span><strong>{{ queue.downloading }}</strong></div>
-                <div class="metric-card"><span class="metric-label">Relinking</span><strong>{{ queue.relinking }}</strong></div>
-                <div class="metric-card"><span class="metric-label">Blocked</span><strong>{{ queue.blocked }}</strong></div>
-                <div class="metric-card"><span class="metric-label">No Result</span><strong>{{ queue.no_result }}</strong></div>
-                <div class="metric-card"><span class="metric-label">Failed</span><strong>{{ queue.failed }}</strong></div>
-                <div class="metric-card"><span class="metric-label">Needs Relink</span><strong>{{ queue.completed_unlinked }}</strong></div>
+                <div class="metric-card"><span class="metric-label">Queued</span><strong>{{ queue.queued|thousands }}</strong></div>
+                <div class="metric-card"><span class="metric-label">Downloading</span><strong>{{ queue.downloading|thousands }}</strong></div>
+                <div class="metric-card"><span class="metric-label">Relinking</span><strong>{{ queue.relinking|thousands }}</strong></div>
+                <div class="metric-card"><span class="metric-label">Blocked</span><strong>{{ queue.blocked|thousands }}</strong></div>
+                <div class="metric-card"><span class="metric-label">No Result</span><strong>{{ queue.no_result|thousands }}</strong></div>
+                <div class="metric-card"><span class="metric-label">Failed</span><strong>{{ queue.failed|thousands }}</strong></div>
+                <div class="metric-card"><span class="metric-label">Needs Relink</span><strong>{{ queue.completed_unlinked|thousands }}</strong></div>
             </div>
         </div>
     </div>
@@ -305,12 +305,12 @@
 
                     {% if deferred_refresh.pending_targets > 0 %}
                     <div class="alert alert-warning">
-                        <strong>{{ deferred_refresh.pending_targets }} refresh target(s) are queued.</strong>
+                        <strong>{{ deferred_refresh.pending_targets|thousands }} refresh target(s) are queued.</strong>
                         Another Symlinkarr run held the refresh lock, or the media server was busy.
                     </div>
                     <div class="badge-stack">
                         {% for server in deferred_refresh.servers %}
-                        <span class="badge badge-warning">{{ server.server }}: {{ server.queued_targets }}</span>
+                        <span class="badge badge-warning">{{ server.server }}: {{ server.queued_targets|thousands }}</span>
                         {% endfor %}
                     </div>
                     {% else %}
@@ -356,7 +356,7 @@
                             </div>
                             <div class="queue-job-card__badges">
                                 <span class="badge {{ job.status_badge_class }}">{{ job.status_label }}</span>
-                                <span class="badge {% if job.attempts > 0 %}badge-warning{% else %}badge-info{% endif %}">Attempts {{ job.attempts }}</span>
+                                <span class="badge {% if job.attempts > 0 %}badge-warning{% else %}badge-info{% endif %}">Attempts {{ job.attempts|thousands }}</span>
                             </div>
                         </div>
                         <div class="queue-job-card__facts">
@@ -405,14 +405,14 @@
                     </div>
                     {% if stats.dead_links > 0 %}
                     <div class="header-badges">
-                        <span class="badge badge-danger">{{ stats.dead_links }} tracked</span>
+                        <span class="badge badge-danger">{{ stats.dead_links|thousands }} tracked</span>
                     </div>
                     {% endif %}
                 </div>
 
                 {% if stats.dead_links > 0 %}
                 <div class="alert alert-warning">
-                    <strong>{{ stats.dead_links }} dead link(s) remain tracked.</strong>
+                    <strong>{{ stats.dead_links|thousands }} dead link(s) remain tracked.</strong>
                     Symlinkarr will keep surfacing them on scan and repair until a fresh source appears or you prune them intentionally.
                 </div>
 

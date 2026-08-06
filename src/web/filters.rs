@@ -51,9 +51,6 @@ pub fn app_version<T: ?Sized>(_: &T, _: &dyn Values) -> Result<&'static str> {
     Ok(env!("CARGO_PKG_VERSION"))
 }
 
-// Dead-code allowance: page templates adopt the `thousands` filter in UI overhaul
-// phase B; the allow covers the macro-generated filter plumbing until then.
-#[allow(dead_code)]
 mod thousands_filter {
     use askama::{Result, Values};
 
@@ -91,7 +88,6 @@ mod thousands_filter {
     }
 }
 
-#[allow(unused_imports)] // consumed by templates starting in UI overhaul phase B
 pub use thousands_filter::thousands;
 
 #[cfg(test)]

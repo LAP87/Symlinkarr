@@ -697,7 +697,7 @@ fn status_template_surfaces_overdue_daemon_warning() {
 }
 
 #[test]
-fn config_template_renders_topology_and_defaults_disclosures() {
+fn config_template_renders_settings_rail_and_defaults() {
     let template = ConfigTemplate {
         config: sample_config(),
         validation_result: Some(ValidationResult {
@@ -710,17 +710,22 @@ fn config_template_renders_topology_and_defaults_disclosures() {
 
     let html = template.render().unwrap();
     assert!(html.contains("Check current configuration"));
-    assert!(html.contains("What this page is for"));
-    assert!(html.contains("Best follow-up"));
-    assert!(html.contains("Docs and recommended workflow"));
-    assert!(html.contains("Libraries and ingestion roots"));
+    assert!(html.contains("settings-rail"));
+    assert!(html.contains("#config-general"));
+    assert!(html.contains("#config-libraries"));
+    assert!(html.contains("#config-matching"));
+    assert!(html.contains("#config-defaults"));
+    assert!(html.contains("Libraries &amp; sources"));
     assert!(html.contains("Low-level runtime defaults"));
     assert!(html.contains("1 libraries"));
     assert!(html.contains("1 sources"));
     assert!(html.contains("/library/anime"));
     assert!(html.contains("/backups"));
-    assert!(html.contains("/wiki/Configuration-and-Doctor"));
-    assert!(html.contains("/wiki/Backup-and-Restore"));
+    assert!(html.contains("/static/js/config-rail.js"));
+    // Filler removed in the phase-B settings layout.
+    assert!(!html.contains("What this page is for"));
+    assert!(!html.contains("Best follow-up"));
+    assert!(!html.contains("Docs and recommended workflow"));
 }
 
 #[test]

@@ -46,15 +46,15 @@
                 </div>
                 <div class="metric-card">
                     <span class="metric-label">Matches</span>
-                    <strong>{{ run.matches_found }}</strong>
+                    <strong>{{ run.matches_found|thousands }}</strong>
                 </div>
                 <div class="metric-card">
                     <span class="metric-label">Created + Updated</span>
-                    <strong>{{ run.links_created + run.links_updated }}</strong>
+                    <strong>{{ (run.links_created + run.links_updated)|thousands }}</strong>
                 </div>
                 <div class="metric-card">
                     <span class="metric-label">Dead Marked</span>
-                    <strong class="{% if run.dead_marked > 0 %}text-error{% endif %}">{{ run.dead_marked }}</strong>
+                    <strong class="{% if run.dead_marked > 0 %}text-error{% endif %}">{{ run.dead_marked|thousands }}</strong>
                 </div>
                 <div class="metric-card">
                     <span class="metric-label">Cache Hit</span>
@@ -62,7 +62,7 @@
                 </div>
                 <div class="metric-card">
                     <span class="metric-label">Auto-Acquire Wins</span>
-                    <strong>{{ run.auto_acquire_successes }}</strong>
+                    <strong>{{ run.auto_acquire_successes|thousands }}</strong>
                 </div>
             </div>
 
@@ -102,7 +102,7 @@
                 <p class="text-muted">Most common reasons the latest run skipped files.</p>
                 <div>
                     {% for reason in run.skip_reason_highlights %}
-                    <span class="badge badge-secondary">{{ reason.group }}: {{ reason.label }} {{ reason.count }}</span>
+                    <span class="badge badge-secondary">{{ reason.group }}: {{ reason.label }} {{ reason.count|thousands }}</span>
                     {% endfor %}
                 </div>
                 {% if run.skip_reason_extra_buckets > 0 %}

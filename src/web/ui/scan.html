@@ -34,7 +34,7 @@
     </div>
     <div class="header-badges">
         <span class="badge {% if queue.active_total > 0 %}badge-warning{% else %}badge-success{% endif %}">
-            Queue {{ queue.active_total }}
+            Queue {{ queue.active_total|thousands }}
         </span>
     </div>
 </div>
@@ -120,13 +120,13 @@
                 </div>
             </div>
             <div class="metric-grid metric-grid--compact">
-                <div class="metric-card"><span class="metric-label">Queued</span><strong>{{ queue.queued }}</strong></div>
-                <div class="metric-card"><span class="metric-label">Downloading</span><strong>{{ queue.downloading }}</strong></div>
-                <div class="metric-card"><span class="metric-label">Relinking</span><strong>{{ queue.relinking }}</strong></div>
-                <div class="metric-card"><span class="metric-label">Blocked</span><strong>{{ queue.blocked }}</strong></div>
-                <div class="metric-card"><span class="metric-label">No Result</span><strong>{{ queue.no_result }}</strong></div>
-                <div class="metric-card"><span class="metric-label">Failed</span><strong>{{ queue.failed }}</strong></div>
-                <div class="metric-card"><span class="metric-label">Needs Relink</span><strong>{{ queue.completed_unlinked }}</strong></div>
+                <div class="metric-card"><span class="metric-label">Queued</span><strong>{{ queue.queued|thousands }}</strong></div>
+                <div class="metric-card"><span class="metric-label">Downloading</span><strong>{{ queue.downloading|thousands }}</strong></div>
+                <div class="metric-card"><span class="metric-label">Relinking</span><strong>{{ queue.relinking|thousands }}</strong></div>
+                <div class="metric-card"><span class="metric-label">Blocked</span><strong>{{ queue.blocked|thousands }}</strong></div>
+                <div class="metric-card"><span class="metric-label">No Result</span><strong>{{ queue.no_result|thousands }}</strong></div>
+                <div class="metric-card"><span class="metric-label">Failed</span><strong>{{ queue.failed|thousands }}</strong></div>
+                <div class="metric-card"><span class="metric-label">Needs Relink</span><strong>{{ queue.completed_unlinked|thousands }}</strong></div>
             </div>
         </div>
     </div>
@@ -199,7 +199,7 @@
                     {% if anime_search_overrides|length > 0 %}
                     <div class="form-group mb-2">
                         <label class="form-label" for="override-filter">Filter overrides</label>
-                        <input id="override-filter" type="text" class="form-control mono" placeholder="media id, title, or hint substring" oninput="filterOverrides(this.value)">
+                        <input id="override-filter" type="text" class="form-control mono" placeholder="media id, title, or hint substring">
                     </div>
                     <div class="stack-list" id="override-list">
                         {% for anime_override in anime_search_overrides %}
@@ -244,23 +244,6 @@
                         </div>
                         {% endfor %}
                     </div>
-                    <script>
-                    (function(){
-                        function filterOverrides(q){
-                            var term = q.toLowerCase().trim();
-                            var items = document.querySelectorAll('.override-item');
-                            var visible = 0;
-                            items.forEach(function(el){
-                                var show = !term || el.getAttribute('data-terms').toLowerCase().indexOf(term) !== -1;
-                                el.style.display = show ? '' : 'none';
-                                if(show) visible++;
-                            });
-                            var badge = document.getElementById('override-count-badge');
-                            if(badge) badge.textContent = visible;
-                        }
-                        window.filterOverrides = filterOverrides;
-                    })();
-                    </script>
                     {% else %}
                     <div class="empty-state">
                         <strong>No local anime search overrides saved.</strong>
@@ -309,12 +292,12 @@
 
                 <div class="metric-grid">
                     <div class="metric-card"><span class="metric-label">Runtime</span><strong>{{ run.total_runtime }}</strong></div>
-                    <div class="metric-card"><span class="metric-label">Source Files</span><strong>{{ run.source_items_found }}</strong></div>
-                    <div class="metric-card"><span class="metric-label">Matches</span><strong>{{ run.matches_found }}</strong></div>
-                    <div class="metric-card"><span class="metric-label">Created</span><strong class="text-success">{{ run.links_created }}</strong></div>
-                    <div class="metric-card"><span class="metric-label">Updated</span><strong>{{ run.links_updated }}</strong></div>
-                    <div class="metric-card"><span class="metric-label">Skipped</span><strong>{{ run.links_skipped }}</strong></div>
-                    <div class="metric-card"><span class="metric-label">Ambiguous</span><strong>{{ run.ambiguous_skipped }}</strong></div>
+                    <div class="metric-card"><span class="metric-label">Source Files</span><strong>{{ run.source_items_found|thousands }}</strong></div>
+                    <div class="metric-card"><span class="metric-label">Matches</span><strong>{{ run.matches_found|thousands }}</strong></div>
+                    <div class="metric-card"><span class="metric-label">Created</span><strong class="text-success">{{ run.links_created|thousands }}</strong></div>
+                    <div class="metric-card"><span class="metric-label">Updated</span><strong>{{ run.links_updated|thousands }}</strong></div>
+                    <div class="metric-card"><span class="metric-label">Skipped</span><strong>{{ run.links_skipped|thousands }}</strong></div>
+                    <div class="metric-card"><span class="metric-label">Ambiguous</span><strong>{{ run.ambiguous_skipped|thousands }}</strong></div>
                     <div class="metric-card"><span class="metric-label">Cache Hit</span><strong>{{ run.cache_hit_ratio }}</strong></div>
                 </div>
 
@@ -368,9 +351,9 @@
                         <div class="card card--nested">
                             <h4 class="subsection-title">Matcher Signals</h4>
                             <div class="metric-grid metric-grid--compact">
-                                <div class="metric-card"><span class="metric-label">Candidate Slots</span><strong>{{ run.candidate_slots }}</strong></div>
-                                <div class="metric-card"><span class="metric-label">Scored</span><strong>{{ run.scored_candidates }}</strong></div>
-                                <div class="metric-card"><span class="metric-label">Exact ID</span><strong>{{ run.exact_id_hits }}</strong></div>
+                                <div class="metric-card"><span class="metric-label">Candidate Slots</span><strong>{{ run.candidate_slots|thousands }}</strong></div>
+                                <div class="metric-card"><span class="metric-label">Scored</span><strong>{{ run.scored_candidates|thousands }}</strong></div>
+                                <div class="metric-card"><span class="metric-label">Exact ID</span><strong>{{ run.exact_id_hits|thousands }}</strong></div>
                             </div>
                         </div>
 
@@ -378,12 +361,12 @@
                             <h4 class="subsection-title">Auto-Acquire</h4>
                             {% if run.auto_acquire_requests > 0 %}
                             <div class="metric-grid metric-grid--compact">
-                                <div class="metric-card"><span class="metric-label">Requests</span><strong>{{ run.auto_acquire_requests }}</strong></div>
-                                <div class="metric-card"><span class="metric-label">Missing</span><strong>{{ run.auto_acquire_missing_requests }}</strong></div>
-                                <div class="metric-card"><span class="metric-label">Cutoff</span><strong>{{ run.auto_acquire_cutoff_requests }}</strong></div>
-                                <div class="metric-card"><span class="metric-label">Hits</span><strong class="text-success">{{ run.auto_acquire_successes }}</strong></div>
-                                <div class="metric-card"><span class="metric-label">No Result</span><strong>{{ run.auto_acquire_no_result }}</strong></div>
-                                <div class="metric-card"><span class="metric-label">Blocked / Failed</span><strong>{{ run.auto_acquire_blocked + run.auto_acquire_failed }}</strong></div>
+                                <div class="metric-card"><span class="metric-label">Requests</span><strong>{{ run.auto_acquire_requests|thousands }}</strong></div>
+                                <div class="metric-card"><span class="metric-label">Missing</span><strong>{{ run.auto_acquire_missing_requests|thousands }}</strong></div>
+                                <div class="metric-card"><span class="metric-label">Cutoff</span><strong>{{ run.auto_acquire_cutoff_requests|thousands }}</strong></div>
+                                <div class="metric-card"><span class="metric-label">Hits</span><strong class="text-success">{{ run.auto_acquire_successes|thousands }}</strong></div>
+                                <div class="metric-card"><span class="metric-label">No Result</span><strong>{{ run.auto_acquire_no_result|thousands }}</strong></div>
+                                <div class="metric-card"><span class="metric-label">Blocked / Failed</span><strong>{{ (run.auto_acquire_blocked + run.auto_acquire_failed)|thousands }}</strong></div>
                             </div>
                             {% else %}
                             <p class="text-muted">No auto-acquire requests were recorded for this run.</p>
@@ -483,9 +466,9 @@
                                     {% endif %}
                                 </td>
                                 <td>{{ run.total_runtime }}</td>
-                                <td>{{ run.matches_found }}</td>
-                                <td class="text-success">{{ run.links_created }}</td>
-                                <td>{{ run.links_updated }}</td>
+                                <td>{{ run.matches_found|thousands }}</td>
+                                <td class="text-success">{{ run.links_created|thousands }}</td>
+                                <td>{{ run.links_updated|thousands }}</td>
                                 <td>
                                     {% if run.plex_refresh_planned_batches > 0 || run.plex_refresh_requested_paths > 0 %}
                                     {{ run.plex_refresh_refreshed_batches }}/{{ run.plex_refresh_planned_batches }}
@@ -541,7 +524,7 @@
                                     {% endif %}
                                 </td>
                                 <td class="{% if run.dead_marked > 0 || run.links_removed > 0 %}text-error{% endif %}">
-                                    {{ run.dead_marked + run.links_removed }}
+                                    {{ (run.dead_marked + run.links_removed)|thousands }}
                                 </td>
                             </tr>
                             {% endfor %}
@@ -555,4 +538,8 @@
         </div>
     </details>
 </section>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/scan-overrides.js" defer></script>
 {% endblock %}
