@@ -1160,9 +1160,8 @@ pub async fn run_scheduler_loop(cfg: &Config, db: &Database) -> Result<()> {
     let ctrl_c = tokio::signal::ctrl_c();
     tokio::pin!(ctrl_c);
     #[cfg(unix)]
-    let mut sigterm =
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .context("Failed to install SIGTERM handler")?;
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .context("Failed to install SIGTERM handler")?;
     let sigterm = async move {
         #[cfg(unix)]
         sigterm.recv().await;

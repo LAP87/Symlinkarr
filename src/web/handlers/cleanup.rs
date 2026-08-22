@@ -125,8 +125,9 @@ fn resolve_plex_db_path(query_path: Option<&str>) -> Result<PathBuf, String> {
         return confine_plex_db_path(requested, &allowed_plex_db_roots());
     }
 
-    default_plex_db_path()
-        .ok_or_else(|| "Plex DB path is required or must exist at a standard local path".to_string())
+    default_plex_db_path().ok_or_else(|| {
+        "Plex DB path is required or must exist at a standard local path".to_string()
+    })
 }
 
 pub(super) async fn visible_last_cleanup_audit_outcome(

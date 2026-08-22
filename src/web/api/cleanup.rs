@@ -344,8 +344,9 @@ pub(super) fn resolve_plex_db_path(query_path: Option<&str>) -> Result<std::path
         return confine_plex_db_path(requested, &allowed_plex_db_roots());
     }
 
-    default_plex_db_path()
-        .ok_or_else(|| "Plex DB path is required or must exist at a standard local path".to_string())
+    default_plex_db_path().ok_or_else(|| {
+        "Plex DB path is required or must exist at a standard local path".to_string()
+    })
 }
 
 /// GET /api/v1/report/anime-remediation
@@ -367,8 +368,12 @@ pub(super) async fn api_get_anime_remediation(
         )
     })?;
 
-    let plex_db_path = resolve_plex_db_path(query.plex_db.as_deref())
-        .map_err(|err| (StatusCode::BAD_REQUEST, Json(ApiErrorResponse { error: err })))?;
+    let plex_db_path = resolve_plex_db_path(query.plex_db.as_deref()).map_err(|err| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ApiErrorResponse { error: err }),
+        )
+    })?;
 
     let full = query.full.unwrap_or(false);
     let wants_tsv = matches!(query.format.as_deref(), Some("tsv"));

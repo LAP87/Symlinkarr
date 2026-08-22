@@ -463,7 +463,10 @@ mod tests {
     #[test]
     fn resolve_link_target_keeps_absolute_targets() {
         assert_eq!(
-            resolve_link_target(Path::new("/library/Movie/file.mkv"), Path::new("/mnt/rd/a.mkv")),
+            resolve_link_target(
+                Path::new("/library/Movie/file.mkv"),
+                Path::new("/mnt/rd/a.mkv")
+            ),
             PathBuf::from("/mnt/rd/a.mkv")
         );
     }

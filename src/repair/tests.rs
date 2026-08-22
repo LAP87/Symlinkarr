@@ -276,7 +276,9 @@ async fn test_scan_skips_links_under_unreachable_source_root() {
     let src = tempfile::TempDir::new().unwrap();
     let src_root = src.path().to_path_buf();
 
-    let link_path = lib.path().join("Show (2020) - S01E01 - Pilot [WEBDL-1080p].mkv");
+    let link_path = lib
+        .path()
+        .join("Show (2020) - S01E01 - Pilot [WEBDL-1080p].mkv");
     std::os::unix::fs::symlink(src_root.join("missing.mkv"), &link_path).unwrap();
 
     // Simulate an unreachable source root (probe fails with an I/O error).

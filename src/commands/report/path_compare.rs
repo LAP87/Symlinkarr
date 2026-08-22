@@ -55,8 +55,7 @@ pub(super) async fn build_path_compare(
 ) -> Result<PathCompareOutput> {
     // Probe each distinct source root once (with timeout) so a hung/disconnected
     // mount neither stalls the report nor makes healthy links look missing.
-    let unreachable_roots =
-        unreachable_source_roots(source_roots, DIRECTORY_PROBE_TIMEOUT).await;
+    let unreachable_roots = unreachable_source_roots(source_roots, DIRECTORY_PROBE_TIMEOUT).await;
     let mut unreachable_source_paths: HashSet<PathBuf> = HashSet::new();
 
     let mut db_active_links: HashSet<PathBuf> = HashSet::new();
