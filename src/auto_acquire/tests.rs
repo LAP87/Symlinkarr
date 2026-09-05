@@ -128,6 +128,7 @@ fn queue_block_reason_prefers_failed_torrents() {
     let torrent = DecypharrTorrent {
         info_hash: "abc".to_string(),
         name: "Broken".to_string(),
+        protocol: "torrent".to_string(),
         state: "error".to_string(),
         status: "error".to_string(),
         progress: 0.0,
@@ -152,6 +153,7 @@ fn queue_block_reason_flags_capacity_separately() {
     let torrent = DecypharrTorrent {
         info_hash: "abc".to_string(),
         name: "Busy".to_string(),
+        protocol: "torrent".to_string(),
         state: "downloading".to_string(),
         status: "downloading".to_string(),
         progress: 0.2,
@@ -185,6 +187,7 @@ fn find_matching_torrent_falls_back_to_recent_token_match() {
     let torrents = vec![DecypharrTorrent {
         info_hash: "abc".to_string(),
         name: "Breaking.Bad.S01E01.1080p".to_string(),
+        protocol: "torrent".to_string(),
         state: "downloading".to_string(),
         status: "downloading".to_string(),
         progress: 42.0,

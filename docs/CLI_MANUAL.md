@@ -333,6 +333,8 @@ symlinkarr repair auto --self-heal
 symlinkarr repair trigger --arr sonarr
 ```
 
+`trigger` starts a Decypharr repair sweep through `POST /api/repair/run` (Decypharr 2.3 or newer; older builds return 404). The sweep is global across every configured *Arr, so `--arr` is accepted for compatibility but ignored; the command prints the next scheduled sweep and the last run afterwards.
+
 Notes:
 
 - successful `repair auto` runs can trigger the same media-server refresh for affected library roots when refresh is configured.

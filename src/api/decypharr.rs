@@ -24,26 +24,44 @@ pub struct DecypharrEntry {
     pub is_dir: bool,
 }
 
-/// Repair job status from Decypharr
+/// Repair schedule and last sweep as reported by `GET /api/repair/status`
+/// (Decypharr >= 2.3). Every field defaults so newer builds can add keys freely.
 #[allow(dead_code)]
-#[derive(Debug, Clone, Deserialize)]
-pub struct RepairJob {
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct RepairStatus {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub next_run_at: Option<String>,
+    #[serde(default)]
+    pub last_run: Option<RepairRun>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct RepairRun {
+    #[serde(default)]
     pub id: String,
+    #[serde(default)]
+    pub trigger: String,
+    #[serde(default)]
     pub status: String,
     #[serde(default)]
-    pub arrs: Vec<String>,
+    pub started_at: Option<String>,
+    #[serde(default)]
+    pub finished_at: Option<String>,
     #[serde(default)]
     pub error: String,
 }
 
-/// Request body for triggering a repair
+/// Request body for `POST /api/repair/run` (Decypharr >= 2.3). The sweep is global
+/// across every configured *Arr; `protocol` optionally limits it to "torrent" or "nzb".
 #[derive(Debug, Serialize)]
-struct RepairRequest {
+struct RepairRunRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
-    arr_name: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    media_ids: Vec<String>,
-    auto_process: bool,
+    protocol: Option<String>,
+    verify_content: bool,
+    auto_repair: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -70,6 +88,10 @@ pub struct DecypharrTorrent {
     #[serde(alias = "hash")]
     pub info_hash: String,
     pub name: String,
+    /// "torrent" or "nzb" (Decypharr >= 2.0); older builds omit it.
+    #[allow(dead_code)]
+    #[serde(default)]
+    pub protocol: String,
     #[serde(default)]
     pub state: String,
     #[serde(default)]
@@ -101,6 +123,12 @@ pub struct DecypharrTorrent {
 }
 
 impl DecypharrTorrent {
+    /// Usenet-backed entry (Decypharr >= 2.0 reports `protocol: "nzb"`).
+    #[allow(dead_code)]
+    pub fn is_nzb(&self) -> bool {
+        self.protocol.eq_ignore_ascii_case("nzb")
+    }
+
     pub fn is_failed(&self) -> bool {
         self.bad
             || self.state.eq_ignore_ascii_case("error")
@@ -279,24 +307,26 @@ impl DecypharrClient {
         Ok(entries)
     }
 
-    /// Trigger a repair job in Decypharr.
-    /// If `arr_name` is None, repairs all configured *Arrs.
+    /// Start a repair sweep (`POST /api/repair/run`, Decypharr >= 2.3). The sweep is
+    /// global across every configured *Arr; `protocol` optionally limits it to
+    /// "torrent" or "nzb". A 409 means a sweep is already running and is reported as
+    /// success, since the caller's intent is satisfied either way.
     pub async fn trigger_repair(
         &self,
-        arr_name: Option<&str>,
-        media_ids: Vec<String>,
-        auto_process: bool,
+        protocol: Option<&str>,
+        verify_content: bool,
+        auto_repair: bool,
     ) -> Result<String> {
-        let url = format!("{}/api/repair", self.base_url);
+        let url = format!("{}/api/repair/run", self.base_url);
         info!(
-            "Decypharr: POST /api/repair (arr={:?}, ids={:?})",
-            arr_name, media_ids
+            "Decypharr: POST /api/repair/run (protocol={:?}, verify_content={}, auto_repair={})",
+            protocol, verify_content, auto_repair
         );
 
-        let body = RepairRequest {
-            arr_name: arr_name.map(|s| s.to_string()),
-            media_ids,
-            auto_process,
+        let body = RepairRunRequest {
+            protocol: protocol.map(|s| s.to_string()),
+            verify_content,
+            auto_repair,
         };
 
         let mut req = self.client.post(&url).json(&body);
@@ -305,27 +335,43 @@ impl DecypharrClient {
         }
 
         let resp = http::send_with_retry(req).await?;
-        if !resp.status().is_success() {
-            let status = resp.status();
+        let status = resp.status();
+        if status == reqwest::StatusCode::CONFLICT {
+            let message = "a repair sweep is already running".to_string();
+            info!("Decypharr: {}", message);
+            return Ok(message);
+        }
+        if status == reqwest::StatusCode::NOT_FOUND {
+            anyhow::bail!(
+                "Decypharr returned 404 for /api/repair/run; the repair API needs Decypharr 2.3 or newer"
+            );
+        }
+        if !status.is_success() {
             let body_text = resp.text().await.unwrap_or_default();
             anyhow::bail!("Decypharr repair error {}: {}", status, body_text);
         }
 
-        #[derive(Deserialize)]
-        struct RepairResponse {
-            message: String,
-        }
-
-        let result: RepairResponse = resp.json().await?;
-        info!("Decypharr: {}", result.message);
-        Ok(result.message)
+        // The response shape is not pinned across builds; surface whatever identifies the run.
+        let value: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
+        let message = value
+            .get("message")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .or_else(|| {
+                value
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .map(|id| format!("repair run {id} started"))
+            })
+            .unwrap_or_else(|| "repair run accepted".to_string());
+        info!("Decypharr: {}", message);
+        Ok(message)
     }
 
-    /// Get all repair jobs from Decypharr.
-    #[allow(dead_code)]
-    pub async fn get_repair_jobs(&self) -> Result<Vec<RepairJob>> {
-        let url = format!("{}/api/repair/jobs", self.base_url);
-        debug!("Decypharr: GET /api/repair/jobs");
+    /// Current repair schedule and last sweep (`GET /api/repair/status`, Decypharr >= 2.3).
+    pub async fn get_repair_status(&self) -> Result<RepairStatus> {
+        let url = format!("{}/api/repair/status", self.base_url);
+        debug!("Decypharr: GET /api/repair/status");
 
         let mut req = self.client.get(&url);
         if let Some((key, val)) = self.auth_header() {
@@ -336,11 +382,10 @@ impl DecypharrClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("Decypharr jobs error {}: {}", status, body);
+            anyhow::bail!("Decypharr repair status error {}: {}", status, body);
         }
 
-        let jobs: Vec<RepairJob> = resp.json().await?;
-        Ok(jobs)
+        Ok(resp.json().await?)
     }
 
     /// Add content (magnet links) via Decypharr's API.
@@ -486,18 +531,75 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_repair_job() {
-        let json = r#"[{
-            "id": "job-123",
-            "status": "completed",
-            "arrs": ["sonarr"],
-            "error": ""
-        }]"#;
+    fn test_parse_repair_status() {
+        let json = r#"{
+            "enabled": true,
+            "next_run_at": "2026-09-05T04:00:00+02:00",
+            "last_run": {"id": "a760adda", "trigger": "scheduled", "status": "completed"}
+        }"#;
 
-        let jobs: Vec<RepairJob> = serde_json::from_str(json).unwrap();
-        assert_eq!(jobs.len(), 1);
-        assert_eq!(jobs[0].status, "completed");
-        assert_eq!(jobs[0].arrs, vec!["sonarr"]);
+        let status: RepairStatus = serde_json::from_str(json).unwrap();
+        assert!(status.enabled);
+        assert_eq!(
+            status.next_run_at.as_deref(),
+            Some("2026-09-05T04:00:00+02:00")
+        );
+        let run = status.last_run.unwrap();
+        assert_eq!(run.id, "a760adda");
+        assert_eq!(run.status, "completed");
+
+        // Older or newer builds may omit keys entirely.
+        let sparse: RepairStatus = serde_json::from_str("{}").unwrap();
+        assert!(!sparse.enabled);
+        assert!(sparse.last_run.is_none());
+    }
+
+    #[test]
+    fn test_trigger_repair_posts_to_v2_run_endpoint() {
+        let Some((base_url, requests)) = spawn_sequence_http_server(&[(
+            "HTTP/1.1 200 OK",
+            r#"{"id":"run-1","message":"Repair run started"}"#,
+        )]) else {
+            return;
+        };
+        let client = DecypharrClient::new(&base_url, None);
+        let message = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(client.trigger_repair(Some("nzb"), false, true))
+            .unwrap();
+        assert_eq!(message, "Repair run started");
+
+        let captured = requests.lock().unwrap();
+        let request = captured.first().unwrap();
+        assert!(request.starts_with("POST /api/repair/run HTTP/1.1"));
+        assert!(request.contains(r#""protocol":"nzb""#));
+        assert!(request.contains(r#""auto_repair":true"#));
+    }
+
+    #[test]
+    fn test_trigger_repair_treats_409_as_already_running() {
+        let Some((base_url, _requests)) =
+            spawn_sequence_http_server(&[("HTTP/1.1 409 Conflict", r#"{"error":"running"}"#)])
+        else {
+            return;
+        };
+        let client = DecypharrClient::new(&base_url, None);
+        let message = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(client.trigger_repair(None, false, true))
+            .unwrap();
+        assert!(message.contains("already running"));
+    }
+
+    #[test]
+    fn test_torrent_protocol_defaults_and_is_nzb() {
+        let nzb: DecypharrTorrent =
+            serde_json::from_str(r#"{"info_hash":"x","name":"n","protocol":"nzb"}"#).unwrap();
+        assert!(nzb.is_nzb());
+        let legacy: DecypharrTorrent =
+            serde_json::from_str(r#"{"info_hash":"x","name":"n"}"#).unwrap();
+        assert!(!legacy.is_nzb());
+        assert_eq!(legacy.protocol, "");
     }
 
     #[test]
