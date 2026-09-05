@@ -5,76 +5,85 @@
 {% block body_class %}page-links page-inspection{% endblock %}
 
 {% block content %}
-<div class="page-header">
-    <div class="page-meta">
-        <p class="page-kicker">Inventory</p>
-        <span class="page-taxonomy page-taxonomy--inspection">Links</span>
+<div class="page-header page-header--split">
+    <div>
+        <h1>Links</h1>
+        <p class="page-lead">Symlinks recorded in the database, filtered by link status.</p>
     </div>
-    <h1>Links</h1>
-    <p class="page-lead">Browse and manage symlinks in the database.</p>
-    <div class="page-help-links">
-        <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Repair-and-Dead-Links" target="_blank" rel="noreferrer noopener">
-            <span class="help-link__eyebrow">Learn more</span>
-            <span class="help-link__title">Links and repair guide</span>
+    <div class="page-header__aside">
+        <span class="badge badge-info">{{ (links|length)|thousands }} shown</span>
+        <a class="doc-link" href="https://github.com/LAP87/Symlinkarr/wiki/Repair-and-Dead-Links" target="_blank" rel="noreferrer noopener">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14L21 3"/></svg>
+            Repair guide
         </a>
     </div>
 </div>
 
-<div class="card operator-links-card">
-    <div class="operator-toolbar">
-        <div class="filter-tabs">
-            <a href="/links?filter=active" class="filter-tab {% if filter == "active" %}active{% endif %}">
-                Active
-            </a>
-            <a href="/links?filter=dead" class="filter-tab {% if filter == "dead" %}active{% endif %}">
-                Dead
-            </a>
-            <a href="/links?filter=all" class="filter-tab {% if filter == "all" %}active{% endif %}">
-                All
-            </a>
+<div class="page-sections">
+    <section class="card operator-links-card">
+        <div class="operator-toolbar">
+            <div class="filter-tabs">
+                <a href="/links?filter=active" class="filter-tab {% if filter == "active" %}active{% endif %}">
+                    Active
+                </a>
+                <a href="/links?filter=dead" class="filter-tab {% if filter == "dead" %}active{% endif %}">
+                    Dead
+                </a>
+                <a href="/links?filter=all" class="filter-tab {% if filter == "all" %}active{% endif %}">
+                    All
+                </a>
+            </div>
+            <div class="operator-toolbar__actions">
+                <a href="/links/dead" class="btn btn-secondary">View dead links</a>
+                <a href="/scan" class="btn btn-primary">Run scan</a>
+            </div>
         </div>
-        <div class="operator-toolbar__actions">
-            <a href="/links/dead" class="btn btn-secondary">View Dead Links</a>
-            <a href="/scan" class="btn btn-primary">Run New Scan</a>
-        </div>
-    </div>
 
-    {% if links|length > 0 %}
-    <table class="data-table">
-        <thead>
-            <tr>
-                <th>Media ID</th>
-                <th>Type</th>
-                <th>Target Path</th>
-                <th>Source Path</th>
-                <th>Status</th>
-                <th>Updated</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for link in links %}
-            <tr>
-                <td>{{ link.media_id }}</td>
-                <td>{{ link.media_type }}</td>
-                <td><code class="mono">{{ link.target_path.display() }}</code></td>
-                <td><code class="mono">{{ link.source_path.display() }}</code></td>
-                <td>
-                    {% match link.status %}
-                    {% when crate::models::LinkStatus::Active %}<span class="badge badge-success">Active</span>
-                    {% when crate::models::LinkStatus::Dead %}<span class="badge badge-danger">Dead</span>
-                    {% when crate::models::LinkStatus::Removed %}<span class="badge badge-warning">Removed</span>
-                    {% endmatch %}
-                </td>
-                <td>
-                    {% match link.updated_at %}
-                    {% when Some with (ts) %}<span class="text-muted">{{ ts }}</span>{% when None %}&mdash;{% endmatch %}
-                </td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-    {% else %}
-    <p class="text-muted operator-empty-state">No links found for filter: <strong>{{ filter }}</strong>.</p>
-    {% endif %}
+        {% if links|length > 0 %}
+        <div class="table-wrap">
+        <table class="data-table dense-table">
+            <thead>
+                <tr>
+                    <th>Media ID</th>
+                    <th>Type</th>
+                    <th>Target path</th>
+                    <th>Source path</th>
+                    <th>Status</th>
+                    <th>Updated</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for link in links %}
+                <tr>
+                    <td><code class="mono">{{ link.media_id }}</code></td>
+                    <td>{{ link.media_type }}</td>
+                    <td><code class="mono">{{ link.target_path.display() }}</code></td>
+                    <td><code class="mono">{{ link.source_path.display() }}</code></td>
+                    <td>
+                        {% match link.status %}
+                        {% when crate::models::LinkStatus::Active %}<span class="badge badge-success">Active</span>
+                        {% when crate::models::LinkStatus::Dead %}<span class="badge badge-danger">Dead</span>
+                        {% when crate::models::LinkStatus::Removed %}<span class="badge badge-warning">Removed</span>
+                        {% endmatch %}
+                    </td>
+                    <td>
+                        {% match link.updated_at %}
+                        {% when Some with (ts) %}<span class="text-muted">{{ ts }}</span>{% when None %}&mdash;{% endmatch %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        </div>
+        {% else %}
+        <div class="empty-state operator-empty-state">
+            <span class="empty-state__title">No links match the <strong>{{ filter }}</strong> filter.</span>
+            Run a scan to refresh link health, or switch to the All tab.
+            <div class="empty-state__actions">
+                <a class="btn btn-secondary" href="/links?filter=all">Show all links</a>
+            </div>
+        </div>
+        {% endif %}
+    </section>
 </div>
 {% endblock %}

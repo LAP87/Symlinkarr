@@ -7,29 +7,22 @@
 {% block content %}
 <div class="page-header page-header--split">
     <div>
-        <div class="page-meta">
-            <p class="page-kicker">Repair</p>
-            <span class="page-taxonomy page-taxonomy--recovery">Repair</span>
-        </div>
-        <h1>&#128683; Dead Links</h1>
-        <p class="page-lead">Review missing-source symlinks and repair them before pruning.</p>
-        <div class="page-help-links advanced-only">
-            <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Repair-and-Dead-Links" target="_blank" rel="noreferrer noopener">
-                <span class="help-link__eyebrow">Learn more</span>
-                <span class="help-link__title">Repair workflow</span>
-            </a>
-        </div>
+        <h1>Dead links</h1>
+        <p class="page-lead">Symlinks whose source file is missing. Repair first, prune only when nothing can replace them.</p>
     </div>
-    <div class="header-badges">
-        <span class="badge badge-danger">{{ links|length }} dead</span>
-        <span class="badge badge-info">Repair queue</span>
+    <div class="page-header__aside">
+        <span class="badge {% if links|length > 0 %}badge-danger{% else %}badge-success{% endif %}">{{ (links|length)|thousands }} dead</span>
+        <a class="doc-link" href="https://github.com/LAP87/Symlinkarr/wiki/Repair-and-Dead-Links" target="_blank" rel="noreferrer noopener">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14L21 3"/></svg>
+            Repair workflow
+        </a>
     </div>
 </div>
 
 {% match active_repair %}
 {% when Some with (job) %}
 <div class="alert alert-info">
-    <strong>Background repair running</strong><br>
+    <strong>Background repair running.</strong>
     Started {{ job.started_at }} for {{ job.scope_label }}. Refresh this page for the finished outcome.
 </div>
 {% when None %}
@@ -38,115 +31,67 @@
 {% match last_repair_outcome %}
 {% when Some with (outcome) %}
 <div class="alert {% if outcome.success %}alert-success{% else %}alert-error{% endif %}">
-    <strong>{% if outcome.success %}Latest background repair completed{% else %}Latest background repair failed{% endif %}</strong><br>
-    {{ outcome.message }}<br>
+    <strong>{% if outcome.success %}Latest background repair completed.{% else %}Latest background repair failed.{% endif %}</strong>
+    {{ outcome.message }}
     <span class="text-muted">{{ outcome.finished_at }}</span>
 </div>
 {% when None %}
 {% endmatch %}
 
-{% if links|length > 0 %}
-<div class="split-grid">
-    <details class="card disclosure-card">
-        <summary class="disclosure-card__summary">
-            <div class="disclosure-card__copy">
-                <span class="disclosure-card__eyebrow">Summary</span>
-                <h2 class="disclosure-card__title">Repair order</h2>
-                <p class="disclosure-card__hint">Open for counts and the short version of what to do next.</p>
-            </div>
-            <div class="disclosure-card__meta">
-                <span class="badge badge-danger">{{ links|length }} dead</span>
-                <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
-            </div>
-        </summary>
-        <div class="disclosure-card__body">
-            <div class="metric-grid metric-grid--compact">
-                <div class="metric-card">
-                    <span class="metric-label">Total Dead Links</span>
-                    <strong>{{ links|length }}</strong>
-                </div>
-                <div class="metric-card">
-                    <span class="metric-label">Affected Media Types</span>
-                    <strong>tv / movie</strong>
-                    <span class="text-muted">Exact type is shown on each row.</span>
-                </div>
-                <div class="metric-card">
-                    <span class="metric-label">Best First Step</span>
-                    <strong>Repair first</strong>
-                    <span class="text-muted">Only prune once no replacement exists.</span>
-                </div>
-            </div>
-
-            <div class="alert alert-warning mt-2">
-                <strong>&#9888;&#65039; {{ links|length }} dead link(s) detected.</strong>
-                Use auto-repair to attempt replacement, or run cleanup to prune unrepairable links.
-            </div>
-        </div>
-    </details>
-
+<div class="page-sections">
     <section class="card">
-        <div class="section-head">
+        <div class="operator-toolbar">
             <div>
-                <p class="section-kicker">Actions</p>
-                <h2 class="section-title">What to do next</h2>
+                <h2 class="section-title">Dead-link records</h2>
+                {% if links|length > 0 %}
+                <p class="section-copy">{{ (links|length)|thousands }} dead links. Auto-repair looks for a replacement source before anything is pruned.</p>
+                {% endif %}
+            </div>
+            <div class="operator-toolbar__actions">
+                <a href="/links" class="btn btn-secondary">All links</a>
+                {% if links|length > 0 %}
+                <form action="/links/repair" method="post" class="actions">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button type="submit" class="btn btn-primary">Auto-repair all</button>
+                </form>
+                {% endif %}
             </div>
         </div>
 
-        <div class="actions">
-            <form action="/links/repair" method="post">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                <button type="submit" class="btn btn-primary">&#128296; Auto-Repair All</button>
-            </form>
-            <a href="/cleanup" class="btn btn-secondary">&#129529; Cleanup</a>
-            <a href="/links" class="btn btn-secondary">&#128279; All Links</a>
-            <a href="/" class="btn">&#127968; Dashboard</a>
+        {% if links|length > 0 %}
+        <div class="table-wrap">
+        <table class="data-table dense-table">
+            <thead>
+                <tr>
+                    <th>Media ID</th>
+                    <th>Type</th>
+                    <th>Target path (symlink)</th>
+                    <th>Source path (missing)</th>
+                    <th>Updated</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for link in links %}
+                <tr>
+                    <td>{{ link.media_id }}</td>
+                    <td><span class="badge badge-info">{{ link.media_type }}</span></td>
+                    <td><code class="mono">{{ link.target_path.display() }}</code></td>
+                    <td><code class="mono text-error">{{ link.source_path.display() }}</code></td>
+                    <td>
+                        {% match link.updated_at %}
+                        {% when Some with (ts) %}<span class="text-muted">{{ ts }}</span>{% when None %}&mdash;{% endmatch %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
         </div>
+        {% else %}
+        <div class="empty-state">
+            <span class="empty-state__title">No dead links recorded.</span>
+            Every tracked symlink still resolves to its source file.
+        </div>
+        {% endif %}
     </section>
-</div>
-
-<div class="card">
-    <div class="section-head">
-        <div>
-            <p class="section-kicker">Inventory</p>
-            <h2 class="section-title">Dead-link records</h2>
-        </div>
-    </div>
-
-    <table class="data-table dense-table">
-        <thead>
-            <tr>
-                <th>Media ID</th>
-                <th>Type</th>
-                <th>Target Path (symlink)</th>
-                <th>Source Path (missing)</th>
-                <th>Updated</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for link in links %}
-            <tr>
-                <td>{{ link.media_id }}</td>
-                <td><span class="badge badge-info">{{ link.media_type }}</span></td>
-                <td><code class="mono">{{ link.target_path.display() }}</code></td>
-                <td><code class="mono text-error">{{ link.source_path.display() }}</code></td>
-                <td>
-                    {% match link.updated_at %}
-                    {% when Some with (ts) %}<span class="text-muted">{{ ts }}</span>{% when None %}&mdash;{% endmatch %}
-                </td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-</div>
-{% else %}
-<div class="alert alert-success">
-    <strong>&#9989; No dead links found.</strong>
-    Your library is in good shape!
-</div>
-{% endif %}
-
-<div class="actions mt-2">
-    <a href="/links" class="btn btn-secondary">&#8592; All Links</a>
-    <a href="/" class="btn">&#127968; Dashboard</a>
 </div>
 {% endblock %}

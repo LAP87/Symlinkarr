@@ -4,46 +4,19 @@
 {% block nav_status %}active{% endblock %}
 {% block body_class %}page-status page-inspection{% endblock %}
 
-{% block quick_links %}
-<nav class="quick-links-nav">
-    <div class="quick-links-title">Quick Links</div>
-    <ul class="quick-links-list">
-        <li><a href="#status-overview" class="quick-link-item active">Overview</a></li>
-        <li><a href="#status-daemon-services" class="quick-link-item">Daemon & Services</a></li>
-        <li><a href="#status-playback" class="quick-link-item">Playback Guard</a></li>
-        <li><a href="#status-queue" class="quick-link-item">Queue Detail</a></li>
-        <li><a href="#status-links" class="quick-link-item">Links History</a></li>
-    </ul>
-</nav>
-{% endblock %}
-
 {% block content %}
 <div class="page-header page-header--split">
     <div>
-        <div class="page-meta">
-            <p class="page-kicker">Live</p>
-            <span class="page-taxonomy page-taxonomy--inspection">Status</span>
-        </div>
         <h1>Service Status</h1>
-        <p class="page-lead">Check links, queue jobs, refresh, and connected services.</p>
-        <div class="page-help-links advanced-only">
-            <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Media-Server-Refresh-and-Deferred-Work" target="_blank" rel="noreferrer noopener">
-                <span class="help-link__eyebrow">Learn more</span>
-                <span class="help-link__title">Media refresh guide</span>
-            </a>
-            <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Configuration-and-Doctor" target="_blank" rel="noreferrer noopener">
-                <span class="help-link__eyebrow">Wiki</span>
-                <span class="help-link__title">Config and doctor guide</span>
-            </a>
-        </div>
+        <p class="page-lead">Live links, queue jobs, media refresh, and service health.</p>
     </div>
-    <div class="header-badges">
-        <span class="badge {% if queue.active_total > 0 %}badge-warning{% else %}badge-success{% endif %}">
-            Queue {{ queue.active_total|thousands }}
-        </span>
-        <span class="badge {% if stats.dead_links > 0 %}badge-danger{% else %}badge-success{% endif %}">
-            Dead {{ stats.dead_links|thousands }}
-        </span>
+    <div class="page-header__aside">
+        <span class="badge {% if queue.active_total > 0 %}badge-warning{% else %}badge-success{% endif %}">Queue {{ queue.active_total|thousands }}</span>
+        <span class="badge {% if stats.dead_links > 0 %}badge-danger{% else %}badge-success{% endif %}">Dead {{ stats.dead_links|thousands }}</span>
+        <a class="doc-link" href="https://github.com/LAP87/Symlinkarr/wiki/Media-Server-Refresh-and-Deferred-Work" target="_blank" rel="noreferrer noopener">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14L21 3"/></svg>
+            Media refresh
+        </a>
     </div>
 </div>
 
@@ -66,145 +39,99 @@
 {% endif %}
 {% when None %}{% endmatch %}
 
-<!-- SECTION 1: OVERVIEW -->
-<section id="status-overview">
-    <div class="split-grid">
-        <div class="card">
-            <div class="section-head">
-                <div>
-                    <p class="section-kicker">Meaning</p>
-                    <h2 class="section-title">What Status is for</h2>
-                </div>
-            </div>
-            <p class="text-muted">Use Status when you want the live view: links, queue jobs, scheduled scans, media refresh, and service health. Use Dashboard for the quick overview and Scan History for older runs.</p>
-        </div>
+<div class="settings-layout">
+    <nav class="settings-rail" id="status-rail" data-section-rail aria-label="Status sections">
+        <a href="#status-overview" class="settings-rail__link active">Overview</a>
+        <a href="#status-services" class="settings-rail__link">Daemon &amp; services</a>
+        <a href="#status-playback" class="settings-rail__link">Playback guard</a>
+        <a href="#status-queue" class="settings-rail__link">Queue</a>
+        <a href="#status-links" class="settings-rail__link">Links history</a>
+    </nav>
 
-        <div class="card">
+    <div class="settings-content">
+        <section id="status-overview" class="card">
             <div class="section-head">
                 <div>
-                    <p class="section-kicker">Next Step</p>
-                    <h2 class="section-title">Best follow-up right now</h2>
-                </div>
-            </div>
-            <ol class="steps-list text-muted">
-                {% if stats.dead_links > 0 %}
-                <li>Review Dead Links first; those rows are the clearest repair or cleanup work.</li>
-                {% else if queue.blocked > 0 || queue.failed > 0 || queue.completed_unlinked > 0 || queue.no_result > 0 %}
-                <li>Open the queue details below and decide whether to scan again, retry jobs, or fix the provider side.</li>
-                {% else if daemon_schedule.status_label == "Due" %}
-                <li>Verify the daemon/service before assuming background scans are still happening on schedule.</li>
-                <li>If nothing here looks unhealthy, go back to Dashboard or Scan instead of treating Status as a work queue.</li>
-                {% endif %}
-                <li>Use Config or Doctor only when this looks like a path, mount, or service problem.</li>
-            </ol>
-        </div>
-    </div>
-
-    <div class="split-grid mt-3">
-        <div class="card">
-            <div class="section-head">
-                <div>
-                    <p class="section-kicker">Library</p>
-                    <h2 class="section-title">Library health</h2>
+                    <h2 class="section-title">Overview</h2>
+                    <p class="section-copy">Link health as of the last completed scan.</p>
                 </div>
             </div>
 
             <div class="metric-grid">
                 <div class="metric-card">
-                    <span class="metric-label">Active Links</span>
+                    <span class="metric-label">Active links</span>
                     <strong class="text-success">{{ stats.active_links|thousands }}</strong>
                 </div>
                 <div class="metric-card">
-                    <span class="metric-label">Dead Links</span>
+                    <span class="metric-label">Dead links</span>
                     <strong class="{% if stats.dead_links > 0 %}text-error{% else %}text-success{% endif %}">{{ stats.dead_links|thousands }}</strong>
                 </div>
                 <div class="metric-card">
-                    <span class="metric-label">Total Scans</span>
+                    <span class="metric-label">Total scans</span>
                     <strong>{{ stats.total_scans|thousands }}</strong>
                 </div>
                 <div class="metric-card">
-                    <span class="metric-label">Last Scan</span>
+                    <span class="metric-label">Last scan</span>
                     <strong>
                         {% match stats.last_scan %}
                         {% when Some with (ts) %}{{ ts }}{% when None %}<span class="text-muted">Never</span>{% endmatch %}
                     </strong>
                 </div>
             </div>
-        </div>
+        </section>
 
-        <div class="card">
+        <section id="status-services" class="card">
             <div class="section-head">
                 <div>
-                    <p class="section-kicker">Auto-Acquire</p>
-                    <h2 class="section-title">Queue</h2>
+                    <h2 class="section-title">Daemon &amp; services</h2>
+                    <p class="section-copy">Scheduler cadence, heartbeat, and external service reachability.</p>
+                </div>
+                <a class="doc-link" href="https://github.com/LAP87/Symlinkarr/wiki/Configuration-and-Doctor" target="_blank" rel="noreferrer noopener">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14L21 3"/></svg>
+                    Config and doctor
+                </a>
+            </div>
+
+            <div class="section-head">
+                <div>
+                    <h3 class="subsection-title">Schedule and heartbeat</h3>
+                </div>
+                <div class="header-badges">
+                    <span class="badge {{ daemon_schedule.status_badge_class }}">{{ daemon_schedule.status_label }}</span>
+                    {% match daemon_heartbeat %}
+                    {% when Some with (heartbeat) %}
+                    <span class="badge {{ heartbeat.status_badge_class }}">{{ heartbeat.status_label }}</span>
+                    {% when None %}{% endmatch %}
+                    <span class="badge badge-info">{{ daemon_schedule.interval_label }}</span>
                 </div>
             </div>
 
             <div class="metric-grid metric-grid--compact">
-                <div class="metric-card"><span class="metric-label">Queued</span><strong>{{ queue.queued|thousands }}</strong></div>
-                <div class="metric-card"><span class="metric-label">Downloading</span><strong>{{ queue.downloading|thousands }}</strong></div>
-                <div class="metric-card"><span class="metric-label">Relinking</span><strong>{{ queue.relinking|thousands }}</strong></div>
-                <div class="metric-card"><span class="metric-label">Blocked</span><strong>{{ queue.blocked|thousands }}</strong></div>
-                <div class="metric-card"><span class="metric-label">No Result</span><strong>{{ queue.no_result|thousands }}</strong></div>
-                <div class="metric-card"><span class="metric-label">Failed</span><strong>{{ queue.failed|thousands }}</strong></div>
-                <div class="metric-card"><span class="metric-label">Needs Relink</span><strong>{{ queue.completed_unlinked|thousands }}</strong></div>
-            </div>
-        </div>
-    </div>
-</section>
-
-<!-- SECTION 2: DAEMON & SERVICES -->
-<section id="status-daemon-services">
-    <details class="collapsible-section" open>
-        <summary>
-            <div>
-                <h2 class="collapsible-header-title">Daemon & Services</h2>
-                <div class="collapsible-header-subtitle">Daemon runner metrics, heartbeat status, and external service checks.</div>
-            </div>
-            <span class="collapsible-chevron">▼</span>
-        </summary>
-        <div class="collapsible-body">
-            <div class="card mb-3">
-                <div class="section-head">
-                    <div>
-                        <p class="section-kicker">Daemon</p>
-                        <h3 class="subsection-title">Schedule and heartbeat</h3>
-                    </div>
-                    <div class="header-badges">
-                        <span class="badge {{ daemon_schedule.status_badge_class }}">{{ daemon_schedule.status_label }}</span>
-                        {% match daemon_heartbeat %}
-                        {% when Some with (heartbeat) %}
-                        <span class="badge {{ heartbeat.status_badge_class }}">{{ heartbeat.status_label }}</span>
-                        {% when None %}{% endmatch %}
-                        <span class="badge badge-info">{{ daemon_schedule.interval_label }}</span>
-                    </div>
-                </div>
-                <div class="metric-grid metric-grid--compact">
-                    <div class="metric-card"><span class="metric-label">{{ daemon_schedule.last_run_metric_label }}</span><strong>{{ daemon_schedule.last_run_label }}</strong></div>
-                    <div class="metric-card"><span class="metric-label">Next scan</span><strong>{{ daemon_schedule.next_due_label }}</strong></div>
-                    <div class="metric-card"><span class="metric-label">Search Missing</span><strong>{{ daemon_schedule.search_missing_label }}</strong></div>
-                    <div class="metric-card"><span class="metric-label">VACUUM</span><strong>{{ daemon_schedule.vacuum_label }}</strong></div>
-                    {% match daemon_heartbeat %}
-                    {% when Some with (heartbeat) %}
-                    <div class="metric-card"><span class="metric-label">Heartbeat</span><strong>{{ heartbeat.last_seen_label }}</strong></div>
-                    <div class="metric-card"><span class="metric-label">Daemon Phase</span><strong>{{ heartbeat.phase_label }}</strong></div>
-                    {% when None %}{% endmatch %}
-                </div>
-                <p class="text-muted mt-2">{{ daemon_schedule.detail }}</p>
+                <div class="metric-card"><span class="metric-label">{{ daemon_schedule.last_run_metric_label }}</span><strong>{{ daemon_schedule.last_run_label }}</strong></div>
+                <div class="metric-card"><span class="metric-label">Next scan</span><strong>{{ daemon_schedule.next_due_label }}</strong></div>
+                <div class="metric-card"><span class="metric-label">Search missing</span><strong>{{ daemon_schedule.search_missing_label }}</strong></div>
+                <div class="metric-card"><span class="metric-label">Vacuum</span><strong>{{ daemon_schedule.vacuum_label }}</strong></div>
                 {% match daemon_heartbeat %}
                 {% when Some with (heartbeat) %}
-                <p class="text-muted">{{ heartbeat.detail }}</p>
+                <div class="metric-card"><span class="metric-label">Heartbeat</span><strong>{{ heartbeat.last_seen_label }}</strong></div>
+                <div class="metric-card"><span class="metric-label">Daemon phase</span><strong>{{ heartbeat.phase_label }}</strong></div>
                 {% when None %}{% endmatch %}
             </div>
+            <p class="text-muted mt-2">{{ daemon_schedule.detail }}</p>
+            {% match daemon_heartbeat %}
+            {% when Some with (heartbeat) %}
+            <p class="text-muted">{{ heartbeat.detail }}</p>
+            {% when None %}{% endmatch %}
 
-            <div class="card advanced-only">
-                <div class="section-head">
+            <div class="advanced-only">
+                <div class="section-head mt-3">
                     <div>
-                        <p class="section-kicker">Integrations</p>
                         <h3 class="subsection-title">Service connectivity</h3>
                     </div>
                 </div>
 
+                {% if checks.len() > 0 %}
+                <div class="table-wrap">
                 <table class="data-table dense-table">
                     <thead>
                         <tr>
@@ -219,11 +146,11 @@
                             <td><strong>{{ check.service }}</strong></td>
                             <td>
                                 {% if check.status == "healthy" %}
-                                <span class="badge badge-success">&#9989; healthy</span>
+                                <span class="badge badge-success">Healthy</span>
                                 {% else if check.status == "configured" %}
-                                <span class="badge badge-info">&#9989; configured</span>
+                                <span class="badge badge-info">Configured</span>
                                 {% else if check.status == "missing" %}
-                                <span class="badge badge-warning">&#9888; missing</span>
+                                <span class="badge badge-warning">Missing</span>
                                 {% else %}
                                 <span class="badge badge-danger">{{ check.status }}</span>
                                 {% endif %}
@@ -233,231 +160,218 @@
                         {% endfor %}
                     </tbody>
                 </table>
-            </div>
-        </div>
-    </details>
-</section>
-
-<!-- SECTION 3: PLAYBACK GUARD -->
-<section id="status-playback">
-    <details class="collapsible-section" open>
-        <summary>
-            <div>
-                <h2 class="collapsible-header-title">Playback & Protection</h2>
-                <div class="collapsible-header-subtitle">Active streaming guard locks and deferred library refreshes.</div>
-            </div>
-            <span class="collapsible-chevron">▼</span>
-        </summary>
-        <div class="collapsible-body">
-            <div class="split-grid">
-                {% match streaming_guard %}
-                {% when Some with (guard) %}
-                <div class="card">
-                    <div class="section-head">
-                        <div>
-                            <p class="section-kicker">Streaming guard</p>
-                            <h3 class="subsection-title">Active playback protection</h3>
-                        </div>
-                        <div class="header-badges">
-                            <span class="badge {{ guard.status_badge_class }}">{{ guard.status_label }}</span>
-                            <span class="badge badge-info">{{ guard.active_streams }} active</span>
-                        </div>
-                    </div>
-                    {% match guard.error_message %}
-                    {% when Some with (message) %}
-                    <div class="alert alert-error">
-                        <strong>Tautulli could not be queried.</strong>
-                        {{ message }}
-                    </div>
-                    {% when None %}
-                    {% if guard.active_streams > 0 %}
-                    <div class="alert alert-warning">
-                        <strong>{{ guard.active_streams }} active stream(s) detected.</strong>
-                        Repair already protects these paths; treat cleanup or other destructive follow-up as unsafe until playback stops.
-                    </div>
-                    {% if guard.protected_paths|length > 0 %}
-                    <div class="card card--nested mt-2">
-                        <h4 class="subsection-title">Protected paths</h4>
-                        <div class="stack-list">
-                            {% for path in guard.protected_paths %}
-                            <code class="mono">{{ path }}</code>
-                            {% endfor %}
-                        </div>
-                    </div>
-                    {% endif %}
-                    {% else %}
-                    <div class="alert alert-success">
-                        <strong>No active streams detected.</strong>
-                        The repair guard is currently idle.
-                    </div>
-                    {% endif %}
-                    {% endmatch %}
                 </div>
-                {% when None %}{% endmatch %}
+                {% else %}
+                <div class="empty-state">
+                    <span class="empty-state__title">No external services configured.</span>
+                    Add Sonarr, Radarr, or a media server in the config file to see reachability here.
+                </div>
+                {% endif %}
+            </div>
+        </section>
 
-                <div class="card">
-                    <div class="section-head">
+        <section id="status-playback" class="card">
+            <div class="section-head">
+                <div>
+                    <h2 class="section-title">Playback guard</h2>
+                    <p class="section-copy">Streaming locks and library refreshes deferred behind them.</p>
+                </div>
+            </div>
+
+            {% match streaming_guard %}
+            {% when Some with (guard) %}
+            <div class="section-head">
+                <div>
+                    <h3 class="subsection-title">Active playback protection</h3>
+                </div>
+                <div class="header-badges">
+                    <span class="badge {{ guard.status_badge_class }}">{{ guard.status_label }}</span>
+                    <span class="badge {% if guard.active_streams > 0 %}badge-warning{% else %}badge-info{% endif %}">{{ guard.active_streams }} active</span>
+                </div>
+            </div>
+            {% match guard.error_message %}
+            {% when Some with (message) %}
+            <div class="alert alert-error">
+                <strong>Tautulli could not be queried.</strong>
+                {{ message }}
+            </div>
+            {% when None %}
+            {% if guard.active_streams > 0 %}
+            <div class="alert alert-warning">
+                <strong>{{ guard.active_streams }} active stream(s) detected.</strong>
+                Repair already protects these paths; treat cleanup or other destructive follow-up as unsafe until playback stops.
+            </div>
+            {% if guard.protected_paths|length > 0 %}
+            <h3 class="subsection-title mt-2">Protected paths</h3>
+            <div class="stack-list">
+                {% for path in guard.protected_paths %}
+                <code class="mono">{{ path }}</code>
+                {% endfor %}
+            </div>
+            {% endif %}
+            {% else %}
+            <div class="alert alert-success">
+                <strong>No active streams detected.</strong>
+                The repair guard is idle.
+            </div>
+            {% endif %}
+            {% endmatch %}
+            {% when None %}{% endmatch %}
+
+            <div class="section-head mt-3">
+                <div>
+                    <h3 class="subsection-title">Pending media refresh</h3>
+                </div>
+                <div class="header-badges">
+                    <span class="badge {% if deferred_refresh.pending_targets > 0 %}badge-warning{% else %}badge-success{% endif %}">{{ deferred_refresh.pending_targets|thousands }} queued</span>
+                </div>
+            </div>
+
+            {% if deferred_refresh.pending_targets > 0 %}
+            <div class="alert alert-warning">
+                <strong>{{ deferred_refresh.pending_targets|thousands }} refresh target(s) are queued.</strong>
+                Another Symlinkarr run held the refresh lock, or the media server was busy.
+            </div>
+            <div class="badge-stack">
+                {% for server in deferred_refresh.servers %}
+                <span class="badge badge-warning">{{ server.server }}: {{ server.queued_targets|thousands }}</span>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="empty-state">
+                <span class="empty-state__title">No pending media refresh.</span>
+                Every library refresh Symlinkarr queued has been handed to the media server.
+            </div>
+            {% endif %}
+        </section>
+
+        <section id="status-queue" class="card">
+            <div class="section-head">
+                <div>
+                    <h2 class="section-title">Queue</h2>
+                    <p class="section-copy">Auto-acquire pipeline state and the jobs behind it.</p>
+                </div>
+                <div class="header-badges">
+                    <span class="badge {% if queue.active_total > 0 %}badge-warning{% else %}badge-success{% endif %}">{{ queue.active_total|thousands }} active</span>
+                </div>
+            </div>
+
+            <div class="metric-grid metric-grid--compact">
+                <div class="metric-card"><span class="metric-label">Queued</span><strong>{{ queue.queued|thousands }}</strong></div>
+                <div class="metric-card"><span class="metric-label">Downloading</span><strong>{{ queue.downloading|thousands }}</strong></div>
+                <div class="metric-card"><span class="metric-label">Relinking</span><strong>{{ queue.relinking|thousands }}</strong></div>
+                <div class="metric-card"><span class="metric-label">Blocked</span><strong>{{ queue.blocked|thousands }}</strong></div>
+                <div class="metric-card"><span class="metric-label">No result</span><strong>{{ queue.no_result|thousands }}</strong></div>
+                <div class="metric-card"><span class="metric-label">Failed</span><strong>{{ queue.failed|thousands }}</strong></div>
+                <div class="metric-card"><span class="metric-label">Needs relink</span><strong>{{ queue.completed_unlinked|thousands }}</strong></div>
+            </div>
+
+            <div class="section-head mt-3">
+                <div>
+                    <h3 class="subsection-title">Recent auto-acquire jobs</h3>
+                </div>
+                <div class="header-badges">
+                    <span class="badge badge-info">{{ recent_queue_jobs|length }} shown</span>
+                </div>
+            </div>
+
+            {% if recent_queue_jobs|length > 0 %}
+            <div class="queue-jobs-list">
+                {% for job in recent_queue_jobs %}
+                <article class="queue-job-card">
+                    <div class="queue-job-card__header">
                         <div>
-                            <p class="section-kicker">Refresh</p>
-                            <h3 class="subsection-title">Pending media refresh</h3>
+                            <p class="queue-job-card__eyebrow">{{ job.arr_label }} · {{ job.scope_label }}</p>
+                            <h4 class="queue-job-card__title">{{ job.label }}</h4>
+                        </div>
+                        <div class="queue-job-card__badges">
+                            <span class="badge {{ job.status_badge_class }}">{{ job.status_label }}</span>
+                            <span class="badge {% if job.attempts > 0 %}badge-warning{% else %}badge-info{% endif %}">Attempts {{ job.attempts|thousands }}</span>
                         </div>
                     </div>
-
-                    {% if deferred_refresh.pending_targets > 0 %}
-                    <div class="alert alert-warning">
-                        <strong>{{ deferred_refresh.pending_targets|thousands }} refresh target(s) are queued.</strong>
-                        Another Symlinkarr run held the refresh lock, or the media server was busy.
+                    <div class="queue-job-card__facts">
+                        <div>
+                            <span class="queue-job-card__label">Query</span>
+                            <code class="mono queue-job-card__query">{{ job.query }}</code>
+                        </div>
+                        <div>
+                            <span class="queue-job-card__label">{{ job.timing_label }}</span>
+                            <strong class="queue-job-card__timing">{{ job.timing_value }}</strong>
+                        </div>
                     </div>
-                    <div class="badge-stack">
-                        {% for server in deferred_refresh.servers %}
-                        <span class="badge badge-warning">{{ server.server }}: {{ server.queued_targets|thousands }}</span>
+                    {% match job.detail %}
+                    {% when Some with (detail) %}
+                    <p class="queue-job-card__detail">{{ detail }}</p>
+                    {% when None %}{% endmatch %}
+                </article>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="empty-state">
+                <span class="empty-state__title">No recent queue jobs need review.</span>
+                Auto-acquire has nothing queued, blocked, or failed right now.
+            </div>
+            {% endif %}
+        </section>
+
+        <section id="status-links" class="card">
+            <div class="section-head">
+                <div>
+                    <h2 class="section-title">Links history</h2>
+                    <p class="section-copy">Dead links Symlinkarr still tracks, plus the newest link records.</p>
+                </div>
+                <div class="header-badges">
+                    <span class="badge {% if stats.dead_links > 0 %}badge-danger{% else %}badge-success{% endif %}">{{ stats.dead_links|thousands }} dead</span>
+                </div>
+            </div>
+
+            {% if stats.dead_links > 0 %}
+            <div class="alert alert-warning">
+                <strong>{{ stats.dead_links|thousands }} dead link(s) remain tracked.</strong>
+                Symlinkarr will keep surfacing them on scan and repair until a fresh source appears or you prune them intentionally.
+            </div>
+
+            {% if tracked_dead_links|length > 0 %}
+            <div class="table-wrap">
+                <table class="data-table dense-table">
+                    <thead>
+                        <tr>
+                            <th>Media ID</th>
+                            <th>Target path</th>
+                            <th>Missing source</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for link in tracked_dead_links %}
+                        <tr>
+                            <td><strong>{{ link.media_id }}</strong></td>
+                            <td><code class="mono">{{ link.target_path.display() }}</code></td>
+                            <td><code class="mono">{{ link.source_path.display() }}</code></td>
+                        </tr>
                         {% endfor %}
-                    </div>
-                    {% else %}
-                    <div class="alert alert-success">
-                        <strong>No pending media refresh.</strong>
-                    </div>
-                    {% endif %}
-                </div>
+                    </tbody>
+                </table>
             </div>
-        </div>
-    </details>
-</section>
+            {% endif %}
 
-<!-- SECTION 4: QUEUE DETAIL -->
-<section id="status-queue">
-    <details class="collapsible-section" open>
-        <summary>
-            <div>
-                <h2 class="collapsible-header-title">Queue Detail</h2>
-                <div class="collapsible-header-subtitle">Detailed state logs for current auto-acquire pipeline activities.</div>
+            <div class="actions mt-2">
+                <a href="/links/dead" class="btn btn-secondary">Review dead links</a>
+                <a href="/scan" class="btn btn-secondary">Run scan</a>
             </div>
-            <span class="collapsible-chevron">▼</span>
-        </summary>
-        <div class="collapsible-body">
-            <div class="card">
-                <div class="section-head">
+            {% else %}
+            <div class="empty-state">
+                <span class="empty-state__title">No persistent dead links are currently tracked.</span>
+                Every recorded symlink still resolves to a source file.
+            </div>
+            {% endif %}
+
+            <div class="advanced-only">
+                <div class="section-head mt-3">
                     <div>
-                        <p class="section-kicker">Queue Jobs</p>
-                        <h3 class="subsection-title">Recent auto-acquire jobs</h3>
-                    </div>
-                    <div class="header-badges">
-                        <span class="badge {% if queue.active_total > 0 %}badge-warning{% else %}badge-success{% endif %}">{{ recent_queue_jobs|length }} shown</span>
-                    </div>
-                </div>
-                {% if recent_queue_jobs|length > 0 %}
-                <div class="queue-jobs-list">
-                    {% for job in recent_queue_jobs %}
-                    <article class="queue-job-card">
-                        <div class="queue-job-card__header">
-                            <div>
-                                <p class="queue-job-card__eyebrow">{{ job.arr_label }} · {{ job.scope_label }}</p>
-                                <h4 class="queue-job-card__title">{{ job.label }}</h4>
-                            </div>
-                            <div class="queue-job-card__badges">
-                                <span class="badge {{ job.status_badge_class }}">{{ job.status_label }}</span>
-                                <span class="badge {% if job.attempts > 0 %}badge-warning{% else %}badge-info{% endif %}">Attempts {{ job.attempts|thousands }}</span>
-                            </div>
-                        </div>
-                        <div class="queue-job-card__facts">
-                            <div>
-                                <span class="queue-job-card__label">Query</span>
-                                <code class="mono queue-job-card__query">{{ job.query }}</code>
-                            </div>
-                            <div>
-                                <span class="queue-job-card__label">{{ job.timing_label }}</span>
-                                <strong class="queue-job-card__timing">{{ job.timing_value }}</strong>
-                            </div>
-                        </div>
-                        {% match job.detail %}
-                        {% when Some with (detail) %}
-                        <p class="queue-job-card__detail">{{ detail }}</p>
-                        {% when None %}{% endmatch %}
-                    </article>
-                    {% endfor %}
-                </div>
-                {% else %}
-                <div class="alert alert-success">
-                    <strong>No recent queue jobs need review.</strong>
-                </div>
-                {% endif %}
-            </div>
-        </div>
-    </details>
-</section>
-
-<!-- SECTION 5: LINKS HISTORY -->
-<section id="status-links">
-    <details class="collapsible-section" open>
-        <summary>
-            <div>
-                <h2 class="collapsible-header-title">Links & History</h2>
-                <div class="collapsible-header-subtitle">Persistent dead link registers and recent link records.</div>
-            </div>
-            <span class="collapsible-chevron">▼</span>
-        </summary>
-        <div class="collapsible-body">
-            <div class="card mb-3">
-                <div class="section-head">
-                    <div>
-                        <p class="section-kicker">Dead Links</p>
-                        <h3 class="subsection-title">Persistent unresolved links</h3>
-                    </div>
-                    {% if stats.dead_links > 0 %}
-                    <div class="header-badges">
-                        <span class="badge badge-danger">{{ stats.dead_links|thousands }} tracked</span>
-                    </div>
-                    {% endif %}
-                </div>
-
-                {% if stats.dead_links > 0 %}
-                <div class="alert alert-warning">
-                    <strong>{{ stats.dead_links|thousands }} dead link(s) remain tracked.</strong>
-                    Symlinkarr will keep surfacing them on scan and repair until a fresh source appears or you prune them intentionally.
-                </div>
-
-                {% if tracked_dead_links|length > 0 %}
-                <div class="card card--nested mt-2">
-                    <h4 class="subsection-title">Tracked dead links</h4>
-                    <div class="table-wrap">
-                        <table class="data-table dense-table">
-                            <thead>
-                                <tr>
-                                    <th>Media ID</th>
-                                    <th>Target Path</th>
-                                    <th>Missing Source</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {% for link in tracked_dead_links %}
-                                <tr>
-                                    <td><strong>{{ link.media_id }}</strong></td>
-                                    <td><code class="mono">{{ link.target_path.display() }}</code></td>
-                                    <td><code class="mono">{{ link.source_path.display() }}</code></td>
-                                </tr>
-                                {% endfor %}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-                {% endif %}
-
-                <div class="actions mt-2">
-                    <a href="/links/dead" class="btn btn-secondary">Review Dead Links</a>
-                    <a href="/scan" class="btn btn-secondary">Run Scan</a>
-                </div>
-                {% else %}
-                <div class="alert alert-success">
-                    <strong>No persistent dead links are currently tracked.</strong>
-                </div>
-                {% endif %}
-            </div>
-
-            <div class="card advanced-only">
-                <div class="section-head">
-                    <div>
-                        <p class="section-kicker">Recent Links</p>
                         <h3 class="subsection-title">Last 50 records</h3>
+                    </div>
+                    <div class="header-badges">
+                        <span class="badge badge-info">{{ recent_links|length }} shown</span>
                     </div>
                 </div>
 
@@ -468,8 +382,8 @@
                             <tr>
                                 <th>Media ID</th>
                                 <th>Type</th>
-                                <th>Target Path</th>
-                                <th>Source Path</th>
+                                <th>Target path</th>
+                                <th>Source path</th>
                                 <th>Status</th>
                                 <th>Created</th>
                             </tr>
@@ -498,10 +412,20 @@
                     </table>
                 </div>
                 {% else %}
-                <p class="text-muted">No links found.</p>
+                <div class="empty-state">
+                    <span class="empty-state__title">No links recorded yet.</span>
+                    Run a scan to populate the link register.
+                    <div class="empty-state__actions">
+                        <a class="btn btn-secondary" href="/scan">Run a scan</a>
+                    </div>
+                </div>
                 {% endif %}
             </div>
-        </div>
-    </details>
-</section>
+        </section>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/section-rail.js" defer></script>
 {% endblock %}

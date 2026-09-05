@@ -7,186 +7,184 @@
 {% block content %}
 <div class="page-header page-header--split">
     <div>
-        <div class="page-meta">
-            <p class="page-kicker">System</p>
-            <span class="page-taxonomy page-taxonomy--recovery">Backup</span>
-        </div>
         <h1>Backup</h1>
-        <p class="page-lead">Create and manage Symlinkarr backups and restore points for tracked links and SQLite state.</p>
-        <div class="page-help-links">
-            <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Backup-and-Restore" target="_blank" rel="noreferrer noopener">
-                <span class="help-link__eyebrow">Learn more</span>
-                <span class="help-link__title">Backup and restore guide</span>
-            </a>
-        </div>
+        <p class="page-lead">Snapshots of tracked links, SQLite state, config, and secrets.</p>
     </div>
-    <div class="header-badges">
-        <span class="badge badge-info">Items {{ backups|length }}</span>
+    <div class="page-header__aside">
+        <span class="badge badge-info">{{ (backups|length)|thousands }} snapshots</span>
+        <a class="doc-link" href="https://github.com/LAP87/Symlinkarr/wiki/Backup-and-Restore" target="_blank" rel="noreferrer noopener">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14L21 3"/></svg>
+            Backup guide
+        </a>
     </div>
 </div>
 
-<div class="split-grid">
-<section class="card">
-    <div class="section-head">
-        <div>
-            <p class="section-kicker">Create</p>
-            <h2 class="section-title">Create new Symlinkarr backup</h2>
-            <p class="section-copy">Use a short label before repair, cleanup, or migration so the backup is easy to spot later.</p>
+<div class="page-sections">
+    <section class="card">
+        <div class="section-head">
+            <div>
+                <h2 class="section-title">Create new Symlinkarr backup</h2>
+                <p class="section-copy">Label it before a repair, cleanup, or migration so it is easy to spot later.</p>
+            </div>
         </div>
-    </div>
-    <form action="/backup/create" method="post" class="stack-form">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <div class="form-group">
-            <label class="form-label" for="label">Label (optional)</label>
-            <input type="text" id="label" name="label" class="form-control field-max-sm" placeholder="e.g. before-cleanup">
-            <small class="field-help">Used in the backup name, for example <code class="mono">symlinkarr-backup-before-cleanup-20260415-220000.json</code>.</small>
+        <form action="/backup/create" method="post" class="stack-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <div class="form-group">
+                <label class="form-label" for="label">Label (optional)</label>
+                <input type="text" id="label" name="label" class="form-control field-max-sm" placeholder="e.g. before-cleanup">
+                <small class="field-help">Used in the backup name, for example <code class="mono">symlinkarr-backup-before-cleanup-20260415-220000.json</code>.</small>
+            </div>
+            <div class="actions">
+                <button type="submit" class="btn btn-primary">Create backup</button>
+            </div>
+        </form>
+    </section>
+
+    <section class="card">
+        <div class="section-head">
+            <div>
+                <h2 class="section-title">Existing backups</h2>
+                <p class="section-copy">Newest snapshots and restore points in the backup directory.</p>
+            </div>
         </div>
-        <div class="actions">
-            <button type="submit" class="btn btn-primary">Create Symlinkarr Backup</button>
+        {% if backups|length > 0 %}
+        <div class="table-wrap">
+        <table class="data-table dense-table">
+            <thead>
+                <tr>
+                    <th>Backup</th>
+                    <th>Created</th>
+                    <th>Contents</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for backup in backups %}
+                <tr>
+                    <td>
+                        <code class="mono">{{ backup.filename }}</code>
+                        <div class="badge-stack mt-1">
+                            <span class="badge {{ backup.kind_badge_class }}">{{ backup.kind_label }}</span>
+                        </div>
+                        <div class="text-faint">{{ backup.label }}</div>
+                    </td>
+                    <td>
+                        <strong>{{ backup.created_at }}</strong>
+                        <div class="text-faint">{{ backup.age_label }}</div>
+                    </td>
+                    <td>
+                        <strong>{{ backup.recorded_links|thousands }} recorded links</strong>
+                        <div class="text-faint">{{ backup.link_delta_label }}</div>
+                        <div class="text-faint">Manifest {{ backup.manifest_size_bytes|thousands }} bytes</div>
+                        {% match backup.database_snapshot_size_bytes %}
+                        {% when Some with (size) %}
+                        <div class="text-faint">SQLite snapshot {{ size|thousands }} bytes</div>
+                        {% when None %}
+                        <div class="text-faint">No SQLite snapshot</div>
+                        {% endmatch %}
+                        {% if backup.config_snapshot_present %}
+                        <div class="text-faint">Config snapshot included</div>
+                        {% else %}
+                        <div class="text-faint">No config snapshot</div>
+                        {% endif %}
+                        {% if backup.secret_snapshot_count > 0 %}
+                        <div class="text-faint">{{ backup.secret_snapshot_count }} secret snapshots included</div>
+                        {% else %}
+                        <div class="text-faint">No secret snapshots</div>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <button
+                            type="button"
+                            class="btn btn-danger"
+                            data-restore-trigger
+                            data-backup-file="{{ backup.filename }}"
+                            data-backup-label="{{ backup.label }}"
+                            data-backup-kind="{{ backup.kind_label }}"
+                            data-created-at="{{ backup.created_at }}"
+                            data-age-label="{{ backup.age_label }}"
+                            data-recorded-links="{{ backup.recorded_links }}"
+                            data-link-delta-label="{{ backup.link_delta_label }}"
+                            data-manifest-size-bytes="{{ backup.manifest_size_bytes }}"
+                            data-snapshot-size-bytes="{% match backup.database_snapshot_size_bytes %}{% when Some with (size) %}{{ size }}{% when None %}{% endmatch %}"
+                            data-config-snapshot-present="{% if backup.config_snapshot_present %}yes{% else %}no{% endif %}"
+                            data-secret-snapshot-count="{{ backup.secret_snapshot_count }}"
+                        >
+                            Restore
+                        </button>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
         </div>
-    </form>
+        {% else %}
+        <div class="empty-state">
+            <span class="empty-state__title">No backups found.</span>
+            Nothing is stored in <code class="mono">{{ backup_dir.display() }}</code> yet.
+        </div>
+        {% endif %}
     </section>
 
     <details class="card disclosure-card">
         <summary class="disclosure-card__summary">
             <div class="disclosure-card__copy">
-                <span class="disclosure-card__eyebrow">Storage</span>
                 <h2 class="disclosure-card__title">Storage path and restore notes</h2>
-                <p class="disclosure-card__hint">Open for the backup directory and restore notes.</p>
+                <p class="disclosure-card__hint">Where snapshots are written, and what a restore does and does not cover.</p>
             </div>
             <div class="disclosure-card__meta">
-                <span class="badge badge-info">{{ backups|length }} snapshots</span>
+                <span class="badge badge-info">{{ (backups|length)|thousands }} snapshots</span>
                 <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
             </div>
         </summary>
         <div class="disclosure-card__body">
-            <div class="key-value-grid">
-                <div class="key-value-row">
-                    <div class="key-value-label">Directory</div>
-                    <div><code class="mono">{{ backup_dir.display() }}</code></div>
+            <div class="alert alert-warning">
+                <strong>Restore is destructive.</strong> It overwrites current tracked link state with the selected snapshot.
+            </div>
+            <div class="def-rows">
+                <div class="def-row">
+                    <div class="def-row__key">
+                        <div class="def-row__label">Directory</div>
+                        <div class="def-row__hint">Where backups and restore points are written.</div>
+                    </div>
+                    <div class="def-row__value"><code class="mono">{{ backup_dir.display() }}</code></div>
                 </div>
-                <div class="key-value-row">
-                    <div class="key-value-label">Snapshots</div>
-                    <div>{{ backups|length }}</div>
+                <div class="def-row">
+                    <div class="def-row__key">
+                        <div class="def-row__label">Snapshots</div>
+                    </div>
+                    <div class="def-row__value">{{ (backups|length)|thousands }}</div>
                 </div>
-            </div>
-            <div class="alert alert-warning mt-2">
-                <strong>Restore is destructive.</strong> A restore overwrites current tracked link state with the selected snapshot.
-            </div>
-            <div class="alert alert-info mt-2">
-                <strong>App-state coverage depends on your setup.</strong> Symlinkarr backups now capture tracked links, SQLite state, the active config file, and any <code class="mono">secretfile:</code> secrets they can see.
-            </div>
-            <div class="alert alert-info mt-2">
-                <strong>Still not identical to Sonarr/Radarr.</strong> Secrets loaded only from environment variables still live outside the backup set, and a true fresh-install restore still needs you to place config/secrets before first start.
-            </div>
-            <div class="alert alert-info mt-2">
-                <strong>Name things clearly.</strong> <em>Symlinkarr Backup</em> is the main backup to keep. <em>Restore Point</em> is a smaller rollback point around a specific job.
+                <div class="def-row">
+                    <div class="def-row__key">
+                        <div class="def-row__label">Covered</div>
+                    </div>
+                    <div class="def-row__value">Tracked links, SQLite state, the active config file, and any <code class="mono">secretfile:</code> secrets Symlinkarr can see.</div>
+                </div>
+                <div class="def-row">
+                    <div class="def-row__key">
+                        <div class="def-row__label">Not covered</div>
+                        <div class="def-row__hint">Still not identical to Sonarr or Radarr.</div>
+                    </div>
+                    <div class="def-row__value">Secrets loaded only from environment variables. A fresh-install restore still needs config and secrets in place before first start.</div>
+                </div>
+                <div class="def-row">
+                    <div class="def-row__key">
+                        <div class="def-row__label">Backup kinds</div>
+                    </div>
+                    <div class="def-row__value">A Symlinkarr backup is the main snapshot to keep. A restore point is a smaller rollback point around one job.</div>
+                </div>
             </div>
         </div>
     </details>
 </div>
 
-<section class="card">
-    <div class="section-head">
-        <div>
-            <p class="section-kicker">History</p>
-            <h2 class="section-title">Existing backups</h2>
-        </div>
-        <div class="header-badges">
-            <span class="badge badge-info">{{ backups|length }} items</span>
-        </div>
-    </div>
-    {% if backups|length > 0 %}
-    <div class="table-wrap">
-    <table class="data-table dense-table">
-        <thead>
-            <tr>
-                <th>Backup</th>
-                <th>Created</th>
-                <th>Contents</th>
-                <th>Action</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for backup in backups %}
-            <tr>
-                <td class="text-muted">
-                    <code class="mono">{{ backup.filename }}</code>
-                    <div class="badge-stack mt-1">
-                        <span class="badge {{ backup.kind_badge_class }}">{{ backup.kind_label }}</span>
-                    </div>
-                    <small class="text-muted">{{ backup.label }}</small>
-                </td>
-                <td class="text-muted">
-                    <strong>{{ backup.created_at }}</strong>
-                    <br>
-                    <small class="text-muted">{{ backup.age_label }}</small>
-                </td>
-                <td class="text-muted">
-                    <strong>{{ backup.recorded_links }} recorded links</strong>
-                    <br>
-                    <small class="text-muted">{{ backup.link_delta_label }}</small>
-                    <br>
-                    <small class="text-muted">Manifest: {{ backup.manifest_size_bytes }} bytes</small>
-                    {% match backup.database_snapshot_size_bytes %}
-                    {% when Some with (size) %}
-                    <br>
-                    <small class="text-muted">SQLite snapshot: {{ size }} bytes</small>
-                    {% when None %}
-                    <br>
-                    <small class="text-muted">No SQLite snapshot</small>
-                    {% endmatch %}
-                    <br>
-                    {% if backup.config_snapshot_present %}
-                    <small class="text-muted">Config snapshot included</small>
-                    {% else %}
-                    <small class="text-muted">No config snapshot</small>
-                    {% endif %}
-                    <br>
-                    {% if backup.secret_snapshot_count > 0 %}
-                    <small class="text-muted">{{ backup.secret_snapshot_count }} secret snapshots included</small>
-                    {% else %}
-                    <small class="text-muted">No secret snapshots</small>
-                    {% endif %}
-                </td>
-                <td>
-                    <button
-                        type="button"
-                        class="btn btn-danger"
-                        style="padding:0.4rem 0.8rem;font-size:0.8rem;"
-                        data-restore-trigger
-                        data-backup-file="{{ backup.filename }}"
-                        data-backup-label="{{ backup.label }}"
-                        data-backup-kind="{{ backup.kind_label }}"
-                        data-created-at="{{ backup.created_at }}"
-                        data-age-label="{{ backup.age_label }}"
-                        data-recorded-links="{{ backup.recorded_links }}"
-                        data-link-delta-label="{{ backup.link_delta_label }}"
-                        data-manifest-size-bytes="{{ backup.manifest_size_bytes }}"
-                        data-snapshot-size-bytes="{% match backup.database_snapshot_size_bytes %}{% when Some with (size) %}{{ size }}{% when None %}{% endmatch %}"
-                        data-config-snapshot-present="{% if backup.config_snapshot_present %}yes{% else %}no{% endif %}"
-                        data-secret-snapshot-count="{{ backup.secret_snapshot_count }}"
-                    >
-                        Restore
-                    </button>
-                </td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-    </div>
-    {% else %}
-    <p class="text-muted">No backups found in <code class="mono">{{ backup_dir.display() }}</code>.</p>
-    {% endif %}
-</section>
-
 <dialog id="restore-confirm-dialog" class="confirm-dialog">
     <form method="dialog" class="confirm-dialog__shell">
         <div class="section-head">
             <div>
-                <p class="section-kicker">Restore</p>
                 <h2 class="section-title">Confirm backup restore</h2>
-                <p class="section-copy">This will overwrite the current link state with the selected snapshot.</p>
+                <p class="section-copy">This overwrites the current link state with the selected snapshot.</p>
             </div>
         </div>
 
@@ -238,20 +236,20 @@
         </div>
 
         <div class="alert alert-error mb-1">
-            <strong>Are you sure?</strong> Restore replaces the current tracked links with this backup.
+            <strong>Restore replaces the current tracked links</strong> with this backup.
         </div>
         <div class="alert alert-warning mb-1">
-            <strong>App-state note.</strong> When this backup includes config or secret snapshots, restore also writes them back to the current installation paths that Symlinkarr knows about.
+            <strong>App-state note.</strong> When this backup includes config or secret snapshots, restore also writes them back to the installation paths Symlinkarr knows about.
         </div>
 
         <div class="actions">
             <button type="submit" class="btn btn-secondary">Cancel</button>
-            <button type="button" id="restore-confirm-submit" class="btn btn-danger">Yes, Restore</button>
+            <button type="button" id="restore-confirm-submit" class="btn btn-danger">Restore backup</button>
         </div>
     </form>
 </dialog>
 
-<form id="restore-confirm-form" action="/backup/restore" method="post" style="display:none;">
+<form id="restore-confirm-form" action="/backup/restore" method="post" hidden>
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="hidden" id="restore-confirm-input" name="backup_file" value="">
 </form>

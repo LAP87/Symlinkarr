@@ -272,16 +272,16 @@ async fn dashboard_renders_latest_run_and_queue_summary() {
     assert!(body.contains("Anime"));
     assert!(body.contains("Queue"));
     assert!(body.contains("Queue 1"));
-    assert!(body.contains("Cache Hit"));
+    assert!(body.contains("Cache hit"));
     assert!(body.contains("Media refresh was limited"));
     assert!(body.contains("Top skip reasons"));
-    assert!(body.contains("Already correct 6200"));
-    assert!(body.contains("Source missing before link 3044"));
+    assert!(body.contains("Already correct 6,200"));
+    assert!(body.contains("Source missing before link 3,044"));
     assert!(body.contains("Plex guard abort"));
     assert!(body.contains("Emby 1/1"));
     assert!(body.contains("Recent queue jobs"));
     assert!(body.contains("Queued Anime"));
-    assert!(body.contains("Needs Relink"));
+    assert!(body.contains("Needs relink"));
     assert!(body.contains("Schedule and next scan"));
 }
 
@@ -305,7 +305,7 @@ async fn dashboard_renders_deferred_refresh_backlog() {
 
     let body = render_body(get_dashboard(State(ctx.state.clone())).await).await;
     assert!(body.contains("Pending refresh 3"));
-    assert!(body.contains("Media Refresh"));
+    assert!(body.contains("Media refresh"));
     assert!(body.contains("Plex"));
     assert!(body.contains("Jellyfin"));
 }
@@ -349,7 +349,7 @@ async fn dashboard_renders_live_activity_feed() {
 
     let body = render_body(get_dashboard(State(ctx.state.clone())).await).await;
 
-    assert!(body.contains("Live Activity"));
+    assert!(body.contains("Live activity"));
     assert!(body.contains("Running now"));
     assert!(body.contains("Latest outcomes"));
     assert!(body.contains("Background scan is in progress."));
@@ -529,7 +529,7 @@ async fn dashboard_needs_attention_fragment_renders_live_section() {
 
     let body = render_body(get_dashboard_needs_attention(State(ctx.state.clone())).await).await;
 
-    assert!(body.contains("Needs Attention"));
+    assert!(body.contains("Needs attention"));
     assert!(body.contains("Needs attention"));
     assert!(body.contains("hx-get=\"/dashboard/needs-attention\""));
     assert!(body.contains("Latest background scan failed"));
@@ -543,10 +543,9 @@ async fn dashboard_latest_run_fragment_renders_current_baseline() {
 
     let body = render_body(get_dashboard_latest_run(State(ctx.state.clone())).await).await;
 
-    assert!(body.contains("Latest Run"));
     assert!(body.contains("Latest scan"));
     assert!(body.contains("hx-get=\"/dashboard/latest-run\""));
-    assert!(body.contains("Open Scan"));
+    assert!(body.contains("Open scan"));
     assert!(body.contains("Top skip reasons"));
 }
 
@@ -558,7 +557,7 @@ async fn dashboard_summary_fragment_renders_live_counters() {
 
     assert!(body.contains("Links"));
     assert!(body.contains("Queue"));
-    assert!(body.contains("Media Refresh"));
+    assert!(body.contains("Media refresh"));
     assert!(body.contains("hx-get=\"/dashboard/summary\""));
     assert!(body.contains("Queue"));
 }
@@ -643,7 +642,7 @@ async fn dashboard_renders_needs_attention_priorities() {
 
     let body = render_body(get_dashboard(State(ctx.state.clone())).await).await;
 
-    assert!(body.contains("Needs Attention"));
+    assert!(body.contains("Needs attention"));
     assert!(body.contains("Latest background scan failed"));
     assert!(body.contains("Dead links need cleanup or repair"));
     assert!(body.contains("Auto-acquire queue is blocked"));
@@ -796,10 +795,10 @@ async fn scan_page_renders_phase_telemetry_and_acquire_summary() {
         render_body(get_scan(State(ctx.state.clone()), Query(ScanHistoryQuery::default())).await)
             .await;
 
-    assert!(body.contains("Start Scan"));
-    assert!(body.contains("Search Missing"));
+    assert!(body.contains("Run scan"));
+    assert!(body.contains("Search missing"));
     assert!(!body.contains("name=\"dry_run\" value=\"true\" checked"));
-    assert!(body.contains("Candidate Slots"));
+    assert!(body.contains("Candidate slots"));
     assert!(body.contains("1,024"));
     assert!(body.contains("4/6"));
     assert!(body.contains("Media refresh was limited"));
@@ -885,7 +884,7 @@ async fn scan_page_renders_anime_override_management_section() {
         render_body(get_scan(State(ctx.state.clone()), Query(ScanHistoryQuery::default())).await)
             .await;
 
-    assert!(body.contains("Anime Search Overrides"));
+    assert!(body.contains("Anime search overrides"));
     assert!(body.contains("Guide stubborn anime searches manually"));
     assert!(body.contains("tvdb-12345"));
 }
@@ -1097,7 +1096,7 @@ async fn cleanup_page_hides_stale_failed_background_audit_outcome_when_newer_rep
 
     assert!(!body.contains("Background cleanup audit failed"));
     assert!(!body.contains("stale cleanup failure"));
-    assert!(body.contains("Last Report"));
+    assert!(body.contains("Latest report"));
 }
 
 #[tokio::test]
@@ -1178,7 +1177,7 @@ async fn anime_remediation_page_renders_ranked_groups() {
 
     assert!(body.contains("Legacy Anime Cleanup"));
     assert!(body.contains("Show A"));
-    assert!(body.contains("Show Full Backlog") || body.contains("Show Sample"));
+    assert!(body.contains("Show full backlog") || body.contains("Show sample"));
     assert!(body.contains("com.plexapp.agents.hama://anidb-100") || body.contains("hama-anidb"));
     assert!(body.contains("/tmp") || body.contains("/Show A (2024) {tvdb-1}"));
 }
@@ -1261,8 +1260,8 @@ async fn anime_remediation_preview_page_renders_saved_plan_and_apply_gate() {
 
     assert!(body.contains("Apply this saved plan"));
     assert!(body.contains("already bound to this saved plan"));
-    assert!(body.contains("Apply Legacy Cleanup"));
-    assert!(body.contains("Report file:"));
+    assert!(body.contains("Apply legacy cleanup"));
+    assert!(body.contains("Report file"));
     assert!(body.contains("name=\"token\""));
     assert!(!body.contains("Confirmation token"));
 }
@@ -1397,10 +1396,10 @@ async fn scan_run_detail_renders_specific_run() {
     let body = render_body(get_scan_run_detail(State(ctx.state.clone()), Path(run.id)).await).await;
 
     assert!(body.contains("Scan Run Detail"));
-    assert!(body.contains("Outcome summary"));
+    assert!(body.contains("Phase telemetry"));
     assert!(body.contains("#1") || body.contains(&format!("#{}", run.id)));
     assert!(body.contains("Recent concrete skip events"));
-    assert!(body.contains("1024"));
+    assert!(body.contains("1,024"));
 }
 
 #[tokio::test]
@@ -1473,7 +1472,7 @@ async fn status_page_renders_queue_pressure_and_recent_links() {
     assert!(body.contains("Queue"));
     assert!(body.contains("Service connectivity"));
     assert!(body.contains("Pending media refresh"));
-    assert!(body.contains("Recent Links"));
+    assert!(body.contains("Last 50 records"));
     assert!(body.contains("tvdb-1"));
     assert!(body.contains("Queued"));
     assert!(body.contains("Schedule"));
@@ -1589,8 +1588,8 @@ async fn discover_page_shell_renders_async_loader() {
 
     assert!(body.contains("Loading discover preview"));
     assert!(body.contains("hx-get=\"/discover/content\""));
-    assert!(body.contains("Web discover is intentionally read-only"));
-    assert!(body.contains("Refresh Discover"));
+    assert!(body.contains("apply stays outside the web UI"));
+    assert!(body.contains("Refresh preview"));
 }
 
 #[tokio::test]
@@ -1598,11 +1597,11 @@ async fn import_page_renders_read_only_preview_form() {
     let ctx = test_context().await;
     let body = render_body(get_import(State(ctx.state)).await).await;
 
-    assert!(body.contains("Preview first"));
+    assert!(body.contains("Provider import preview"));
     assert!(body.contains("action=\"/import/preview\""));
     assert!(body.contains("name=\"folders_only\""));
     assert!(body.contains("name=\"force\""));
-    assert!(body.contains("Build Preview"));
+    assert!(body.contains("Build preview"));
 }
 
 #[tokio::test]
@@ -1698,8 +1697,8 @@ async fn import_preview_filters_candidate_review_table_by_confidence() {
     )
     .await;
 
-    assert!(body.contains("Candidate review table"));
-    assert!(body.contains("filtered by low confidence"));
+    assert!(body.contains("Candidate review"));
+    assert!(body.contains("candidates at low confidence"));
     assert!(body.contains("Unknown.Movie.2024"));
     assert!(!body.contains("Known.Movie.2024 {tmdb-123}"));
     assert!(!destination.exists());
@@ -1744,14 +1743,14 @@ async fn discover_content_renders_cached_gap_items() {
     let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let body = String::from_utf8(bytes.to_vec()).unwrap();
 
-    assert!(body.contains("Folder plans behind this preview"));
-    assert!(body.contains("Row-level placement report"));
+    assert!(body.contains("Folder plans"));
+    assert!(body.contains("Row-level placements"));
     assert!(body.contains("Missing Show"));
     assert!(body.contains("create"));
     assert!(body.contains("Season 01"));
     assert!(body.contains("Real-Debrid API key not configured"));
     assert!(body.contains("live refresh is unavailable"));
-    assert!(body.contains("How to read this preview"));
+    assert!(body.contains("Preview summary"));
     assert!(body.contains("/wiki/Discover-and-Queue"));
     assert!(!body.contains("name=\"torrent_id\""));
 }
@@ -1875,11 +1874,11 @@ async fn cleanup_page_renders_latest_report_summary() {
 
     let body = render_body(get_cleanup(State(ctx.state.clone())).await).await;
 
-    assert!(body.contains("Last Report"));
+    assert!(body.contains("Latest report"));
     assert!(body.contains("12"));
-    assert!(body.contains("Open Prune Preview"));
+    assert!(body.contains("Open prune preview"));
     assert!(!body.contains("Apply Cleanup"));
-    assert!(body.contains("Exact report path and apply safety"));
+    assert!(body.contains("Apply is gated to this exact file."));
 }
 
 #[test]

@@ -5,37 +5,34 @@
 {% block body_class %}page-scan-history page-inspection{% endblock %}
 
 {% block content %}
-<div class="page-header">
-    <div class="page-meta">
-        <p class="page-kicker">History</p>
-        <span class="page-taxonomy page-taxonomy--inspection">History</span>
+<div class="page-header page-header--split">
+    <div>
+        <h1>Scan History</h1>
+        <p class="page-lead">Every recorded run, newest first.</p>
     </div>
-    <h1>&#128269; Scan History</h1>
-    <p class="page-lead">Every recorded run, including phase timings and acquisition outcomes.</p>
-    <div class="page-help-links">
-        <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Scan-History-and-Why-Not-Signals" target="_blank" rel="noreferrer noopener">
-            <span class="help-link__eyebrow">Learn more</span>
-            <span class="help-link__title">History and why-not guide</span>
+    <div class="page-header__aside">
+        <span class="badge badge-info">{{ history|length }} runs</span>
+        {% if !filters.library.is_empty() || filters.mode != "any" || filters.search_missing != "any" %}
+        <span class="badge badge-warning">Filtered</span>
+        {% endif %}
+        <a class="doc-link" href="https://github.com/LAP87/Symlinkarr/wiki/Scan-History-and-Why-Not-Signals" target="_blank" rel="noreferrer noopener">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14L21 3"/></svg>
+            Docs
         </a>
     </div>
 </div>
 
-<details class="card disclosure-card" {% if !filters.library.is_empty() || filters.mode != "any" || filters.search_missing != "any" || filters.limit != 25 %}open{% endif %}>
-    <summary class="disclosure-card__summary">
-        <div class="disclosure-card__copy">
-            <span class="disclosure-card__eyebrow">Filters</span>
-            <h2 class="disclosure-card__title">History filters and row limit</h2>
-            <p class="disclosure-card__hint">Open to narrow the run list.</p>
+<div class="page-sections">
+    <section class="card">
+        <div class="section-head">
+            <div>
+                <h2 class="section-title">History filters and row limit</h2>
+            </div>
+            <div class="header-badges">
+                <span class="badge badge-info">{{ filters.limit }} rows</span>
+            </div>
         </div>
-        <div class="disclosure-card__meta">
-            <span class="badge badge-info">{{ filters.limit }} rows</span>
-            {% if !filters.library.is_empty() || filters.mode != "any" || filters.search_missing != "any" %}
-            <span class="badge badge-warning">filtered</span>
-            {% endif %}
-            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
-        </div>
-    </summary>
-    <div class="disclosure-card__body">
+
         <form action="/scan/history" method="get" class="stack-form">
             <div class="split-grid split-grid--tight">
                 <div class="form-group">
@@ -58,7 +55,7 @@
                 </div>
 
                 <div class="form-group">
-                    <label class="form-label" for="search_missing">Missing Search</label>
+                    <label class="form-label" for="search_missing">Missing search</label>
                     <select id="search_missing" name="search_missing" class="form-control">
                         <option value="any" {% if filters.search_missing == "any" %}selected{% endif %}>Any</option>
                         <option value="only" {% if filters.search_missing == "only" %}selected{% endif %}>Only with search-missing</option>
@@ -78,118 +75,132 @@
             </div>
 
             <div class="actions">
-                <button type="submit" class="btn btn-primary">&#128269; Apply Filters</button>
-                <a href="/scan/history" class="btn btn-secondary">Reset</a>
+                <button type="submit" class="btn btn-primary">Apply filters</button>
+                <a href="/scan/history" class="btn btn-secondary">Reset filters</a>
             </div>
         </form>
-    </div>
-</details>
+    </section>
 
-<section class="card">
-    {% if history|length > 0 %}
-    <table class="data-table dense-table">
-        <thead>
-            <tr>
-                <th>Started</th>
-                <th>Scope</th>
-                <th>Mode</th>
-                <th>Runtime</th>
-                <th>Matches</th>
-                <th>Links</th>
-                <th>Cache</th>
-                <th>Refresh</th>
-                <th>Acquire</th>
-                <th>Why Not</th>
-                <th>Dead</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for run in history %}
-            <tr>
-                <td class="mono"><a href="/scan/history/{{ run.id }}">{{ run.started_at }}</a></td>
-                <td><a href="/scan/history/{{ run.id }}">{{ run.scope_label }}</a></td>
-                <td>
-                    {% if run.dry_run %}
-                    <span class="badge badge-info">Dry</span>
-                    {% else %}
-                    <span class="badge badge-success">Live</span>
-                    {% endif %}
-                    <span class="badge {{ run.origin_badge_class }}">{{ run.origin_label }}</span>
-                    {% if run.search_missing %}
-                    <span class="badge badge-warning">Missing</span>
-                    {% endif %}
-                </td>
-                <td>{{ run.total_runtime }}</td>
-                <td>{{ run.matches_found }}</td>
-                <td class="text-success">{{ run.links_created + run.links_updated }}</td>
-                <td>{{ run.cache_hit_ratio }}</td>
-                <td>
-                    {% if run.plex_refresh_planned_batches > 0 || run.plex_refresh_requested_paths > 0 %}
-                    {{ run.plex_refresh_refreshed_batches }}/{{ run.plex_refresh_planned_batches }}
-                    {% if run.plex_refresh_capped_batches > 0 %}
-                    <span class="badge badge-warning">cap {{ run.plex_refresh_capped_batches }}</span>
-                    {% endif %}
-                    {% if run.plex_refresh_aborted_due_to_cap %}
-                    <span class="badge badge-danger">guard abort</span>
-                    {% endif %}
-                    {% if run.plex_refresh_skipped_batches > 0 %}
-                    <span class="badge badge-danger">skip {{ run.plex_refresh_skipped_batches }}</span>
-                    {% endif %}
-                    {% if !run.media_server_refresh.is_empty() %}
-                    <div>
-                        {% for refresh in run.media_server_refresh %}
-                        {% if refresh.deferred_due_to_lock %}
-                        <span class="badge badge-warning">{{ refresh.server }} pending</span>
-                        {% else if refresh.failed_batches > 0 %}
-                        <span class="badge badge-danger">{{ refresh.server }} failed</span>
-                        {% else if refresh.aborted_due_to_cap %}
-                        <span class="badge badge-danger">{{ refresh.server }} guard abort</span>
-                        {% else if refresh.skipped_batches > 0 %}
-                        <span class="badge badge-warning">{{ refresh.server }} skip {{ refresh.skipped_batches }}</span>
+    <section class="card">
+        <div class="section-head">
+            <div>
+                <h2 class="section-title">Recorded runs</h2>
+            </div>
+        </div>
+
+        {% if history|length > 0 %}
+        <div class="table-wrap">
+        <table class="data-table dense-table">
+            <thead>
+                <tr>
+                    <th>Started</th>
+                    <th>Scope</th>
+                    <th>Mode</th>
+                    <th>Runtime</th>
+                    <th>Matches</th>
+                    <th>Links</th>
+                    <th>Cache</th>
+                    <th>Refresh</th>
+                    <th>Acquire</th>
+                    <th>Why not</th>
+                    <th>Dead</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for run in history %}
+                <tr>
+                    <td class="mono"><a href="/scan/history/{{ run.id }}">{{ run.started_at }}</a></td>
+                    <td><a href="/scan/history/{{ run.id }}">{{ run.scope_label }}</a></td>
+                    <td>
+                        {% if run.dry_run %}
+                        <span class="badge badge-secondary">Dry</span>
                         {% else %}
-                        <span class="badge badge-info">{{ refresh.server }} {{ refresh.refreshed_batches }}/{{ refresh.planned_batches }}</span>
+                        <span class="badge badge-success">Live</span>
                         {% endif %}
-                        {% endfor %}
-                    </div>
-                    {% endif %}
-                    {% else %}
-                    <span class="text-muted">n/a</span>
-                    {% endif %}
-                </td>
-                <td>
-                    {% if run.auto_acquire_requests > 0 %}
-                    {{ run.auto_acquire_successes }}/{{ run.auto_acquire_requests }}
-                    {% else %}
-                    <span class="text-muted">n/a</span>
-                    {% endif %}
-                </td>
-                <td>
-                    {% if !run.skip_reason_highlights.is_empty() %}
-                    <div>
-                        {% for reason in run.skip_reason_highlights %}
-                        <span class="badge badge-secondary">{{ reason.label }} {{ reason.count }}</span>
-                        {% endfor %}
-                    </div>
-                    {% if run.skip_reason_extra_buckets > 0 %}
-                    <div class="text-muted">+{{ run.skip_reason_extra_buckets }} more reason group(s)</div>
-                    {% endif %}
-                    {% else %}
-                    <span class="text-muted">n/a</span>
-                    {% endif %}
-                </td>
-                <td class="{% if run.dead_marked > 0 || run.links_removed > 0 %}text-error{% endif %}">
-                    {{ run.dead_marked + run.links_removed }}
-                </td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-    {% else %}
-    <p class="text-muted">No scan history yet.</p>
-    {% endif %}
-</section>
+                        <span class="badge {{ run.origin_badge_class }}">{{ run.origin_label }}</span>
+                        {% if run.search_missing %}
+                        <span class="badge badge-warning">Missing</span>
+                        {% endif %}
+                    </td>
+                    <td>{{ run.total_runtime }}</td>
+                    <td>{{ run.matches_found|thousands }}</td>
+                    <td class="text-success">{{ (run.links_created + run.links_updated)|thousands }}</td>
+                    <td>{{ run.cache_hit_ratio }}</td>
+                    <td>
+                        {% if run.plex_refresh_planned_batches > 0 || run.plex_refresh_requested_paths > 0 %}
+                        {{ run.plex_refresh_refreshed_batches }}/{{ run.plex_refresh_planned_batches }}
+                        {% if run.plex_refresh_capped_batches > 0 %}
+                        <span class="badge badge-warning">cap {{ run.plex_refresh_capped_batches }}</span>
+                        {% endif %}
+                        {% if run.plex_refresh_aborted_due_to_cap %}
+                        <span class="badge badge-danger">guard abort</span>
+                        {% endif %}
+                        {% if run.plex_refresh_skipped_batches > 0 %}
+                        <span class="badge badge-danger">skip {{ run.plex_refresh_skipped_batches }}</span>
+                        {% endif %}
+                        {% if !run.media_server_refresh.is_empty() %}
+                        <div class="badge-stack">
+                            {% for refresh in run.media_server_refresh %}
+                            {% if refresh.deferred_due_to_lock %}
+                            <span class="badge badge-warning">{{ refresh.server }} pending</span>
+                            {% else if refresh.failed_batches > 0 %}
+                            <span class="badge badge-danger">{{ refresh.server }} failed</span>
+                            {% else if refresh.aborted_due_to_cap %}
+                            <span class="badge badge-danger">{{ refresh.server }} guard abort</span>
+                            {% else if refresh.skipped_batches > 0 %}
+                            <span class="badge badge-warning">{{ refresh.server }} skip {{ refresh.skipped_batches }}</span>
+                            {% else %}
+                            <span class="badge badge-info">{{ refresh.server }} {{ refresh.refreshed_batches }}/{{ refresh.planned_batches }}</span>
+                            {% endif %}
+                            {% endfor %}
+                        </div>
+                        {% endif %}
+                        {% else %}
+                        <span class="text-muted">n/a</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if run.auto_acquire_requests > 0 %}
+                        {{ run.auto_acquire_successes|thousands }}/{{ run.auto_acquire_requests|thousands }}
+                        {% else %}
+                        <span class="text-muted">n/a</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if !run.skip_reason_highlights.is_empty() %}
+                        <div class="badge-stack">
+                            {% for reason in run.skip_reason_highlights %}
+                            <span class="badge badge-secondary">{{ reason.label }} {{ reason.count|thousands }}</span>
+                            {% endfor %}
+                        </div>
+                        {% if run.skip_reason_extra_buckets > 0 %}
+                        <div class="text-muted">+{{ run.skip_reason_extra_buckets }} more reason group(s)</div>
+                        {% endif %}
+                        {% else %}
+                        <span class="text-muted">n/a</span>
+                        {% endif %}
+                    </td>
+                    <td class="{% if run.dead_marked > 0 || run.links_removed > 0 %}text-error{% endif %}">
+                        {{ (run.dead_marked + run.links_removed)|thousands }}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <span class="empty-state__title">No scan history yet.</span>
+            Runs appear here once a scan completes.
+            <div class="empty-state__actions">
+                <a class="btn btn-secondary" href="/scan">Run a scan</a>
+            </div>
+        </div>
+        {% endif %}
+    </section>
+</div>
 
 <div class="actions mt-2">
-    <a href="/scan" class="btn btn-secondary">&#8592; Back to Scan</a>
+    <a href="/scan" class="btn btn-secondary">Back to scan</a>
 </div>
 {% endblock %}

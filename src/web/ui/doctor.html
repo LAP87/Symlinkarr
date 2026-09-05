@@ -7,105 +7,80 @@
 {% block content %}
 <div class="page-header page-header--split">
     <div>
-        <div class="page-meta">
-            <p class="page-kicker">Maintenance</p>
-            <span class="page-taxonomy page-taxonomy--inspection">Checks</span>
-        </div>
         <h1>Doctor</h1>
-        <p class="page-lead">Run blunt preflight checks before scans, repairs, or cleanup.</p>
-        <div class="page-help-links advanced-only">
-            <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Configuration-and-Doctor" target="_blank" rel="noreferrer noopener">
-                <span class="help-link__eyebrow">Learn more</span>
-                <span class="help-link__title">Config and doctor guide</span>
-            </a>
-            <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Backup-and-Restore" target="_blank" rel="noreferrer noopener">
-                <span class="help-link__eyebrow">Wiki</span>
-                <span class="help-link__title">Restore guide</span>
-            </a>
-        </div>
+        <p class="page-lead">Preflight checks on database, paths, mounts, permissions, and services.</p>
     </div>
-    <div class="header-badges">
+    <div class="page-header__aside">
         <span class="badge badge-info">Checks {{ checks|length }}</span>
         <span class="badge {% if all_passed %}badge-success{% else %}badge-danger{% endif %}">
             {% if all_passed %}Healthy{% else %}Needs review{% endif %}
         </span>
+        <a class="doc-link" href="https://github.com/LAP87/Symlinkarr/wiki/Configuration-and-Doctor" target="_blank" rel="noreferrer noopener">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14L21 3"/></svg>
+            Config and doctor
+        </a>
     </div>
 </div>
 
 {% if all_passed %}
 <div class="alert alert-success">
-    <strong>All checks passed.</strong> Your Symlinkarr installation is healthy.
+    <strong>All checks passed.</strong>
+    Nothing here blocks a scan, repair, cleanup, or restore.
 </div>
 {% else %}
 <div class="alert alert-error">
-    <strong>Some checks failed.</strong> Review the issues below.
+    <strong>Some checks failed.</strong>
+    Fix the failing rows below before running jobs that change links.
 </div>
 {% endif %}
 
-<div class="split-grid">
+<div class="page-sections">
     <section class="card">
         <div class="section-head">
             <div>
-                <p class="section-kicker">Meaning</p>
-                <h2 class="section-title">How to use Doctor</h2>
+                <h2 class="section-title">Check list</h2>
+                <p class="section-copy">Each row is a blunt pass/fail probe against the live install.</p>
+            </div>
+            <div class="operator-toolbar__actions">
+                <a href="/doctor" class="btn btn-primary">Re-run checks</a>
+                <a href="/config" class="btn btn-secondary">View config</a>
+                <a class="doc-link" href="https://github.com/LAP87/Symlinkarr/wiki/Backup-and-Restore" target="_blank" rel="noreferrer noopener">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14L21 3"/></svg>
+                    Restore guide
+                </a>
             </div>
         </div>
-        <p class="text-muted">Doctor checks the boring but important stuff: database, paths, mounts, permissions, and service reachability.</p>
-    </section>
 
-    <section class="card">
-        <div class="section-head">
-            <div>
-                <p class="section-kicker">Next Step</p>
-                <h2 class="section-title">Best follow-up</h2>
+        {% if checks|length > 0 %}
+        <ul class="check-list">
+            {% for check in checks %}
+            <li>
+                <span>
+                    <strong>{{ check.check }}</strong>
+                    <br>
+                    <small class="text-muted">{{ check.message }}</small>
+                </span>
+                <span class="check-status">
+                    {% if check.passed %}
+                    <span class="check-icon passed">&#10003;</span>
+                    <span class="text-success">Pass</span>
+                    {% else %}
+                    <span class="check-icon failed">&#10007;</span>
+                    <span class="text-error">Fail</span>
+                    {% endif %}
+                </span>
+            </li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <div class="empty-state">
+            <span class="empty-state__title">No checks available.</span>
+            Doctor reported nothing to probe, which usually means the config could not be loaded.
+            <div class="empty-state__actions">
+                <a class="btn btn-secondary" href="/config">View config</a>
             </div>
         </div>
-        <ol class="steps-list text-muted">
-            {% if all_passed %}
-            <li>If Doctor is clean, go back to the page you were using.</li>
-            {% else %}
-            <li>Fix failing checks before running scans, cleanup, repair, or restore.</li>
-            {% endif %}
-            <li>Use Config for exact live values and Status for current runtime symptoms.</li>
-        </ol>
+        {% endif %}
     </section>
 </div>
-
-<section class="card">
-    <div class="section-head">
-        <div>
-            <p class="section-kicker">Results</p>
-            <h2 class="section-title">Check list</h2>
-            <p class="section-copy">If a check fails here, fix that before running jobs that change links.</p>
-        </div>
-        <div class="actions">
-            <a href="/doctor" class="btn btn-primary">Re-run Checks</a>
-            <a href="/config" class="btn btn-secondary">View Config</a>
-            <a href="/status" class="btn btn-secondary">Service Status</a>
-        </div>
-    </div>
-    <ul class="check-list">
-        {% for check in checks %}
-        <li>
-            <span>
-                <strong>{{ check.check }}</strong>
-                <br>
-                <small class="text-muted">{{ check.message }}</small>
-            </span>
-            <span class="check-status">
-                {% if check.passed %}
-                <span class="check-icon passed">&#10003;</span>
-                <span class="text-success">Pass</span>
-                {% else %}
-                <span class="check-icon failed">&#10007;</span>
-                <span class="text-error">Fail</span>
-                {% endif %}
-            </span>
-        </li>
-        {% endfor %}
-    </ul>
-    {% if checks|length == 0 %}
-    <p class="text-muted">No checks available.</p>
-    {% endif %}
-</section>
 {% endblock %}

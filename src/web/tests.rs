@@ -340,8 +340,8 @@ async fn dashboard_page_exposes_primary_operator_actions() {
 
     assert_eq!(status, 200);
     assert!(dashboard.contains("Dashboard"));
-    assert!(dashboard.contains("Needs Attention"));
-    assert!(dashboard.contains("Live Activity"));
+    assert!(dashboard.contains("Needs attention"));
+    assert!(dashboard.contains("Live activity"));
     assert!(dashboard.contains("href=\"/scan\""));
     assert!(dashboard.contains("href=\"/status\""));
     assert!(dashboard.contains("hx-get=\"/dashboard/summary\""));
@@ -358,7 +358,7 @@ async fn dashboard_activity_feed_route_renders_fragment() {
     let (status, fragment) = get_html(&router, "/dashboard/activity-feed").await;
 
     assert_eq!(status, 200);
-    assert!(fragment.contains("Live Activity"));
+    assert!(fragment.contains("Live activity"));
     assert!(fragment.contains("Running now"));
     assert!(fragment.contains("Latest outcomes"));
     assert!(fragment.contains("hx-get=\"/dashboard/activity-feed\""));
@@ -381,8 +381,8 @@ async fn dashboard_needs_attention_route_renders_fragment() {
     let (status, fragment) = get_html(&router, "/dashboard/needs-attention").await;
 
     assert_eq!(status, 200);
-    assert!(fragment.contains("Needs Attention"));
-    assert!(fragment.contains("Stuff worth checking before the next scan runs."));
+    assert!(fragment.contains("Needs attention"));
+    assert!(fragment.contains("Worth clearing before the next scan runs."));
     assert!(fragment.contains("hx-get=\"/dashboard/needs-attention\""));
 }
 
@@ -392,7 +392,6 @@ async fn dashboard_latest_run_route_renders_fragment() {
     let (status, fragment) = get_html(&router, "/dashboard/latest-run").await;
 
     assert_eq!(status, 200);
-    assert!(fragment.contains("Latest Run"));
     assert!(fragment.contains("Latest scan"));
     assert!(fragment.contains("hx-get=\"/dashboard/latest-run\""));
 }
@@ -409,7 +408,7 @@ async fn status_page_exposes_link_health_actions_and_seeded_rows() {
     assert!(status_page.contains("No persistent dead links are currently tracked."));
     assert!(status_page.contains("Recent auto-acquire jobs"));
     assert!(status_page.contains("Queued Anime"));
-    assert!(status_page.contains("Needs Relink"));
+    assert!(status_page.contains("Needs relink"));
 }
 
 #[tokio::test]
@@ -444,15 +443,14 @@ async fn noconfig_page_exposes_restore_and_bootstrap_paths() {
     assert_eq!(status, 200);
     assert!(page.contains("Setup required"));
     assert!(page.contains("Restore from backup"));
-    assert!(page.contains("Create new installation"));
-    assert!(page.contains("What this state means"));
-    assert!(page.contains("Choose the shortest safe route"));
+    assert!(page.contains("Create a new installation"));
+    assert!(page.contains("Preferred route when a Symlinkarr backup already exists."));
     assert!(page.contains("symlinkarr restore &lt;path-to-backup.json&gt;"));
     assert!(page.contains("symlinkarr bootstrap"));
     assert!(page.contains("/wiki/Backup-and-Restore"));
     assert!(page.contains("/wiki/Configuration-and-Doctor"));
-    assert!(page.contains("Recovery notes"));
-    assert!(page.contains("Auto-restore:"));
+    assert!(page.contains("What restore can bring back"));
+    assert!(page.contains("Auto-restore"));
 }
 
 #[tokio::test]
@@ -786,7 +784,7 @@ async fn ui_mutations_accept_valid_csrf_token_with_issued_session_when_remote_ex
 
     assert_eq!(status, 200);
     assert!(body.contains("action=\"/config/validate\""));
-    assert!(body.contains("Validate Config"));
+    assert!(body.contains("Validate config"));
 }
 
 #[tokio::test]

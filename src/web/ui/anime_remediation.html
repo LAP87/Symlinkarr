@@ -7,381 +7,368 @@
 {% block content %}
 <div class="page-header page-header--split">
     <div>
-        <div class="page-meta">
-            <p class="page-kicker">Cleanup</p>
-            <span class="page-taxonomy page-taxonomy--recovery">Anime Cleanup</span>
-        </div>
-        <h1>&#127909; Legacy Anime Cleanup</h1>
-        <p class="page-lead">Advanced tool for older anime libraries with split roots or Plex Hama AniDB/TVDB duplicates. Most users can ignore this page.</p>
-        <div class="page-help-links">
-            <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Anime-Remediation" target="_blank" rel="noreferrer noopener">
-                <span class="help-link__eyebrow">Learn more</span>
-                <span class="help-link__title">When this tool is actually needed</span>
-            </a>
-        </div>
+        <h1>Legacy Anime Cleanup</h1>
+        <p class="page-lead">Legacy anime roots and Plex Hama AniDB/TVDB splits only. Most users can ignore this page.</p>
     </div>
-    <div class="header-badges">
+    <div class="page-header__aside">
         {% match summary %}
         {% when Some with (data) %}
-        <span class="badge badge-danger">{{ data.remediation_groups }} cleanup groups</span>
-        <span class="badge badge-info">{{ data.visible_groups }} visible now</span>
-        <span class="badge badge-success">{{ data.eligible_groups }} visible eligible</span>
-        <span class="badge badge-warning">{{ data.blocked_groups }} visible blocked</span>
-        <span class="badge badge-warning">{{ data.correlated_hama_split_groups }} correlated splits</span>
-        <span class="badge badge-info">{% if data.full %}Full View{% else %}Sample View{% endif %}</span>
+        <span class="badge {% if data.remediation_groups > 0 %}badge-warning{% else %}badge-success{% endif %}">{{ data.remediation_groups|thousands }} cleanup groups</span>
+        <span class="badge badge-info">{{ data.visible_groups|thousands }} visible now</span>
+        <span class="badge {% if data.eligible_groups > 0 %}badge-success{% else %}badge-secondary{% endif %}">{{ data.eligible_groups|thousands }} visible eligible</span>
+        <span class="badge {% if data.blocked_groups > 0 %}badge-warning{% else %}badge-success{% endif %}">{{ data.blocked_groups|thousands }} visible blocked</span>
+        <span class="badge badge-secondary">{% if data.full %}Full view{% else %}Sample view{% endif %}</span>
         {% when None %}
-        <span class="badge badge-info">Read only</span>
+        <span class="badge badge-secondary">Read only</span>
         {% endmatch %}
+        <a class="doc-link" href="https://github.com/LAP87/Symlinkarr/wiki/Anime-Remediation" target="_blank" rel="noreferrer noopener">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14L21 3"/></svg>
+            Anime remediation
+        </a>
     </div>
 </div>
 
 {% match error_message %}
 {% when Some with (message) %}
 <div class="alert alert-error">
-    <strong>&#10060; Backlog unavailable.</strong><br>
+    <strong>Backlog unavailable.</strong>
     {{ message }}
 </div>
 {% when None %}{% endmatch %}
 
 {% match summary %}
 {% when Some with (data) %}
-<div class="alert alert-info">
-    <strong>Use this only for legacy anime messes.</strong>
-    If your anime library already lives under one tagged root per show, normal scan and cleanup are the right tools.
-</div>
+<div class="settings-layout">
+    <nav class="settings-rail" id="anime-remediation-rail" data-section-rail aria-label="Legacy anime cleanup sections">
+        <a href="#anime-overview" class="settings-rail__link active">Overview</a>
+        <a href="#anime-plan" class="settings-rail__link">Build plan</a>
+        <a href="#anime-filters" class="settings-rail__link">Filters</a>
+        {% if !data.blocked_reason_summary.is_empty() %}
+        <a href="#anime-blockers" class="settings-rail__link">Blockers</a>
+        {% endif %}
+        <a href="#anime-groups" class="settings-rail__link">Groups</a>
+    </nav>
 
-<section class="card">
-    <div class="section-head">
-        <div>
-            <p class="section-kicker">Workflow</p>
-            <h2 class="section-title">Preview a saved legacy cleanup plan</h2>
-            <p class="text-muted">This writes a saved plan under the backup directory. Preview does not change anything by itself.</p>
-        </div>
-    </div>
-    <form action="/cleanup/anime-remediation/preview" method="post" class="stack-form">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <div class="form-group">
-            <label class="form-label" for="anime-remediation-plex-db">Plex DB Path</label>
-            <input id="anime-remediation-plex-db" name="plex_db" type="text" class="form-control mono" value="{{ data.plex_db_path }}">
-            <small class="text-muted">Use a standard local Plex DB path or override it here if this machine stores Plex elsewhere.</small>
-        </div>
-        <div class="form-group">
-            <label class="form-label" for="anime-remediation-title">Title Filter (optional)</label>
-            <input id="anime-remediation-title" name="title" type="text" class="form-control field-max-lg" placeholder="Narrow the preview to one title when you want a safer first apply pass">
-        </div>
-        <div class="actions">
-            <button type="submit" class="btn btn-primary">&#128269; Build Guarded Plan</button>
-            <a href="/cleanup" class="btn btn-secondary">&#129529; Back to Cleanup</a>
-        </div>
-    </form>
-</section>
+    <div class="settings-content">
+        <section id="anime-overview" class="card">
+            <div class="section-head">
+                <div>
+                    <h2 class="section-title">Backlog overview</h2>
+                    <p class="section-copy">Titles where legacy anime roots and Plex metadata splits overlap.</p>
+                </div>
+            </div>
+            <div class="metric-grid metric-grid--compact">
+                <div class="metric-card">
+                    <span class="metric-label">Groups in view</span>
+                    <strong>{{ data.visible_groups|thousands }}</strong>
+                    <span class="metric-meta">of <strong>{{ data.returned_groups|thousands }}</strong> loaded</span>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-label">Correlated backlog</span>
+                    <strong>{{ data.remediation_groups|thousands }}</strong>
+                    <span class="metric-meta"><strong>{{ data.correlated_hama_split_groups|thousands }}</strong> correlated splits</span>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-label">Mixed roots</span>
+                    <strong>{{ data.filesystem_mixed_root_groups|thousands }}</strong>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-label">Plex duplicates</span>
+                    <strong>{{ data.plex_duplicate_show_groups|thousands }}</strong>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-label">Hama splits</span>
+                    <strong>{{ data.plex_hama_anidb_tvdb_groups|thousands }}</strong>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-label">Eligible in view</span>
+                    <strong class="{% if data.eligible_groups > 0 %}text-success{% else %}text-muted{% endif %}">{{ data.eligible_groups|thousands }}</strong>
+                    <span class="metric-meta"><strong>{{ data.blocked_groups|thousands }}</strong> blocked</span>
+                </div>
+            </div>
+            <div class="def-rows mt-2">
+                <div class="def-row">
+                    <div class="def-row__key">
+                        <div class="def-row__label">Plex database</div>
+                        <div class="def-row__hint">Source of the duplicate and Hama split signals.</div>
+                    </div>
+                    <div class="def-row__value"><code class="mono">{{ data.plex_db_path }}</code></div>
+                </div>
+                <div class="def-row">
+                    <div class="def-row__key">
+                        <div class="def-row__label">Generated</div>
+                    </div>
+                    <div class="def-row__value">{{ data.generated_at }}</div>
+                </div>
+            </div>
+        </section>
 
-<details class="card disclosure-card" {% if !data.reason_filter.is_empty() || !data.title_filter.is_empty() || data.state_filter != "all" %}open{% endif %}>
-    <summary class="disclosure-card__summary">
-        <div class="disclosure-card__copy">
-            <span class="disclosure-card__eyebrow">Filters</span>
-            <h2 class="disclosure-card__title">Filter blocked groups</h2>
-            <p class="disclosure-card__hint">Open to filter the list or export the current slice.</p>
-        </div>
-        <div class="disclosure-card__meta">
-            <span class="badge badge-info">{{ data.visible_groups }} visible</span>
-            {% if data.blocked_groups > 0 %}
-            <span class="badge badge-warning">{{ data.blocked_groups }} blocked</span>
-            {% endif %}
-            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
-        </div>
-    </summary>
-    <div class="disclosure-card__body">
-        <div class="split-grid">
+        <section id="anime-plan" class="card">
+            <div class="section-head">
+                <div>
+                    <h2 class="section-title">Build a guarded plan</h2>
+                    <p class="section-copy">Writes a saved plan under the backup directory; nothing changes yet.</p>
+                </div>
+            </div>
+            <form action="/cleanup/anime-remediation/preview" method="post" class="stack-form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <div class="form-group">
+                    <label class="form-label" for="anime-remediation-plex-db">Plex DB path</label>
+                    <input id="anime-remediation-plex-db" name="plex_db" type="text" class="form-control mono" value="{{ data.plex_db_path }}">
+                    <small class="field-help">Override this when Plex stores its database somewhere non-standard.</small>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="anime-remediation-title">Title filter (optional)</label>
+                    <input id="anime-remediation-title" name="title" type="text" class="form-control field-max-md" placeholder="Narrow the preview to one title">
+                    <small class="field-help">A single title makes a safer first apply pass.</small>
+                </div>
+                <div class="actions">
+                    <button type="submit" class="btn btn-primary">Build guarded plan</button>
+                </div>
+            </form>
+        </section>
+
+        <section id="anime-filters" class="card">
+            <div class="section-head">
+                <div>
+                    <h2 class="section-title">Filters</h2>
+                    <p class="section-copy">Narrow the queue below, or export the current slice.</p>
+                </div>
+                <div class="operator-toolbar__actions">
+                    <form action="/api/v1/report/anime-remediation" method="get" class="actions">
+                        <input type="hidden" name="plex_db" value="{{ data.plex_db_path }}">
+                        {% if data.full %}
+                        <input type="hidden" name="full" value="true">
+                        {% endif %}
+                        <input type="hidden" name="state" value="{{ data.state_filter }}">
+                        {% if !data.reason_filter.is_empty() %}
+                        <input type="hidden" name="reason" value="{{ data.reason_filter }}">
+                        {% endif %}
+                        {% if !data.title_filter.is_empty() %}
+                        <input type="hidden" name="title" value="{{ data.title_filter }}">
+                        {% endif %}
+                        <input type="hidden" name="format" value="tsv">
+                        <button type="submit" class="btn btn-secondary">Download filtered TSV</button>
+                    </form>
+                </div>
+            </div>
+
             <form action="/cleanup/anime-remediation" method="get" class="stack-form">
                 <input type="hidden" name="plex_db" value="{{ data.plex_db_path }}">
                 {% if data.full %}
                 <input type="hidden" name="full" value="true">
                 {% endif %}
-                <div class="form-group">
-                    <label class="form-label" for="anime-remediation-state">Visibility</label>
-                    <select id="anime-remediation-state" name="state" class="form-control field-max-md">
-                        <option value="all" {% if data.state_filter == "all" %}selected{% endif %}>All groups</option>
-                        <option value="eligible" {% if data.state_filter == "eligible" %}selected{% endif %}>Eligible only</option>
-                        <option value="blocked" {% if data.state_filter == "blocked" %}selected{% endif %}>Blocked only</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label class="form-label" for="anime-remediation-reason">Blocked reason</label>
-                    <select id="anime-remediation-reason" name="reason" class="form-control">
-                        <option value="">Any blocker</option>
-                        {% for item in data.available_blocked_reasons %}
-                        <option value="{{ item.code }}" {% if data.reason_filter == item.code %}selected{% endif %}>{{ item.label }}</option>
-                        {% endfor %}
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label class="form-label" for="anime-remediation-filter-title">Title contains</label>
-                    <input id="anime-remediation-filter-title" name="title" type="text" class="form-control field-max-lg" value="{{ data.title_filter }}" placeholder="e.g. Gundam">
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label class="form-label" for="anime-remediation-state">Visibility</label>
+                        <select id="anime-remediation-state" name="state" class="form-control">
+                            <option value="all" {% if data.state_filter == "all" %}selected{% endif %}>All groups</option>
+                            <option value="eligible" {% if data.state_filter == "eligible" %}selected{% endif %}>Eligible only</option>
+                            <option value="blocked" {% if data.state_filter == "blocked" %}selected{% endif %}>Blocked only</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="anime-remediation-reason">Blocked reason</label>
+                        <select id="anime-remediation-reason" name="reason" class="form-control">
+                            <option value="">Any blocker</option>
+                            {% for item in data.available_blocked_reasons %}
+                            <option value="{{ item.code }}" {% if data.reason_filter == item.code %}selected{% endif %}>{{ item.label }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="anime-remediation-filter-title">Title contains</label>
+                        <input id="anime-remediation-filter-title" name="title" type="text" class="form-control" value="{{ data.title_filter }}" placeholder="e.g. Gundam">
+                    </div>
                 </div>
                 <div class="actions">
-                    <button type="submit" class="btn btn-primary">Apply Filters</button>
-                    <a href="/cleanup/anime-remediation{% if data.full %}?full=true{% endif %}" class="btn btn-secondary">Clear Filters</a>
+                    <button type="submit" class="btn btn-primary">Apply filters</button>
+                    <a href="/cleanup/anime-remediation{% if data.full %}?full=true{% endif %}" class="btn btn-secondary">Clear filters</a>
                 </div>
             </form>
+        </section>
 
-            <form action="/api/v1/report/anime-remediation" method="get" class="stack-form">
-                <input type="hidden" name="plex_db" value="{{ data.plex_db_path }}">
-                {% if data.full %}
-                <input type="hidden" name="full" value="true">
-                {% endif %}
-                <input type="hidden" name="state" value="{{ data.state_filter }}">
-                {% if !data.reason_filter.is_empty() %}
-                <input type="hidden" name="reason" value="{{ data.reason_filter }}">
-                {% endif %}
-                {% if !data.title_filter.is_empty() %}
-                <input type="hidden" name="title" value="{{ data.title_filter }}">
-                {% endif %}
-                <input type="hidden" name="format" value="tsv">
-                <div class="metric-grid metric-grid--compact">
-                    <div class="metric-card">
-                        <span class="metric-label">Visible queue</span>
-                        <strong>{{ data.visible_groups }}</strong>
-                    </div>
-                    <div class="metric-card">
-                        <span class="metric-label">Blocked in slice</span>
-                        <strong>{{ data.blocked_groups }}</strong>
-                    </div>
-                    <div class="metric-card">
-                        <span class="metric-label">Eligible in slice</span>
-                        <strong>{{ data.eligible_groups }}</strong>
-                    </div>
+        {% if !data.blocked_reason_summary.is_empty() %}
+        <section id="anime-blockers" class="card">
+            <div class="section-head">
+                <div>
+                    <h2 class="section-title">Why groups stay blocked</h2>
+                    <p class="section-copy">Blocker mix across the current slice, with the recommended fix.</p>
                 </div>
-                <div class="actions mt-2">
-                    <button type="submit" class="btn btn-secondary">&#128190; Download Filtered TSV</button>
-                </div>
-            </form>
-        </div>
-    </div>
-</details>
-
-<div class="split-grid">
-    <section class="card hero-card hero-card--accent">
-        <p class="hero-label">Current Groups</p>
-        <div class="hero-value">{{ data.visible_groups }}</div>
-        <p class="hero-copy">These groups are the titles where legacy anime roots and Plex metadata splits overlap strongly enough to justify manual review.</p>
-        <div class="hero-inline-stats">
-            <span>Visible now <strong>{{ data.visible_groups }}</strong></span>
-            <span>Loaded <strong>{{ data.returned_groups }}</strong></span>
-            <span>Generated <strong>{{ data.generated_at }}</strong></span>
-        </div>
-    </section>
-
-    <details class="card disclosure-card">
-        <summary class="disclosure-card__summary">
-            <div class="disclosure-card__copy">
-                <span class="disclosure-card__eyebrow">Context</span>
-                <h2 class="disclosure-card__title">When you actually need this</h2>
-                <p class="disclosure-card__hint">Open for counts and a quick check that this is the right tool.</p>
-            </div>
-            <div class="disclosure-card__meta">
-                <span class="badge badge-info">Legacy-only</span>
-                <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
-            </div>
-        </summary>
-        <div class="disclosure-card__body">
-            <p class="text-muted">Use this only when the same anime title still exists in old legacy folders as well as tagged roots, or when Plex/Hama split one show into separate AniDB and TVDB entries. If that is not your situation, skip this page.</p>
-            <div class="metric-grid metric-grid--compact mt-2">
-                <div class="metric-card">
-                    <span class="metric-label">Mixed roots</span>
-                    <strong>{{ data.filesystem_mixed_root_groups }}</strong>
-                </div>
-                <div class="metric-card">
-                    <span class="metric-label">Plex duplicates</span>
-                    <strong>{{ data.plex_duplicate_show_groups }}</strong>
-                </div>
-                <div class="metric-card">
-                    <span class="metric-label">Hama splits</span>
-                    <strong>{{ data.plex_hama_anidb_tvdb_groups }}</strong>
-                </div>
-                <div class="metric-card">
-                    <span class="metric-label">Plex DB</span>
-                    <strong class="mono">{{ data.plex_db_path }}</strong>
+                <div class="header-badges">
+                    <span class="badge badge-warning">{{ data.blocked_reason_summary|length }} blocker types</span>
                 </div>
             </div>
-        </div>
-    </details>
-</div>
-
-{% if !data.blocked_reason_summary.is_empty() %}
-<details class="card disclosure-card" open>
-    <summary class="disclosure-card__summary">
-        <div class="disclosure-card__copy">
-            <span class="disclosure-card__eyebrow">Why Groups Stay Blocked</span>
-            <h2 class="disclosure-card__title">What to do next</h2>
-            <p class="disclosure-card__hint">Keep this open while triaging blockers, then collapse it once you are working the main queue table.</p>
-        </div>
-        <div class="disclosure-card__meta">
-            <span class="badge badge-warning">{{ data.blocked_reason_summary|length }} blocker type(s)</span>
-            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
-        </div>
-    </summary>
-    <div class="disclosure-card__body">
-        <div class="metric-grid metric-grid--compact">
-            {% for item in data.blocked_reason_summary %}
-            <div class="metric-card">
-                <span class="metric-label">{{ item.label }}</span>
-                <strong>{{ item.groups }}</strong>
-                <div class="text-muted">{{ item.recommended_action }}</div>
+            <div class="table-wrap">
+            <table class="data-table dense-table">
+                <thead>
+                    <tr><th>Blocker</th><th>Groups</th><th>Recommended action</th></tr>
+                </thead>
+                <tbody>
+                    {% for item in data.blocked_reason_summary %}
+                    <tr>
+                        <td><strong>{{ item.label }}</strong></td>
+                        <td>{{ item.groups|thousands }}</td>
+                        <td class="text-muted">{{ item.recommended_action }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
             </div>
-            {% endfor %}
-        </div>
-    </div>
-</details>
-{% endif %}
+        </section>
+        {% endif %}
 
-<div class="card">
-    <div class="section-head">
-        <div>
-            <p class="section-kicker">Groups</p>
-            <h2 class="section-title">Review order</h2>
-            <p class="text-muted">The queue is ranked by legacy impact. Titles near the top usually have the biggest pile of old symlink drift.</p>
-            {% if data.visible_groups != data.returned_groups %}
-            <p class="text-muted">Showing {{ data.visible_groups }} filtered groups from {{ data.returned_groups }} loaded rows.</p>
-            {% endif %}
-        </div>
-        <div class="actions">
-            {% if data.full %}
-            <a href="/cleanup/anime-remediation" class="btn btn-secondary">Show Sample</a>
+        <section id="anime-groups" class="card">
+            <div class="section-head">
+                <div>
+                    <h2 class="section-title">Review order</h2>
+                    <p class="section-copy">Ranked by legacy impact; the top titles carry the most symlink drift.</p>
+                    {% if data.visible_groups != data.returned_groups %}
+                    <p class="section-copy">Showing {{ data.visible_groups|thousands }} filtered groups from {{ data.returned_groups|thousands }} loaded rows.</p>
+                    {% endif %}
+                </div>
+                <div class="operator-toolbar__actions">
+                    {% if data.full %}
+                    <a href="/cleanup/anime-remediation" class="btn btn-secondary">Show sample</a>
+                    {% else %}
+                    <a href="/cleanup/anime-remediation?full=true" class="btn btn-secondary">Show full backlog</a>
+                    {% endif %}
+                </div>
+            </div>
+
+            {% if groups|length > 0 %}
+            <div class="table-wrap">
+            <table class="data-table dense-table">
+                <thead>
+                    <tr>
+                        <th>Title</th>
+                        <th>Status</th>
+                        <th>Recommended tagged root</th>
+                        <th>Legacy roots</th>
+                        <th>Legacy symlinks</th>
+                        <th>Tracked DB links</th>
+                        <th>Plex rows</th>
+                        <th>GUID kinds</th>
+                        <th>Alt tagged roots</th>
+                        <th>Review samples</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for group in groups %}
+                    <tr>
+                        <td>
+                            <strong>{{ group.normalized_title }}</strong>
+                        </td>
+                        <td>
+                            <div class="badge-stack">
+                                {% if group.eligible %}
+                                <span class="badge badge-success">Eligible</span>
+                                {% else %}
+                                <span class="badge badge-warning">Blocked</span>
+                                {% endif %}
+                                {% for reason in group.block_reasons %}
+                                <span class="badge badge-secondary">{{ reason }}</span>
+                                {% endfor %}
+                                {% match group.recommended_action %}
+                                {% when Some with (action) %}
+                                <span class="text-muted">{{ action }}</span>
+                                {% when None %}
+                                {% endmatch %}
+                            </div>
+                        </td>
+                        <td>
+                            <div class="badge-stack">
+                                <code class="mono">{{ group.recommended_tagged_root.display() }}</code>
+                                <span class="badge badge-info">fs {{ group.recommended_filesystem_symlinks|thousands }}</span>
+                                <span class="badge badge-info">db {{ group.recommended_db_active_links|thousands }}</span>
+                            </div>
+                        </td>
+                        <td>
+                            <div class="badge-stack">
+                                {% for root in group.legacy_roots %}
+                                <code class="mono">{{ root.display() }}</code>
+                                {% endfor %}
+                            </div>
+                        </td>
+                        <td><strong>{{ group.legacy_symlink_total|thousands }}</strong></td>
+                        <td><strong>{{ group.legacy_db_total|thousands }}</strong></td>
+                        <td>
+                            <div class="badge-stack">
+                                <span class="badge badge-info">total {{ group.plex_total_rows|thousands }}</span>
+                                <span class="badge badge-warning">live {{ group.plex_live_rows|thousands }}</span>
+                                <span class="badge badge-danger">deleted {{ group.plex_deleted_rows|thousands }}</span>
+                            </div>
+                        </td>
+                        <td>
+                            <div class="badge-stack">
+                                {% for kind in group.plex_guid_kinds %}
+                                <span class="badge badge-info">{{ kind }}</span>
+                                {% endfor %}
+                            </div>
+                        </td>
+                        <td>
+                            <div class="badge-stack">
+                                {% for root in group.alternate_tagged_roots %}
+                                <code class="mono">{{ root.display() }}</code>
+                                {% endfor %}
+                                {% if group.alternate_tagged_roots|length == 0 %}
+                                <span class="text-muted">None</span>
+                                {% endif %}
+                            </div>
+                        </td>
+                        <td>
+                            <div class="badge-stack">
+                                {% if group.candidate_symlink_samples|length > 0 %}
+                                <strong>Candidate symlinks</strong>
+                                {% for sample in group.candidate_symlink_samples %}
+                                <code class="mono">{{ sample.display() }}</code>
+                                {% endfor %}
+                                {% endif %}
+                                {% if group.broken_symlink_samples|length > 0 %}
+                                <strong>Broken legacy symlinks</strong>
+                                {% for sample in group.broken_symlink_samples %}
+                                <code class="mono">{{ sample.display() }}</code>
+                                {% endfor %}
+                                {% endif %}
+                                {% if group.legacy_media_file_samples|length > 0 %}
+                                <strong>Real media files blocking automatic cleanup</strong>
+                                {% for sample in group.legacy_media_file_samples %}
+                                <code class="mono">{{ sample.display() }}</code>
+                                {% endfor %}
+                                {% endif %}
+                                {% if group.candidate_symlink_samples|length == 0 && group.broken_symlink_samples|length == 0 && group.legacy_media_file_samples|length == 0 %}
+                                <span class="text-muted">No sample paths captured</span>
+                                {% endif %}
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            </div>
             {% else %}
-            <a href="/cleanup/anime-remediation?full=true" class="btn btn-secondary">Show Full Backlog</a>
+            <div class="empty-state">
+                <span class="empty-state__title">No cleanup groups found.</span>
+                This report found no correlated anime duplicate groups that need manual review.
+                <div class="empty-state__actions">
+                    <a class="btn btn-secondary" href="/cleanup">Back to cleanup</a>
+                </div>
+            </div>
             {% endif %}
-            <a href="/cleanup" class="btn btn-secondary">&#8592; Back to Cleanup</a>
-        </div>
+        </section>
     </div>
-
-    {% if groups|length > 0 %}
-    <table class="data-table dense-table">
-        <thead>
-            <tr>
-                <th>Title</th>
-                <th>Status</th>
-                <th>Recommended tagged root</th>
-                <th>Legacy roots</th>
-                <th>Legacy symlinks</th>
-                <th>Tracked DB links</th>
-                <th>Plex rows</th>
-                <th>GUID kinds</th>
-                <th>Alt tagged roots</th>
-                <th>Review samples</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for group in groups %}
-            <tr>
-                <td>
-                    <strong>{{ group.normalized_title }}</strong>
-                </td>
-                <td>
-                    <div class="badge-stack">
-                        {% if group.eligible %}
-                        <span class="badge badge-success">Eligible</span>
-                        {% else %}
-                        <span class="badge badge-warning">Blocked</span>
-                        {% endif %}
-                        {% for reason in group.block_reasons %}
-                        <span class="badge badge-secondary">{{ reason }}</span>
-                        {% endfor %}
-                        {% match group.recommended_action %}
-                        {% when Some with (action) %}
-                        <span class="text-muted">{{ action }}</span>
-                        {% when None %}
-                        {% endmatch %}
-                    </div>
-                </td>
-                <td>
-                    <div class="badge-stack">
-                        <code class="mono">{{ group.recommended_tagged_root.display() }}</code>
-                        <span class="badge badge-info">fs {{ group.recommended_filesystem_symlinks }}</span>
-                        <span class="badge badge-info">db {{ group.recommended_db_active_links }}</span>
-                    </div>
-                </td>
-                <td>
-                    <div class="badge-stack">
-                        {% for root in group.legacy_roots %}
-                        <code class="mono">{{ root.display() }}</code>
-                        {% endfor %}
-                    </div>
-                </td>
-                <td><strong>{{ group.legacy_symlink_total }}</strong></td>
-                <td><strong>{{ group.legacy_db_total }}</strong></td>
-                <td>
-                    <div class="badge-stack">
-                        <span class="badge badge-info">total {{ group.plex_total_rows }}</span>
-                        <span class="badge badge-warning">live {{ group.plex_live_rows }}</span>
-                        <span class="badge badge-danger">deleted {{ group.plex_deleted_rows }}</span>
-                    </div>
-                </td>
-                <td>
-                    <div class="badge-stack">
-                        {% for kind in group.plex_guid_kinds %}
-                        <span class="badge badge-info">{{ kind }}</span>
-                        {% endfor %}
-                    </div>
-                </td>
-                <td>
-                    <div class="badge-stack">
-                        {% for root in group.alternate_tagged_roots %}
-                        <code class="mono">{{ root.display() }}</code>
-                        {% endfor %}
-                        {% if group.alternate_tagged_roots|length == 0 %}
-                        <span class="text-muted">None</span>
-                        {% endif %}
-                    </div>
-                </td>
-                <td>
-                    <div class="badge-stack">
-                        {% if group.candidate_symlink_samples|length > 0 %}
-                        <strong>Candidate symlinks</strong>
-                        {% for sample in group.candidate_symlink_samples %}
-                        <code class="mono">{{ sample.display() }}</code>
-                        {% endfor %}
-                        {% endif %}
-                        {% if group.broken_symlink_samples|length > 0 %}
-                        <strong>Broken legacy symlinks</strong>
-                        {% for sample in group.broken_symlink_samples %}
-                        <code class="mono">{{ sample.display() }}</code>
-                        {% endfor %}
-                        {% endif %}
-                        {% if group.legacy_media_file_samples|length > 0 %}
-                        <strong>Real media files blocking automatic cleanup</strong>
-                        {% for sample in group.legacy_media_file_samples %}
-                        <code class="mono">{{ sample.display() }}</code>
-                        {% endfor %}
-                        {% endif %}
-                        {% if group.candidate_symlink_samples|length == 0 && group.broken_symlink_samples|length == 0 && group.legacy_media_file_samples|length == 0 %}
-                        <span class="text-muted">No sample paths captured</span>
-                        {% endif %}
-                    </div>
-                </td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-    {% else %}
-    <div class="alert alert-success">
-        <strong>&#9989; No cleanup groups found.</strong>
-        The current report did not find any correlated anime duplicate groups that need manual review.
-    </div>
-    {% endif %}
 </div>
 {% when None %}
-<div class="card">
-    <div class="section-head">
-        <div>
-            <p class="section-kicker">Backlog</p>
-            <h2 class="section-title">Nothing to show yet</h2>
-        </div>
-    </div>
-    <p class="text-muted">No legacy anime cleanup data could be built from the current configuration.</p>
-    <div class="actions mt-2">
-        <a href="/cleanup" class="btn btn-secondary">&#8592; Back to Cleanup</a>
+<div class="empty-state">
+    <span class="empty-state__title">Nothing to show yet.</span>
+    No legacy anime cleanup data could be built from the current configuration.
+    <div class="empty-state__actions">
+        <a class="btn btn-secondary" href="/cleanup">Back to cleanup</a>
     </div>
 </div>
 {% endmatch %}
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/section-rail.js" defer></script>
 {% endblock %}

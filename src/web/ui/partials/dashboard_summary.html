@@ -6,46 +6,38 @@
     hx-target="#dashboard-summary-body"
     hx-swap="innerHTML"
 >
-    <div id="dashboard-summary-body" class="hero-grid">
-        <section class="hero-card hero-card--accent hero-card--health">
-            <p class="hero-label">Links</p>
-            <div class="hero-value">{{ stats.active_links|thousands }}</div>
-            <p class="hero-copy">Active symlinks across all libraries.</p>
-            <div class="hero-inline-stats">
-                <span>Dead: <strong class="{% if stats.dead_links > 0 %}text-error{% else %}text-success{% endif %}">{{ stats.dead_links|thousands }}</strong></span>
-                <span>Last scan:
-                    <strong>
-                        {% match stats.last_scan %}
-                        {% when Some with (ts) %}{{ ts }}{% when None %}Never{% endmatch %}
-                    </strong>
-                </span>
-            </div>
-        </section>
+    <div id="dashboard-summary-body" class="metric-grid">
+        <div class="metric-card">
+            <span class="metric-label">Links</span>
+            <strong>{{ stats.active_links|thousands }}</strong>
+            <span class="metric-meta">
+                <span class="{% if stats.dead_links > 0 %}text-error{% else %}text-success{% endif %}">{{ stats.dead_links|thousands }} dead</span>
+                &middot; last scan
+                {% match stats.last_scan %}
+                {% when Some with (ts) %}{{ ts }}{% when None %}never{% endmatch %}
+            </span>
+        </div>
 
-        <section class="hero-card hero-card--queue">
-            <p class="hero-label">Queue</p>
-            <div class="hero-value">{{ queue.active_total|thousands }}</div>
-            <p class="hero-copy">Waiting, downloading, relinking, and retrying jobs.</p>
-            <div class="hero-inline-stats">
-                <span>Queued <strong>{{ queue.queued|thousands }}</strong></span>
-                <span>Downloading <strong>{{ queue.downloading|thousands }}</strong></span>
-                <span>Blocked <strong>{{ queue.blocked|thousands }}</strong></span>
-            </div>
-        </section>
+        <div class="metric-card">
+            <span class="metric-label">Queue</span>
+            <strong>{{ queue.active_total|thousands }}</strong>
+            <span class="metric-meta">
+                {{ queue.queued|thousands }} queued &middot;
+                {{ queue.downloading|thousands }} downloading &middot;
+                {{ queue.blocked|thousands }} blocked
+            </span>
+        </div>
 
-        <section class="hero-card hero-card--refresh">
-            <p class="hero-label">Media Refresh</p>
-            <div class="hero-value">{{ deferred_refresh.pending_targets|thousands }}</div>
-            <p class="hero-copy">Refresh requests waiting for the media server.</p>
-            <div class="hero-inline-stats">
+        <div class="metric-card">
+            <span class="metric-label">Media refresh</span>
+            <strong>{{ deferred_refresh.pending_targets|thousands }}</strong>
+            <span class="metric-meta">
                 {% if deferred_refresh.servers|length > 0 %}
-                {% for server in deferred_refresh.servers %}
-                <span>{{ server.server }} <strong>{{ server.queued_targets|thousands }}</strong></span>
-                {% endfor %}
+                {% for server in deferred_refresh.servers %}{% if !loop.first %} &middot; {% endif %}{{ server.server }} {{ server.queued_targets|thousands }}{% endfor %}
                 {% else %}
-                <span>None queued</span>
+                none queued
                 {% endif %}
-            </div>
-        </section>
+            </span>
+        </div>
     </div>
 </div>

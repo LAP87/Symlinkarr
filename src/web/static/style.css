@@ -4222,3 +4222,251 @@ body.page-status .telemetry-item {
   stroke: var(--card-bg);
   stroke-width: 2;
 }
+
+/* ============================================================
+   2026-08 phase C — shared page primitives (UI overhaul)
+   Contract: scratchpad/UI_STYLE_CONTRACT.md
+   These are the ONLY classes the per-page agents may rely on
+   beyond what already existed. Everything below uses existing
+   themed tokens only (no new variables, no hardcoded colours).
+   ============================================================ */
+
+/* --- canonical page header ------------------------------------
+   One h1, one optional lead, one right-hand aside. The decorative
+   gradient wash + accent underline on hub/inspection/recovery/result
+   headers are switched off; a hairline rule is the only separator. */
+.page-header,
+body.page-hub .page-header,
+body.page-inspection .page-header,
+body.page-recovery .page-header,
+body.page-result .page-header {
+  position: relative;
+  margin-bottom: 1.25rem;
+  padding: 0 0 0.85rem;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--hairline);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.page-header::before,
+.page-header::after,
+body.page-hub .page-header::before,
+body.page-inspection .page-header::before,
+body.page-recovery .page-header::before,
+body.page-result .page-header::before,
+body.page-hub .page-header::after,
+body.page-inspection .page-header::after,
+body.page-recovery .page-header::after,
+body.page-result .page-header::after {
+  content: none;
+}
+
+.page-header h1 {
+  margin-bottom: 0.28rem;
+}
+
+.page-header .page-lead {
+  margin: 0;
+  max-width: 62ch;
+  font-size: 0.88rem;
+  color: var(--text-secondary);
+}
+
+/* Right-hand cluster of the split header: status badges, then at
+   most one primary action, then at most one quiet doc link. */
+.page-header__aside {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
+/* The single permitted wiki/help link. Never a card, never a pill. */
+.doc-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.8rem;
+  color: var(--text-faint);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.doc-link:hover {
+  color: var(--text-secondary);
+  border-bottom-color: var(--hairline-strong);
+}
+
+.doc-link svg {
+  display: block;
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* --- flat section stack (default page shape) --- */
+.page-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  min-width: 0;
+}
+
+.page-sections > .card,
+.page-sections > section > .card:last-child {
+  margin-bottom: 0;
+}
+
+/* --- stat tile sub-line (mockup's .stat-meta) --- */
+.metric-meta {
+  margin-top: 0.2rem;
+  font-size: 0.75rem;
+  color: var(--text-faint);
+}
+
+.metric-meta strong {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+/* --- empty states --- */
+.empty-state__title {
+  display: block;
+  margin-bottom: 0.25rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.empty-state__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+/* --- .stack-list: used by prune_preview.html but never defined --- */
+.stack-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.stack-list > code,
+.stack-list > .mono {
+  display: block;
+  padding: 0.3rem 0.5rem;
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
+/* --- long log / path dumps inside a <details> --- */
+.log-scroll {
+  max-height: 22rem;
+  overflow: auto;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* --- legacy .collapsible-section: deprecated, but calm while it lasts --- */
+details.collapsible-section {
+  margin-bottom: 1.25rem;
+  border-color: var(--hairline);
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+details.collapsible-section:hover {
+  transform: none;
+  box-shadow: none;
+}
+
+details.collapsible-section > summary {
+  padding: 0.95rem 1.1rem;
+}
+
+.collapsible-header-title {
+  font-family: var(--font-ui);
+  font-size: 1rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+/* --- section rail reused outside config.html ---------------------
+   Same .settings-layout / .settings-rail / .settings-content markup
+   as config.html; the generic scroll-spy binds to [data-section-rail]. */
+.settings-rail[data-section-rail] {
+  top: 1rem;
+}
+
+/* =================================================================
+   2026-08 phase C — reconcile pass (gaps reported by the UI agents)
+   Token-only. No new custom properties, no literal colours.
+   ================================================================= */
+
+/* .alert-info — used by cleanup, cleanup_result, dead_links, discover_content,
+   repair_result and scan_result. Only .alert-success/-error/-warning existed,
+   so these rendered as an untinted bare .alert. Mirrors the other three, using
+   the themed info badge tokens (there is no --alert-info-bg to reuse). */
+.alert-info {
+  background-color: var(--badge-info-bg);
+  border: 1px solid var(--badge-info-border);
+  color: var(--info);
+}
+
+/* .def-row__key — the label+hint wrapper in the §D.8 def-row pattern. It sits in
+   the fixed 220px grid column; without min-width:0 a long unbroken label pushes
+   the value column off the card. */
+.def-row__key {
+  min-width: 0;
+}
+
+/* .field-max-lg — scan.html's anime-override text inputs. Completes the
+   .field-max-sm (18rem) / .field-max-md (25rem) scale. */
+.field-max-lg {
+  max-width: 34rem;
+}
+
+/* .row-warning — import.html tags candidate rows needing manual review. The
+   class was in the markup but had no rule, so those rows were indistinguishable
+   from clean ones. Hover state kept so row feedback survives the tint. */
+.data-table tbody tr.row-warning {
+  background: color-mix(in srgb, var(--warning) 10%, transparent);
+}
+
+.data-table tbody tr.row-warning:hover {
+  background: color-mix(in srgb, var(--warning) 16%, transparent);
+}
+
+.data-table tbody tr.row-warning td:first-child {
+  box-shadow: inset 3px 0 0 var(--warning);
+}
+
+/* .metric-meta strong — `.metric-card strong { display: block }` (defined many
+   times, last at :4000) beat the phase-C .metric-meta strong rule on `display`,
+   so the §D.3 example ("across <strong>N</strong> libraries") broke onto its own
+   line. Restore inline flow for <strong> inside the sub-line only. */
+.metric-meta strong {
+  display: inline;
+  font-size: inherit;
+}
