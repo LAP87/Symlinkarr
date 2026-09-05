@@ -1,45 +1,403 @@
-# NZB / Usenet Migration Assessment
+# NZB / Usenet Migration Assessment — Hybrid via Decypharr v2
 
-**Question:** if the stack moves off Real-Debrid + Decypharr and onto SABnzbd/NZBGet + indexers
-driven by Sonarr/Radarr, does Symlinkarr still work? What breaks, what becomes pointless, what
-must be built?
+**Status:** decision made. This document is now the integration plan for making Symlinkarr
+usenet-aware on the Decypharr mount. The earlier three-way analysis (usenet mount / hybrid /
+classic SAB-to-local-disk) is preserved verbatim in **Appendix A** because much of its evidence
+still applies; it is no longer the framing.
 
-**Method:** every claim below was checked against the source tree at commit `a8416ae`
-(branch `feature/review-fixes-and-ui`). File:line citations are to that tree. No files were
-modified. A handful of external references are listed at the end and were *not* fetched from
-this machine — treat them as pointers, not verified facts.
+**Method.** Symlinkarr claims were checked against the working tree at `86b3c0d`
+(branch `feature/review-fixes-and-ui`, plus uncommitted edits; the only local diff in
+src/linker.rs is a 5-line insertion at :1034+, so cited linker lines are stable). Decypharr
+claims were checked against a local clone of github.com/sirrobot01/decypharr at tag `v2.5`
+(commit `0dd1cbb`, 2026-08-11) **and** the upstream `beta` branch (HEAD `1f7a62e`, 2026-09-04),
+the repo docs, and live reads of the owner's own instance on 2026-09-04. No file under `src/` was
+modified.
+
+**Labels used below.**
+
+| Label | Meaning |
+|---|---|
+| **VERIFIED** | Read in primary source (Decypharr Go code / docs at the cited path, Symlinkarr Rust at the cited line) or observed live on the owner's instance. |
+| **INFERRED** | Reasoned from verified facts; not directly confirmed. |
+| **MUST-TEST** | Cannot be settled from source; the owner must run the listed check. Every MUST-TEST item is collected in [Verify on your own instance](#verify-on-your-own-instance). |
+
+Where an earlier recon note and the adversarial verification disagree, the verification wins
+and the recon claim is not repeated here.
+
+---
+
+## Decision: hybrid via Decypharr v2 usenet
+
+**Settled.** The Decypharr mount stays. Acquisition moves toward usenet. Decypharr itself is the
+usenet client: since v2.0 (2026-04-09) it parses NZBs, streams articles over NNTP, exposes the
+result on the same mount tree as debrid content, and presents a SABnzbd-compatible API to
+Sonarr/Radarr (VERIFIED — release notes for v2.0; `pkg/server/server.go:123`
+`routes["/sabnzbd"] = sb.Routes()`; `pkg/manager/entry.go:16-19` group constants incl. `nzbs`).
+
+**Why this collapses the old fork.** The original document's fork A (usenet mount) and fork B
+(hybrid) were distinct because a usenet mount was assumed to be a *second* product (NzbDAV,
+AltMount) beside Decypharr. With Decypharr serving both protocols, A and B are the same path: one
+mount, one `sources[]` entry, one WebDAV probe endpoint, one queue API. Fork C
+(SAB/NZBGet-to-local-disk with arr-managed imports) is not being pursued; its analysis — the
+ownership collision, the presentation-tree topology, hardlinks — is retained in Appendix A only
+because parts of it (path namespace, sweep gating, sample filtering, unattended repair) are
+still live risks and are re-framed below.
+
+**Why the trigger is still real.** Measured on the owner's library: ~56 % of 130,224 symlinks are
+broken (94 % of links whose names match WEB-DL/WEBRip/AMZN/YTS/RARBG, 29 % of the rest), all with
+targets under `__all__/`. Debrid content still vanishes; dead-link detection and repair keep their
+original justification. The usenet half of the hybrid exists to replace what vanishes.
+
+**What the owner actually runs (VERIFIED, live 2026-09-04).**
+
+| Fact | Value | Evidence |
+|---|---|---|
+| Decypharr version | `v2.5.1`, channel `beta` — **not a tagged release** | `GET /version`; `.github/workflows/beta-docker.yml` builds every push to `beta` as latest-tag+PATCH+1 (`v2.5` → `v2.5.1`); `auth_token_only` in `GET /api/config` exists only on the beta branch |
+| Mount type | `external_rclone`, `dir_cache_time: 5m` | `GET /api/config` `.mount` |
+| Library root (`mount.mount_path`) | `/mnt/decypharr/realdebrid` | `GET /api/config`; `ls` shows `__all__ __bad__ nzbs realdebrid torrents version.txt`; `version.txt` = `v2.5.1-beta` |
+| `folder_naming` | `original_no_ext` | `GET /api/config` |
+| Usenet providers | **none** (`config.usenet` = `{}`) | `GET /api/config` |
+| Debrid clients | `realdebrid` only | `GET /api/config` |
+| Arrs known to Decypharr | 6 | `GET /api/arrs` |
+| Decypharr repair | enabled, `source=arr`, 04:00, `auto_repair=true`, arrs sonarr/radarr/sonarr-anime | `GET /api/config` `.repair` |
+| `default_download_action` | `symlink` | `GET /api/config` |
+| Entries today | `__all__` = `torrents` = `realdebrid` = 12,081; `nzbs/` empty; `__bad__` 562 | live `ls`/browse |
+
+The beta build matters: several v2.5 behaviours (NZB parse timing, SAB auth, STRM action, repair
+internals) differ on beta, and "v2.5.1" does not pin a commit — the image is rebuilt on every
+push to `beta`. See MUST-TEST item 1.
 
 ---
 
 ## Verdict
 
-Symlinkarr does not crash on usenet — the scan/match/link core is genuinely storage-agnostic
-(`SourceConfig` is name + absolute path + a parser hint, src/config.rs:297-305; `scan_source` is
-a plain `WalkDir` filtered by video extension, src/source_scanner.rs:140-167) and the answer
-depends entirely on *where you point `sources`*. If you migrate to a usenet **mount**
-(NzbDAV / AltMount-style: SAB-compatible API to the arrs, content exposed over rclone/FUSE), the
-product transfers almost verbatim and the migration is a five-line YAML edit — content is still
-remote, revocable and multi-copy, so dead-link repair, the FUSE/`PathHealth` guards and the
-readiness gate all keep their original justification. If you migrate to **classic
-SAB/NZBGet-to-local-disk with arr-managed imports**, Symlinkarr keeps running but three of its
-five pillars (dead-link repair, mount-health safety, auto-acquire) lose their trigger and its
-write path collides with the arrs, which now own the library filesystem — you are left with a
-tool whose only defensible remaining job, multi-library fan-out over a hybrid shelf, is the one
-thing it does not currently implement (`destination_key` has no library dimension,
-src/matcher/scoring.rs:54-63).
+With Decypharr v2 as the mount, Symlinkarr's scan/match/link/repair core carries over
+**without a topology change**: NZB items land in the same `__all__` group at the same absolute
+path shape (`{mount_path}/__all__/{folder}/{file}`) as debrid items, the WebDAV readiness probe
+already composes exactly the path Decypharr's router serves, `GET /api/torrents` already lists
+NZB entries alongside torrents with every field `DecypharrTorrent` reads, and NZB items are never
+visible on the mount while partially parsed. The whole usenet half is a `sources[]` no-op from
+the scanner's point of view.
 
-The honest headline is therefore **fork-dependent**: *config migration* for the mount and hybrid
-cases, *deliberate repositioning plus two real safety fixes* for the local-disk case. And the
-failure mode on a naive local-disk migration is not a clean no-op — it is **silent garbage
-accumulation**: duplicate entries beside every Sonarr-imported file, dangling links that nothing
-cleans up (the dead-link sweep is gated behind `search_missing`, which defaults false —
-src/commands/scan.rs:285, src/config.rs:337-339, config.example.yaml:26), and — most likely of
-all — 100 % dangling links from day one because symlink targets are absolute paths from
-Symlinkarr's own container namespace with no remapping layer (src/utils.rs:35).
+What must be built splits into three tiers:
+
+1. **Already broken today, independent of usenet.** `symlinkarr repair --trigger` posts to
+   `POST /api/repair`, which Decypharr removed in v2.3 (2026-05-14); on the owner's build it
+   404s. Its request body never matched Decypharr's JSON keys in any version. And the dead-link
+   sweep — the one subsystem the 56 %-broken library needs most — only runs inside `scan` when
+   `daemon.search_missing` is true (default false). Fix both before touching usenet.
+2. **Needed before usenet content flows.** Point `sources[].path` at exactly one view
+   (`/mnt/decypharr/realdebrid/__all__` — the on-disk configs already say this; the live
+   datapoint disagrees, see MUST-TEST 2); add `protocol` to `DecypharrTorrent`; decide the
+   readiness-probe timeout against real NNTP first-byte latency; add a parent-directory fallback
+   to the filename parser for obfuscated raw posts.
+3. **Only if Symlinkarr acquires usenet itself.** Prowlarr protocol switch, `nzbURLs`
+   submission, UUID-keyed tracking, protocol-scoped queue guards, protocol-aware ranking. The
+   recommendation below is to **defer this** and let Sonarr/Radarr acquire via Decypharr's SAB
+   client, so tier 3 is a follow-up, not a prerequisite.
+
+What is now moot: the local-disk topology work (presentation tree, source/library overlap,
+moved-vs-deleted inode tracking, hardlinks), the "retire the FUSE/`PathHealth` machinery" list,
+and the fork-C runbook. DMM stays moot for the usenet half (it is a debrid-cache hash oracle) but
+remains valid for the torrent half if that is ever re-enabled.
+
+**Recommendation on acquisition.** Let Sonarr/Radarr do usenet acquisition through Decypharr's
+`/sabnzbd` client, and keep Symlinkarr to scan/match/link/repair plus a one-POST-per-item
+"ask the arr to search" handoff when a dead link has no replacement copy on the mount. Reasons:
+(a) the arrs already implement search → grab → failed-download handling → blocklist → retry for
+usenet end-to-end; (b) Decypharr's own repair sweep (enabled on this instance) already deletes
+broken files, blocklists them in the arr and re-searches (`pkg/manager/repair_sweep.go:639-686,
+763-801` at v2.5; `pkg/repair/` on beta); (c) every native-acquire piece in Symlinkarr is
+torrent-shaped in exactly four places and none of them is architectural, so the option stays
+open and cheap to build later; (d) the SAB shim and `/api/add` give the arr-driven and
+Symlinkarr-driven paths the same identity space (`nzo_id` = `info_hash` = one UUID), so nothing
+is lost by deferring. Build native usenet acquisition only if the arr path proves too slow to
+backfill 70,000 broken links.
 
 ---
 
-## The fork that decides everything
+## What works, what must be built, what is moot
+
+| Subsystem | Under hybrid Decypharr v2 | Label | Evidence |
+|---|---|---|---|
+| Source walk over `__all__` | Works. NZB items appear in `__all__` with no protocol filter; also in `nzbs/`; **not** under `realdebrid/`. `__bad__` is pruned by the walk. | VERIFIED | `pkg/manager/entry.go:215-243` (`case EntryAllFolder` iterates `ForEachMeta`, no `Protocol`/`Bad` filter), `:244-296` (`nzbs`/`torrents` filter `meta.Protocol`), `:321-349` (provider branch filters `meta.Provider == group`; NZB `ActiveProvider = "usenet"`); Symlinkarr `src/source_scanner.rs:91-92, :161` |
+| Path shape | Same for both protocols: `{mount_path}/__all__/{folder}/{file}`; NZB folders are flat (no season subdirs). | VERIFIED | `pkg/manager/entry.go:62-64` `GetTorrentMountPath`; `pkg/usenet/parser/rar.go:181-219` (RAR members exposed under `path.Base`) |
+| Folder name for an NZB item | `path.Clean(RemoveExtension(OriginalFilename))` under the owner's `original_no_ext`; `OriginalFilename` = `.nzb` filename minus `.nzb`, invalid chars stripped. With Sonarr/Radarr that is the release title. `RemoveExtension` only strips known media suffixes, so `.x264-GRP` survives. | VERIFIED (rule) / MUST-TEST (observed name) | `pkg/storage/types.go:668-686`; `pkg/manager/usenet.go:39-41`; `internal/utils/regex.go:43-57`; `pkg/usenet/parser/misc.go:80-90`. **Beta caveat:** at submit time `Name`/`OriginalFilename` are the *raw* filename (extension not yet stripped); the parsed name is set later by `processNZBJob` (`git diff v2.5 origin/beta -- pkg/manager/usenet.go`). |
+| File names inside an NZB item | RAR members: internal filename (basename). Raw posts: subject-derived `BaseName + ext` — **obfuscated subjects yield obfuscated file names**. | VERIFIED (RAR) / INFERRED (raw) | `pkg/usenet/parser/rar.go:191-219`; `parser.go:763-782` |
+| Partially assembled files visible to the scanner | **Never.** `AddNewNZB` writes only to the `queue` store; mount/WebDAV/share listings read only the `entries` store; the entry reaches `entries` solely in `processAction`, after the full parse, a sampled availability gate and a 512-byte head-signature check. Nothing is ever assembled on the mount — files are virtual NNTP streams; sizes are fixed at parse time. | VERIFIED | `pkg/manager/usenet.go:63`; `pkg/storage/storage.go:17`; `pkg/storage/entry.go:136-149`; `pkg/manager/processor.go:313-343`; `pkg/usenet/usenet.go:516-577`; `pkg/usenet/verify.go:20` |
+| … but a visible file can still fail mid-read | Only ~1 % of segments were STAT-probed at import (`import_availability_sample_percent=1` live) and only the first 512 bytes were read. Missing middle segments surface at read time or in a later repair sweep. | VERIFIED (gate depth) / MUST-TEST (FUSE behaviour) | `pkg/usenet/usenet.go:578-606`; live config |
+| WebDAV readiness probe | Works unchanged. From a source rooted at `__all__` it probes `GET /webdav/__all__/<folder>/<file>` with `Range: bytes=0-0`, which is exactly Decypharr's `/{group}/{torrent}/{file}` route. For an NZB this forces an NNTP article fetch; the 2,500 ms default timeout maps a slow first byte to `Unreadable` → link **skipped** (not bypassed). | VERIFIED (composition) / MUST-TEST (latency) | `src/linker.rs:97-123, :125-174`; `src/api/decypharr.rs:191-256`; `src/config/defaults.rs:317-319`; `pkg/server/webdav/handler.go:66-70` |
+| WebDAV probe auth | The probe sends `Authorization: Bearer` (`src/api/decypharr.rs:235-237`); the WebDAV handler only honours Basic auth via `config.VerifyAuth` when `use_auth && enable_webdav_auth`. If the owner turns WebDAV auth on, every probe returns 401 → `Unreadable` → every link skipped. | VERIFIED | `pkg/server/webdav/handler.go:156-164` |
+| `GET /api/torrents` | Still live, same contract v2.0→beta; lists the **queue** store for both protocols (`ProtocolAll`); each item carries `"protocol": "torrent"\|"nzb"` (the string is `nzb`, **not** `usenet`; `usenet` is the `active_provider` value). Symlinkarr deserialises every field it uses; it lacks only `protocol`. `limit` > 100 is clamped to 20. | VERIFIED | `pkg/server/api.go:287-384`; `internal/config/config.go:27-29`; `pkg/storage/types.go:43-96`; `src/api/decypharr.rs:68-101` |
+| NZB lifecycle as seen in `/api/torrents` (beta) | submit → `status=queued, state=downloading, progress=0, name=<raw filename>, size=0, active_provider=""` → async parse → `status=downloading, name=<parsed>, size` → `status=downloaded, progress=1` → post-action → `state=pausedUP, is_complete=true`. Failure: `state=error, status=error, last_error`. **With `action=none` the entry is deleted from the queue immediately after completion** — it vanishes from `/api/torrents` and SAB history. Failed entries with `progress==0` are auto-purged after `remove_stalled_after`. | VERIFIED (source) / MUST-TEST (no NZB has ever existed on this instance) | `git diff v2.5 origin/beta -- pkg/manager/usenet.go`; `pkg/manager/downloader.go:121-125`; `pkg/manager/queue.go:145-164`; `pkg/storage/types.go:401-423` |
+| `is_failed()` / `is_complete` semantics | Read real fields with unchanged vocab: state `downloading\|pausedDL\|pausedUP\|error`, status `queued\|downloading\|downloaded\|error`. | VERIFIED | `pkg/storage/types.go:28-31`; `pkg/debrid/types/status.go:6-11`; `src/api/decypharr.rs:104-123` |
+| `POST /api/add` (Bearer) | Still accepts `urls`/`arr`/`action` as Symlinkarr sends them. Also accepts `nzbURLs` (newline-separated, fetched server-side with a User-Agent) and multipart `nzbFiles`. Response is always HTTP 200 with `[{id,status,error}]`; per-item failure is `status:"error"`. For an **NZB** `id` = the UUID that becomes `info_hash`/`nzo_id`. For a **torrent** `id` is a throwaway UUID, **not** the infohash. An `.nzb` URL sent via `urls` fails bencode parsing. | VERIFIED | `pkg/server/api.go:37-208`; `pkg/manager/queue.go:30-55, :68-82`; `internal/utils/magnet.go:74-81` |
+| `usenet not configured` | Every NZB submission on this instance today returns `status:"error"` because no provider is configured. | VERIFIED | `pkg/manager/usenet.go:17-20`; live `config.usenet = {}` |
+| `action=strm` | Removed on beta (STRM is now a separate reconciler, `POST /api/strm/regenerate`); `action=strm` falls to the symlink branch. Symlinkarr sends `none`, so unaffected. | VERIFIED | `git diff v2.5 origin/beta -- internal/config/config.go pkg/manager/downloader.go` |
+| Duplicate NZB submissions | Storage is keyed by `InfoHash` (fresh UUID per submit) with a plain overwrite; no name-based dedup found → duplicates likely create separate entries. Beta adds a "hearsay" layer (`NZBClaimedIncomplete`/`ReportNZB`) that was not traced. Symlinkarr's pre-submit token match is the only guard. | INFERRED / MUST-TEST | `pkg/storage/entry.go` `AddOrUpdate`/`AddQueue`; `pkg/manager/usenet.go` |
+| `POST /api/repair`, `GET /api/repair/jobs` | **Removed in v2.3** (commit `3fc8e4d`, 2026-05-11). `symlinkarr repair --trigger` bails with `Decypharr repair error 404`. Replacement: `POST /api/repair/run` (JSON `{ignore_last_checked, force, auto_repair, unrestrict_link, verify_content, protocol: ""\|all\|both\|torrent\|nzb}` → `200 {"run_id"}`, `409` if a sweep is running, `503` if service nil); `GET /api/repair/status` (`{enabled,next_run_at,active_run,last_run,health_counts}`); `GET /api/repair/runs[/{id}]`; per-item `POST /api/repair/recheck/media {arr, media_id, fix}` and `POST /api/repair/health/{name}/check`. No per-arr targeting on `/run`. | VERIFIED | per-tag `git grep` of `pkg/server/routes.go`; `pkg/server/api.go:669-751`; `src/commands/repair.rs:237`; `src/api/decypharr.rs:284-322` |
+| Symlinkarr's `RepairRequest` body | Serialises `arr_name`/`media_ids`/`auto_process`; Decypharr (v1.1.6–v2.2) read `arr`/`mediaIds`/`autoProcess`. No field ever matched, so on v2.0–2.2 the trigger ran a **detect-only sweep over all arrs** regardless of `--arr`. | VERIFIED | `src/api/decypharr.rs:40-47`; v2.0 `pkg/server/server.go:59-70`, `pkg/server/api.go:215-247` |
+| `GET /api/browse/{group}` | Returns a paginated object `{entries,total,page,limit,total_pages,current_dir,parent_dir,current_kind}`; Symlinkarr's `browse_group` expects a bare array and cannot parse it. Dead code (no callers); `test_parse_browse_entry` encodes the wrong shape. | VERIFIED | `pkg/server/api_browse.go:21-44, :163-235`; `src/api/decypharr.rs:260-280, :474-501` |
+| `GET /api/arrs` | Unchanged; `DecypharrArr{name, host}` parses. | VERIFIED | `pkg/arr/arr.go:34-42` (beta) |
+| Bearer auth on `/api/*` | Unchanged (`Bearer`/`Token` prefix); 401 JSON when auth on and token missing; 503 JSON until the setup wizard completes. | VERIFIED | `pkg/server/auth.go:47-77`; `pkg/server/middlewares.go:13-59, :75-105` |
+| Mount refresh after import | Decypharr issues rclone RC `vfs/forget` + `vfs/refresh` for `refresh_dirs`, default `["__all__"]` only. With `dir_cache_time=5m`, `nzbs/`, `realdebrid/` and `__bad__/` can lag up to 5 min; `__all__` should not. Decypharr's own symlink action polls the mount up to 30 min for files to appear — primary-source confirmation that mount visibility lags catalog visibility under rclone. | VERIFIED (mechanism) / MUST-TEST (external rclone honours RC) | `pkg/mount/external/manager.go:52-54`; `internal/rclone/rclone.go:95-125`; `pkg/manager/mount.go:47-56`; `pkg/manager/downloader.go:35-37, :232-272` |
+| `__all__` contains Bad items | Yes — `__all__` does not filter `meta.Bad`; a broken item is listed in both `__all__` and `__bad__`. NZB entries are never flagged Bad (the two `Bad=true` setters are torrent-only paths); broken NZBs are deleted by the repair sweep instead, so their folders disappear. | VERIFIED | `pkg/manager/entry.go:215-243, :297-320`; `pkg/manager/fixer.go:175`; `pkg/manager/link/service.go:210`; `pkg/manager/session.go:560-579` |
+| Multi-season / EntryItem merge | Multi-season split creates queue entries only, no extra mount folders. Entries computing the same folder name (same release as torrent *and* NZB) are merged into one folder with the union of files. | VERIFIED / INFERRED (cross-protocol collision untested) | `pkg/manager/downloader.go:88-105`; `pkg/storage/entry.go:209-247` |
+| Prowlarr | Hard-pinned to `indexerIds=-2` (torrent only). `protocol` is deserialised but never read; `best_url()` already falls back to `download_url`. `-1` = all usenet is Prowlarr convention, not verified here. | VERIFIED (Symlinkarr) / MUST-TEST (Prowlarr semantics) | `src/api/prowlarr.rs:43-48, :61-64, :102` |
+| Idempotency key | `acquisition_jobs.request_key` is `UNIQUE` and derived from `media:{id}` / `episode:{id}:{s}:{e}` / `symlink:{path}` — never from a hash. `info_hash` is a nullable tracking column. No schema change needed for usenet. | VERIFIED | `src/auto_acquire.rs:76-106`; `src/db/migrations.rs:482-501`; `src/auto_acquire/queue.rs:82` |
+| Queue guards | `Failing` blocks the whole arr category on any failed incomplete entry; `Capacity` counts every incomplete entry against `max_in_flight` (default 3). Both are protocol-blind. Once the arrs push NZBs into the same categories, an NZB failure stalls Symlinkarr's torrent acquisition and NZBs eat the debrid cap. | VERIFIED | `src/auto_acquire.rs:934-972`; `src/auto_acquire/queue.rs:300-310` |
+| `release_completed` (entry vanished from queue) | Step 1 (`rd_torrents` by hash) can never match an NZB UUID. Step 2 checks `source.path.join(release_title)` — correct for a source rooted at `__all__`, dead for a source rooted at the mount root (items live one group deeper), and for NZBs it compares against the Prowlarr title rather than Decypharr's `Entry.Name`. | VERIFIED | `src/auto_acquire.rs:1053-1076`; `src/db/cache.rs:168-178` |
+| `__bad__` quarantine handling | Walk prunes `__bad__` (`is_quarantine_dir`). Fine for NZBs (never Bad). | VERIFIED | `src/source_scanner.rs:91-92, :161` |
+| DMM | Debrid-cache infohash oracle; no usenet analogue. Bypass for the usenet path. | VERIFIED | `src/api/dmm.rs:38-43`; `src/auto_acquire/dmm.rs:281-283` |
+| FUSE/`PathHealth`/ENOTCONN machinery, repair candidate scorer | **Load-bearing. Keep.** The mount is still remote, revocable and many-copies. | VERIFIED | `src/utils.rs:238-345`; `src/repair.rs:632-700` |
+
+---
+
+## The Decypharr v2 usenet surface
+
+### Build identity (beta, not v2.5)
+
+- **VERIFIED.** `GET /version` → `{"version":"v2.5.1","channel":...}`. No tag `v2.5.1` exists;
+  `.github/workflows/beta-docker.yml` derives it from the latest tag with PATCH+1 and sets
+  `CHANNEL=beta`. `auth_token_only` appears in the owner's `GET /api/config` and exists only on
+  the `beta` branch. The owner runs beta.
+- **VERIFIED.** `origin/beta` is 298 files / +33k lines ahead of `v2.5` and changes: NZB
+  ingestion (async parse, staged file, initial `status=queued`), SAB auth (API token accepted as
+  `ma_password`), STRM (action removed), repair (moved to `pkg/repair`, `skip_nzb_repair`
+  removed), new routes `/api/arr/reacquire*`, `/api/arr/index*`, `/api/arr/bindings`,
+  `/api/strm/regenerate`, a `/stream` mount.
+- **MUST-TEST 1.** Record the running image digest / build date. "v2.5.1" does not pin a commit.
+
+### Mount layout (VERIFIED, live + source)
+
+```
+/mnt/decypharr/realdebrid/          <- mount.mount_path (fuse.rclone, ro)
+├── __all__/      every entry, both protocols, Bad included   <- Symlinkarr source (configs)
+├── __bad__/      entries with Bad=true (torrent-only path)   <- pruned by the walk
+├── nzbs/         protocol == "nzb" view
+├── torrents/     protocol == "torrent" view
+├── realdebrid/   provider view (meta.Provider == "realdebrid"); NZBs are NOT here
+└── version.txt
+```
+
+- `realdebrid/__all__` no longer exists (`ls` → ENOENT); `realdebrid/` is a provider group whose
+  children are items.
+- No category (`sonarr/`, `radarr/`) folders exist on the mount. The `/mnt/decypharr/sonarr` tree
+  in `docs/guides/usenet/sabnzbd.mdx` describes `SavePath = {download_folder}/{category}` (where
+  Decypharr writes *its own* symlinks), not the mount. Stale docs.
+- `/api/browse/` reports `kind: system|provider|virtual` per root entry; virtual folders are
+  user-named and cannot collide with the five reserved names.
+- Timing: DFS (not used here) resolves in ~1 s; external rclone depends on RC refresh of
+  `__all__` and `dir_cache_time=5m` for everything else.
+
+### `GET /api/torrents` — the in-flight ledger (VERIFIED)
+
+Owner's live sample keys: `action, active_provider, added_on, bad, bytes, category, completed_at,
+content_path, created_at, files, info_hash, is_complete, magnet, mount_path, name,
+original_filename, progress, protocol, providers, save_path, seeders, size, speed, state, status,
+updated_at` — this matches `storage.Entry`'s non-omitempty JSON tags exactly, which independently
+confirms the beta build serialises the same struct.
+
+- NZB rows will carry `protocol: "nzb"`, `active_provider: "usenet"` (after parse),
+  `info_hash: "<uuid-v4>"`, `category: <arr name>`.
+- **Arr-driven NZBs (via `/sabnzbd`) and Symlinkarr-driven NZBs (via `/api/add`) land in the
+  same list under the same category** — so Symlinkarr's `max_in_flight` counts the arrs' usenet
+  activity too.
+- Absent from the list: completed entries submitted with `action=none` (deleted on completion),
+  failed entries older than `remove_stalled_after`, and — on the qBittorrent shim
+  `/api/v2/torrents/info` — all NZBs (it filters `ProtocolTorrent`).
+- `MUST-TEST 5`: none of this has been observed live; no NZB has ever existed on this instance.
+
+### `POST /api/add` — NZB submission without the SAB shim (VERIFIED)
+
+```
+POST {url}/api/add            Authorization: Bearer <api_token>      multipart/form-data
+  nzbURLs      newline-separated NZB download URLs (fetched server-side, plain GET + User-Agent)
+  nzbFiles     one or more .nzb files
+  arr          Decypharr Arr name  -> Entry.Category and SavePath
+  action       symlink | download | none        (strm removed on beta)
+  callbackUrl  optional; payload {hash,name,status,event,category,debrid:"usenet",content_path,error?,message}
+-> 200 [ {"id":"<uuid>","status":"success"|"error","error":"...","arr":{...incl. token...},"magnet":...} ]
+```
+
+- Same client, same auth, same response type Symlinkarr already parses (`ImportRequest`
+  tags `id`/`status`/`error` confirmed at `pkg/manager/queue.go:30-49`).
+- Capture `id` **only for NZB submissions**. For torrents it is a random UUID unrelated to the
+  infohash (`NewTorrentRequest`, `pkg/manager/queue.go:51-55`).
+- The response echoes the Arr including its API `token` — do not log it.
+- NZB URL must be reachable from the Decypharr process with no auth beyond what is in the URL
+  (Prowlarr proxy links embed `apikey=`). MUST-TEST 9.
+
+### `/sabnzbd/api` — what the arrs will use (VERIFIED)
+
+- Mounted at `{url_base}/sabnzbd`, single endpoint `GET|POST /sabnzbd/api`, dispatched on
+  `mode=`. Live: `mode=version` → `{"version":"4.5.0"}`; `mode=queue`, `history`, `get_config`
+  200; `/api?mode=` 404.
+- Modes: `queue`, `history`, `config`/`get_config`, `status`/`fullstatus`, `addurl`, `addfile`,
+  `version`, `get_cats`, `get_scripts`, `get_files`. Delete is `mode=queue&name=delete&value=<id>[,..]`
+  (or `value=failed`), also under `mode=history`. `pause`/`resume` are no-ops. Bare
+  `mode=delete` (as the docs table says) → 404. `output=` is ignored; everything is JSON.
+- `addfile`: multipart field **`name`**, POST only. `addurl`: URLs in the **query-string**
+  `name` param, POST only. Optional `action=`. Category comes from `cat=`; auth lookup uses
+  `category=`; send both.
+- Success: `200 {"status":true,"nzo_ids":[...]}`; total failure: **HTTP 500**
+  `{"status":false,"error":...}` (real SAB returns 200). On beta an unparseable NZB is
+  *accepted* and fails later (async parse).
+- `mode=queue` lists only `protocol=nzb && state=downloading`; slot status `Downloading`
+  (`Queued` while `status=queued`), `Completed`, `Failed`. `mode=history` = `pausedUP` +
+  `error` entries; `limit` is ignored. `get_files` 404s until the item is in main storage.
+- **Auth is not the Bearer token.** The router is outside `authMiddleware`. `ma_username`/
+  `ma_password` are tried as (Arr host URL, Arr API key), else (UI username, UI password) when
+  `use_auth` is on. **Beta additionally accepts Decypharr's API token as `ma_password`.** With
+  `use_auth` off nothing is required — and `mode=get_config` then returns NNTP provider
+  credentials in plaintext to anyone who can reach the port. Turn `use_auth` on before adding a
+  provider.
+- SAB `nzo_id` == `/api/torrents` `info_hash` == `/api/add` `id` for the same NZB.
+- A SAB delete calls `Queue().Delete(id, true, nil)` on beta — it **removes the download/symlink
+  folder** `{download_folder}/{category}/{name}` for that item.
+- Recommendation: Symlinkarr should never call `/sabnzbd`; the arrs use it, Symlinkarr uses
+  `/api/add` + `/api/torrents`.
+
+### Repair API (VERIFIED — already broken)
+
+See the table above. Concretely for Symlinkarr:
+
+- `src/api/decypharr.rs:284-322 trigger_repair` → must target `POST /api/repair/run`
+  (global sweep, optional `protocol`) and poll `GET /api/repair/status` or
+  `GET /api/repair/runs/{id}`. Per-item equivalents are `POST /api/repair/recheck/media
+  {arr, media_id, fix}` / `POST /api/repair/health/{name}/check`.
+- `get_repair_jobs` and `browse_group` are dead code with removed/wrong shapes: delete.
+- Decypharr's own sweep already probes NZB files (STAT sample + head signature), deletes
+  broken ones, blocklists in the arr and re-searches; when every file in an entry is broken and
+  the arr call succeeded, the entry is deleted — **its folder disappears from `__all__`**, which
+  Symlinkarr's dead-link sweep then sees as a vanished target.
+
+### Visibility timing (VERIFIED)
+
+```
+submit ─► queue store (invisible on mount; /api/torrents status=queued|downloading)
+       ─► async parse + 1% STAT sample + 512-byte head check
+       ─► processAction: entries store + RefreshEntries + rclone vfs/refresh __all__
+              ▲ item now visible in __all__/ and nzbs/ ; SAB still says "Downloading"
+       ─► post-action (symlink | download | none)
+       ─► state=pausedUP / is_complete  (SAB "Completed"; with action=none: deleted from queue)
+```
+
+Symlinkarr can never link a half-parsed NZB. It *can* link a fully-visible NZB whose unsampled
+segments are missing; that is what the readiness probe and the repair sweep are for.
+
+### Verify on your own instance
+
+Every item below is something the source could not settle. Run these before relying on the
+corresponding claim. `$D` = `http://127.0.0.1:8282`, `$T` = the Decypharr API token Symlinkarr
+uses.
+
+| # | What to establish | Command / check | Why it matters |
+|---|---|---|---|
+| 1 | Which beta commit is running | `docker inspect <decypharr> --format '{{.Image}} {{.Created}} {{json .Config.Labels}}'` and note any `org.opencontainers.image.revision`; otherwise record the image digest and the container's create date. | Beta rebuilds on every push under the same "v2.5.1"; the async-parse and token-auth behaviours above are keyed to `origin/beta@1f7a62e`. |
+| 2 | Which path Symlinkarr actually scans | `symlinkarr config` (prints effective config) and `symlinkarr doctor`; look for a failing `source:<name>:layout` check. The on-disk configs (`config.yaml:27`, `config.local.yaml:25`, `config.docker.yaml:25`) say `/mnt/decypharr/realdebrid/__all__`; the live datapoint supplied during recon said the root. | Root-pointed source = every item seen 3–4 times (`__all__`, `torrents`/`nzbs`, `realdebrid/`) and `release_completed`'s mount check goes dead. Must be `__all__`. |
+| 3 | Auth flags | `curl -s $D/api/config \| jq 'paths(..) as $p \| select($p[-1] \| tostring \| test("use_auth\|webdav_auth\|auth_token_only")) \| {($p\|join(".")): getpath($p)}'` — if `use_auth`/`enable_webdav_auth` do not surface here, read Settings → Auth in the UI. | `enable_webdav_auth=true` makes Symlinkarr's Bearer-only probe 401 → every link skipped. `use_auth=false` leaves `/sabnzbd/api?mode=get_config` (NNTP creds) open. |
+| 4 | SAB history shape | `curl -s "$D/sabnzbd/api?mode=history&output=json"` — expect `version` and `paused` keys inside `history`. | Source (v2.5 and beta) always emits them; the recon transcript showed only `slots`. If they are genuinely absent, the binary is not built from any commit that was read. |
+| 5 | Real NZB lifecycle | After configuring one NNTP provider: `curl -s -H "Authorization: Bearer $T" -F 'nzbURLs=<one NZB URL>' -F 'arr=radarr' -F 'action=symlink' $D/api/add`, take `id`, then loop `curl -s -H "Authorization: Bearer $T" "$D/api/torrents?search=<id>" \| jq '.torrents[] \| {protocol,status,state,progress,is_complete,name,size,active_provider,last_error}'` every 2 s. Then `ls /mnt/decypharr/realdebrid/__all__/ \| grep -i <name>` and the same for `nzbs/`; time both. | Confirms `protocol:"nzb"`, the beta `queued → downloading → downloaded → pausedUP` sequence, the actual folder name under `original_no_ext`, and the rclone-refresh lag between `__all__` and `nzbs/`. |
+| 6 | Readiness-probe first-byte latency | For the NZB above: `curl -s -o /dev/null -r 0-0 -w 'connect=%{time_connect} ttfb=%{time_starttransfer} total=%{time_total}\n' "$D/webdav/__all__/<folder>/<file>"` (add `-u user:pass` if WebDAV auth is on). Repeat 5×, cold and warm. | Compare against `symlink.source_probe_timeout_ms` (2500). Above it, links are skipped as `source_unreadable_before_link`. |
+| 7 | Read behaviour on missing segments | Pick an old NZB with known-missing articles; `dd if=/mnt/decypharr/realdebrid/__all__/<folder>/<file> bs=1M skip=<mid> count=1 of=/dev/null`; observe EIO vs short read vs hang. | Decides whether the repair sweep or Plex playback is the first thing to notice a 99 %-unsampled bad item. |
+| 8 | Duplicate submission | Submit the same NZB URL twice via `/api/add`; check whether `/api/torrents` shows two rows and whether `__all__` shows one merged folder. | Symlinkarr's pre-submit token match is the only double-grab guard if Decypharr does not dedup. |
+| 9 | Prowlarr semantics and reachability | `curl -s "http://<prowlarr>/api/v1/search?query=<title>&indexerIds=-1&apikey=<key>" \| jq '.[0] \| {protocol,downloadUrl}'`; then from *inside the Decypharr container* `curl -sI '<that downloadUrl>'` → expect 200. | Confirms `-1` = usenet, the `protocol` string, and that Decypharr can fetch Prowlarr's proxied NZB links unauthenticated. Only needed if Symlinkarr acquires usenet itself. |
+| 10 | Arr refresh with `cat=` only | With Sonarr's SAB client configured against Decypharr, grab one episode; in Decypharr logs confirm a `RefreshMonitoredDownloads` POST to Sonarr after completion. | `authenticate()` may register the arr under an empty name when only `cat=` is sent, in which case Decypharr cannot trigger the arr refresh. |
+| 11 | External rclone honours Decypharr RC refresh | After item 5, compare `ls __all__` (should show the new folder within seconds) with `ls nzbs/` (may lag up to `dir_cache_time`). Check rclone logs for `vfs/refresh`. | Symlinkarr scans `__all__` only, so lag elsewhere is cosmetic — unless RC auth fails and `__all__` also lags. |
+| 12 | Whether Decypharr's repair sweep and Symlinkarr's sweep fight | Run `symlinkarr repair auto --dry-run` (or the plan output) the morning after a 04:00 Decypharr sweep; count links whose targets Decypharr removed overnight. | Establishes the steady-state dead-link volume the arr-handoff (workplan step 9) must absorb. |
+
+---
+
+## Retained live risks (re-framed for hybrid)
+
+These come from the original analysis and still stand under the hybrid path. They are
+re-framed, not dropped.
+
+**Absolute symlink targets, no path-remap layer (src/utils.rs:35).** VERIFIED: the link target
+is the source path exactly as Symlinkarr's process sees it; there is no relative-link mode and no
+`path_map`. Under hybrid the risk is *dormant*, not gone: every consumer (Plex, Sonarr, Radarr,
+Symlinkarr) mounts `/mnt/decypharr/realdebrid` at the same absolute path, and NZB items live under
+the same root, so nothing changes on day one. It becomes live the moment any consumer is moved to
+Decypharr's new NFSv4/SMB share (which exposes the identical tree at whatever path the client
+chooses) or a container is given a different mount point. Mitigation ordering: a `doctor` check
+that the configured source root is the same path Plex/the arrs report for their root folders
+(cheap, uses the arr clients already in the binary), then a `path_map`/relative-link mode
+(medium) — workplan step 8.
+
+**Dead-link sweep gated behind `search_missing`, default false (src/commands/scan.rs:285;
+src/config.rs:337-339).** VERIFIED. Under hybrid this is the *most* important risk, not the
+least: the owner's library is 56 % broken, Decypharr's own 04:00 sweep will keep deleting
+entries whose files fail, and the scan-time sweep that would mark those links dead is off unless
+acquisition is on. `symlinkarr repair auto` exists as the deliberate path, but the daemon does not
+sweep by default. Decouple — workplan step 2.
+
+**Parsing reads the file stem only, no parent-directory fallback (src/source_scanner.rs:251,
+:437).** VERIFIED. Now attached to a concrete Decypharr behaviour: raw (non-RAR) posts with
+obfuscated subjects surface as obfuscated *file* names inside a correctly-named *folder*
+(INFERRED from `parser.go:763-782`; MUST-TEST 5). RAR-packed releases keep their internal
+names. Workplan step 6.
+
+**Scheduled `RepairAuto` is not classified destructive (src/scheduler.rs:72-74, :678-687).**
+VERIFIED. Unchanged under hybrid; more exposed once repair has a second source of churn
+(Decypharr deleting NZB entries). Workplan step 10.
+
+**No sample/extras/min-size filter (src/source_scanner.rs:151-165; src/repair.rs:648-695).**
+VERIFIED. NZB releases carry samples as often as torrents do. Workplan step 10.
+
+**WalkDir errors silently discarded (src/source_scanner.rs:153).** VERIFIED. With rclone
+dir-cache lag and NNTP-backed reads, a walk error is the first symptom of a stale or half-refreshed
+directory. Workplan step 4.
+
+**`__bad__` is the only pruned group.** VERIFIED. Harmless while the source is `__all__`; a
+root-pointed source (MUST-TEST 2) is the one layout the scanner cannot de-duplicate.
+
+---
+
+## Workplan
+
+Ordered by what unblocks the owner soonest. **PREREQ** = must land before usenet content is
+relied on; **PREREQ-if-acquire** = prerequisite only if Symlinkarr's own acquisition stays on
+(`daemon.search_missing: true`); **FOLLOW-UP** = after the hybrid is live. Effort is engineering
+effort.
+
+| # | What | Why | Effort | Files | Gate |
+|---|---|---|---|---|---|
+| 1 | **Preflight on the live instance.** Pin `sources[].path` to `/mnt/decypharr/realdebrid/__all__` (never the root); record the beta image digest; read `use_auth` / `enable_webdav_auth` / `auth_token_only`; turn `use_auth` on before adding an NNTP provider (SAB `get_config` leaks provider creds otherwise). Run MUST-TEST 1–4. | Root-pointed source multiplies every item ×3–4 and kills `release_completed`'s mount check; WebDAV auth on = every link skipped; "v2.5.1" pins nothing. | small (config + runbook) | config.yaml:27, config.local.yaml:25, config.docker.yaml:25; `src/commands/doctor.rs:346-374` already flags the root layout | PREREQ |
+| 2 | **Decouple the dead-link sweep from `search_missing`.** New `daemon.sweep_dead_links` (default true), keep `search_missing` for acquisition only; surface the sweep result in the scan summary. | The hybrid exists to replace vanished content; detection is the trigger for everything downstream, and it is off by default. 56 % of links are already dead. | small | `src/commands/scan.rs:283-294`; `src/config.rs:337-339`; `src/config/defaults.rs`; config.example.yaml:26; `src/web/ui/config.html` | PREREQ |
+| 3 | **Fix `repair --trigger` onto the v2.3+ repair API.** Replace `POST /api/repair` with `POST /api/repair/run` (`{protocol, verify_content, auto_repair}`; handle 409/503), poll `GET /api/repair/status` / `/api/repair/runs/{id}`; drop `RepairRequest`/`RepairJob`/`get_repair_jobs`; delete `browse_group` and its bare-array test or rewrite against `BrowseResponse`. | Broken today (404) regardless of usenet; its body never matched any Decypharr version. Decypharr's sweep is the thing that will re-search NZBs, so Symlinkarr needs a working handle on it. | small–medium | `src/api/decypharr.rs:29-47, :260-344`; `src/commands/repair.rs:231-239`; tests `src/api/decypharr.rs:474-501` | PREREQ |
+| 4 | **Foundation: `protocol` on `DecypharrTorrent`** (`#[serde(default)] pub protocol: String`, helper `is_nzb()`), update the three full-struct fixtures; **surface WalkDir errors** (count + log) in the scan walk and repair catalog. | Every protocol-aware decision needs the field; the walk-error count is the only diagnostic for rclone-lag and NNTP-read problems. | small | `src/api/decypharr.rs:68-101`; `src/auto_acquire/tests.rs:128-143, :152-167, :185-200`; `src/source_scanner.rs:153, :166`; `src/repair.rs:650` | PREREQ |
+| 5 | **Readiness probe for NZB-backed files.** Measure (MUST-TEST 6); make `source_probe_timeout_ms` per-source; send Basic auth when `enable_webdav_auth` is on (new optional `decypharr.webdav_user/password`), or add a `doctor` check that fails loudly on 401; consider skipping the probe for `nzbs`-view items since Decypharr already head-verified them at import. | 2,500 ms vs NNTP first byte decides whether every NZB link is skipped as `source_unreadable_before_link`; a 401 skips everything. | small (code) + MUST-TEST | `src/linker.rs:125-174`; `src/api/decypharr.rs:191-256`; `src/config.rs:360-365`; `src/config/defaults.rs:317-319` | PREREQ |
+| 6 | **Parent-directory fallback in the parser.** When the file stem yields no usable title (or looks obfuscated: hex/random, no year/SxxEyy), parse the parent folder name (which under `original_no_ext` is the release name). Report "parsed from folder" and count unparseable stems instead of emitting garbage `SourceItem`s. | Obfuscated raw posts surface as obfuscated file names in a correctly-named folder; today the junk stem flows into matching as noise. | medium | `src/source_scanner.rs:251, :437`; `src/models.rs:79-102`; tests | PREREQ (before the first obfuscated post) |
+| 7 | **Protocol-scope the queue guards and define in-flight accounting.** `Failing`: only block on same-protocol failures (an NZB failure must not stall torrent acquisition and vice versa). `Capacity`: `max_in_flight` counts torrents only; new `max_in_flight_nzb` (or exempt NZBs). Treat "vanished from `/api/torrents`" as *complete-or-failed, check the mount* — with `action=none` every completed entry is deleted immediately, and failed ones are purged after `remove_stalled_after`; arr-driven NZBs share the same list and category. Shorter `completion_timeout_minutes` for NZBs (parse+verify, not a download). | The arrs will now push NZBs into the same categories Symlinkarr polls; protocol-blind guards turn one bad NZB into a 10-minute category block and let NZBs consume the debrid cap. | medium | `src/auto_acquire.rs:934-972, :1023-1076`; `src/auto_acquire/queue.rs:294-310`; `src/config.rs:387-421`; `src/config/defaults.rs:329-339`; tests `src/auto_acquire/tests.rs:127-167` | PREREQ-if-acquire, else FOLLOW-UP |
+| 8 | **Path-remap gap.** (a) `doctor`: compare each `sources[].path` / `libraries[].path` with the root folders Sonarr/Radarr report (`SonarrSeries.path`, `RadarrMovie.path` already deserialised) and warn on prefix mismatch. (b) `symlink.link_style: absolute\|relative` or `symlink.path_map: [{from,to}]` applied before `symlink()` and in `verify_link_target`/`target_ok`. | Dormant under hybrid because every consumer shares one mount path; becomes live the day Plex is pointed at Decypharr's NFS/SMB share or a container mount moves. | (a) small, (b) medium | `src/utils.rs:16-49, :138-146`; `src/linker.rs:209-230, :928-931`; `src/commands/doctor.rs`; `src/api/sonarr.rs:20`; `src/api/radarr.rs:17-23` | FOLLOW-UP (a soon, b when a second namespace appears) |
+| 9 | **Arr re-search handoff (the recommended acquisition path).** When the sweep marks a link dead and the repair scorer finds no replacement copy on the mount, POST `EpisodeSearch` / `MoviesSearch` to Sonarr/Radarr for that media id (first write endpoint on the arr clients; rate-limit; dedupe by `request_key`). Sonarr/Radarr then grab via Decypharr's `/sabnzbd` client. Document configuring Decypharr as a SAB client in the arrs (URL base `/sabnzbd`, username = arr host URL, password = arr API key, or `ma_password` = Decypharr token on beta). | Reuses the arrs' full usenet pipeline instead of rebuilding it; Decypharr's own sweep already does the same for entries *it* still holds, but not for links Symlinkarr authored to since-deleted entries. | medium | `src/api/sonarr.rs:143-269`; `src/api/radarr.rs:41-64`; `src/repair.rs`; `src/commands/repair.rs`; `src/scheduler.rs`; docs | FOLLOW-UP (first after go-live) |
+| 10 | **Carried-over safety items.** Reclassify `RepairAuto` as destructive / opt-in; sample/extras/min-size filter in walk + repair catalog with a size field on `SourceItem`; health-gate the cleanup audit and rename `non_rd_source_path`; bring `cleanup dead` to the prune path's guard level. | Unchanged hazards; repair now has two sources of churn (debrid takedowns and Decypharr deleting broken NZB entries), so unattended repointing is more exposed. | medium | `src/scheduler.rs:72-74, :678-687`; `src/source_scanner.rs:151-165`; `src/repair.rs:648-695`; `src/repair/scoring.rs:160-168`; `src/models.rs:79-102`; `src/cleanup_audit.rs:300-306, :617-622`; `src/commands/cleanup.rs:147-180` | FOLLOW-UP |
+| 11 | **Identity when there is no infohash (only with step 12).** Keep `request_key` as-is (VERIFIED media/episode/symlink-keyed). Reinterpret `acquisition_jobs.info_hash` as `provider_id`: btih for torrents (from the magnet, as today), the `/api/add` `id` UUID for NZBs. **Never** capture the `/api/add` `id` for torrents (it is a throwaway UUID). `find_matching_torrent`'s hash branch then works unchanged for both; the token fallback must compare against Decypharr's `Entry.Name` (the .nzb filename) rather than the Prowlarr title, so store `Entry.Name` from the first `/api/torrents` hit. `release_completed`: skip the `rd_torrents` step for NZBs; resolve the mount path as `{source}/{folder}` using the `original_no_ext` rule. | Without a stable id Symlinkarr cannot re-find its own NZB submission, and the RD-cache step can never match a UUID. | small | `src/auto_acquire.rs:1053-1076, :1238-1321`; `src/auto_acquire/queue.rs:424-451`; `src/db/migrations.rs:482-501`; `src/web/handlers/tests.rs:412, :506, :606` | FOLLOW-UP (bundled with 12) |
+| 12 | **Native usenet acquisition in Symlinkarr (optional).** Prowlarr: replace the `-2` pin with a config-driven protocol selector (`prowlarr.protocols: [usenet, torrent]`, `indexerIds` -1/-2/omitted) and read `protocol` into `DownloadCandidate`; new `DecypharrClient::add_nzb_urls` sending `nzbURLs`; dispatch on candidate protocol in `submit_request`; protocol-aware ranking (age/grabs for usenet, configured protocol priority before seeders, remove the 0–200 seeder bonus for usenet in anime scoring); bypass DMM when the request is usenet-only; per-arr protocol preference. Requires steps 4, 7, 11 and MUST-TEST 8–9. | Only if the arr handoff (step 9) is too slow for the backfill volume. Every piece is local; nothing architectural. | large | `src/api/prowlarr.rs:88-119, :160-190`; `src/api/decypharr.rs:347-399`; `src/auto_acquire.rs:700-770, :909-932`; `src/auto_acquire/queue.rs:399-451`; `src/auto_acquire/anime.rs:99-103, :196-217, :441-443`; `src/config.rs:455-463` | FOLLOW-UP (optional) |
+| 13 | **Hygiene and docs.** Retire DMM for the usenet path (doc as torrent-only); fix `src/cache.rs:509` and any prose that describes the v1 `{mount}/{debrid}/__all__` layout; describe the v2 root, `nzbs/`, the beta caveat and the SAB client settings in README/wiki/CLI manual; make `realdebrid` optional in `/api/v1/health`. | Stops the next operator from re-deriving all of this. | small–medium | `src/cache.rs:509`; config.example.yaml; README.md; docs/wiki; docs/CLI_MANUAL.md; `src/web/api/misc.rs:222-226` | FOLLOW-UP |
+
+Things this plan deliberately does **not** include: a hardlink backend, a presentation-tree
+topology, source/library overlap validation, moved-vs-deleted inode tracking, or deleting the
+FUSE/`PathHealth` machinery. All of those were fork-C items (Appendix A) and are moot while the
+Decypharr mount is the only source.
+
+---
+
+## Appendix A — the original three-way analysis (retained, superseded as framing)
+
+> **Read this as history.** Everything below was written before the decision and checked
+> against commit `a8416ae`. It analysed three targets — A: a usenet *mount* product beside
+> Decypharr, B: hybrid, C: classic SAB/NZBGet-to-local-disk with arr-managed imports. Under the
+> decision above, A and B collapse into "Decypharr v2 serves both protocols", and C is not
+> being pursued. The sections are kept because their evidence (path namespace, sweep gating,
+> sample filtering, unattended repair, cleanup-audit guards, parser behaviour) is still correct
+> and is cited from the main plan. Items that only make sense for fork C — ownership collision,
+> presentation tree, overlap validation, moved-vs-deleted, hardlinks — are **moot** for the
+> hybrid and should not be scheduled. Where this appendix says "fork B" it means the path now
+> chosen; where it says "the sweep is off by default" that is workplan step 2.
+
+### The fork that decides everything
 
 Settle this before writing a line of code. It determines whether most of the workplan is needed
 at all.
@@ -57,7 +415,7 @@ episode (src/repair.rs:632-700). Do **not** delete those during A or B.
 
 ---
 
-## What works unchanged
+### What works unchanged
 
 | Subsystem | Evidence | Note |
 |---|---|---|
@@ -71,7 +429,7 @@ episode (src/repair.rs:632-700). Do **not** delete those during A or B.
 | SQLite link ledger, backup/restore, scheduler, media-server targeted refresh, three-way FS/DB/Plex reconciliation | — | Keyed off library paths and the link table, not the provider. **Two corrections below** (scheduler job count; symlink-only inventories). |
 | `__all__` runtime probe-path special case | src/commands/mod.rs:219-233 | Identity function for any other directory name. Harmless. |
 
-### Corrections to the "works unchanged" list
+#### Corrections to the "works unchanged" list
 
 **The scheduler has eight job kinds, not two, and one of them mutates symlinks unattended.**
 `ScheduledEvent` is `Scan, Backup, HousekeepingVacuum, CacheRefresh, CleanupAudit, RepairAuto,
@@ -110,9 +468,9 @@ something the code can recover from. It belongs at the top of any migration runb
 
 ---
 
-## What needs code changes
+### What needs code changes
 
-### 1. The Decypharr readiness gate can blanket-skip every link — but only in one specific fork
+#### 1. The Decypharr readiness gate can blanket-skip every link — but only in one specific fork
 
 `SourceReadinessGate::from_config` returns `Some(..)` when `symlink.verify_source_readability`
 (default `true`, src/config.rs:361-362, src/config/defaults.rs:68) **and** `has_decypharr()`
@@ -147,7 +505,7 @@ non-empty value (compare `DmmConfig` at src/config/defaults.rs:103-113 and the e
 `realdebrid.api_token`). Change it to `String::new()` and document the two `symlink.*` keys.
 **Effort: small.**
 
-### 2. Ownership collision with Sonarr/Radarr
+#### 2. Ownership collision with Sonarr/Radarr
 
 A "library" is an arr root folder discovered by `\{(tvdb|tmdb)-([0-9]+)\}`
 (src/library_scanner.rs:13-14, :28-55). With Completed Download Handling on, the arrs import the
@@ -182,7 +540,7 @@ against clients already in the binary — `SonarrSeries` already deserializes `p
 (src/api/radarr.rs:17-23), and a live `SonarrClient` is already constructed inside the audit
 (src/cleanup_audit.rs:739-751).
 
-### 3. Moved ≠ deleted, in the dead-link sweep
+#### 3. Moved ≠ deleted, in the dead-link sweep
 
 `PathHealth::Missing` is deliberately excluded from `blocks_destructive_ops()`
 (src/utils.rs:255-261) because "a missing path is a legitimate 'gone' signal" — correct under
@@ -212,7 +570,7 @@ provably equivalent — source paths are validated absolute (src/config.rs:943-9
 rooted there, and `symlink()` is called with that same absolute path (src/utils.rs:35) — so this
 is a latent inconsistency, not a live defect. It becomes a defect only in a hardlink port.
 
-### 4. No source/library overlap validation — and the obvious place to put it is dead code
+#### 4. No source/library overlap validation — and the obvious place to put it is dead code
 
 `validate_paths` checks each path independently for absoluteness and health
 (src/config.rs:938-976) and the walk accepts `is_symlink()` entries as source files
@@ -228,7 +586,7 @@ whoever runs `doctor` and would not stop a single bad scan. The guard must live 
 `Config::load`, in `collect_source_items` (src/commands/scan.rs:602), or in the walk itself.
 **Effort: small — but target the right file.**
 
-### 5. No file-stability gating, and no sample/extras/min-size filter anywhere
+#### 5. No file-stability gating, and no sample/extras/min-size filter anywhere
 
 `scan_source` accepts every `is_file() || is_symlink()` entry whose extension is in
 `VIDEO_EXTENSIONS` (src/source_scanner.rs:151-165) — no `filter_entry`, no directory exclusion,
@@ -261,7 +619,7 @@ config**, because that sweep is off (§3). One cycle of churn becomes a permanen
 **Effort: medium. Skip it entirely if you adopt the presentation-tree topology** (arr-managed
 files are already stable and already sample-free).
 
-### 6. Cutover hazard in the cleanup audit — real, but smaller than it looks
+#### 6. Cutover hazard in the cleanup audit — real, but smaller than it looks
 
 `BrokenSource` is computed from a bare `!entry.source_path.exists()` with no health gate
 (src/cleanup_audit.rs:300-302), is unconditionally Critical (src/cleanup_audit/classify.rs:488-497)
@@ -297,7 +655,7 @@ src/commands/cleanup.rs:831-894). It does health-gate and does write a safety sn
 backups are on (src/commands/cleanup.rs:157-163), but during a cutover it is a much likelier
 accident than the audit+prune sequence.
 
-### 7. Auto-acquire cannot reach usenet indexers
+#### 7. Auto-acquire cannot reach usenet indexers
 
 Prowlarr search is hard-pinned to `indexerIds=-2` with the inline comment `// -2 = all torrent
 indexers` (src/api/prowlarr.rs:102), no config override, single call site
@@ -321,7 +679,7 @@ the same shape as SABnzbd's `mode=addurl`, so the port is a new client plus enum
 in-repo precedent is `MediaServerKind`, src/media_servers/mod.rs:47-73), not an architecture
 rewrite. **But see "What becomes pointless" — you almost certainly should not do this at all.**
 
-### 8. Hardlinks are architecturally excluded
+#### 8. Hardlinks are architecturally excluded
 
 Zero hits for `hard_link|hardlink|HardLink` across `src/`. The only write primitive is temp-symlink
 + `renameat2(RENAME_NOREPLACE|RENAME_EXCHANGE)` (src/utils.rs:16-134), `verify_link_target`
@@ -332,7 +690,7 @@ wrong thing to build.
 
 ---
 
-## What becomes pointless
+### What becomes pointless
 
 | Subsystem | Size / evidence | Why |
 |---|---|---|
@@ -381,7 +739,7 @@ telemetry, Missing Search filter, Anime Search Overrides editor).
 
 ---
 
-## Practical failure modes on day one
+### Practical failure modes on day one
 
 Assume: SAB writes to `/downloads/complete`, Sonarr/Radarr import into `/tv` and `/movies`, Plex
 reads those, Symlinkarr runs in its own container. In roughly descending order of likelihood.
@@ -465,16 +823,16 @@ migrants are disproportionately the population moving library roots onto single-
 
 ---
 
-## Recommended architecture
+### Recommended architecture
 
-### If you are moving to a usenet mount (fork A)
+#### If you are moving to a usenet mount (fork A)
 
 Do nothing structural. Point `sources` at the mount, blank the debrid/Decypharr/DMM keys, leave
 `search_missing: false`. Keep every piece of the `PathHealth`/ENOTCONN machinery — it is
 load-bearing again. The only real loss is auto-acquire, which those projects replace by design
 because they present themselves to Sonarr/Radarr as a SABnzbd-compatible download client.
 
-### If you are hedging (fork B — hybrid debrid + usenet) — the recommended path
+#### If you are hedging (fork B — hybrid debrid + usenet) — the recommended path
 
 This is the strongest near-term argument for keeping the tool, and the case the existing code
 handles best. A single Plex shelf unifying a legacy debrid mount with new usenet-imported files is
@@ -496,7 +854,7 @@ What to watch:
 The hybrid also survives the debrid side being retired later — it degrades into the
 presentation-tree topology rather than needing a second migration.
 
-### If you are going to local disk (fork C)
+#### If you are going to local disk (fork C)
 
 `sources` = the arr-managed library roots. `libraries` = a separate Symlinkarr-owned presentation
 tree with its own `{tvdb-N}`/`{tmdb-N}` item folders. This sidesteps the ownership collision, the
@@ -513,7 +871,7 @@ file (src/matcher.rs:837), so a movie tagged `{tmdb-603}` in both a 1080p and a 
 collides and one silently wins. `multi_version` only adds a quality/edition discriminator, is
 movies-only and is off by default (src/config.rs:354-356).
 
-### Hardlink vs symlink
+#### Hardlink vs symlink
 
 **Do not build the hardlink backend.** Three reasons, in order of decisiveness:
 
@@ -539,7 +897,7 @@ above says you should not.
 
 ---
 
-## How to try it today
+### How to try it today
 
 Nothing here requires a recompile. Every key already exists in `config.example.yaml`.
 
@@ -619,7 +977,7 @@ scan report, and never enable a `repair_auto` schedule.
 
 ---
 
-## Workplan
+### Original fork-agnostic workplan (superseded by the main Workplan)
 
 Ordered. Effort is engineering effort, not calendar.
 
@@ -643,7 +1001,7 @@ Ordered. Effort is engineering effort, not calendar.
 
 ---
 
-## Where the honest answer is "this tool has less to do"
+### Where the honest answer is "this tool has less to do"
 
 In a pure-usenet setup where Sonarr/Radarr import real files into their own root folders, a
 symlink manager does not earn its keep, and Symlinkarr specifically earns it least. Its pillars
@@ -675,7 +1033,7 @@ to see whether usenet takedown pressure follows debrid's.
 
 ---
 
-## Appendix: objections considered and rejected
+### Objections considered and rejected (original)
 
 Kept here so the reasoning is not re-litigated later.
 
@@ -709,10 +1067,21 @@ Kept here so the reasoning is not re-litigated later.
   (src/utils.rs:138-141), so the comparison is provably equivalent for every Symlinkarr-authored
   link. Worth aligning anyway, for consistency and for any future hardlink work.
 
-## External references (pointers only — not fetched from this machine)
+
+---
+
+## External references
+
+Primary (read for this revision):
+
+- Decypharr source — https://github.com/sirrobot01/decypharr (tag `v2.5`, commit `0dd1cbb`; branch `beta`, HEAD `1f7a62e` on 2026-09-04). Files cited by path throughout.
+- Decypharr v2.0 release notes — https://github.com/sirrobot01/decypharr/releases/tag/v2.0
+- Decypharr docs sources in-repo: `docs/src/content/docs/reference/api.md`, `guides/usenet/overview.md`, `guides/usenet/sabnzbd.mdx`, `guides/repair.mdx`, `guides/shares/overview.md`, `guides/virtual-folders.md` (note: the SAB page and the API reference are stale in the places called out above; the Go source is authoritative).
+
+Pointers only (not fetched from this machine):
 
 - SABnzbd switches, incl. Direct Unpack and "Deobfuscate final filenames" — https://sabnzbd.org/wiki/configuration/4.5/switches
 - Sonarr Completed Download Handling — https://wiki.servarr.com/sonarr/settings#completed-download-handling
+- Prowlarr API (`indexerIds` semantics) — https://prowlarr.com/docs/api/
 - TRaSH Guides, hardlinks and instant moves — https://trash-guides.info/File-and-Folder-Structure/Hardlinks-and-Instant-Moves/
-- NzbDAV (usenet-as-a-mount, SAB-compatible API) — https://github.com/nzbdav-dev/nzbdav
-- AltMount — https://github.com/javi11/altmount
+- NzbDAV — https://github.com/nzbdav-dev/nzbdav ; AltMount — https://github.com/javi11/altmount (the standalone usenet-mount products fork A originally assumed; superseded by Decypharr's own usenet support)
