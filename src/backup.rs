@@ -1,4 +1,8 @@
+use std::collections::HashMap;
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::SystemTime;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -19,6 +23,64 @@ const MANAGED_MANIFEST_PREFIXES: &[&str] = &[
     "symlinkarr-restore-point-",
     "safety-",
 ];
+
+/// Bytes of a JSON file to inspect before deciding it is a manifest. Manifests
+/// serialise `version`, `timestamp`, `backup_type` and `label` first, so the
+/// marker sits within the first few hundred bytes; foreign JSON in the backup
+/// directory (cleanup-audit reports run to 100+ MB) never carries it.
+const MANIFEST_SNIFF_BYTES: usize = 4096;
+
+/// Cheap header check so `list()` never reads a whole non-manifest file.
+fn looks_like_manifest(path: &Path) -> bool {
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut head = vec![0u8; MANIFEST_SNIFF_BYTES];
+    let mut filled = 0;
+    while filled < head.len() {
+        match file.read(&mut head[filled..]) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(_) => return false,
+        }
+    }
+    String::from_utf8_lossy(&head[..filled]).contains("\"backup_type\"")
+}
+
+type SummaryCacheKey = PathBuf;
+type SummaryCacheEntry = (u64, SystemTime, BackupSummary);
+
+/// Listing summaries keyed by (path, size, mtime). Manifests embed the full
+/// symlink list (tens of MB each), so re-parsing every one on each page render
+/// is the dominant cost of `/backup`; a changed file simply misses the cache.
+fn summary_cache() -> &'static Mutex<HashMap<SummaryCacheKey, SummaryCacheEntry>> {
+    static CACHE: OnceLock<Mutex<HashMap<SummaryCacheKey, SummaryCacheEntry>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn summary_cache_get(
+    path: &Path,
+    size: u64,
+    modified: Option<SystemTime>,
+) -> Option<BackupSummary> {
+    let modified = modified?;
+    let cache = summary_cache().lock().unwrap_or_else(|e| e.into_inner());
+    cache
+        .get(path)
+        .filter(|(cached_size, cached_mtime, _)| *cached_size == size && *cached_mtime == modified)
+        .map(|(_, _, summary)| summary.clone())
+}
+
+fn summary_cache_store(
+    path: &Path,
+    size: u64,
+    modified: Option<SystemTime>,
+    summary: &BackupSummary,
+) {
+    let Some(modified) = modified else { return };
+    let mut cache = summary_cache().lock().unwrap_or_else(|e| e.into_inner());
+    cache.insert(path.to_path_buf(), (size, modified, summary.clone()));
+}
 use self::manifest::{
     compute_manifest_checksum, safety_snapshot_base_name, sanitize_backup_file_name_component,
     scheduled_backup_base_name, sha256_file, validate_managed_backup_file_name,
@@ -774,12 +836,26 @@ impl BackupManager {
             let is_managed = MANAGED_MANIFEST_PREFIXES
                 .iter()
                 .any(|prefix| file_name.starts_with(prefix));
+            if !looks_like_manifest(&path) {
+                if is_managed {
+                    warn!("Could not parse backup {:?}: no manifest header", path);
+                } else {
+                    tracing::debug!("Ignoring non-manifest JSON {:?}", path);
+                }
+                continue;
+            }
+            let metadata = entry.metadata().ok();
+            let file_size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+            let modified = metadata.as_ref().and_then(|m| m.modified().ok());
+            if let Some(summary) = summary_cache_get(&path, file_size, modified) {
+                summaries.push(summary);
+                continue;
+            }
 
             match std::fs::read_to_string(&path) {
                 Ok(json) => match parse_backup_manifest(&json, &path) {
                     Ok(manifest) => {
-                        let file_size = entry.metadata().map(|m| m.len()).unwrap_or(0);
-                        summaries.push(BackupSummary {
+                        let summary = BackupSummary {
                             path: path.clone(),
                             filename: path
                                 .file_name()
@@ -793,7 +869,9 @@ impl BackupManager {
                             file_size,
                             database_snapshot: manifest.database_snapshot,
                             app_state: manifest.app_state,
-                        });
+                        };
+                        summary_cache_store(&path, file_size, modified, &summary);
+                        summaries.push(summary);
                     }
                     Err(e) if is_managed => {
                         warn!("Could not parse backup {:?}: {}", path, e);
@@ -962,7 +1040,7 @@ fn remove_backup_artifacts(manifest_path: &Path) -> Result<()> {
 }
 
 /// Summary of a backup file (for listing)
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BackupSummary {
     #[allow(dead_code)] // Available for restore operations
     pub path: PathBuf,
