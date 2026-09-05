@@ -18,7 +18,7 @@ against unit tests. Fixes that came out of it are in commits `c0ed98e` and `2d82
 | TMDB | — | v3 with `api_key` or bearer read-token | ✅ |
 | TVDB | — | `api4.thetvdb.com/v4/login` | ✅ |
 | DMM | — | `/api/search/title`, `/api/torrents/{path}` (problem-key auth) | ✅ reachable |
-| Decypharr | **v2.5.1** | `/api/{browse,repair,repair/jobs,add,torrents,arrs}` | ✅ v1 surface still live; see §4 |
+| Decypharr | **2.5.x** (image `cy01/blackhole:beta`, rolling) | `/api/{browse,add,torrents,arrs}` ✅ — `POST /api/repair` + `GET /api/repair/jobs` **removed in 2.3 → 404** | ⚠️ `repair trigger` had been broken since May; **fixed** (`66296bc`: `/api/repair/run` + `/api/repair/status`) |
 | Plex / Emby / Jellyfin | — | `/library/sections`, `/System/Info` | ❌ connection refused — only in `config.test-web.yaml` (stale `localhost` entries); **prod has no media server configured** |
 
 Symlinkarr's own surface: 36 HTML routes + 4 htmx partials + `/api/v1/{cleanup/audit,report/anime-remediation}` + the nested scheduler API all return 200 on the fresh build; every `/static/js/*` asset serves; CSP is `script-src 'self'` (only `style-src` keeps `'unsafe-inline'`, for the injected theme variables). `doctor` and `status` are green. CLI subcommands match `docs/CLI_MANUAL.md` (the "missing" cleanup flags live on `cleanup prune`/`remediate-anime`).
@@ -30,7 +30,7 @@ Symlinkarr's own surface: 36 HTML routes + 4 htmx partials + `/api/v1/{cleanup/a
 | Change | Effect on Symlinkarr | State |
 |---|---|---|
 | **Real-Debrid keyword filter (≈2026-05-10)** — cached torrents whose names carry WEB-DL/WEBRip/AMZN/NF/CR/YTS/RARBG are refused ("removed … due to copyright infringement") | Measured on the live library (3,000-link random sample): **94 %** of keyword-matching links and **29 %** of the rest are broken → ≈72,600 of 130,224 symlinks. Prod DB agrees: **48,161 active / 68,585 dead**, acquire queue **0**. Detection works (targets vanish, Decypharr quarantines them in `__bad__`, 562 today). Healing does not: any alternative WEB release is filtered too, so RD-based repair is futile for this class | Detected, not healed → see recommendations and `docs/NZB_MIGRATION_ASSESSMENT.md` |
-| **Decypharr 2.0 (2026-04-09), running 2.5.1** — hybrid debrid+usenet, SAB emulation at `/sabnzbd/api` (`mode=version` → 4.5.0; `queue`/`history`/`get_config` live), new mount layout `__all__/ torrents/ nzbs/ <provider>/ __bad__/`, `/api/torrents` items now carry `protocol`, `bad`, `providers`, `content_path` | Our client is v1-shaped but fully compatible (unknown fields ignored). Both configs point at `__all__`, so the mirrors (`torrents/`, `realdebrid/` — 12,081 entries each, identical) are not walked. `config.usenet` is empty: no usenet providers configured yet | Compatible; usenet plan in the NZB doc |
+| **Decypharr 2.0 (2026-04-09), running 2.5.1** — hybrid debrid+usenet, SAB emulation at `/sabnzbd/api` (`mode=version` → 4.5.0; `queue`/`history`/`get_config` live), new mount layout `__all__/ torrents/ nzbs/ <provider>/ __bad__/`, `/api/torrents` items now carry `protocol`, `bad`, `providers`, `content_path` | Our client is v1-shaped and compatible for browse/add/torrents/arrs (unknown fields ignored), but the repair endpoints it called were removed in 2.3 (2026-05) — `symlinkarr repair trigger` returned 404 on the live instance until it was ported to `/api/repair/run` + `/api/repair/status`. `DecypharrTorrent` now carries `protocol` ("torrent" / "nzb"). Both configs point at `__all__`, so the mirrors (`torrents/`, `realdebrid/` — 12,081 entries each, identical) are not walked. `config.usenet` is empty: no usenet providers configured yet | Compatible; usenet plan in the NZB doc |
 | **FFmpeg 9** — `ffprobe --version` exits 1 | `doctor` reported a working ffprobe as "version check failed" | **Fixed** (`-version`) |
 | Radarr 6 / Prowlarr 10 / Sonarr 4.1 | API paths unchanged; new response fields are ignored by serde | OK |
 | Decypharr API `instantAvailability` change (2024) | not used | n/a |
@@ -41,6 +41,7 @@ Symlinkarr's own surface: 36 HTML routes + 4 htmx partials + `/api/v1/{cleanup/a
 - `doctor`: a source pointed at a Decypharr mount **root** is flagged (mirrored views → files seen several times, links split across views). Guard only — current configs are correct.
 - Scanner never descends into Decypharr's `__bad__` quarantine.
 - Backup listing: `/backup` took **18.6 s** — `list()` read every `*.json` in a 1.5 GB directory (four 140 MB cleanup-audit reports + eighteen 30 MB safety manifests) on every render. Now sniffs the first 4 KB for the manifest marker (foreign files skipped unread) and caches summaries per (path, size, mtime): **2.8 s** first render, **0.05 s** after.
+- Decypharr repair client ported to the 2.3+ API (`POST /api/repair/run`, `GET /api/repair/status`; 409 = sweep already running); `--arr` is accepted but ignored since the sweep is global. `protocol` field added to the torrent model.
 - GUI overhaul completed across all pages; deps refreshed (`cargo update`, 72 bumps, `cargo audit` clean); version `1.1.0-rc.9`.
 
 ## 4. Recommendations (not done — decisions or larger work)
@@ -55,4 +56,4 @@ Symlinkarr's own surface: 36 HTML routes + 4 htmx partials + `/api/v1/{cleanup/a
 
 ## 5. Release state
 
-`1.1.0-rc.9` is committed on `feature/review-fixes-and-ui` with fmt, clippy, tests and audit green — the same gates `release.yml` runs. Publishing = pushing tag `v1.1.0-rc.9` (builds linux-amd64/arm64, pushes `ghcr.io/lap87/symlinkarr:rc`, creates the pre-release). Uncommitted, deliberately left alone: `src/linker.rs` (owner's change to stop persisting `skipped` link events) and `AGENTS.md`.
+`1.1.0-rc.9` is committed on `feature/review-fixes-and-ui` (the version bump sits mid-branch; the tag should point at the branch head, which also carries the `/backup` and Decypharr repair fixes) with fmt, clippy, tests and audit green — the same gates `release.yml` runs. Publishing = pushing tag `v1.1.0-rc.9` (builds linux-amd64/arm64, pushes `ghcr.io/lap87/symlinkarr:rc`, creates the pre-release). Uncommitted, deliberately left alone: `src/linker.rs` (owner's change to stop persisting `skipped` link events) and `AGENTS.md`.
