@@ -90,6 +90,11 @@ pub(crate) async fn collect_doctor_checks(
             ok: health.is_healthy(),
             detail: health.describe(&probe_path),
         });
+        if health.is_healthy() {
+            if let Some(layout) = decypharr_root_layout_check(src) {
+                checks.push(layout);
+            }
+        }
     }
 
     let (backup_ok, backup_detail) = match mode {
@@ -338,9 +343,45 @@ fn format_validation_detail(report: &crate::config::ValidationReport) -> String 
     detail
 }
 
+/// Decypharr exposes the same content under several views (`__all__`, `torrents/`,
+/// `<provider>/`) next to a `__bad__` quarantine. A source pointed at the mount ROOT
+/// makes the scanner walk every mirror, so each file is seen several times and links end
+/// up split across views. Flag it so the operator points at one view instead.
+fn decypharr_root_layout_check(src: &crate::config::SourceConfig) -> Option<DoctorCheckResult> {
+    let has = |name: &str| src.path.join(name).is_dir();
+    if !(has("__all__") && has("__bad__")) {
+        return None;
+    }
+    let mirrors: Vec<&str> = ["torrents", "nzbs"]
+        .into_iter()
+        .filter(|name| has(name))
+        .collect();
+    let mirror_note = if mirrors.is_empty() {
+        String::new()
+    } else {
+        format!(", plus {}", mirrors.join("/"))
+    };
+    Some(DoctorCheckResult {
+        name: format!("source:{}:layout", src.name),
+        ok: false,
+        detail: format!(
+            "points at a Decypharr mount root (contains __all__ and __bad__{mirror_note}); the \
+             scanner walks every mirrored view and sees each file several times — point the \
+             source at {}/__all__ (or add torrents/ and nzbs/ as separate sources) instead",
+            src.path.display()
+        ),
+    })
+}
+
 fn optional_tool_check(name: &str, command: &str) -> DoctorCheckResult {
+    // FFmpeg tools only accept the single-dash form; FFmpeg 9 exits 1 on `--version`.
+    let version_flag = if matches!(command, "ffprobe" | "ffmpeg") {
+        "-version"
+    } else {
+        "--version"
+    };
     let detail = match std::process::Command::new(command)
-        .arg("--version")
+        .arg(version_flag)
         .output()
     {
         Ok(output) if output.status.success() => {
@@ -489,5 +530,30 @@ mod tests {
         assert_eq!(check.name, "media_probe.fake");
         assert!(check.detail.contains("optional"));
         assert!(check.detail.contains("not found"));
+    }
+
+    #[test]
+    fn decypharr_root_layout_check_flags_mount_root_only() {
+        let root = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(root.path().join("__all__")).unwrap();
+        std::fs::create_dir_all(root.path().join("__bad__")).unwrap();
+        std::fs::create_dir_all(root.path().join("torrents")).unwrap();
+        let at_root = crate::config::SourceConfig {
+            name: "RD".to_string(),
+            path: root.path().to_path_buf(),
+            media_type: "auto".to_string(),
+        };
+        let check = decypharr_root_layout_check(&at_root).expect("root layout must be flagged");
+        assert!(!check.ok);
+        assert_eq!(check.name, "source:RD:layout");
+        assert!(check.detail.contains("__all__"));
+        assert!(check.detail.contains("torrents"));
+
+        let at_all = crate::config::SourceConfig {
+            name: "RD".to_string(),
+            path: root.path().join("__all__"),
+            media_type: "auto".to_string(),
+        };
+        assert!(decypharr_root_layout_check(&at_all).is_none());
     }
 }

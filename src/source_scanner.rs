@@ -87,6 +87,11 @@ pub enum ParserKind {
 /// filenames to extract title, season, episode, quality, and year information.
 pub struct SourceScanner;
 
+/// Decypharr quarantine directory: content the debrid provider removed or that failed.
+fn is_quarantine_dir(entry: &walkdir::DirEntry) -> bool {
+    entry.file_type().is_dir() && entry.file_name() == "__bad__"
+}
+
 impl SourceScanner {
     pub fn new() -> Self {
         Self
@@ -137,6 +142,9 @@ impl SourceScanner {
     }
 
     /// Scan a single source directory and return all video files found.
+    ///
+    /// Decypharr's `__bad__` group holds torrents the provider removed or that
+    /// failed; it is never a valid link source and is skipped entirely.
     pub fn scan_source(&self, source: &SourceConfig) -> Vec<SourceItem> {
         info!("Scanning source: {} at {:?}", source.name, source.path);
 
@@ -150,6 +158,7 @@ impl SourceScanner {
         for entry in WalkDir::new(&source.path)
             .follow_links(false)
             .into_iter()
+            .filter_entry(|e| !is_quarantine_dir(e))
             .filter_map(|e| e.ok())
             .filter(|e| e.file_type().is_file() || e.file_type().is_symlink())
         {

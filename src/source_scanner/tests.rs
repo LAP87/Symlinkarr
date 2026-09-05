@@ -366,3 +366,37 @@ fn test_anime_japanese_title_romanized() {
     assert_eq!(item.episode, Some(1));
     assert_eq!(item.quality, Some("1080p".to_string()));
 }
+
+#[test]
+fn test_decypharr_bad_quarantine_dir_skipped_by_scan() {
+    use tempfile::TempDir;
+
+    let scanner = SourceScanner::new();
+    let dir = TempDir::new().unwrap();
+    std::fs::create_dir_all(dir.path().join("__all__")).unwrap();
+    std::fs::create_dir_all(dir.path().join("__bad__")).unwrap();
+    std::fs::write(
+        dir.path().join("__all__").join("Show.S01E01.720p.mkv"),
+        "data",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("__bad__").join("Show.S01E02.720p.mkv"),
+        "data",
+    )
+    .unwrap();
+
+    let source = crate::config::SourceConfig {
+        name: "Decypharr".to_string(),
+        path: dir.path().to_path_buf(),
+        media_type: "auto".to_string(),
+    };
+    let results = scanner.scan_source(&source);
+
+    assert_eq!(
+        results.len(),
+        1,
+        "quarantined __bad__ content must never be scanned"
+    );
+    assert!(results[0].path.to_string_lossy().contains("__all__"));
+}

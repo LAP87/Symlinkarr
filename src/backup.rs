@@ -9,6 +9,16 @@ use crate::config::{BackupConfig, Config};
 use crate::db::Database;
 
 pub(crate) use self::manifest::parse_backup_manifest;
+
+/// Filename prefixes of manifests this manager creates or rotates. `list()` still
+/// accepts any parseable manifest, but only warns about unparseable files carrying
+/// one of these prefixes; other JSON in the directory is foreign and stays quiet.
+const MANAGED_MANIFEST_PREFIXES: &[&str] = &[
+    "symlinkarr-backup-",
+    "backup-",
+    "symlinkarr-restore-point-",
+    "safety-",
+];
 use self::manifest::{
     compute_manifest_checksum, safety_snapshot_base_name, sanitize_backup_file_name_component,
     scheduled_backup_base_name, sha256_file, validate_managed_backup_file_name,
@@ -757,6 +767,13 @@ impl BackupManager {
             if !path.extension().map(|e| e == "json").unwrap_or(false) {
                 continue;
             }
+            // Any parseable manifest is a backup regardless of its name; the prefix only
+            // decides whether an unparseable file is worth a warning (foreign JSON such as
+            // cleanup-audit reports shares this directory and must stay quiet).
+            let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let is_managed = MANAGED_MANIFEST_PREFIXES
+                .iter()
+                .any(|prefix| file_name.starts_with(prefix));
 
             match std::fs::read_to_string(&path) {
                 Ok(json) => match parse_backup_manifest(&json, &path) {
@@ -778,8 +795,11 @@ impl BackupManager {
                             app_state: manifest.app_state,
                         });
                     }
-                    Err(e) => {
+                    Err(e) if is_managed => {
                         warn!("Could not parse backup {:?}: {}", path, e);
+                    }
+                    Err(e) => {
+                        tracing::debug!("Ignoring non-manifest JSON {:?}: {}", path, e);
                     }
                 },
                 Err(e) => {
