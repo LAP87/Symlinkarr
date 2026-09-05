@@ -2060,7 +2060,6 @@ body::after {
 .card {
   position: relative;
   isolation: isolate;
-  overflow: hidden;
   padding: 1.35rem 1.45rem;
   margin-bottom: 1.35rem;
   border-radius: 24px;
@@ -3244,7 +3243,8 @@ body.page-status .telemetry-item {
 }
 
 .table-wrap {
-  overflow: hidden;
+  /* Wide tables must scroll horizontally instead of clipping. */
+  overflow-x: auto;
 }
 
 .data-table th {
@@ -3788,4 +3788,685 @@ details.collapsible-section[open] > summary .collapsible-chevron {
   .quick-links-nav {
     display: none !important;
   }
+}
+
+/* ============================================================
+   2026-08 operator calm pass (UI overhaul phase A)
+   Mockup-aligned foundation: system font stack, hairline
+   borders, softer radii (6/9/13), no glow, calm pill badges,
+   dense tables with tabular numbers. Component rules only —
+   theme token names are untouched.
+   ============================================================ */
+:root {
+  --font-ui: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-display: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-accent: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
+  --radius-sm: 6px;
+  --radius-md: 9px;
+  --radius-lg: 13px;
+  --hairline: color-mix(in srgb, var(--border-color) 55%, transparent);
+  --hairline-strong: color-mix(in srgb, var(--border-strong) 65%, transparent);
+  --accent-soft: rgba(var(--brand-primary-rgb), 0.13);
+  --accent-line: rgba(var(--brand-primary-rgb), 0.35);
+}
+
+body {
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* --- typography: no shouting headlines --- */
+.logo-title,
+.page-header h1,
+.hero-value,
+.metric-card strong {
+  font-family: var(--font-ui);
+  text-transform: none;
+}
+
+.page-header h1 {
+  font-size: clamp(1.4rem, 2vw, 1.75rem);
+  font-weight: 650;
+  letter-spacing: -0.015em;
+  line-height: 1.2;
+}
+
+.logo-title {
+  font-size: 1.02rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.section-kicker,
+.metric-label,
+.hero-label,
+.page-kicker,
+.nav-section-label,
+.form-label,
+.help-link__eyebrow,
+.sidebar-intro__eyebrow,
+.action-context,
+.queue-job-card__eyebrow,
+.queue-job-card__label,
+.key-value-label,
+.theme-option__meta {
+  font-weight: 600;
+  letter-spacing: 0.07em;
+}
+
+/* --- hairline borders, calm surfaces --- */
+.card,
+body.page-dashboard .split-grid > .card,
+body.page-dashboard details.card,
+body.page-status .card,
+body.page-scan .card,
+body.page-cleanup .card,
+.hero-card,
+body.page-dashboard .hero-card--health,
+body.page-cleanup .hero-card--accent {
+  border: 1px solid var(--hairline);
+  background: var(--card-bg);
+  box-shadow: none;
+}
+
+.card,
+.hero-card,
+details.collapsible-section {
+  border-radius: var(--radius-lg);
+}
+
+.card:hover,
+details.collapsible-section:hover {
+  transform: none;
+  box-shadow: none;
+  border-color: var(--hairline-strong);
+}
+
+details.collapsible-section {
+  border-color: var(--hairline);
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.hero-card--accent,
+.hero-card--health,
+.hero-card--queue,
+.hero-card--refresh,
+body.page-scan .operator-action-card,
+body.page-cleanup .operator-action-card,
+body.page-cleanup .operator-remediation-card {
+  border-top-width: 2px;
+}
+
+.metric-card,
+.telemetry-item,
+body.page-status .metric-card,
+body.page-status .telemetry-item {
+  background: var(--card-bg);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  box-shadow: none;
+  padding: 0.95rem 1rem;
+}
+
+.metric-card strong {
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.attention-item,
+.activity-item,
+.queue-job-card,
+.toggle-row,
+.help-link {
+  border-color: var(--hairline);
+  box-shadow: none;
+}
+
+.help-link:hover,
+.btn:hover {
+  transform: none;
+}
+
+.sidebar-intro,
+.sidebar-meta {
+  border-color: var(--shell-panel-border);
+  border-radius: var(--radius-md);
+}
+
+/* --- buttons: flat, small radius, no lift --- */
+.btn {
+  border-radius: var(--radius-sm);
+  box-shadow: none;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+/* --- badges: calm tinted pills --- */
+.badge {
+  border-radius: 999px;
+  padding: 0.18rem 0.55rem;
+  font-family: var(--font-ui);
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  text-transform: none;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.35;
+}
+
+.badge-success,
+.badge-warning,
+.badge-danger,
+.badge-info {
+  border-color: transparent;
+}
+
+.page-taxonomy {
+  border-radius: 999px;
+  letter-spacing: 0.08em;
+}
+
+/* --- tables: dense, hairline rows, tabular numbers --- */
+.data-table {
+  font-size: 0.84rem;
+}
+
+.data-table th,
+.data-table td {
+  padding: 0.55rem 0.8rem;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.data-table th {
+  background: var(--bg-tertiary);
+  color: var(--text-faint);
+  font-family: var(--font-ui);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.data-table tbody tr:hover {
+  background: color-mix(in srgb, var(--text-primary) 5%, transparent);
+}
+
+.data-table td,
+.metric-card strong,
+.telemetry-item strong,
+.hero-value,
+.hero-inline-stats strong,
+.card-value {
+  font-variant-numeric: tabular-nums;
+}
+
+.table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--card-bg);
+}
+
+.operator-links-card {
+  overflow-x: auto;
+}
+
+/* --- sidebar nav: line icons, restrained active state --- */
+.nav-link {
+  min-height: 38px;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font-size: 0.9rem;
+}
+
+.nav-link:hover {
+  background: color-mix(in srgb, var(--shell-hover-bg) 72%, transparent);
+  border-color: var(--shell-border-color);
+}
+
+.nav-link.active {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+}
+
+.nav-link__icon {
+  width: 1.25rem;
+  height: 1.25rem;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  color: var(--shell-text-faint);
+}
+
+.nav-link__icon svg {
+  display: block;
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.nav-link.active .nav-link__icon,
+.nav-link:hover .nav-link__icon {
+  background: transparent;
+  border-color: transparent;
+  color: var(--brand-primary);
+}
+
+/* --- filter tabs and inputs pick up the new radii --- */
+.filter-tab {
+  border-radius: var(--radius-sm);
+}
+
+.quick-links-nav {
+  border: 1px solid var(--hairline);
+  background: var(--card-bg);
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* --- config page: settings rail + definition rows (UI overhaul phase B) --- */
+.settings-layout {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  gap: 1.5rem;
+  align-items: start;
+}
+
+.settings-rail {
+  position: sticky;
+  top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-rail__link {
+  display: block;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: 0.88rem;
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.settings-rail__link:hover {
+  background: var(--card-bg);
+  border-color: var(--hairline);
+  color: var(--text-primary);
+}
+
+.settings-rail__link.active {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--text-primary);
+}
+
+.settings-content {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  min-width: 0;
+}
+
+.def-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.def-row {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 1.1rem;
+  align-items: center;
+  padding: 0.85rem 0;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.def-row:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.def-row__label {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.def-row__hint {
+  margin-top: 2px;
+  font-size: 0.78rem;
+  color: var(--text-faint);
+}
+
+.def-row__value {
+  font-size: 0.88rem;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 900px) {
+  .settings-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-rail {
+    position: static;
+    flex-direction: row;
+    overflow-x: auto;
+  }
+
+  .def-row {
+    grid-template-columns: 1fr;
+    gap: 0.35rem;
+  }
+}
+
+/* --- dashboard scan-history chart: theme-aware, single accent color --- */
+.scan-history-chart-container {
+  position: relative;
+  height: 240px;
+  margin-top: 1rem;
+  padding: 0.5rem 0;
+}
+
+.scan-history-chart-container svg {
+  overflow: visible;
+}
+
+.scan-history-chart-container .chart-grid {
+  stroke: var(--hairline);
+  stroke-width: 1;
+}
+
+#chart-area {
+  fill: rgba(var(--brand-primary-rgb), 0.08);
+}
+
+#chart-line {
+  fill: none;
+  stroke: rgba(var(--brand-primary-rgb), 0.75);
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+
+.chart-dot {
+  cursor: pointer;
+}
+
+.chart-dot__halo {
+  fill: rgba(var(--brand-primary-rgb), 0.16);
+  transition: fill 0.15s ease;
+}
+
+.chart-dot:hover .chart-dot__halo {
+  fill: rgba(var(--brand-primary-rgb), 0.32);
+}
+
+.chart-dot__core {
+  fill: rgb(var(--brand-primary-rgb));
+  stroke: var(--card-bg);
+  stroke-width: 2;
+}
+
+/* ============================================================
+   2026-08 phase C — shared page primitives (UI overhaul)
+   Contract: scratchpad/UI_STYLE_CONTRACT.md
+   These are the ONLY classes the per-page agents may rely on
+   beyond what already existed. Everything below uses existing
+   themed tokens only (no new variables, no hardcoded colours).
+   ============================================================ */
+
+/* --- canonical page header ------------------------------------
+   One h1, one optional lead, one right-hand aside. The decorative
+   gradient wash + accent underline on hub/inspection/recovery/result
+   headers are switched off; a hairline rule is the only separator. */
+.page-header,
+body.page-hub .page-header,
+body.page-inspection .page-header,
+body.page-recovery .page-header,
+body.page-result .page-header {
+  position: relative;
+  margin-bottom: 1.25rem;
+  padding: 0 0 0.85rem;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--hairline);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.page-header::before,
+.page-header::after,
+body.page-hub .page-header::before,
+body.page-inspection .page-header::before,
+body.page-recovery .page-header::before,
+body.page-result .page-header::before,
+body.page-hub .page-header::after,
+body.page-inspection .page-header::after,
+body.page-recovery .page-header::after,
+body.page-result .page-header::after {
+  content: none;
+}
+
+.page-header h1 {
+  margin-bottom: 0.28rem;
+}
+
+.page-header .page-lead {
+  margin: 0;
+  max-width: 62ch;
+  font-size: 0.88rem;
+  color: var(--text-secondary);
+}
+
+/* Right-hand cluster of the split header: status badges, then at
+   most one primary action, then at most one quiet doc link. */
+.page-header__aside {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
+/* The single permitted wiki/help link. Never a card, never a pill. */
+.doc-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.8rem;
+  color: var(--text-faint);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.doc-link:hover {
+  color: var(--text-secondary);
+  border-bottom-color: var(--hairline-strong);
+}
+
+.doc-link svg {
+  display: block;
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* --- flat section stack (default page shape) --- */
+.page-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  min-width: 0;
+}
+
+.page-sections > .card,
+.page-sections > section > .card:last-child {
+  margin-bottom: 0;
+}
+
+/* --- stat tile sub-line (mockup's .stat-meta) --- */
+.metric-meta {
+  margin-top: 0.2rem;
+  font-size: 0.75rem;
+  color: var(--text-faint);
+}
+
+.metric-meta strong {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+/* --- empty states --- */
+.empty-state__title {
+  display: block;
+  margin-bottom: 0.25rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.empty-state__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+/* --- .stack-list: used by prune_preview.html but never defined --- */
+.stack-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.stack-list > code,
+.stack-list > .mono {
+  display: block;
+  padding: 0.3rem 0.5rem;
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
+/* --- long log / path dumps inside a <details> --- */
+.log-scroll {
+  max-height: 22rem;
+  overflow: auto;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* --- legacy .collapsible-section: deprecated, but calm while it lasts --- */
+details.collapsible-section {
+  margin-bottom: 1.25rem;
+  border-color: var(--hairline);
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+details.collapsible-section:hover {
+  transform: none;
+  box-shadow: none;
+}
+
+details.collapsible-section > summary {
+  padding: 0.95rem 1.1rem;
+}
+
+.collapsible-header-title {
+  font-family: var(--font-ui);
+  font-size: 1rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+/* --- section rail reused outside config.html ---------------------
+   Same .settings-layout / .settings-rail / .settings-content markup
+   as config.html; the generic scroll-spy binds to [data-section-rail]. */
+.settings-rail[data-section-rail] {
+  top: 1rem;
+}
+
+/* =================================================================
+   2026-08 phase C — reconcile pass (gaps reported by the UI agents)
+   Token-only. No new custom properties, no literal colours.
+   ================================================================= */
+
+/* .alert-info — used by cleanup, cleanup_result, dead_links, discover_content,
+   repair_result and scan_result. Only .alert-success/-error/-warning existed,
+   so these rendered as an untinted bare .alert. Mirrors the other three, using
+   the themed info badge tokens (there is no --alert-info-bg to reuse). */
+.alert-info {
+  background-color: var(--badge-info-bg);
+  border: 1px solid var(--badge-info-border);
+  color: var(--info);
+}
+
+/* .def-row__key — the label+hint wrapper in the §D.8 def-row pattern. It sits in
+   the fixed 220px grid column; without min-width:0 a long unbroken label pushes
+   the value column off the card. */
+.def-row__key {
+  min-width: 0;
+}
+
+/* .field-max-lg — scan.html's anime-override text inputs. Completes the
+   .field-max-sm (18rem) / .field-max-md (25rem) scale. */
+.field-max-lg {
+  max-width: 34rem;
+}
+
+/* .row-warning — import.html tags candidate rows needing manual review. The
+   class was in the markup but had no rule, so those rows were indistinguishable
+   from clean ones. Hover state kept so row feedback survives the tint. */
+.data-table tbody tr.row-warning {
+  background: color-mix(in srgb, var(--warning) 10%, transparent);
+}
+
+.data-table tbody tr.row-warning:hover {
+  background: color-mix(in srgb, var(--warning) 16%, transparent);
+}
+
+.data-table tbody tr.row-warning td:first-child {
+  box-shadow: inset 3px 0 0 var(--warning);
+}
+
+/* .metric-meta strong — `.metric-card strong { display: block }` (defined many
+   times, last at :4000) beat the phase-C .metric-meta strong rule on `display`,
+   so the §D.3 example ("across <strong>N</strong> libraries") broke onto its own
+   line. Restore inline flow for <strong> inside the sub-line only. */
+.metric-meta strong {
+  display: inline;
+  font-size: inherit;
 }

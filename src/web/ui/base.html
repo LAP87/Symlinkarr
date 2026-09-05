@@ -6,49 +6,10 @@
     <title>{% block title %}Symlinkarr{% endblock %}</title>
     <link rel="icon" href="/static/favicon.ico" sizes="any">
     <link rel="icon" type="image/png" href="/static/favicon-32x32.png" sizes="32x32">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/style.css">
     <style id="theme-vars"></style>
     <script src="/static/themes/theme-manifest.js"></script>
-    <script>
-        (function () {
-            var manifest = window.SYMLINKARR_THEME_MANIFEST || null;
-
-            if (!manifest || !manifest.resolveSelection || !manifest.buildThemeCss) {
-                return;
-            }
-
-            function prefersDark() {
-                return !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
-            }
-
-            var storedTheme = null;
-            try {
-                storedTheme = localStorage.getItem("symlinkarr-theme");
-            } catch (e) {}
-
-            var resolved = manifest.resolveSelection(storedTheme, prefersDark());
-            var style = document.getElementById("theme-vars");
-
-            if (style && resolved.actual) {
-                style.textContent = manifest.buildThemeCss(resolved.actual);
-            }
-
-            document.documentElement.setAttribute("data-theme-selection", resolved.selectionId);
-            document.documentElement.setAttribute("data-theme", resolved.actual ? resolved.actual.id : "");
-        }());
-    </script>
-    <script>
-        (function () {
-            try {
-                if (localStorage.getItem("symlinkarr-advanced") === "1") {
-                    document.documentElement.classList.add("show-advanced");
-                }
-            } catch (e) {}
-        }());
-    </script>
+    <script src="/static/boot.js"></script>
     <script src="/static/vendor/htmx-1.9.10.min.js"></script>
     <script src="/static/themes/theme-switcher.js" defer></script>
     <script src="/static/ui-preferences.js" defer></script>
@@ -89,70 +50,70 @@
                 <li class="nav-section-label">Overview</li>
                 <li class="nav-item">
                     <a href="/" class="nav-link {% block nav_dashboard %}{% endblock %}">
-                        <span class="nav-link__icon">OV</span>
+                        <span class="nav-link__icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg></span>
                         <span class="nav-link__label">Dashboard</span>
                     </a>
                 </li>
                 <li class="nav-section-label">Activity</li>
                 <li class="nav-item">
                     <a href="/scan" class="nav-link {% block nav_scan %}{% endblock %}">
-                        <span class="nav-link__icon">SC</span>
+                        <span class="nav-link__icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-6.2-8.6"/><path d="M21 3v6h-6"/></svg></span>
                         <span class="nav-link__label">Scan</span>
                     </a>
                 </li>
                 <li class="nav-item">
                     <a href="/status" class="nav-link {% block nav_status %}{% endblock %}">
-                        <span class="nav-link__icon">ST</span>
+                        <span class="nav-link__icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></span>
                         <span class="nav-link__label">Status</span>
                     </a>
                 </li>
                 <li class="nav-item">
                     <a href="/scheduler" class="nav-link {% block nav_scheduler %}{% endblock %}">
-                        <span class="nav-link__icon">SD</span>
+                        <span class="nav-link__icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span>
                         <span class="nav-link__label">Scheduler</span>
                     </a>
                 </li>
                 <li class="nav-item">
                     <a href="/links" class="nav-link {% block nav_links %}{% endblock %}">
-                        <span class="nav-link__icon">LK</span>
+                        <span class="nav-link__icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/></svg></span>
                         <span class="nav-link__label">Links</span>
                     </a>
                 </li>
                 <li class="nav-section-label">Maintenance</li>
                 <li class="nav-item">
                     <a href="/cleanup" class="nav-link {% block nav_cleanup %}{% endblock %}">
-                        <span class="nav-link__icon">CL</span>
+                        <span class="nav-link__icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg></span>
                         <span class="nav-link__label">Cleanup</span>
                     </a>
                 </li>
                 <li class="nav-item">
                     <a href="/doctor" class="nav-link {% block nav_doctor %}{% endblock %}">
-                        <span class="nav-link__icon">DR</span>
+                        <span class="nav-link__icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18v3h3l6.3-6.3a4 4 0 0 0 5.4-5.4l-2.1 2.1-2.4-.6-.6-2.4z"/></svg></span>
                         <span class="nav-link__label">Doctor</span>
                     </a>
                 </li>
                 <li class="nav-item advanced-only">
                     <a href="/discover" class="nav-link {% block nav_discover %}{% endblock %}">
-                        <span class="nav-link__icon">DV</span>
+                        <span class="nav-link__icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M15.5 8.5l-2 5-5 2 2-5z"/></svg></span>
                         <span class="nav-link__label">Discover</span>
                     </a>
                 </li>
                 <li class="nav-item advanced-only">
                     <a href="/import" class="nav-link {% block nav_import %}{% endblock %}">
-                        <span class="nav-link__icon">IM</span>
+                        <span class="nav-link__icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5M12 15V3"/></svg></span>
                         <span class="nav-link__label">Import</span>
                     </a>
                 </li>
                 <li class="nav-section-label advanced-only">System</li>
                 <li class="nav-item advanced-only">
                     <a href="/backup" class="nav-link {% block nav_backup %}{% endblock %}">
-                        <span class="nav-link__icon">BK</span>
+                        <span class="nav-link__icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 8v13H3V8"/><rect x="1" y="3" width="22" height="5"/><path d="M10 12h4"/></svg></span>
                         <span class="nav-link__label">Backup</span>
                     </a>
                 </li>
                 <li class="nav-item advanced-only">
                     <a href="/config" class="nav-link {% block nav_config %}{% endblock %}">
-                        <span class="nav-link__icon">CF</span>
+                        <span class="nav-link__icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2V21a2 2 0 0 1-4 0v-.2A1.7 1.7 0 0 0 6.6 19l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 3 13.4H3a2 2 0 0 1 0-4h.2A1.7 1.7 0 0 0 5 6.6l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H10a1.7 1.7 0 0 0 1-1.6V2a2 2 0 0 1 4 0v.2a1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V10a1.7 1.7 0 0 0 1.6 1H22a2 2 0 0 1 0 4h-.2a1.7 1.7 0 0 0-1.4 1z"/></svg></span>
                         <span class="nav-link__label">Config</span>
                     </a>
                 </li>
@@ -221,45 +182,5 @@
     </div>
 
     {% block scripts %}{% endblock %}
-    <script>
-        // Scroll spy for Quick Links navigation
-        (function() {
-            function updateScrollSpy() {
-                var nav = document.querySelector('.quick-links-nav');
-                if (!nav) return;
-                
-                var sections = document.querySelectorAll('section[id]');
-                var scrollPos = window.scrollY || document.documentElement.scrollTop || document.body.scrollTop;
-                
-                // Add offset for breathing room (header height and layout margins)
-                var activeId = null;
-                for (var i = 0; i < sections.length; i++) {
-                    var sec = sections[i];
-                    if (sec.offsetTop - 140 <= scrollPos) {
-                        activeId = sec.getAttribute('id');
-                    }
-                }
-                
-                if (activeId) {
-                    var links = nav.querySelectorAll('.quick-link-item');
-                    links.forEach(function(link) {
-                        var href = link.getAttribute('href');
-                        if (href === '#' + activeId) {
-                            link.classList.add('active');
-                        } else {
-                            link.classList.remove('active');
-                        }
-                    });
-                }
-            }
-            
-            window.addEventListener('scroll', updateScrollSpy);
-            window.addEventListener('resize', updateScrollSpy);
-            document.addEventListener('DOMContentLoaded', updateScrollSpy);
-            document.body.addEventListener('htmx:afterSwap', function() {
-                setTimeout(updateScrollSpy, 100);
-            });
-        })();
-    </script>
 </body>
 </html>

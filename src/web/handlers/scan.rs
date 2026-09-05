@@ -238,8 +238,6 @@ async fn build_scan_template(
     };
     let local_anime_targets = local_anime_target_labels(&state.config);
     let anime_search_overrides = load_anime_override_views(state, &local_anime_targets).await;
-    let anime_override_panel_open =
-        anime_override_feedback.is_some() || !anime_search_overrides.is_empty();
 
     ScanTemplate {
         libraries: state.config.libraries.clone(),
@@ -251,7 +249,6 @@ async fn build_scan_template(
         anime_search_overrides,
         anime_override_feedback,
         anime_override_draft: anime_override_draft.unwrap_or_default(),
-        anime_override_panel_open,
         filters,
         default_dry_run: state.config.symlink.dry_run,
         csrf_token: browser_csrf_token(state),

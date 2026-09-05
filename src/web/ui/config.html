@@ -7,14 +7,10 @@
 {% block content %}
 <div class="page-header page-header--split">
     <div>
-        <div class="page-meta">
-            <p class="page-kicker">System</p>
-            <span class="page-taxonomy page-taxonomy--inspection">Config</span>
-        </div>
         <h1>Configuration</h1>
-        <p class="page-lead">View the active config and validate paths, sources, and services.</p>
+        <p class="page-lead">Read-only view of the active config, plus a validation check.</p>
     </div>
-    <div class="header-badges">
+    <div class="page-header__aside">
         <span class="badge badge-info">Libraries {{ config.libraries|length }}</span>
         <span class="badge badge-info">Sources {{ config.sources|length }}</span>
         {% match validation_result %}
@@ -28,255 +24,235 @@
     </div>
 </div>
 
-<details class="card disclosure-card">
-    <summary class="disclosure-card__summary">
-        <div class="disclosure-card__copy">
-            <span class="disclosure-card__eyebrow">Guides</span>
-            <h2 class="disclosure-card__title">Docs and recommended workflow</h2>
-            <p class="disclosure-card__hint">Open when you need setup docs instead of the config values.</p>
-        </div>
-        <div class="disclosure-card__meta">
-            <span class="badge badge-secondary">2 links</span>
-            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
-        </div>
-    </summary>
-    <div class="disclosure-card__body">
-        <div class="page-help-links">
-            <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Configuration-and-Doctor" target="_blank" rel="noreferrer noopener">
-                <span class="help-link__eyebrow">Learn more</span>
-                <span class="help-link__title">Config and doctor guide</span>
-            </a>
-            <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Backup-and-Restore" target="_blank" rel="noreferrer noopener">
-                <span class="help-link__eyebrow">Wiki</span>
-                <span class="help-link__title">First-run and restore</span>
-            </a>
-        </div>
-    </div>
-</details>
+<div class="settings-layout">
+    <nav class="settings-rail" id="config-rail" aria-label="Config sections">
+        <a href="#config-general" class="settings-rail__link active">General</a>
+        <a href="#config-libraries" class="settings-rail__link">Libraries &amp; sources</a>
+        <a href="#config-matching" class="settings-rail__link">Matching</a>
+        <a href="#config-defaults" class="settings-rail__link">Defaults</a>
+    </nav>
 
-<div class="split-grid">
-    <section class="card">
-        <div class="section-head">
-            <div>
-                <p class="section-kicker">Meaning</p>
-                <h2 class="section-title">What this page is for</h2>
+    <div class="settings-content">
+        <section class="card">
+            <div class="section-head">
+                <div>
+                    <h2 class="section-title">Check current configuration</h2>
+                    <p class="section-copy">Run validation after changing libraries, sources, or matching rules so the UI and daemon share the same assumptions.</p>
+                </div>
+                <form action="/config/validate" method="post" class="actions">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button type="submit" class="btn btn-primary">Validate config</button>
+                </form>
             </div>
-        </div>
-        <p class="text-muted">This is the config Symlinkarr is using right now. Use it to check paths, sources, services, and matching rules.</p>
-    </section>
 
-    <section class="card">
-        <div class="section-head">
-            <div>
-                <p class="section-kicker">Next Step</p>
-                <h2 class="section-title">Best follow-up</h2>
-            </div>
-        </div>
-        <ol class="steps-list text-muted">
             {% match validation_result %}
             {% when Some with (result) %}
             {% if result.valid %}
-            <li>If the config is valid, go back to the page you were using.</li>
+            <div class="alert alert-success">
+                <strong>Configuration is valid.</strong>
+                {% if result.warnings|length > 0 %}
+                <ul class="mt-1">
+                    {% for w in result.warnings %}
+                    <li class="text-warning">{{ w }}</li>
+                    {% endfor %}
+                </ul>
+                {% endif %}
+            </div>
             {% else %}
-            <li>Fix validation errors before running Scan, Cleanup, Repair, or the daemon.</li>
+            <div class="alert alert-error">
+                <strong>Configuration has errors.</strong>
+                <ul class="mt-1">
+                    {% for e in result.errors %}
+                    <li>{{ e }}</li>
+                    {% endfor %}
+                </ul>
+                {% if result.warnings|length > 0 %}
+                <ul class="mt-1">
+                    {% for w in result.warnings %}
+                    <li class="text-warning">{{ w }}</li>
+                    {% endfor %}
+                </ul>
+                {% endif %}
+            </div>
             {% endif %}
             {% when None %}
-            <li>Run validation first if you just changed paths, sources, credentials, or matching rules.</li>
+            <div class="empty-state">
+                <span class="empty-state__title">No validation result yet.</span>
+                Validation checks paths, credentials, and library definitions against the current config file.
+            </div>
             {% endmatch %}
-            <li>Use Doctor when you need blunt environment checks, not just config structure.</li>
-        </ol>
-    </section>
+        </section>
+
+        <section id="config-general" class="card">
+            <div class="section-head">
+                <div>
+                    <h2 class="section-title">Runtime overview</h2>
+                    <p class="section-copy">The config Symlinkarr is using right now, read-only.</p>
+                </div>
+            </div>
+            <div class="def-rows">
+                <div class="def-row">
+                    <div class="def-row__key">
+                        <div class="def-row__label">Libraries</div>
+                        <div class="def-row__hint">Tagged library roots symlinks are written into.</div>
+                    </div>
+                    <div class="def-row__value">{{ config.libraries|length }}</div>
+                </div>
+                <div class="def-row">
+                    <div class="def-row__key">
+                        <div class="def-row__label">Sources</div>
+                        <div class="def-row__hint">Ingestion roots scanned for source files.</div>
+                    </div>
+                    <div class="def-row__value">{{ config.sources|length }}</div>
+                </div>
+                <div class="def-row">
+                    <div class="def-row__key">
+                        <div class="def-row__label">Log level</div>
+                        <div class="def-row__hint">Verbosity of the daemon and CLI output.</div>
+                    </div>
+                    <div class="def-row__value">{{ config.log_level }}</div>
+                </div>
+            </div>
+        </section>
+
+        <section id="config-libraries" class="card">
+            <div class="section-head">
+                <div>
+                    <h2 class="section-title">Libraries &amp; sources</h2>
+                    <p class="section-copy">Tagged library roots and ingestion paths from the live config.</p>
+                </div>
+                <div class="header-badges">
+                    <span class="badge badge-info">{{ config.libraries|length }} libraries</span>
+                    <span class="badge badge-info">{{ config.sources|length }} sources</span>
+                </div>
+            </div>
+
+            {% if config.libraries|length > 0 %}
+            <div class="table-wrap">
+            <table class="data-table dense-table">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Path</th>
+                        <th>Media type</th>
+                        <th>Content type</th>
+                        <th>Depth</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for lib in config.libraries %}
+                    <tr>
+                        <td><strong>{{ lib.name }}</strong></td>
+                        <td><code class="mono">{{ lib.path.display() }}</code></td>
+                        <td>{{ lib.media_type }}</td>
+                        <td>
+                            {% match lib.content_type %}
+                            {% when Some with (ct) %}{{ ct }}{% when None %}<span class="text-muted">auto</span>{% endmatch %}
+                        </td>
+                        <td>{{ lib.depth }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            </div>
+            {% else %}
+            <p class="text-muted">No libraries configured.</p>
+            {% endif %}
+
+            <h3 class="subsection-title mt-2">Sources</h3>
+            {% if config.sources|length > 0 %}
+            <div class="table-wrap">
+            <table class="data-table dense-table">
+                <thead>
+                    <tr><th>Name</th><th>Path</th><th>Media type</th></tr>
+                </thead>
+                <tbody>
+                    {% for src in config.sources %}
+                    <tr>
+                        <td><strong>{{ src.name }}</strong></td>
+                        <td><code class="mono">{{ src.path.display() }}</code></td>
+                        <td>{{ src.media_type }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            </div>
+            {% else %}
+            <p class="text-muted">No sources configured.</p>
+            {% endif %}
+        </section>
+
+        <section id="config-matching" class="card">
+            <div class="section-head">
+                <div>
+                    <h2 class="section-title">How files are matched</h2>
+                    <p class="section-copy">Matcher behavior applied on every scan.</p>
+                </div>
+            </div>
+            <div class="def-rows">
+                <div class="def-row">
+                    <div class="def-row__key">
+                        <div class="def-row__label">Match mode</div>
+                        <div class="def-row__hint">Strict avoids false positives; lenient links more.</div>
+                    </div>
+                    <div class="def-row__value">{{ config.matching.mode }}</div>
+                </div>
+                <div class="def-row">
+                    <div class="def-row__key">
+                        <div class="def-row__label">Metadata mode</div>
+                        <div class="def-row__hint">How much metadata enrichment is applied while matching.</div>
+                    </div>
+                    <div class="def-row__value">{{ config.matching.metadata_mode }}</div>
+                </div>
+            </div>
+        </section>
+
+        <section id="config-defaults" class="card">
+            <div class="section-head">
+                <div>
+                    <h2 class="section-title">Low-level runtime defaults</h2>
+                    <p class="section-copy">Database, backup, and matcher defaults exactly as the server sees them right now.</p>
+                </div>
+            </div>
+            <div class="def-rows">
+                <div class="def-row">
+                    <div class="def-row__key">
+                        <div class="def-row__label">Database path</div>
+                        <div class="def-row__hint">SQLite file backing links and queue state.</div>
+                    </div>
+                    <div class="def-row__value"><code class="mono">{{ config.db_path }}</code></div>
+                </div>
+                <div class="def-row">
+                    <div class="def-row__key">
+                        <div class="def-row__label">Log level</div>
+                    </div>
+                    <div class="def-row__value">{{ config.log_level }}</div>
+                </div>
+                <div class="def-row">
+                    <div class="def-row__key">
+                        <div class="def-row__label">Matching mode</div>
+                    </div>
+                    <div class="def-row__value">{{ config.matching.mode }}</div>
+                </div>
+                <div class="def-row">
+                    <div class="def-row__key">
+                        <div class="def-row__label">Metadata mode</div>
+                    </div>
+                    <div class="def-row__value">{{ config.matching.metadata_mode }}</div>
+                </div>
+                <div class="def-row">
+                    <div class="def-row__key">
+                        <div class="def-row__label">Backup path</div>
+                        <div class="def-row__hint">Where Symlinkarr backups and restore points are written.</div>
+                    </div>
+                    <div class="def-row__value"><code class="mono">{{ config.backup.path.display() }}</code></div>
+                </div>
+            </div>
+        </section>
+    </div>
 </div>
+{% endblock %}
 
-<section class="card">
-    <div class="section-head">
-        <div>
-            <p class="section-kicker">Validation</p>
-            <h2 class="section-title">Check current configuration</h2>
-            <p class="section-copy">Run validation after changing libraries, sources, or matching rules so the UI and daemon share the same assumptions.</p>
-        </div>
-        <form action="/config/validate" method="post" class="actions">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <button type="submit" class="btn btn-primary">Validate Config</button>
-        </form>
-    </div>
-
-    {% match validation_result %}
-    {% when Some with (result) %}
-    {% if result.valid %}
-    <div class="alert alert-success">
-        <strong>Configuration is valid.</strong>
-        {% if result.warnings|length > 0 %}
-        <ul style="margin-top:0.5rem;padding-left:1.5rem;">
-            {% for w in result.warnings %}
-            <li class="text-warning">{{ w }}</li>
-            {% endfor %}
-        </ul>
-        {% endif %}
-    </div>
-    {% else %}
-    <div class="alert alert-error">
-        <strong>Configuration has errors.</strong>
-        <ul style="margin-top:0.5rem;padding-left:1.5rem;">
-            {% for e in result.errors %}
-            <li>{{ e }}</li>
-            {% endfor %}
-        </ul>
-        {% if result.warnings|length > 0 %}
-        <ul style="margin-top:0.5rem;padding-left:1.5rem;">
-            {% for w in result.warnings %}
-            <li class="text-warning">{{ w }}</li>
-            {% endfor %}
-        </ul>
-        {% endif %}
-    </div>
-    {% endif %}
-    {% when None %}
-    <div class="empty-state">
-        No validation result yet. Use the action on the right to verify paths, credentials, and library definitions against the current config file.
-    </div>
-    {% endmatch %}
-</section>
-
-<section class="card">
-    <div class="section-head">
-        <div>
-            <p class="section-kicker">Overview</p>
-            <h2 class="section-title">Current system defaults</h2>
-        </div>
-    </div>
-    <div class="metric-grid metric-grid--compact">
-        <div class="metric-card"><span class="metric-label">Libraries</span><strong>{{ config.libraries|length }}</strong></div>
-        <div class="metric-card"><span class="metric-label">Sources</span><strong>{{ config.sources|length }}</strong></div>
-        <div class="metric-card"><span class="metric-label">Log Level</span><strong>{{ config.log_level }}</strong></div>
-        <div class="metric-card"><span class="metric-label">Match Mode</span><strong>{{ config.matching.mode }}</strong></div>
-        <div class="metric-card"><span class="metric-label">Metadata</span><strong>{{ config.matching.metadata_mode }}</strong></div>
-    </div>
-</section>
-
-<details class="card disclosure-card">
-    <summary class="disclosure-card__summary">
-        <div class="disclosure-card__copy">
-            <span class="disclosure-card__eyebrow">Topology</span>
-            <h2 class="disclosure-card__title">Libraries and ingestion roots</h2>
-            <p class="disclosure-card__hint">Open when you need exact paths, content typing, or depth details from the live config.</p>
-        </div>
-        <div class="disclosure-card__meta">
-            <span class="badge badge-info">{{ config.libraries|length }} libraries</span>
-            <span class="badge badge-info">{{ config.sources|length }} sources</span>
-            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
-        </div>
-    </summary>
-    <div class="disclosure-card__body">
-        <div class="split-grid">
-            <section class="card card--nested">
-                <div class="section-head">
-                    <div>
-                        <p class="section-kicker">Libraries</p>
-                        <h2 class="section-title">Tagged library roots</h2>
-                    </div>
-                </div>
-                {% if config.libraries|length > 0 %}
-                <div class="table-wrap">
-                <table class="data-table dense-table">
-                    <thead>
-                        <tr>
-                            <th>Name</th>
-                            <th>Path</th>
-                            <th>Media Type</th>
-                            <th>Content Type</th>
-                            <th>Depth</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for lib in config.libraries %}
-                        <tr>
-                            <td><strong>{{ lib.name }}</strong></td>
-                            <td><code class="mono">{{ lib.path.display() }}</code></td>
-                            <td>{{ lib.media_type }}</td>
-                            <td>
-                                {% match lib.content_type %}
-                                {% when Some with (ct) %}{{ ct }}{% when None %}<span class="text-muted">auto</span>{% endmatch %}
-                            </td>
-                            <td>{{ lib.depth }}</td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-                </div>
-                {% else %}
-                <p class="text-muted">No libraries configured.</p>
-                {% endif %}
-            </section>
-
-            <section class="card card--nested">
-                <div class="section-head">
-                    <div>
-                        <p class="section-kicker">Sources</p>
-                        <h2 class="section-title">Ingestion roots</h2>
-                    </div>
-                </div>
-                {% if config.sources|length > 0 %}
-                <div class="table-wrap">
-                <table class="data-table dense-table">
-                    <thead>
-                        <tr><th>Name</th><th>Path</th><th>Media Type</th></tr>
-                    </thead>
-                    <tbody>
-                        {% for src in config.sources %}
-                        <tr>
-                            <td><strong>{{ src.name }}</strong></td>
-                            <td><code class="mono">{{ src.path.display() }}</code></td>
-                            <td>{{ src.media_type }}</td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-                </div>
-                {% else %}
-                <p class="text-muted">No sources configured.</p>
-                {% endif %}
-            </section>
-        </div>
-    </div>
-</details>
-
-<details class="card disclosure-card">
-    <summary class="disclosure-card__summary">
-        <div class="disclosure-card__copy">
-            <span class="disclosure-card__eyebrow">Defaults</span>
-            <h2 class="disclosure-card__title">Low-level runtime defaults</h2>
-            <p class="disclosure-card__hint">Open when you need database, backup, or matcher defaults exactly as the server sees them right now.</p>
-        </div>
-        <div class="disclosure-card__meta">
-            <span class="badge badge-secondary">{{ config.log_level }}</span>
-            <span class="badge badge-secondary">{{ config.matching.mode }}</span>
-            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
-        </div>
-    </summary>
-    <div class="disclosure-card__body">
-        <div class="key-value-grid">
-            <div class="key-value-row">
-                <div class="key-value-label">Database Path</div>
-                <div><code class="mono">{{ config.db_path }}</code></div>
-            </div>
-            <div class="key-value-row">
-                <div class="key-value-label">Log Level</div>
-                <div>{{ config.log_level }}</div>
-            </div>
-            <div class="key-value-row">
-                <div class="key-value-label">Matching Mode</div>
-                <div>{{ config.matching.mode }}</div>
-            </div>
-            <div class="key-value-row">
-                <div class="key-value-label">Metadata Mode</div>
-                <div>{{ config.matching.metadata_mode }}</div>
-            </div>
-            <div class="key-value-row">
-                <div class="key-value-label">Backup Path</div>
-                <div><code class="mono">{{ config.backup.path.display() }}</code></div>
-            </div>
-        </div>
-    </div>
-</details>
+{% block scripts %}
+<script src="/static/js/config-rail.js" defer></script>
 {% endblock %}

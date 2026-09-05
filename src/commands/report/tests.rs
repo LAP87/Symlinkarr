@@ -532,6 +532,101 @@ fn test_symlink_source_missing_valid() {
 }
 
 #[test]
+fn test_symlink_source_missing_relative_target_resolved_against_link_parent() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let target = dir.path().join("target_file");
+    std::fs::write(&target, b"content").unwrap();
+    let link_path = dir.path().join("relative_link");
+    std::os::unix::fs::symlink("target_file", &link_path).unwrap();
+    assert!(!symlink_source_missing(&link_path));
+
+    let broken = dir.path().join("relative_broken");
+    std::os::unix::fs::symlink("missing_file", &broken).unwrap();
+    assert!(symlink_source_missing(&broken));
+}
+
+fn path_compare_test_library(path: PathBuf) -> LibraryConfig {
+    LibraryConfig {
+        name: "Movies".to_string(),
+        path,
+        media_type: MediaType::Movie,
+        content_type: Some(ContentType::Movie),
+        depth: 1,
+    }
+}
+
+#[tokio::test]
+async fn test_build_path_compare_healthy_root_has_no_unreachable_bucket() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let movies = dir.path().join("movies");
+    let source = dir.path().join("rd");
+    std::fs::create_dir_all(&movies).unwrap();
+    std::fs::create_dir_all(&source).unwrap();
+
+    let link_path = movies.join("Movie A.mkv");
+    symlink(source.join("missing.mkv"), &link_path).unwrap();
+
+    let lib = path_compare_test_library(movies);
+    let output = build_path_compare(&[&lib], &[], &[], None, std::slice::from_ref(&source))
+        .await
+        .unwrap();
+
+    assert_eq!(output.filesystem_symlinks, 1);
+    assert!(output.unreachable_sources.is_none());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_build_path_compare_reports_unreachable_sources_instead_of_missing() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let movies = dir.path().join("movies");
+    let source = dir.path().join("rd");
+    std::fs::create_dir_all(&movies).unwrap();
+    std::fs::create_dir_all(&source).unwrap();
+
+    let link_path = movies.join("Movie A.mkv");
+    symlink(source.join("movie-a.mkv"), &link_path).unwrap();
+
+    let lib = path_compare_test_library(movies);
+    let records = vec![LinkRecord {
+        id: None,
+        source_path: source.join("movie-a.mkv"),
+        target_path: link_path.clone(),
+        media_id: "tmdb-1".to_string(),
+        media_type: MediaType::Movie,
+        status: LinkStatus::Active,
+        created_at: None,
+        updated_at: None,
+    }];
+
+    // Simulate an unreachable source root (probe fails with an I/O error).
+    let original_perms = std::fs::metadata(&source).unwrap().permissions();
+    std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let simulated = std::fs::read_dir(&source).is_err();
+
+    let output = build_path_compare(&[&lib], &[], &records, None, std::slice::from_ref(&source))
+        .await
+        .unwrap();
+
+    std::fs::set_permissions(&source, original_perms).unwrap();
+
+    if !simulated {
+        // Running as root: permissions cannot make the root unreachable.
+        return;
+    }
+
+    let unreachable = output.unreachable_sources.expect("unreachable bucket set");
+    assert_eq!(unreachable.count, 1);
+    assert_eq!(unreachable.samples, vec![link_path]);
+    // The link stays consistent between FS and DB instead of drifting into
+    // the missing buckets while its source root is unreachable.
+    assert_eq!(output.fs_not_in_db.count, 0);
+    assert_eq!(output.db_not_on_fs.count, 0);
+}
+
+#[test]
 fn test_collect_link_presence_active_and_dead() {
     let dir = tempfile::TempDir::new().unwrap();
     let movies = dir.path().join("movies");

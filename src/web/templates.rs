@@ -741,7 +741,6 @@ pub struct ScanTemplate {
     pub anime_search_overrides: Vec<AnimeSearchOverrideView>,
     pub anime_override_feedback: Option<FormFeedbackView>,
     pub anime_override_draft: AnimeSearchOverrideDraftView,
-    pub anime_override_panel_open: bool,
     pub filters: ScanHistoryFilters,
     pub default_dry_run: bool,
     pub csrf_token: String,

@@ -340,8 +340,8 @@ async fn dashboard_page_exposes_primary_operator_actions() {
 
     assert_eq!(status, 200);
     assert!(dashboard.contains("Dashboard"));
-    assert!(dashboard.contains("Needs Attention"));
-    assert!(dashboard.contains("Live Activity"));
+    assert!(dashboard.contains("Needs attention"));
+    assert!(dashboard.contains("Live activity"));
     assert!(dashboard.contains("href=\"/scan\""));
     assert!(dashboard.contains("href=\"/status\""));
     assert!(dashboard.contains("hx-get=\"/dashboard/summary\""));
@@ -358,7 +358,7 @@ async fn dashboard_activity_feed_route_renders_fragment() {
     let (status, fragment) = get_html(&router, "/dashboard/activity-feed").await;
 
     assert_eq!(status, 200);
-    assert!(fragment.contains("Live Activity"));
+    assert!(fragment.contains("Live activity"));
     assert!(fragment.contains("Running now"));
     assert!(fragment.contains("Latest outcomes"));
     assert!(fragment.contains("hx-get=\"/dashboard/activity-feed\""));
@@ -381,8 +381,8 @@ async fn dashboard_needs_attention_route_renders_fragment() {
     let (status, fragment) = get_html(&router, "/dashboard/needs-attention").await;
 
     assert_eq!(status, 200);
-    assert!(fragment.contains("Needs Attention"));
-    assert!(fragment.contains("Stuff worth checking before the next scan runs."));
+    assert!(fragment.contains("Needs attention"));
+    assert!(fragment.contains("Worth clearing before the next scan runs."));
     assert!(fragment.contains("hx-get=\"/dashboard/needs-attention\""));
 }
 
@@ -392,7 +392,6 @@ async fn dashboard_latest_run_route_renders_fragment() {
     let (status, fragment) = get_html(&router, "/dashboard/latest-run").await;
 
     assert_eq!(status, 200);
-    assert!(fragment.contains("Latest Run"));
     assert!(fragment.contains("Latest scan"));
     assert!(fragment.contains("hx-get=\"/dashboard/latest-run\""));
 }
@@ -409,7 +408,7 @@ async fn status_page_exposes_link_health_actions_and_seeded_rows() {
     assert!(status_page.contains("No persistent dead links are currently tracked."));
     assert!(status_page.contains("Recent auto-acquire jobs"));
     assert!(status_page.contains("Queued Anime"));
-    assert!(status_page.contains("Needs Relink"));
+    assert!(status_page.contains("Needs relink"));
 }
 
 #[tokio::test]
@@ -444,15 +443,14 @@ async fn noconfig_page_exposes_restore_and_bootstrap_paths() {
     assert_eq!(status, 200);
     assert!(page.contains("Setup required"));
     assert!(page.contains("Restore from backup"));
-    assert!(page.contains("Create new installation"));
-    assert!(page.contains("What this state means"));
-    assert!(page.contains("Choose the shortest safe route"));
+    assert!(page.contains("Create a new installation"));
+    assert!(page.contains("Preferred route when a Symlinkarr backup already exists."));
     assert!(page.contains("symlinkarr restore &lt;path-to-backup.json&gt;"));
     assert!(page.contains("symlinkarr bootstrap"));
     assert!(page.contains("/wiki/Backup-and-Restore"));
     assert!(page.contains("/wiki/Configuration-and-Doctor"));
-    assert!(page.contains("Recovery notes"));
-    assert!(page.contains("Auto-restore:"));
+    assert!(page.contains("What restore can bring back"));
+    assert!(page.contains("Auto-restore"));
 }
 
 #[tokio::test]
@@ -786,7 +784,7 @@ async fn ui_mutations_accept_valid_csrf_token_with_issued_session_when_remote_ex
 
     assert_eq!(status, 200);
     assert!(body.contains("action=\"/config/validate\""));
-    assert!(body.contains("Validate Config"));
+    assert!(body.contains("Validate config"));
 }
 
 #[tokio::test]
@@ -888,6 +886,7 @@ fn panic_message_extracts_string_payload() {
 #[test]
 fn failed_scan_outcome_is_hidden_when_newer_scan_run_exists() {
     let outcome = LastScanOutcome {
+        operation_id: None,
         finished_at: "2026-03-29 10:00:00 UTC".to_string(),
         scope_label: "Anime".to_string(),
         dry_run: false,
@@ -905,6 +904,7 @@ fn failed_scan_outcome_is_hidden_when_newer_scan_run_exists() {
 #[test]
 fn failed_cleanup_outcome_is_hidden_when_newer_report_exists() {
     let outcome = LastCleanupAuditOutcome {
+        operation_id: None,
         finished_at: "2026-03-29 10:00:00 UTC".to_string(),
         scope_label: "Anime".to_string(),
         libraries_label: "Anime".to_string(),
@@ -917,6 +917,118 @@ fn failed_cleanup_outcome_is_hidden_when_newer_report_exists() {
         &outcome,
         Some("2026-03-29 10:05:00 UTC")
     ));
+}
+
+#[tokio::test]
+async fn active_scan_falls_back_to_persistent_operation_registry_after_web_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = test_config(dir.path());
+    let db = Database::new(&cfg.db_path).await.unwrap();
+    let operation = db
+        .try_acquire_operation("library-operation", "scan", "scheduler", Some("Anime"))
+        .await
+        .unwrap()
+        .unwrap();
+    let state = WebState::new(cfg, db);
+    let active = state.active_scan().await.unwrap();
+    assert_eq!(active.operation_id, operation.id);
+    assert_eq!(active.scope_label, "Anime");
+}
+
+#[tokio::test]
+async fn scheduler_and_cli_operations_block_web_mutation_entry_points() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = test_config(dir.path());
+    let db = Database::new(&cfg.db_path).await.unwrap();
+    let state = WebState::new(cfg, db.clone());
+
+    let scheduled = db
+        .try_acquire_operation("library-operation", "scan", "scheduler", Some("Anime"))
+        .await
+        .unwrap()
+        .unwrap();
+    let repair_error = state.start_repair().await.unwrap_err();
+    assert!(repair_error.contains("scan"));
+    assert!(repair_error.contains("scheduler"));
+    db.finish_operation(scheduled.id, "succeeded", None, None)
+        .await
+        .unwrap();
+
+    let cli = db
+        .try_acquire_operation("library-operation", "cleanup", "cli", None)
+        .await
+        .unwrap()
+        .unwrap();
+    let audit_error = state
+        .start_cleanup_audit(CleanupScope::All, Vec::new())
+        .await
+        .unwrap_err();
+    assert!(audit_error.contains("cleanup"));
+    assert!(audit_error.contains("cli"));
+    db.finish_operation(cli.id, "succeeded", None, None)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn web_shutdown_drains_finished_task_and_interrupts_over_grace_task() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = test_config(dir.path());
+    let db = Database::new(&cfg.db_path).await.unwrap();
+    let state = WebState::new(cfg, db.clone());
+
+    let completed = db
+        .try_acquire_operation("library-operation", "scan", "web", None)
+        .await
+        .unwrap()
+        .unwrap();
+    db.finish_operation(completed.id, "succeeded", Some("done"), None)
+        .await
+        .unwrap();
+    state
+        .background_tasks
+        .lock()
+        .await
+        .push(TrackedBackgroundTask {
+            operation_id: completed.id,
+            handle: tokio::spawn(async {}),
+        });
+    state
+        .drain_background_tasks_with_grace(std::time::Duration::from_secs(1))
+        .await;
+    assert_eq!(
+        db.get_operation_run(completed.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        "succeeded"
+    );
+
+    let interrupted = db
+        .try_acquire_operation("library-operation", "repair_auto", "web", None)
+        .await
+        .unwrap()
+        .unwrap();
+    state
+        .background_tasks
+        .lock()
+        .await
+        .push(TrackedBackgroundTask {
+            operation_id: interrupted.id,
+            handle: tokio::spawn(std::future::pending()),
+        });
+    state
+        .drain_background_tasks_with_grace(std::time::Duration::ZERO)
+        .await;
+    assert_eq!(
+        db.get_operation_run(interrupted.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        "interrupted"
+    );
 }
 
 #[test]

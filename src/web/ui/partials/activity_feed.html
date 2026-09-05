@@ -9,9 +9,8 @@
 >
     <div class="section-head">
         <div>
-            <p class="section-kicker">Live Activity</p>
-            <h2 class="section-title">Activity <span class="htmx-indicator">&#8987;</span></h2>
-            <p class="text-muted">Live jobs and recent scan, cleanup, and repair results.</p>
+            <h2 class="section-title">Live activity <span class="htmx-indicator" aria-hidden="true">&#8987;</span></h2>
+            <p class="section-copy">Background jobs in flight, plus the latest scan, cleanup, and repair outcomes.</p>
         </div>
         <div class="header-badges">
             <span class="badge badge-info">Refresh 5s</span>
@@ -23,19 +22,21 @@
             <div class="activity-feed-column">
                 <h3 class="subsection-title">Running now</h3>
                 {% if activity_feed.active_items|length == 0 %}
-                <p class="text-muted">No background work is currently running.</p>
+                <div class="empty-state">
+                    <span class="empty-state__title">Nothing running.</span>
+                    Background work appears here while it is in flight.
+                </div>
                 {% else %}
                 <div class="activity-feed-stack">
                     {% for item in activity_feed.active_items %}
                     <article class="activity-item activity-item--active">
                         <div class="activity-item__header">
                             <div>
-                                <p class="section-kicker">{{ item.kind_label }}</p>
                                 <h4 class="activity-item__title">{{ item.scope_label }}</h4>
+                                <p class="text-faint">{{ item.kind_label }} &middot; {{ item.timestamp_label }} {{ item.timestamp }}</p>
                             </div>
                             <span class="badge {{ item.status_badge_class }}">{{ item.status_label }}</span>
                         </div>
-                        <p class="text-muted">{{ item.timestamp_label }} {{ item.timestamp }}</p>
                         {% match item.context %}
                         {% when Some with (context) %}
                         <p class="text-muted">{{ context }}</p>
@@ -64,19 +65,21 @@
             <div class="activity-feed-column">
                 <h3 class="subsection-title">Latest outcomes</h3>
                 {% if activity_feed.recent_items|length == 0 %}
-                <p class="text-muted">Recent scans, cleanup work, and repair outcomes will appear here once they are either recorded or finished.</p>
+                <div class="empty-state">
+                    <span class="empty-state__title">No recorded outcomes yet.</span>
+                    Finished scans, cleanup work, and repairs land here.
+                </div>
                 {% else %}
                 <div class="activity-feed-stack">
                     {% for item in activity_feed.recent_items %}
                     <article class="activity-item">
                         <div class="activity-item__header">
                             <div>
-                                <p class="section-kicker">{{ item.kind_label }}</p>
                                 <h4 class="activity-item__title">{{ item.scope_label }}</h4>
+                                <p class="text-faint">{{ item.kind_label }} &middot; {{ item.timestamp_label }} {{ item.timestamp }}</p>
                             </div>
                             <span class="badge {{ item.status_badge_class }}">{{ item.status_label }}</span>
                         </div>
-                        <p class="text-muted">{{ item.timestamp_label }} {{ item.timestamp }}</p>
                         {% match item.context %}
                         {% when Some with (context) %}
                         <p class="text-muted">{{ context }}</p>

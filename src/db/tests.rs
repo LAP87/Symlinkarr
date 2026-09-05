@@ -19,6 +19,88 @@ fn sample_link(source: &str, target: &str) -> LinkRecord {
 }
 
 #[tokio::test]
+async fn operation_registry_allows_exactly_one_concurrent_active_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("operations.db");
+    let db_a = Database::new(path.to_str().unwrap()).await.unwrap();
+    let db_b = Database::new(path.to_str().unwrap()).await.unwrap();
+    let (first, second) = tokio::join!(
+        db_a.try_acquire_operation("library-operation", "scan", "cli", Some("Movies")),
+        db_b.try_acquire_operation("library-operation", "repair_auto", "web", None),
+    );
+    let successful = [first.unwrap(), second.unwrap()]
+        .into_iter()
+        .filter(|result| result.is_ok())
+        .count();
+    assert_eq!(successful, 1);
+}
+
+#[tokio::test]
+async fn operation_registry_reports_active_conflict_and_preserves_terminal_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Database::new(dir.path().join("operations.db").to_str().unwrap())
+        .await
+        .unwrap();
+    let first = db
+        .try_acquire_operation("library-operation", "scan", "cli", Some("TV"))
+        .await
+        .unwrap()
+        .unwrap();
+    let conflict = db
+        .try_acquire_operation("library-operation", "cleanup_audit", "web", None)
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(conflict.active.id, first.id);
+    assert_eq!(conflict.active.kind, "scan");
+    assert_eq!(conflict.active.origin, "cli");
+    assert_eq!(conflict.active.scope.as_deref(), Some("TV"));
+
+    db.finish_operation(first.id, "succeeded", Some("done"), Some("{}"))
+        .await
+        .unwrap();
+    let history = db.list_operation_runs(10).await.unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].status, "succeeded");
+    assert_eq!(history[0].message.as_deref(), Some("done"));
+}
+
+#[tokio::test]
+async fn operation_registry_recovers_only_stale_heartbeats() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Database::new(dir.path().join("operations.db").to_str().unwrap())
+        .await
+        .unwrap();
+    let fresh = db
+        .try_acquire_operation("library-operation", "scan", "cli", None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(db.heartbeat_operation(fresh.id).await.unwrap());
+    let fresh_conflict = db
+        .try_acquire_operation("library-operation", "repair_auto", "web", None)
+        .await
+        .unwrap();
+    assert!(fresh_conflict.is_err());
+
+    sqlx::query(
+        "UPDATE operation_runs SET heartbeat_at = datetime('now', '-301 seconds') WHERE id = ?",
+    )
+    .bind(fresh.id)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let recovered = db
+        .try_acquire_operation("library-operation", "repair_auto", "web", None)
+        .await
+        .unwrap()
+        .unwrap();
+    let old = db.get_operation_run(fresh.id).await.unwrap().unwrap();
+    assert_eq!(old.status, "interrupted");
+    assert_eq!(recovered.status, "running");
+}
+
+#[tokio::test]
 async fn test_insert_and_get_active_links() {
     let dir = tempfile::tempdir().unwrap();
     let db = Database::new(dir.path().join("test.db").to_str().unwrap())
@@ -380,6 +462,10 @@ async fn test_migrations_can_move_down_and_up() {
     assert!(db.table_exists("acquisition_jobs").await.unwrap());
     assert!(db.table_exists("anime_search_overrides").await.unwrap());
     assert!(db.table_exists("scheduler_rules").await.unwrap());
+    assert!(db
+        .column_exists("acquisition_jobs", "relink_attempts")
+        .await
+        .unwrap());
     assert!(db.table_exists("scheduler_runs").await.unwrap());
     assert!(db.table_exists("scheduler_state").await.unwrap());
 
@@ -403,6 +489,50 @@ async fn test_migrations_can_move_down_and_up() {
     assert!(db.table_exists("acquisition_jobs").await.unwrap());
     assert!(db.table_exists("anime_search_overrides").await.unwrap());
     assert!(db.table_exists("scheduler_rules").await.unwrap());
+}
+
+#[tokio::test]
+async fn test_acquisition_jobs_v20_migrate_to_v21_with_relink_attempts() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+        .await
+        .unwrap();
+
+    db.migrate_to_for_tests(20).await.unwrap();
+    assert!(!db
+        .column_exists("acquisition_jobs", "relink_attempts")
+        .await
+        .unwrap());
+
+    sqlx::query(
+        "INSERT INTO acquisition_jobs
+         (request_key, label, query, categories_json, arr, relink_kind, relink_value, status)
+         VALUES ('v20-job', 'V20 Job', 'V20 Query', '[]', 'sonarr', 'media_id', 'tvdb-v20', 'failed')",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+
+    db.migrate_to_for_tests(21).await.unwrap();
+    let migrated = db
+        .list_acquisition_jobs(None, 10)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|job| job.request_key == "v20-job")
+        .unwrap();
+    assert_eq!(migrated.relink_attempts, 0);
+
+    db.migrate_to_for_tests(20).await.unwrap();
+    assert!(!db
+        .column_exists("acquisition_jobs", "relink_attempts")
+        .await
+        .unwrap());
+    db.migrate_to_for_tests(21).await.unwrap();
+    assert!(db
+        .column_exists("acquisition_jobs", "relink_attempts")
+        .await
+        .unwrap());
 }
 
 #[tokio::test]
@@ -768,6 +898,8 @@ async fn test_acquisition_jobs_deduplicate_and_resume_when_due() {
             submitted_at: None,
             completed_at: None,
             increment_attempts: true,
+            increment_relink_attempts: false,
+            reset_relink_attempts: false,
         },
     )
     .await
@@ -799,6 +931,8 @@ async fn test_acquisition_jobs_deduplicate_and_resume_when_due() {
             submitted_at: None,
             completed_at: None,
             increment_attempts: false,
+            increment_relink_attempts: false,
+            reset_relink_attempts: false,
         },
     )
     .await
@@ -861,6 +995,8 @@ async fn test_completed_linked_jobs_do_not_reset_on_reenqueue() {
             submitted_at: Some(Utc::now()),
             completed_at: Some(Utc::now()),
             increment_attempts: false,
+            increment_relink_attempts: false,
+            reset_relink_attempts: false,
         },
     )
     .await
@@ -1082,6 +1218,8 @@ async fn test_recover_stale_downloading_jobs() {
             submitted_at: Some(old_submitted),
             completed_at: None,
             increment_attempts: true,
+            increment_relink_attempts: false,
+            reset_relink_attempts: false,
         },
     )
     .await
@@ -1100,6 +1238,8 @@ async fn test_recover_stale_downloading_jobs() {
             submitted_at: Some(recent_submitted),
             completed_at: None,
             increment_attempts: true,
+            increment_relink_attempts: false,
+            reset_relink_attempts: false,
         },
     )
     .await
@@ -1190,6 +1330,251 @@ async fn test_max_job_attempts_gate() {
     assert_eq!(manageable[0].attempts, 0);
 }
 
+#[tokio::test]
+async fn test_acquisition_retry_caps_keep_active_jobs_resumable() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+        .await
+        .unwrap();
+
+    for (key, label, value) in [
+        ("cap-downloading", "Downloading", "tvdb-201"),
+        ("cap-relinking", "Relinking", "tvdb-202"),
+        ("cap-failed", "Failed", "tvdb-203"),
+        ("cap-unlinked", "Unlinked", "tvdb-204"),
+        ("capacity-blocked", "Blocked", "tvdb-205"),
+    ] {
+        db.enqueue_acquisition_jobs(&[make_seed(key, label, value)])
+            .await
+            .unwrap();
+    }
+
+    sqlx::query(
+        "UPDATE acquisition_jobs
+         SET attempts = ?, relink_attempts = ?, status = CASE request_key
+             WHEN 'cap-downloading' THEN 'downloading'
+             WHEN 'cap-relinking' THEN 'relinking'
+             WHEN 'cap-failed' THEN 'failed'
+             WHEN 'cap-unlinked' THEN 'completed_unlinked'
+             WHEN 'capacity-blocked' THEN 'blocked'
+         END,
+         next_retry_at = NULL",
+    )
+    .bind(MAX_JOB_ATTEMPTS)
+    .bind(MAX_JOB_ATTEMPTS)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+
+    let manageable = db.get_manageable_acquisition_jobs().await.unwrap();
+    let keys = manageable
+        .iter()
+        .map(|job| job.request_key.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    assert!(keys.contains("cap-downloading"));
+    assert!(keys.contains("cap-relinking"));
+    assert!(keys.contains("capacity-blocked"));
+    assert!(!keys.contains("cap-failed"));
+    assert!(!keys.contains("cap-unlinked"));
+
+    let reloaded_downloading = manageable
+        .iter()
+        .find(|job| job.request_key == "cap-downloading")
+        .unwrap();
+    db.update_acquisition_job_state(
+        reloaded_downloading.id,
+        &AcquisitionJobUpdate {
+            status: AcquisitionJobStatus::CompletedLinked,
+            release_title: Some("Recovered after restart".to_string()),
+            info_hash: None,
+            error: None,
+            next_retry_at: None,
+            submitted_at: Some(Utc::now()),
+            completed_at: Some(Utc::now()),
+            increment_attempts: false,
+            increment_relink_attempts: false,
+            reset_relink_attempts: false,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        db.list_acquisition_jobs(None, 10)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|job| job.request_key == "cap-downloading")
+            .unwrap()
+            .status,
+        AcquisitionJobStatus::CompletedLinked
+    );
+}
+
+#[tokio::test]
+async fn test_manual_retry_resets_both_acquisition_counters() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+        .await
+        .unwrap();
+    let seed = make_seed("retry-both", "Retry Both", "tvdb-206");
+    db.enqueue_acquisition_jobs(&[seed]).await.unwrap();
+
+    sqlx::query(
+        "UPDATE acquisition_jobs
+         SET status = 'completed_unlinked', attempts = ?, relink_attempts = ?
+         WHERE request_key = 'retry-both'",
+    )
+    .bind(MAX_JOB_ATTEMPTS)
+    .bind(MAX_JOB_ATTEMPTS)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    assert!(db
+        .get_manageable_acquisition_jobs()
+        .await
+        .unwrap()
+        .is_empty());
+
+    assert_eq!(
+        db.retry_acquisition_jobs(&[AcquisitionJobStatus::CompletedUnlinked])
+            .await
+            .unwrap(),
+        1
+    );
+    let retried = db.get_manageable_acquisition_jobs().await.unwrap();
+    assert_eq!(retried.len(), 1);
+    assert_eq!(retried[0].attempts, 0);
+    assert_eq!(retried[0].relink_attempts, 0);
+    assert_eq!(retried[0].status, AcquisitionJobStatus::Queued);
+}
+
+#[tokio::test]
+async fn test_relink_cycles_and_capacity_deferral_do_not_spend_submission_budget() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+        .await
+        .unwrap();
+    db.enqueue_acquisition_jobs(&[
+        make_seed("reused-relink", "Reused Relink", "tvdb-207"),
+        make_seed("capacity-deferral", "Capacity", "tvdb-208"),
+    ])
+    .await
+    .unwrap();
+
+    let jobs = db.get_manageable_acquisition_jobs().await.unwrap();
+    let relink_id = jobs
+        .iter()
+        .find(|job| job.request_key == "reused-relink")
+        .unwrap()
+        .id;
+    let capacity_id = jobs
+        .iter()
+        .find(|job| job.request_key == "capacity-deferral")
+        .unwrap()
+        .id;
+
+    db.update_acquisition_job_state(
+        capacity_id,
+        &AcquisitionJobUpdate {
+            status: AcquisitionJobStatus::Queued,
+            release_title: None,
+            info_hash: None,
+            error: Some("capacity deferred".to_string()),
+            next_retry_at: Some(Utc::now() - chrono::Duration::minutes(1)),
+            submitted_at: None,
+            completed_at: None,
+            increment_attempts: false,
+            increment_relink_attempts: false,
+            reset_relink_attempts: false,
+        },
+    )
+    .await
+    .unwrap();
+
+    for expected_relink_attempts in 1..=3 {
+        db.update_acquisition_job_state(
+            relink_id,
+            &AcquisitionJobUpdate {
+                status: AcquisitionJobStatus::Relinking,
+                release_title: Some("already in Decypharr".to_string()),
+                info_hash: None,
+                error: None,
+                next_retry_at: None,
+                submitted_at: Some(Utc::now()),
+                completed_at: Some(Utc::now()),
+                increment_attempts: false,
+                increment_relink_attempts: true,
+                reset_relink_attempts: false,
+            },
+        )
+        .await
+        .unwrap();
+        db.update_acquisition_job_state(
+            relink_id,
+            &AcquisitionJobUpdate {
+                status: AcquisitionJobStatus::CompletedUnlinked,
+                release_title: Some("already in Decypharr".to_string()),
+                info_hash: None,
+                error: Some("relink timed out".to_string()),
+                next_retry_at: Some(Utc::now() - chrono::Duration::minutes(1)),
+                submitted_at: Some(Utc::now()),
+                completed_at: Some(Utc::now()),
+                increment_attempts: false,
+                increment_relink_attempts: false,
+                reset_relink_attempts: false,
+            },
+        )
+        .await
+        .unwrap();
+
+        let relink = db
+            .list_acquisition_jobs(None, 10)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|job| job.id == relink_id)
+            .unwrap();
+        assert_eq!(relink.attempts, 0);
+        assert_eq!(relink.relink_attempts, expected_relink_attempts);
+
+        if expected_relink_attempts < 3 {
+            db.update_acquisition_job_state(
+                relink_id,
+                &AcquisitionJobUpdate {
+                    status: AcquisitionJobStatus::Downloading,
+                    release_title: Some("already in Decypharr".to_string()),
+                    info_hash: None,
+                    error: None,
+                    next_retry_at: None,
+                    submitted_at: Some(Utc::now()),
+                    completed_at: None,
+                    increment_attempts: false,
+                    increment_relink_attempts: false,
+                    reset_relink_attempts: false,
+                },
+            )
+            .await
+            .unwrap();
+        }
+    }
+
+    let capacity = db
+        .list_acquisition_jobs(None, 10)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|job| job.id == capacity_id)
+        .unwrap();
+    assert_eq!(capacity.attempts, 0);
+    assert_eq!(capacity.relink_attempts, 0);
+    assert!(db
+        .get_manageable_acquisition_jobs()
+        .await
+        .unwrap()
+        .iter()
+        .any(|job| job.id == capacity_id));
+}
+
 // ── Test 4: retry_acquisition_jobs by status ───────────────────────────────
 
 #[tokio::test]
@@ -1242,6 +1627,8 @@ async fn test_retry_acquisition_jobs_by_status() {
             submitted_at: None,
             completed_at: None,
             increment_attempts: false,
+            increment_relink_attempts: false,
+            reset_relink_attempts: false,
         },
     )
     .await
@@ -1257,6 +1644,8 @@ async fn test_retry_acquisition_jobs_by_status() {
             submitted_at: None,
             completed_at: None,
             increment_attempts: false,
+            increment_relink_attempts: false,
+            reset_relink_attempts: false,
         },
     )
     .await
@@ -1272,6 +1661,8 @@ async fn test_retry_acquisition_jobs_by_status() {
             submitted_at: None,
             completed_at: None,
             increment_attempts: false,
+            increment_relink_attempts: false,
+            reset_relink_attempts: false,
         },
     )
     .await
@@ -1351,6 +1742,8 @@ async fn test_manageable_jobs_priority_ordering() {
             submitted_at: Some(Utc::now()),
             completed_at: None,
             increment_attempts: false,
+            increment_relink_attempts: false,
+            reset_relink_attempts: false,
         },
     )
     .await
@@ -1367,6 +1760,8 @@ async fn test_manageable_jobs_priority_ordering() {
             submitted_at: None,
             completed_at: None,
             increment_attempts: false,
+            increment_relink_attempts: false,
+            reset_relink_attempts: false,
         },
     )
     .await
@@ -1425,6 +1820,8 @@ async fn test_list_acquisition_jobs_status_filter() {
             submitted_at: None,
             completed_at: None,
             increment_attempts: false,
+            increment_relink_attempts: false,
+            reset_relink_attempts: false,
         },
     )
     .await
@@ -1440,6 +1837,8 @@ async fn test_list_acquisition_jobs_status_filter() {
             submitted_at: None,
             completed_at: None,
             increment_attempts: false,
+            increment_relink_attempts: false,
+            reset_relink_attempts: false,
         },
     )
     .await
@@ -2036,12 +2435,29 @@ async fn database_enables_foreign_keys() {
         .await
         .unwrap();
 
-    let enabled: i64 = sqlx::query("PRAGMA foreign_keys")
-        .fetch_one(&db.pool)
-        .await
-        .unwrap()
-        .get(0);
-    assert_eq!(enabled, 1);
+    // Hold every pooled connection simultaneously so we verify the settings are
+    // applied per-connection (not just to whichever connection a pool query grabs).
+    let max_connections = db.pool.options().get_max_connections();
+    let mut connections = Vec::new();
+    for _ in 0..max_connections {
+        connections.push(db.pool.acquire().await.unwrap());
+    }
+
+    for conn in &mut connections {
+        let enabled: i64 = sqlx::query("PRAGMA foreign_keys")
+            .fetch_one(&mut **conn)
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(enabled, 1);
+
+        let busy_timeout: i64 = sqlx::query("PRAGMA busy_timeout")
+            .fetch_one(&mut **conn)
+            .await
+            .unwrap()
+            .get(0);
+        assert!(busy_timeout > 0);
+    }
 }
 
 fn test_scheduler_rule(name: &str) -> ScheduleRule {

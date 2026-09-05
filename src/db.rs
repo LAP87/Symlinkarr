@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::Result;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::SqlitePool;
 use tracing::info;
 
@@ -12,12 +13,14 @@ mod daemon_heartbeat;
 mod links;
 mod maintenance;
 mod migrations;
+mod operations;
 mod scan_runs;
 mod scheduler;
 #[cfg(test)]
 mod tests;
 mod types;
 
+pub use operations::*;
 pub use types::*;
 
 /// Maximum number of attempts before a job stops being picked up for retry (H-10).
@@ -39,7 +42,7 @@ pub struct Database {
     db_path: PathBuf,
 }
 
-const LATEST_SCHEMA_VERSION: i64 = 20;
+const LATEST_SCHEMA_VERSION: i64 = 22;
 
 // SqlitePool is Clone (wraps Arc), so Database can safely be Clone
 impl Clone for Database {
@@ -63,24 +66,19 @@ impl Database {
             }
         }
 
+        // Configure the connection options so relational safeguards and concurrency
+        // tuning apply to every pooled connection, not just the first one checked out.
         let options = SqliteConnectOptions::new()
             .filename(&path)
-            .create_if_missing(true);
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .synchronous(SqliteSynchronous::Normal)
+            .foreign_keys(true)
+            .busy_timeout(Duration::from_secs(5));
 
         let pool = SqlitePoolOptions::new()
             .max_connections(5)
             .connect_with(options)
-            .await?;
-
-        // Enable relational safeguards, then tune SQLite for concurrent CLI/daemon/web access.
-        sqlx::query("PRAGMA foreign_keys = ON")
-            .execute(&pool)
-            .await?;
-        sqlx::query("PRAGMA journal_mode = WAL")
-            .execute(&pool)
-            .await?;
-        sqlx::query("PRAGMA busy_timeout = 5000")
-            .execute(&pool)
             .await?;
 
         let db = Self {

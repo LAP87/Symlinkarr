@@ -105,24 +105,46 @@ pub async fn api_post_scheduler_rule_run_now(
         Ok(None) => return api_error(StatusCode::NOT_FOUND, "Scheduler rule not found"),
         Err(err) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
     };
-    let permit = match state.scheduler_jobs().try_acquire_owned() {
-        Ok(permit) => permit,
-        Err(_) => {
-            return api_error(
-                StatusCode::CONFLICT,
-                "Another scheduler job is already running",
-            )
-        }
-    };
     match crate::scheduler::claim_rule_now(&state.database, &rule).await {
         Ok(run_id) => {
+            let lease = match crate::scheduler::acquire_rule_operation(&state.database, &rule).await
+            {
+                Ok(lease) => lease,
+                Err(err) => {
+                    let message = err.to_string();
+                    let _ = state
+                        .database
+                        .finish_scheduler_run(
+                            run_id,
+                            crate::scheduler::JobRunStatus::Failed,
+                            Some(&message),
+                            None,
+                        )
+                        .await;
+                    let status = if err.downcast_ref::<crate::db::OperationConflict>().is_some() {
+                        StatusCode::CONFLICT
+                    } else {
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    };
+                    return api_error(status, message);
+                }
+            };
             let config = state.config.clone();
             let database = state.database.clone();
             tokio::spawn(async move {
-                let _permit = permit;
-                if let Err(err) =
-                    crate::scheduler::execute_claimed_rule(&config, &database, &rule, run_id).await
-                {
+                let result = match lease {
+                    Some(lease) => {
+                        crate::scheduler::execute_claimed_rule_with_lease(
+                            &config, &database, &rule, run_id, lease,
+                        )
+                        .await
+                    }
+                    None => {
+                        crate::scheduler::execute_claimed_rule(&config, &database, &rule, run_id)
+                            .await
+                    }
+                };
+                if let Err(err) = result {
                     tracing::error!(run_id, "Background scheduler run failed: {}", err);
                 }
             });

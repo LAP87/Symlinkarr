@@ -7,28 +7,23 @@
 {% block content %}
 <div class="page-header page-header--split">
     <div>
-        <div class="page-meta">
-            <p class="page-kicker">Cleanup</p>
-            <span class="page-taxonomy page-taxonomy--inspection">Preview</span>
-        </div>
-        <h1>Prune Preview</h1>
-        <p class="page-lead">Review what cleanup found before applying any changes.</p>
-        <div class="page-help-links">
-            <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Cleanup-Audit-and-Prune-Preview" target="_blank" rel="noreferrer noopener">
-                <span class="help-link__eyebrow">Learn more</span>
-                <span class="help-link__title">Blocked findings and apply rules</span>
-            </a>
-        </div>
+        <h1>Prune preview</h1>
+        <p class="page-lead">Review every candidate here; apply is the only step that deletes anything.</p>
     </div>
-    <div class="header-badges">
-        <span class="badge badge-danger">{{ total }} findings</span>
+    <div class="page-header__aside">
+        <span class="badge {% if total > 0 %}badge-warning{% else %}badge-success{% endif %}">{{ total|thousands }} findings</span>
+        <span class="badge {% if actionable_candidates > 0 %}badge-danger{% else %}badge-secondary{% endif %}">{{ actionable_candidates|thousands }} to apply</span>
+        <a class="doc-link" href="https://github.com/LAP87/Symlinkarr/wiki/Cleanup-Audit-and-Prune-Preview" target="_blank" rel="noreferrer noopener">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14L21 3"/></svg>
+            Prune rules
+        </a>
     </div>
 </div>
 
 {% match error_message %}
 {% when Some with (message) %}
 <div class="alert alert-error">
-    <strong>Preview unavailable:</strong> {{ message }}
+    <strong>Preview unavailable.</strong> {{ message }}
 </div>
 {% when None %}{% endmatch %}
 
@@ -36,17 +31,16 @@
 {% when Some with (guard) %}
 <div class="alert alert-warning">
     <strong>Active playback overlaps this apply set.</strong>
-    {{ guard.protected_count }} candidate path(s) in this preview are currently streaming, so cleanup apply will refuse to run until playback stops.
+    {{ guard.protected_count|thousands }} candidate path(s) in this preview are currently streaming, so cleanup apply will refuse to run until playback stops.
 </div>
 <details class="card disclosure-card">
     <summary class="disclosure-card__summary">
         <div class="disclosure-card__copy">
-            <span class="disclosure-card__eyebrow">Playback guard</span>
             <h2 class="disclosure-card__title">Protected paths in this preview</h2>
-            <p class="disclosure-card__hint">Open when you need the exact sample paths that are currently keeping apply blocked.</p>
+            <p class="disclosure-card__hint">Sample paths currently keeping apply blocked.</p>
         </div>
         <div class="disclosure-card__meta">
-            <span class="badge badge-warning">{{ guard.protected_count }} protected</span>
+            <span class="badge badge-warning">{{ guard.protected_count|thousands }} protected</span>
             <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
         </div>
     </summary>
@@ -61,251 +55,276 @@
 {% when None %}{% endmatch %}
 
 {% if findings|length > 0 %}
-<div class="split-grid">
-    <section class="card hero-card hero-card--accent">
-        <p class="hero-label">Summary</p>
-        <div class="hero-value">{{ total }}</div>
-        <div class="hero-inline-stats">
-            <span>Critical <strong class="text-error">{{ critical }}</strong></span>
-            <span>High <strong class="text-warning">{{ high }}</strong></span>
-            <span>Info <strong class="text-info">{{ warning }}</strong></span>
-        </div>
-    </section>
+<div class="settings-layout">
+    <nav class="settings-rail" id="prune-rail" data-section-rail aria-label="Prune preview sections">
+        <a href="#prune-summary" class="settings-rail__link active">Summary</a>
+        <a href="#prune-findings" class="settings-rail__link">Findings</a>
+        <a href="#prune-blockers" class="settings-rail__link">Blockers</a>
+        <a href="#prune-apply" class="settings-rail__link">Apply</a>
+    </nav>
 
-    <section class="card">
-        <div class="section-head">
-            <div>
-                <h2 class="section-title">What happens when you apply</h2>
+    <div class="settings-content">
+        <section id="prune-summary" class="card">
+            <div class="section-head">
+                <div>
+                    <h2 class="section-title">Summary</h2>
+                    <p class="section-copy">What applying this report would do, before it does it.</p>
+                </div>
+                <div class="header-badges">
+                    <span class="badge {% if critical > 0 %}badge-danger{% else %}badge-success{% endif %}">{{ critical|thousands }} critical</span>
+                    <span class="badge {% if high > 0 %}badge-warning{% else %}badge-success{% endif %}">{{ high|thousands }} high</span>
+                    <span class="badge badge-info">{{ warning|thousands }} info</span>
+                </div>
             </div>
-        </div>
-        <div class="metric-grid metric-grid--compact">
-            <div class="metric-card">
-                <span class="metric-label">Will be removed</span>
-                <strong>{{ managed_candidates }}</strong>
+
+            <div class="metric-grid metric-grid--compact">
+                <div class="metric-card">
+                    <span class="metric-label">Will be removed</span>
+                    <strong class="{% if managed_candidates > 0 %}text-error{% else %}text-muted{% endif %}">{{ managed_candidates|thousands }}</strong>
+                    <span class="metric-meta">Managed symlinks deleted outright.</span>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-label">Moved to quarantine</span>
+                    <strong class="{% if foreign_candidates > 0 %}text-warning{% else %}text-muted{% endif %}">{{ foreign_candidates|thousands }}</strong>
+                    <span class="metric-meta">Foreign files set aside, not deleted.</span>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-label">Skipped</span>
+                    <strong class="text-muted">{{ blocked_candidates|thousands }}</strong>
+                    <span class="metric-meta">Blocked by a trust gate.</span>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-label">Ready to apply</span>
+                    <strong class="{% if actionable_candidates > 0 %}text-error{% else %}text-success{% endif %}">{{ actionable_candidates|thousands }}</strong>
+                    <span class="metric-meta">Total rows the apply button touches.</span>
+                </div>
             </div>
-            <div class="metric-card">
-                <span class="metric-label">Moved to quarantine</span>
-                <strong>{{ foreign_candidates }}</strong>
-            </div>
-            <div class="metric-card">
-                <span class="metric-label">Skipped</span>
-                <strong>{{ blocked_candidates }}</strong>
-            </div>
-            <div class="metric-card">
-                <span class="metric-label">Ready to apply</span>
-                <strong>{{ actionable_candidates }}</strong>
-            </div>
-        </div>
-        {% if reason_counts|length > 0 %}
-        <div class="mt-2">
-            <p class="section-kicker">Reasons</p>
+
+            {% if reason_counts|length > 0 %}
+            <h3 class="subsection-title mt-2">Reasons</h3>
             <div class="badge-stack">
                 {% for bucket in reason_counts %}
-                <span class="badge badge-info">{{ bucket.reason }}: {{ bucket.total }}</span>
+                <span class="badge badge-info">{{ bucket.reason }}: {{ bucket.total|thousands }}</span>
                 {% endfor %}
             </div>
-        </div>
-        {% endif %}
-    </section>
-</div>
+            {% endif %}
+        </section>
 
-{% if blocked_reason_summary|length > 0 %}
-<details class="card disclosure-card">
-    <summary class="disclosure-card__summary">
-        <div class="disclosure-card__copy">
-            <span class="disclosure-card__eyebrow">Blocked</span>
-            <h2 class="disclosure-card__title">Apply blockers and trust gates</h2>
-            <p class="disclosure-card__hint">Open when you need to understand why some rows stayed out of the apply set.</p>
-        </div>
-        <div class="disclosure-card__meta">
-            <span class="badge badge-warning">{{ blocked_reason_summary|length }} blocker groups</span>
-            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
-        </div>
-    </summary>
-    <div class="disclosure-card__body">
-        <div class="stack-list">
-            {% for blocked in blocked_reason_summary %}
-            <div class="kv-row">
-                <strong>{{ blocked.label }}</strong>
-                <span class="text-muted">{{ blocked.candidates }} candidate(s)</span>
+        <section id="prune-findings" class="card">
+            <div class="section-head">
+                <div>
+                    <h2 class="section-title">Findings</h2>
+                    <p class="section-copy">Row-level reasons and exact paths for every candidate.</p>
+                </div>
+                <div class="header-badges">
+                    <span class="badge badge-info">{{ total|thousands }} items</span>
+                </div>
             </div>
-            <p class="text-muted mb-1">{{ blocked.recommended_action }}</p>
-            {% endfor %}
-        </div>
-    </div>
-</details>
-{% endif %}
 
-{% if legacy_anime_root_groups|length > 0 %}
-<details class="card disclosure-card">
-    <summary class="disclosure-card__summary">
-        <div class="disclosure-card__copy">
-            <span class="disclosure-card__eyebrow">Anime</span>
-            <h2 class="disclosure-card__title">Legacy anime root groups</h2>
-            <p class="disclosure-card__hint">Open when duplicate anime roots are driving the cleanup plan or blocking auto-prune trust.</p>
-        </div>
-        <div class="disclosure-card__meta">
-            <span class="badge badge-info">{{ legacy_anime_root_groups|length }} groups</span>
-            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
-        </div>
-    </summary>
-    <div class="disclosure-card__body">
-        <div class="stack-list">
-            {% for group in legacy_anime_root_groups %}
-            <div class="kv-row">
-                <strong>{{ group.normalized_title }}</strong>
-                <span class="text-muted">{{ group.total }} group(s)</span>
+            <div class="table-wrap">
+            <table class="data-table dense-table">
+                <thead>
+                    <tr>
+                        <th>Severity</th>
+                        <th>Path</th>
+                        <th>Action</th>
+                        <th>Reasons</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for finding in findings %}
+                    <tr>
+                        <td>
+                            {% match finding.finding.severity %}
+                            {% when crate::cleanup_audit::FindingSeverity::Critical %}
+                            <span class="badge badge-danger">Critical</span>
+                            {% when crate::cleanup_audit::FindingSeverity::High %}
+                            <span class="badge badge-warning">High</span>
+                            {% when crate::cleanup_audit::FindingSeverity::Warning %}
+                            <span class="badge badge-info">Info</span>
+                            {% endmatch %}
+                        </td>
+                        <td><code class="mono">{{ finding.finding.symlink_path.display() }}</code></td>
+                        <td><span class="badge {{ finding.action_badge_class }}">{{ finding.action_label }}</span></td>
+                        <td>
+                            <span class="badge-stack">
+                                {% for reason in finding.finding.reasons %}
+                                <span class="badge badge-info">{{ reason }}</span>
+                                {% endfor %}
+                            </span>
+                            {% match finding.alternate_match_summary %}
+                            {% when Some with (summary) %}
+                            <p class="text-muted mt-1">{{ summary }}</p>
+                            {% when None %}{% endmatch %}
+                            {% match finding.legacy_anime_root_summary %}
+                            {% when Some with (summary) %}
+                            <p class="text-muted mt-1">{{ summary }}</p>
+                            <div class="badge-stack">
+                                {% for root in finding.legacy_anime_tagged_roots %}
+                                <span class="badge badge-secondary mono">{{ root.display() }}</span>
+                                {% endfor %}
+                            </div>
+                            {% when None %}{% endmatch %}
+                            {% match finding.blocked_reason_label %}
+                            {% when Some with (label) %}
+                            <p class="text-muted mt-1"><strong>{{ label }}</strong></p>
+                            {% when None %}{% endmatch %}
+                            {% match finding.blocked_reason_recommended_action %}
+                            {% when Some with (action) %}
+                            <p class="text-muted">{{ action }}</p>
+                            {% when None %}{% endmatch %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
             </div>
-            <div class="badge-stack mb-1">
-                {% for root in group.tagged_roots %}
-                <span class="badge badge-info mono">{{ root.display() }}</span>
+        </section>
+
+        <section id="prune-blockers" class="card">
+            <div class="section-head">
+                <div>
+                    <h2 class="section-title">Apply blockers and trust gates</h2>
+                    <p class="section-copy">Why some rows stayed out of the apply set.</p>
+                </div>
+                <div class="header-badges">
+                    <span class="badge {% if blocked_candidates > 0 %}badge-warning{% else %}badge-success{% endif %}">{{ blocked_candidates|thousands }} skipped</span>
+                </div>
+            </div>
+
+            {% if blocked_reason_summary|length > 0 %}
+            <div class="def-rows">
+                {% for blocked in blocked_reason_summary %}
+                <div class="def-row">
+                    <div class="def-row__key">
+                        <div class="def-row__label">{{ blocked.label }}</div>
+                        <div class="def-row__hint">{{ blocked.recommended_action }}</div>
+                    </div>
+                    <div class="def-row__value">
+                        <span class="badge badge-warning">{{ blocked.candidates|thousands }} candidate(s)</span>
+                    </div>
+                </div>
                 {% endfor %}
             </div>
-            {% endfor %}
-        </div>
-    </div>
-</details>
-{% endif %}
+            {% endif %}
 
-{% match confirmation_token %}
-{% when Some with (token) %}
-{% match report_path %}
-{% when Some with (path) %}
-
-<details class="card disclosure-card">
-    <summary class="disclosure-card__summary">
-        <div class="disclosure-card__copy">
-            <span class="disclosure-card__eyebrow">Detailed findings</span>
-            <h2 class="disclosure-card__title">Row-level reasons and exact paths</h2>
-            <p class="disclosure-card__hint">Open when the summary is not enough and you need the exact symlink path, action, and blocker context for each row.</p>
-        </div>
-        <div class="disclosure-card__meta">
-            <span class="badge badge-info">{{ total }} items</span>
-            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
-        </div>
-    </summary>
-    <div class="disclosure-card__body">
-        <div class="table-wrap">
-        <table class="data-table dense-table">
-            <thead>
-                <tr>
-                    <th>Severity</th>
-                    <th>Path</th>
-                    <th>Action</th>
-                    <th>Reasons</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for finding in findings %}
-                <tr>
-                    <td>
-                        {% match finding.finding.severity %}
-                        {% when crate::cleanup_audit::FindingSeverity::Critical %}
-                        <span class="badge badge-danger">Critical</span>
-                        {% when crate::cleanup_audit::FindingSeverity::High %}
-                        <span class="badge badge-warning">High</span>
-                        {% when crate::cleanup_audit::FindingSeverity::Warning %}
-                        <span class="badge badge-info">Info</span>
-                        {% endmatch %}
-                    </td>
-                    <td><code class="mono">{{ finding.finding.symlink_path.display() }}</code></td>
-                    <td><span class="badge {{ finding.action_badge_class }}">{{ finding.action_label }}</span></td>
-                    <td>
-                        <span class="badge-stack">
-                            {% for reason in finding.finding.reasons %}
-                            <span class="badge badge-info">{{ reason }}</span>
-                            {% endfor %}
-                        </span>
-                        {% match finding.alternate_match_summary %}
-                        {% when Some with (summary) %}
-                        <p class="text-muted mt-1">{{ summary }}</p>
-                        {% when None %}{% endmatch %}
-                        {% match finding.legacy_anime_root_summary %}
-                        {% when Some with (summary) %}
-                        <p class="text-muted mt-1">{{ summary }}</p>
-                        <div class="badge-stack">
-                            {% for root in finding.legacy_anime_tagged_roots %}
+            {% if legacy_anime_root_groups|length > 0 %}
+            <h3 class="subsection-title mt-2">Legacy anime root groups</h3>
+            <div class="def-rows">
+                {% for group in legacy_anime_root_groups %}
+                <div class="def-row">
+                    <div class="def-row__key">
+                        <div class="def-row__label">{{ group.normalized_title }}</div>
+                        <div class="def-row__hint">Duplicate tagged roots can block auto-prune trust.</div>
+                    </div>
+                    <div class="def-row__value">
+                        <span class="badge badge-info">{{ group.total|thousands }} group(s)</span>
+                        <div class="badge-stack mt-1">
+                            {% for root in group.tagged_roots %}
                             <span class="badge badge-secondary mono">{{ root.display() }}</span>
                             {% endfor %}
                         </div>
-                        {% when None %}{% endmatch %}
-                        {% match finding.blocked_reason_label %}
-                        {% when Some with (label) %}
-                        <p class="text-muted mt-1"><strong>{{ label }}</strong></p>
-                        {% when None %}{% endmatch %}
-                        {% match finding.blocked_reason_recommended_action %}
-                        {% when Some with (action) %}
-                        <p class="text-muted">{{ action }}</p>
-                        {% when None %}{% endmatch %}
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-        </div>
-    </div>
-</details>
-
-<div class="card">
-    {% if already_applied %}
-    <div class="alert alert-warning">
-        <strong>Already applied.</strong> This report has already been used for cleanup. Run a new audit from the <a href="/cleanup">cleanup page</a> to generate a fresh report.
-    </div>
-    <div class="actions mt-2">
-        <a href="/cleanup" class="btn btn-secondary">Back to Cleanup</a>
-    </div>
-    {% else if actionable_candidates > 0 %}
-    <form action="/cleanup/prune" method="post">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <input type="hidden" name="report" value="{{ path.display() }}">
-        <div class="form-group">
-            <label class="toggle-row">
-                <input type="checkbox" id="confirm-prune" required>
-                <div>
-                    <strong>I have reviewed the findings above and want to apply this cleanup.</strong>
-                    <p class="text-muted">{{ actionable_candidates }} links will be cleaned up. This cannot be undone.</p>
+                    </div>
                 </div>
-            </label>
-        </div>
-        <div class="actions mt-2">
-            <button type="submit" class="btn btn-danger" id="apply-btn" disabled>
-                Apply Cleanup
-            </button>
-            <a href="/cleanup" class="btn btn-secondary">Back to Cleanup</a>
-        </div>
-    </form>
-    <script>
-        document.getElementById('confirm-prune').addEventListener('change', function() {
-            document.getElementById('apply-btn').disabled = !this.checked;
-        });
-    </script>
-    {% else %}
-    <div class="alert alert-info">
-        <strong>Nothing to apply.</strong> All findings are either informational or blocked. No cleanup actions are needed right now.
+                {% endfor %}
+            </div>
+            {% endif %}
+
+            {% if blocked_reason_summary|length == 0 %}
+            {% if legacy_anime_root_groups|length == 0 %}
+            <div class="empty-state">
+                <span class="empty-state__title">Nothing is blocked.</span>
+                No trust gate or duplicate anime root is holding rows back from this apply set.
+            </div>
+            {% endif %}
+            {% endif %}
+        </section>
+
+        <section id="prune-apply" class="card">
+            <div class="section-head">
+                <div>
+                    <h2 class="section-title">Apply</h2>
+                    <p class="section-copy">Permanent. Confirm the findings above before you run it.</p>
+                </div>
+            </div>
+
+            {% match confirmation_token %}
+            {% when Some with (token) %}
+            {% match report_path %}
+            {% when Some with (path) %}
+            {% if already_applied %}
+            <div class="empty-state">
+                <span class="empty-state__title">Already applied.</span>
+                This report has already been used for cleanup. Run a new audit from the <a href="/cleanup">cleanup page</a> to generate a fresh report.
+                <div class="empty-state__actions">
+                    <a href="/cleanup" class="btn btn-secondary">Back to cleanup</a>
+                </div>
+            </div>
+            {% else if actionable_candidates > 0 %}
+            <form action="/cleanup/prune" method="post">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="report" value="{{ path.display() }}">
+                <div class="def-rows">
+                    <div class="def-row">
+                        <div class="def-row__key">
+                            <div class="def-row__label">Report file</div>
+                            <div class="def-row__hint">Apply is gated to this exact file.</div>
+                        </div>
+                        <div class="def-row__value"><code class="mono">{{ path.display() }}</code></div>
+                    </div>
+                </div>
+                <div class="form-group mt-2">
+                    <label class="toggle-row">
+                        <input type="checkbox" id="confirm-prune" data-enables="apply-btn" required>
+                        <div>
+                            <strong>I have reviewed the findings above and want to apply this cleanup.</strong>
+                            <p class="text-muted">{{ actionable_candidates|thousands }} links will be cleaned up. This cannot be undone.</p>
+                        </div>
+                    </label>
+                </div>
+                <div class="actions mt-2">
+                    <button type="submit" class="btn btn-danger" id="apply-btn" disabled>
+                        Apply cleanup
+                    </button>
+                    <a href="/cleanup" class="btn btn-secondary">Back to cleanup</a>
+                </div>
+            </form>
+            {% else %}
+            <div class="empty-state">
+                <span class="empty-state__title">Nothing to apply.</span>
+                All findings are either informational or blocked, so no cleanup actions are needed right now.
+                <div class="empty-state__actions">
+                    <a href="/cleanup" class="btn btn-secondary">Back to cleanup</a>
+                </div>
+            </div>
+            {% endif %}
+            {% when None %}
+            <div class="alert alert-warning">
+                <strong>Report path could not be resolved.</strong>
+                Rerun the audit to get a fresh preview.
+            </div>
+            {% endmatch %}
+            {% when None %}
+            <div class="alert alert-warning">
+                <strong>Report could not be loaded safely.</strong>
+                Rerun the audit from the <a href="/cleanup">cleanup page</a>.
+            </div>
+            {% endmatch %}
+        </section>
     </div>
-    <div class="actions mt-2">
-        <a href="/cleanup" class="btn btn-secondary">Back to Cleanup</a>
-    </div>
-    {% endif %}
 </div>
-{% when None %}
-<div class="alert alert-warning">
-    Report path could not be resolved. Rerun the audit to get a fresh preview.
-</div>
-{% endmatch %}
-{% when None %}
-<div class="alert alert-warning">
-    Report could not be loaded safely. Rerun the audit from the <a href="/cleanup">cleanup page</a>.
-</div>
-{% endmatch %}
 {% else %}
-<div class="alert alert-success">
-    <h2>No issues found</h2>
-    <p>The audit did not find any links that need cleanup.</p>
-</div>
-<div class="actions mt-2">
-    <a href="/cleanup" class="btn btn-secondary">Back to Cleanup</a>
-    <a href="/" class="btn">Dashboard</a>
+<div class="empty-state">
+    <span class="empty-state__title">No issues found.</span>
+    The audit did not find any links that need cleanup.
+    <div class="empty-state__actions">
+        <a href="/cleanup" class="btn btn-secondary">Back to cleanup</a>
+    </div>
 </div>
 {% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/section-rail.js" defer></script>
+<script src="/static/js/confirm-gate.js" defer></script>
 {% endblock %}

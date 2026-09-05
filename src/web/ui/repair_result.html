@@ -7,41 +7,24 @@
 {% block content %}
 <div class="page-header page-header--split">
     <div>
-        <div class="page-meta">
-            <p class="page-kicker">Result</p>
-            <span class="page-taxonomy page-taxonomy--result">Result</span>
-        </div>
-        <h1>&#128296; Repair Result</h1>
-        <p class="page-lead">Repair result. Go back to Dead Links to see what is still broken.</p>
-        <div class="page-help-links">
-            <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Repair-and-Dead-Links" target="_blank" rel="noreferrer noopener">
-                <span class="help-link__eyebrow">Learn more</span>
-                <span class="help-link__title">Repair and dead-link guide</span>
-            </a>
-        </div>
+        <h1>Repair result</h1>
+        <p class="page-lead">Counters from this repair pass; Dead Links stays the source of truth.</p>
     </div>
-    <div class="actions">
-        <a href="/links/dead" class="btn btn-secondary">&#128683; View Dead Links</a>
-        <a href="/cleanup" class="btn btn-secondary">&#129529; Cleanup</a>
+    <div class="page-header__aside">
+        <a class="doc-link" href="https://github.com/LAP87/Symlinkarr/wiki/Repair-and-Dead-Links" target="_blank" rel="noreferrer noopener">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14L21 3"/></svg>
+            Docs
+        </a>
     </div>
 </div>
-
-{% match active_repair %}
-{% when Some with (job) %}
-<div class="alert alert-info">
-    <strong>Background repair running</strong><br>
-    Started {{ job.started_at }} for {{ job.scope_label }}. Refresh `/links/dead` for the finished outcome.
-</div>
-{% when None %}
-{% endmatch %}
 
 {% if success %}
 <div class="alert alert-success">
     {% match active_repair %}
     {% when Some with (_) %}
-    <strong>&#9989; Background repair accepted.</strong><br>
+    <strong>Background repair accepted.</strong>
     {% when None %}
-    <strong>&#9989; Repair Completed</strong><br>
+    <strong>Repair completed.</strong>
     {% endmatch %}
     {{ message }}
 </div>
@@ -49,112 +32,87 @@
 <div class="alert alert-error">
     {% match active_repair %}
     {% when Some with (_) %}
-    <strong>&#10060; Repair Not Started</strong><br>
+    <strong>Repair not started.</strong>
     {% when None %}
-    <strong>&#10060; Repair Failed</strong><br>
+    <strong>Repair failed.</strong>
     {% endmatch %}
     {{ message }}
 </div>
 {% endif %}
 
-<section class="card">
-    <div class="section-head">
-        <div>
-            <p class="section-kicker">Outcome</p>
-            <h2 class="section-title">What this attempt changed</h2>
-        </div>
-    </div>
-    <div class="metric-grid metric-grid--compact">
-        <div class="metric-card"><span class="metric-label">Repaired</span><strong class="text-success">{{ repaired }}</strong></div>
-        <div class="metric-card"><span class="metric-label">Still Failed</span><strong class="{% if failed > 0 %}text-error{% else %}text-success{% endif %}">{{ failed }}</strong></div>
-    </div>
-    {% match active_repair %}
-    {% when Some with (_) %}
-    <p class="text-muted mt-2">The background run has started. Counters update when it finishes.</p>
-    {% when None %}
-    {% if failed > 0 %}
-    <p class="text-muted mt-2">This pass fixed some links, but Dead Links still has rows to review or clean up.</p>
-    {% else %}
-    <p class="text-muted mt-2">No unresolved rows are shown here. Check Dead Links to confirm it is clear.</p>
-    {% endif %}
-    {% endmatch %}
-</section>
-
-<div class="split-grid">
-    <section class="card">
-        <div class="section-head">
-            <div>
-                <p class="section-kicker">Meaning</p>
-                <h2 class="section-title">How to read this result</h2>
-            </div>
-        </div>
-        {% match active_repair %}
-        {% when Some with (_) %}
-        <p class="text-muted">Repair is still running. Check Dead Links when it finishes.</p>
-        {% when None %}
-        {% if failed > 0 %}
-        <p class="text-muted">Repair fixed part of the set, but some rows still need review. Usually the source is still missing or no replacement was found.</p>
-        {% else %}
-        <p class="text-muted">Repair finished without unresolved rows in this result. Dead Links is still the place to confirm it.</p>
-        {% endif %}
-        {% endmatch %}
-    </section>
-
-    <section class="card">
-        <div class="section-head">
-            <div>
-                <p class="section-kicker">Next Step</p>
-                <h2 class="section-title">Best follow-up</h2>
-            </div>
-        </div>
-        <ol class="steps-list text-muted">
-            <li>Open Dead Links and verify the remaining rows, not just the counters on this page.</li>
-            {% if failed > 0 %}
-            <li>Use Cleanup only for rows that really have no safe replacement left.</li>
-            {% else %}
-            <li>If the queue is empty, go back to Dashboard or Scan rather than rerunning repair blindly.</li>
-            {% endif %}
-        </ol>
-    </section>
+{% match active_repair %}
+{% when Some with (job) %}
+<div class="alert alert-info">
+    <strong>Background repair running.</strong>
+    {{ job.scope_label }} started {{ job.started_at }}. Dead Links shows the finished outcome.
 </div>
-
-{% match last_repair_outcome %}
-{% when Some with (outcome) %}
-<details class="card disclosure-card">
-    <summary class="disclosure-card__summary">
-        <div class="disclosure-card__copy">
-            <span class="disclosure-card__eyebrow">Latest background outcome</span>
-            <h2 class="disclosure-card__title">{% if outcome.success %}Previous repair completed{% else %}Previous repair failed{% endif %}</h2>
-            <p class="disclosure-card__hint">Open when you need the latest background-repair message while comparing this page against Dead Links.</p>
-        </div>
-        <div class="disclosure-card__meta">
-            <span class="badge {% if outcome.success %}badge-success{% else %}badge-danger{% endif %}">
-                {% if outcome.success %}Completed{% else %}Failed{% endif %}
-            </span>
-            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
-        </div>
-    </summary>
-    <div class="disclosure-card__body">
-        <div class="alert {% if outcome.success %}alert-success{% else %}alert-error{% endif %}">
-            <strong>{% if outcome.success %}Latest background repair outcome{% else %}Latest background repair failure{% endif %}</strong><br>
-            {{ outcome.message }}<br>
-            <span class="text-muted">{{ outcome.finished_at }}</span>
-        </div>
-    </div>
-</details>
 {% when None %}
 {% endmatch %}
 
 {% if failed > 0 %}
 <div class="alert alert-warning">
-    <strong>&#9888;&#65039; {{ failed }} link(s) could not be repaired.</strong>
-    Consider running cleanup to remove unrepairable dead links.
+    <strong>{{ failed|thousands }} links could not be repaired.</strong>
+    Run cleanup for the rows that have no safe replacement left.
 </div>
 {% endif %}
 
+<div class="page-sections">
+    <section class="card">
+        <div class="section-head">
+            <div>
+                <h2 class="section-title">What this attempt changed</h2>
+            </div>
+        </div>
+        <div class="metric-grid metric-grid--compact">
+            <div class="metric-card"><span class="metric-label">Repaired</span><strong class="{% if repaired > 0 %}text-success{% else %}text-muted{% endif %}">{{ repaired|thousands }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Still failed</span><strong class="{% if failed > 0 %}text-error{% else %}text-success{% endif %}">{{ failed|thousands }}</strong></div>
+        </div>
+        {% match active_repair %}
+        {% when Some with (_) %}
+        <p class="text-muted mt-2">The background run has started. Counters update when it finishes.</p>
+        {% when None %}
+        {% if failed > 0 %}
+        <p class="text-muted mt-2">Some rows are still unresolved. Open Dead Links to review them.</p>
+        {% else %}
+        <p class="text-muted mt-2">No unresolved rows in this pass. Dead Links confirms the current state.</p>
+        {% endif %}
+        {% endmatch %}
+    </section>
+
+    {% match last_repair_outcome %}
+    {% when Some with (outcome) %}
+    <section class="card">
+        <div class="section-head">
+            <div>
+                <h2 class="section-title">Latest background outcome</h2>
+            </div>
+            <div class="header-badges">
+                <span class="badge {% if outcome.success %}badge-success{% else %}badge-danger{% endif %}">
+                    {% if outcome.success %}Completed{% else %}Failed{% endif %}
+                </span>
+            </div>
+        </div>
+        <div class="def-rows">
+            <div class="def-row">
+                <div class="def-row__key">
+                    <div class="def-row__label">Message</div>
+                </div>
+                <div class="def-row__value">{{ outcome.message }}</div>
+            </div>
+            <div class="def-row">
+                <div class="def-row__key">
+                    <div class="def-row__label">Finished</div>
+                </div>
+                <div class="def-row__value">{{ outcome.finished_at }}</div>
+            </div>
+        </div>
+    </section>
+    {% when None %}
+    {% endmatch %}
+</div>
+
 <div class="actions mt-2">
-    <a href="/links/dead" class="btn btn-primary">&#128683; View Dead Links</a>
-    <a href="/cleanup" class="btn btn-secondary">&#129529; Cleanup</a>
-    <a href="/" class="btn">&#127968; Dashboard</a>
+    <a href="/links/dead" class="btn btn-primary">View dead links</a>
+    <a href="/cleanup" class="btn btn-secondary">Open cleanup</a>
 </div>
 {% endblock %}

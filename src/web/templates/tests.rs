@@ -346,12 +346,12 @@ fn dead_links_template_renders_summary_and_actions() {
     };
 
     let html = template.render().unwrap();
-    assert!(html.contains("Repair order"));
+    assert!(html.contains("Dead-link records"));
     assert!(html.contains("2 dead"));
-    assert!(html.contains("Auto-Repair All"));
+    assert!(html.contains("Auto-repair all"));
+    assert!(html.contains("action=\"/links/repair\""));
     assert!(html.contains("Cleanup"));
     assert!(html.contains("Background repair running"));
-    assert!(html.contains("tv / movie"));
     assert!(html.contains("badge badge-info"));
     assert!(html.contains("/wiki/Repair-and-Dead-Links"));
 }
@@ -375,12 +375,10 @@ fn doctor_template_renders_results_without_redundant_metric_summary() {
     };
 
     let html = template.render().unwrap();
-    assert!(html.contains("How to use Doctor"));
-    assert!(html.contains("Best follow-up"));
     assert!(html.contains("Check list"));
     assert!(html.contains("Needs review"));
     assert!(html.contains("backup directory is not writable"));
-    assert!(html.contains("Re-run Checks"));
+    assert!(html.contains("Re-run checks"));
     assert!(html.contains("/wiki/Configuration-and-Doctor"));
     assert!(html.contains("/wiki/Backup-and-Restore"));
     assert!(!html.contains("metric-label\">Checks"));
@@ -405,23 +403,22 @@ fn scan_run_detail_template_renders_full_run_summary() {
     let html = template.render().unwrap();
     assert!(html.contains("Scan Run Detail"));
     assert!(html.contains("Anime"));
-    assert!(html.contains("Phase Telemetry"));
-    assert!(html.contains("Matcher Signals"));
+    assert!(html.contains("Phase telemetry"));
+    assert!(html.contains("Matcher signals"));
     assert!(html.contains("Queue and throttle signals"));
     assert!(html.contains("cap 1") || html.contains(">1<"));
-    assert!(html.contains("Auto-Acquire"));
-    assert!(html.contains("Skip Reasons"));
+    assert!(html.contains("Auto-acquire"));
+    assert!(html.contains("Why work was skipped"));
     assert!(html.contains("Already correct"));
     assert!(html.contains("Source missing before link"));
-    assert!(html.contains("Auto-Acquire"));
     assert!(html.contains("No Prowlarr result"));
     assert!(html.contains("Linking"));
     assert!(html.contains("source_missing_before_link"));
-    assert!(html.contains(">3044<"));
+    assert!(html.contains(">3,044<"));
     assert!(html.contains("Recent concrete skip events"));
     assert!(html.contains("/library/Show A/Season 01/Show A - S01E01.mkv"));
     assert!(html.contains("Back to Scan History"));
-    assert!(html.contains("77624480"));
+    assert!(html.contains("77,624,480"));
     assert!(html.contains("/wiki/Scan-History-and-Why-Not-Signals"));
 }
 
@@ -449,9 +446,9 @@ fn scan_history_template_renders_humanized_skip_reason_highlights() {
 
     let html = template.render().unwrap();
     assert!(html.contains("History filters and row limit"));
-    assert!(html.contains("Why Not"));
-    assert!(html.contains("Already correct 6200"));
-    assert!(html.contains("Source missing before link 3044"));
+    assert!(html.contains("Why not"));
+    assert!(html.contains("Already correct 6,200"));
+    assert!(html.contains("Source missing before link 3,044"));
     assert!(html.contains("+1 more reason group(s)"));
     assert!(html.contains("/wiki/Scan-History-and-Why-Not-Signals"));
 }
@@ -471,18 +468,17 @@ fn scan_template_renders_top_skip_reason_summary() {
             message: "Saved anime override.".to_string(),
         }),
         anime_override_draft: AnimeSearchOverrideDraftView::default(),
-        anime_override_panel_open: true,
         filters: ScanHistoryFilters::default(),
         default_dry_run: false,
         csrf_token: "csrf-test-token".to_string(),
     };
 
     let html = template.render().unwrap();
-    assert!(html.contains("Top Skip Reasons"));
+    assert!(html.contains("Top skip reasons"));
     assert!(html.contains("Matcher: Ambiguous match 70"));
-    assert!(html.contains("Open the detail view for grouped counts and raw reason codes."));
+    assert!(html.contains("more reason group(s) in"));
     assert!(html.contains("/wiki/Scan-History-and-Why-Not-Signals"));
-    assert!(html.contains("Anime Search Overrides"));
+    assert!(html.contains("Anime search overrides"));
     assert!(html.contains("tvdb-12345"));
     assert!(html.contains("Yofukashi no Uta"));
     assert!(html.contains("Title + hints"));
@@ -501,7 +497,7 @@ fn dashboard_activity_feed_template_renders_active_and_recent_items() {
     };
 
     let html = template.render().unwrap();
-    assert!(html.contains("Live Activity"));
+    assert!(html.contains("Live activity"));
     assert!(html.contains("Running now"));
     assert!(html.contains("Latest outcomes"));
     assert!(html.contains("Background scan is in progress."));
@@ -520,7 +516,6 @@ fn dashboard_needs_attention_template_renders_polling_fragment() {
     };
 
     let html = template.render().unwrap();
-    assert!(html.contains("Needs Attention"));
     assert!(html.contains("Needs attention"));
     assert!(html.contains("hx-get=\"/dashboard/needs-attention\""));
     assert!(html.contains("hx-trigger=\"every 10s\""));
@@ -535,11 +530,10 @@ fn dashboard_latest_run_template_renders_polling_fragment() {
     };
 
     let html = template.render().unwrap();
-    assert!(html.contains("Latest Run"));
     assert!(html.contains("Latest scan"));
     assert!(html.contains("hx-get=\"/dashboard/latest-run\""));
     assert!(html.contains("hx-trigger=\"every 10s\""));
-    assert!(html.contains("Open Scan"));
+    assert!(html.contains("Open scan"));
     assert!(html.contains("Top skip reasons"));
 }
 
@@ -574,7 +568,7 @@ fn dashboard_summary_template_renders_polling_fragment() {
     let html = template.render().unwrap();
     assert!(html.contains("Links"));
     assert!(html.contains("Queue"));
-    assert!(html.contains("Media Refresh"));
+    assert!(html.contains("Media refresh"));
     assert!(html.contains("hx-get=\"/dashboard/summary\""));
     assert!(html.contains("hx-trigger=\"every 10s\""));
     assert!(html.contains("plex"));
@@ -598,7 +592,7 @@ fn dashboard_template_renders_needs_attention_section() {
     };
 
     let html = template.render().unwrap();
-    assert!(html.contains("Needs Attention"));
+    assert!(html.contains("Needs attention"));
     assert!(html.contains("hx-get=\"/dashboard/summary\""));
     assert!(html.contains("hx-get=\"/dashboard/needs-attention\""));
     assert!(html.contains("hx-get=\"/dashboard/latest-run\""));
@@ -644,12 +638,10 @@ fn status_template_renders_recent_queue_jobs() {
     };
 
     let html = template.render().unwrap();
-    assert!(html.contains("What Status is for"));
-    assert!(html.contains("Best follow-up right now"));
     assert!(html.contains("Recent auto-acquire jobs"));
     assert!(html.contains("Queued Anime"));
     assert!(html.contains("Blocked Anime"));
-    assert!(html.contains("Needs Relink"));
+    assert!(html.contains("Needs relink"));
     assert!(html.contains("Active playback protection"));
     assert!(html.contains("2 active stream(s) detected"));
     assert!(html.contains("Schedule and heartbeat"));
@@ -697,7 +689,7 @@ fn status_template_surfaces_overdue_daemon_warning() {
 }
 
 #[test]
-fn config_template_renders_topology_and_defaults_disclosures() {
+fn config_template_renders_settings_rail_and_defaults() {
     let template = ConfigTemplate {
         config: sample_config(),
         validation_result: Some(ValidationResult {
@@ -710,17 +702,22 @@ fn config_template_renders_topology_and_defaults_disclosures() {
 
     let html = template.render().unwrap();
     assert!(html.contains("Check current configuration"));
-    assert!(html.contains("What this page is for"));
-    assert!(html.contains("Best follow-up"));
-    assert!(html.contains("Docs and recommended workflow"));
-    assert!(html.contains("Libraries and ingestion roots"));
+    assert!(html.contains("settings-rail"));
+    assert!(html.contains("#config-general"));
+    assert!(html.contains("#config-libraries"));
+    assert!(html.contains("#config-matching"));
+    assert!(html.contains("#config-defaults"));
+    assert!(html.contains("Libraries &amp; sources"));
     assert!(html.contains("Low-level runtime defaults"));
     assert!(html.contains("1 libraries"));
     assert!(html.contains("1 sources"));
     assert!(html.contains("/library/anime"));
     assert!(html.contains("/backups"));
-    assert!(html.contains("/wiki/Configuration-and-Doctor"));
-    assert!(html.contains("/wiki/Backup-and-Restore"));
+    assert!(html.contains("/static/js/config-rail.js"));
+    // Filler removed in the phase-B settings layout.
+    assert!(!html.contains("What this page is for"));
+    assert!(!html.contains("Best follow-up"));
+    assert!(!html.contains("Docs and recommended workflow"));
 }
 
 #[test]
@@ -792,7 +789,7 @@ fn links_template_renders_dead_link_wiki_entrypoint() {
     };
 
     let html = template.render().unwrap();
-    assert!(html.contains("Browse and manage symlinks in the database."));
+    assert!(html.contains("Symlinks recorded in the database, filtered by link status."));
     assert!(html.contains("/wiki/Repair-and-Dead-Links"));
 }
 
@@ -830,14 +827,13 @@ fn cleanup_result_template_renders_report_summary() {
     };
 
     let html = template.render().unwrap();
-    assert!(html.contains("Audit Report Generated"));
     assert!(html.contains("Audit report details"));
     assert!(html.contains("2026-03-21 21:30:00 UTC"));
     assert!(html.contains("Anime"));
     assert!(html.contains("18"));
     assert!(html.contains("4 / 9"));
-    assert!(html.contains("Best follow-up"));
-    assert!(html.contains("Open Prune Preview for this exact report file."));
+    assert!(html.contains("Preview prune actions"));
+    assert!(html.contains("/cleanup/prune?report="));
     assert!(html.contains("/wiki/Cleanup-Audit-and-Prune-Preview"));
 }
 
@@ -858,7 +854,7 @@ fn cleanup_result_template_renders_background_audit_banner() {
 
     let html = template.render().unwrap();
     assert!(html.contains("Background cleanup audit running"));
-    assert!(html.contains("Background Audit Accepted"));
+    assert!(html.contains("Background audit accepted."));
     assert!(html.contains("2026-03-29 23:59:00 UTC"));
     assert!(html.contains("The audit is running in the background."));
 }
@@ -904,8 +900,6 @@ fn scan_result_template_renders_guided_follow_up() {
     };
 
     let html = template.render().unwrap();
-    assert!(html.contains("What this result actually means"));
-    assert!(html.contains("Best follow-up"));
     assert!(html.contains("Latest saved run"));
     assert!(html.contains("Scan History"));
     assert!(html.contains("/wiki/Scan-History-and-Why-Not-Signals"));
@@ -928,8 +922,8 @@ fn repair_result_template_renders_recovery_guidance() {
 
     let html = template.render().unwrap();
     assert!(html.contains("What this attempt changed"));
-    assert!(html.contains("How to read this result"));
-    assert!(html.contains("Use Cleanup only for rows that really have no safe replacement left."));
+    assert!(html.contains("2 links could not be repaired."));
+    assert!(html.contains("Run cleanup for the rows that have no safe replacement left."));
     assert!(html.contains("Latest background outcome"));
     assert!(html.contains("/wiki/Repair-and-Dead-Links"));
 }
@@ -977,11 +971,9 @@ fn backup_result_template_renders_follow_up_guidance() {
 
     let html = template.render().unwrap();
     assert!(html.contains("What Symlinkarr recorded"));
-    assert!(html.contains("What this gives you"));
-    assert!(html.contains("Best follow-up"));
     assert!(html.contains("Files and restore details"));
-    assert!(html.contains("Backup File"));
-    assert!(html.contains("Return to Backup and confirm the item appears in the list."));
+    assert!(html.contains("Backup file"));
+    assert!(html.contains("Back to backup"));
     assert!(html.contains("/wiki/Backup-and-Restore"));
 }
 
@@ -1245,12 +1237,12 @@ fn anime_remediation_template_renders_backlog_summary() {
     assert!(html.contains("Legacy Anime Cleanup"));
     assert!(html.contains("Mobile Suit Gundam SEED"));
     assert!(html.contains("Recommended tagged root"));
-    assert!(html.contains("Sample View"));
+    assert!(html.contains("Sample view"));
     assert!(html.contains("hama-anidb"));
     assert!(html.contains("visible blocked"));
     assert!(html.contains("legacy roots still contain tracked DB links"));
-    assert!(html.contains("Download Filtered TSV"));
-    assert!(html.contains("Apply Filters"));
+    assert!(html.contains("Download filtered TSV"));
+    assert!(html.contains("Apply filters"));
     assert!(html.contains("Candidate symlinks"));
     assert!(html.contains("Broken legacy symlinks"));
     assert!(html.contains("Real media files blocking automatic cleanup"));
@@ -1318,14 +1310,14 @@ fn anime_remediation_result_template_renders_review_samples() {
     let html = template.render().unwrap();
     assert!(html.contains("Saved preview ready."));
     assert!(html.contains("Active playback overlaps this legacy cleanup plan"));
-    assert!(html.contains("What this page means"));
-    assert!(html.contains("Best follow-up"));
+    assert!(html.contains("Saved plan"));
+    assert!(html.contains("Apply this saved plan"));
     assert!(html.contains("Plan contents"));
     assert!(html.contains("Candidate symlinks"));
     assert!(html.contains("Broken legacy symlinks"));
     assert!(html.contains("Blocking real media files"));
     assert!(html.contains("Horimiya - S01E03.mkv"));
-    assert!(html.contains("Apply Legacy Cleanup"));
+    assert!(html.contains("Apply legacy cleanup"));
     assert!(html.contains("name=\"token\""));
     assert!(html.contains("/wiki/Anime-Remediation"));
     assert!(!html.contains("Confirmation token"));
@@ -1404,13 +1396,10 @@ fn discover_content_template_renders_guidance_and_help_link() {
     };
 
     let html = template.render().unwrap();
-    assert!(html.contains("What this preview found"));
-    assert!(html.contains("How to read this preview"));
-    assert!(html.contains("Best follow-up"));
-    assert!(html.contains("Where to go deeper"));
-    assert!(html.contains("Folder plans behind this preview"));
-    assert!(html.contains("Row-level placement report"));
+    assert!(html.contains("Preview summary"));
+    assert!(html.contains("Folder plans"));
+    assert!(html.contains("Row-level placements"));
     assert!(html.contains("/wiki/Discover-and-Queue"));
     assert!(html.contains("Discover never writes links"));
-    assert!(html.contains("Inspect blocked rows first"));
+    assert!(html.contains("Using cached discover snapshot"));
 }

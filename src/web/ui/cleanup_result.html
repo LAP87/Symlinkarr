@@ -7,22 +7,19 @@
 {% block content %}
 <div class="page-header page-header--split">
     <div>
-        <div class="page-meta">
-            <p class="page-kicker">Result</p>
-            <span class="page-taxonomy page-taxonomy--result">Result</span>
-        </div>
-        <h1>Cleanup Result</h1>
-        <p class="page-lead">Audit is done. Nothing gets deleted until you open the matching prune preview and confirm it.</p>
-        <div class="page-help-links">
-            <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Cleanup-Audit-and-Prune-Preview" target="_blank" rel="noreferrer noopener">
-                <span class="help-link__eyebrow">Learn more</span>
-                <span class="help-link__title">Cleanup and prune guide</span>
-            </a>
-        </div>
+        <h1>Cleanup result</h1>
+        <p class="page-lead">Nothing is deleted until you confirm the matching prune preview.</p>
     </div>
-    <div class="actions">
-        <a href="/cleanup" class="btn btn-secondary">Back to Cleanup</a>
-        <a href="/" class="btn btn-secondary">Dashboard</a>
+    <div class="page-header__aside">
+        {% match report_summary %}
+        {% when Some with (report) %}
+        <span class="badge {% if report.total_findings > 0 %}badge-warning{% else %}badge-success{% endif %}">{{ report.total_findings|thousands }} findings</span>
+        {% when None %}
+        {% endmatch %}
+        <a class="doc-link" href="https://github.com/LAP87/Symlinkarr/wiki/Cleanup-Audit-and-Prune-Preview" target="_blank" rel="noreferrer noopener">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14L21 3"/></svg>
+            Cleanup guide
+        </a>
     </div>
 </div>
 
@@ -42,7 +39,7 @@
     {{ outcome.message }}
     {% match outcome.report_path %}
     {% when Some with (path) %}
-    <a href="/cleanup/prune?report={{ path }}" class="btn btn-secondary mt-1">Open Prune Preview</a>
+    <a href="/cleanup/prune?report={{ path }}" class="btn btn-secondary mt-1">Open prune preview</a>
     {% when None %}{% endmatch %}
 </div>
 {% when None %}{% endmatch %}
@@ -51,109 +48,91 @@
 <div class="alert alert-success">
     {% match active_cleanup_audit %}
     {% when Some with (_) %}
-    <h2>Background Audit Accepted</h2>
+    <strong>Background audit accepted.</strong>
     {% when None %}
-    <h2>Audit Completed Successfully</h2>
+    <strong>Audit completed.</strong>
     {% endmatch %}
-    <p>{{ message }}</p>
+    {{ message }}
+    {% match active_cleanup_audit %}
+    {% when Some with (_) %}
+    The audit is running in the background. The report appears here once it finishes.
+    {% when None %}
+    The report is review-only — deletion happens from the matching prune preview.
+    {% endmatch %}
 </div>
+{% else %}
+<div class="alert alert-error">
+    <strong>Audit failed.</strong>
+    {{ message }}
+    Fix the underlying path or runtime issue before expecting a safe prune step.
+</div>
+{% endif %}
 
-{% match report_path %}
-{% when Some with (path) %}
-<details class="card disclosure-card">
-    <summary class="disclosure-card__summary">
-        <div class="disclosure-card__copy">
-            <span class="disclosure-card__eyebrow">Saved report</span>
-            <h2 class="disclosure-card__title">Audit report details</h2>
-            <p class="disclosure-card__hint">Open for the report path and severity counts.</p>
-        </div>
-        <div class="disclosure-card__meta">
-            {% match report_summary %}
-            {% when Some with (report) %}
-            <span class="badge badge-warning">{{ report.total_findings }} findings</span>
-            {% when None %}
-            {% endmatch %}
-            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
-        </div>
-    </summary>
-    <div class="disclosure-card__body">
+<div class="page-sections">
+    <section class="card">
         <div class="section-head">
             <div>
-                <p class="section-kicker">Report</p>
-                <h2 class="section-title">Audit Report Generated</h2>
+                <h2 class="section-title">Audit report details</h2>
+                <p class="section-copy">The saved report this preview and apply step are gated to.</p>
+            </div>
+            {% match report_summary %}
+            {% when Some with (report) %}
+            <div class="header-badges">
+                <span class="badge badge-info">{{ report.scope_label }}</span>
+            </div>
+            {% when None %}
+            {% endmatch %}
+        </div>
+
+        {% match report_path %}
+        {% when Some with (path) %}
+        <div class="def-rows">
+            <div class="def-row">
+                <div class="def-row__key">
+                    <div class="def-row__label">Report file</div>
+                    <div class="def-row__hint">Apply is gated to this exact file.</div>
+                </div>
+                <div class="def-row__value"><code class="mono">{{ path.display() }}</code></div>
             </div>
         </div>
-        <p><strong>Report Location:</strong> <code class="mono">{{ path.display() }}</code></p>
 
         {% match report_summary %}
         {% when Some with (report) %}
         <div class="metric-grid metric-grid--compact mt-2">
-            <div class="metric-card"><span class="metric-label">Scope</span><strong>{{ report.scope_label }}</strong></div>
-            <div class="metric-card"><span class="metric-label">Generated</span><strong>{{ report.created_at }}</strong></div>
-            <div class="metric-card"><span class="metric-label">Findings</span><strong>{{ report.total_findings }}</strong></div>
-            <div class="metric-card"><span class="metric-label">Critical / High</span><strong>{{ report.critical }} / {{ report.high }}</strong></div>
+            <div class="metric-card">
+                <span class="metric-label">Findings</span>
+                <strong>{{ report.total_findings|thousands }}</strong>
+                <span class="metric-meta">{{ report.scope_label }}</span>
+            </div>
+            <div class="metric-card">
+                <span class="metric-label">Critical / High</span>
+                <strong class="{% if report.critical > 0 %}text-error{% else %}text-warning{% endif %}">{{ report.critical|thousands }} / {{ report.high|thousands }}</strong>
+            </div>
+            <div class="metric-card">
+                <span class="metric-label">Warning</span>
+                <strong class="text-info">{{ report.warning|thousands }}</strong>
+            </div>
+            <div class="metric-card">
+                <span class="metric-label">Generated</span>
+                <strong>{{ report.created_at }}</strong>
+            </div>
         </div>
         {% when None %}
         {% endmatch %}
-    </div>
-</details>
-{% when None %}
-{% endmatch %}
-{% else %}
-<div class="alert alert-error">
-    <h2>Audit Failed</h2>
-    <p>{{ message }}</p>
-</div>
-{% endif %}
 
-<div class="split-grid">
-    <section class="card">
-        <div class="section-head">
-            <div>
-                <p class="section-kicker">Meaning</p>
-                <h2 class="section-title">What happened here</h2>
+        <div class="operator-action-strip mt-2">
+            <a href="/cleanup/prune?report={{ path.display() }}" class="btn btn-primary">Preview prune actions</a>
+            <a href="/cleanup" class="btn btn-secondary">Back to cleanup</a>
+        </div>
+        {% when None %}
+        <div class="empty-state">
+            <span class="empty-state__title">No report file was written.</span>
+            Rerun the audit from Cleanup and confirm it completes before expecting a prune step.
+            <div class="empty-state__actions">
+                <a href="/cleanup" class="btn btn-secondary">Back to cleanup</a>
             </div>
         </div>
-        {% match active_cleanup_audit %}
-        {% when Some with (_) %}
-        <p class="text-muted">The audit is running in the background. This page is only the acceptance/result shell; the real review work starts once a report exists.</p>
-        {% when None %}
-        {% if success %}
-        <p class="text-muted">The cleanup report is review-only. Deletion only happens from the matching prune preview.</p>
-        {% else %}
-        <p class="text-muted">Cleanup did not reach a safe report output. Fix the underlying path or runtime issue before trying to prune anything.</p>
-        {% endif %}
         {% endmatch %}
     </section>
-
-    <section class="card">
-        <div class="section-head">
-            <div>
-                <p class="section-kicker">Next Step</p>
-                <h2 class="section-title">Best follow-up</h2>
-            </div>
-        </div>
-        <ol class="steps-list text-muted">
-            {% match report_path %}
-            {% when Some with (_) %}
-            <li>Open Prune Preview for this exact report file.</li>
-            <li>Review blocked findings, foreign quarantine, and legacy-anime groups before you apply anything.</li>
-            <li>Only apply prune from that matching preview page.</li>
-            {% when None %}
-            <li>Return to Cleanup and confirm the audit can complete cleanly before expecting a safe prune step.</li>
-            <li>If the audit failed, fix the reported runtime or path issue first.</li>
-            {% endmatch %}
-        </ol>
-    </section>
-</div>
-
-<div class="actions mt-2">
-    {% match report_path %}
-    {% when Some with (path) %}
-    <a href="/cleanup/prune?report={{ path.display() }}" class="btn btn-primary">Preview Prune Actions</a>
-    {% when None %}
-    {% endmatch %}
-    <a href="/cleanup" class="btn btn-secondary">Back to Cleanup</a>
-    <a href="/" class="btn">Dashboard</a>
 </div>
 {% endblock %}

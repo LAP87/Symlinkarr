@@ -148,18 +148,27 @@ impl Database {
                 info_hash,
                 error,
                 attempts,
+                relink_attempts,
                 next_retry_at,
                 submitted_at,
                 completed_at
              FROM acquisition_jobs
-             WHERE (
-                    status IN ('queued', 'downloading', 'relinking')
-                    OR (
-                        status IN ('blocked', 'no_result', 'completed_unlinked', 'failed')
-                        AND (next_retry_at IS NULL OR next_retry_at <= ?)
-                    )
-                   )
-               AND attempts < ?
+             WHERE status IN ('downloading', 'relinking')
+                OR (status = 'queued' AND attempts < ?)
+                OR (
+                    status IN ('no_result', 'failed')
+                    AND attempts < ?
+                    AND (next_retry_at IS NULL OR next_retry_at <= ?)
+                )
+                OR (
+                    status = 'completed_unlinked'
+                    AND relink_attempts < ?
+                    AND (next_retry_at IS NULL OR next_retry_at <= ?)
+                )
+                OR (
+                    status = 'blocked'
+                    AND (next_retry_at IS NULL OR next_retry_at <= ?)
+                )
              ORDER BY
                 CASE status
                     WHEN 'downloading' THEN 0
@@ -168,8 +177,12 @@ impl Database {
                 END,
                 id ASC",
         )
-        .bind(now)
         .bind(MAX_JOB_ATTEMPTS)
+        .bind(MAX_JOB_ATTEMPTS)
+        .bind(&now)
+        .bind(MAX_JOB_ATTEMPTS)
+        .bind(&now)
+        .bind(&now)
         .fetch_all(&self.pool)
         .await?;
 
@@ -201,6 +214,7 @@ impl Database {
                 info_hash,
                 error,
                 attempts,
+                relink_attempts,
                 next_retry_at,
                 submitted_at,
                 completed_at
@@ -233,6 +247,7 @@ impl Database {
             "UPDATE acquisition_jobs
              SET status = 'queued',
                  attempts = 0,
+                 relink_attempts = 0,
                  error = NULL,
                  next_retry_at = NULL,
                  release_title = NULL,
@@ -273,6 +288,10 @@ impl Database {
                  submitted_at = ?,
                  completed_at = ?,
                  attempts = attempts + CASE WHEN ? THEN 1 ELSE 0 END,
+                 relink_attempts = CASE
+                     WHEN ? THEN 0
+                     ELSE relink_attempts + CASE WHEN ? THEN 1 ELSE 0 END
+                 END,
                  updated_at = ?
              WHERE id = ?",
         )
@@ -284,6 +303,8 @@ impl Database {
         .bind(submitted_at)
         .bind(completed_at)
         .bind(update.increment_attempts)
+        .bind(update.reset_relink_attempts)
+        .bind(update.increment_relink_attempts)
         .bind(now)
         .bind(id)
         .execute(&self.pool)
@@ -380,6 +401,7 @@ impl Database {
                 info_hash,
                 error,
                 attempts,
+                relink_attempts,
                 next_retry_at,
                 submitted_at,
                 completed_at
@@ -419,6 +441,7 @@ impl Database {
             info_hash: row.get("info_hash"),
             error: row.get("error"),
             attempts: row.get("attempts"),
+            relink_attempts: row.get("relink_attempts"),
             next_retry_at: parse_optional_datetime(row, "next_retry_at")?,
             submitted_at: parse_optional_datetime(row, "submitted_at")?,
             completed_at: parse_optional_datetime(row, "completed_at")?,

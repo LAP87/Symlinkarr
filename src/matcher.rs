@@ -90,6 +90,7 @@ struct VersionedDestinationKey {
 #[derive(Debug, Default)]
 struct MatchSkipDiagnostics {
     exact_id_incompatible: bool,
+    anime_ambiguous_numbering: bool,
     any_resolved_candidate: bool,
     any_shape_compatible: bool,
     any_metadata_compatible: bool,
@@ -113,6 +114,9 @@ fn dominant_match_skip_reason(
         return "matcher_exact_id_incompatible";
     }
     if !diagnostics.any_resolved_candidate {
+        if diagnostics.anime_ambiguous_numbering {
+            return "matcher_anime_ambiguous_numbering";
+        }
         return "matcher_episode_mapping_unresolved";
     }
     if !diagnostics.any_shape_compatible {
@@ -676,7 +680,14 @@ fn match_source_slice(
                 .or_else(|| variants.values().next());
             if let Some(parsed) = parsed {
                 let parsed =
-                    resolve_source_for_library_item(item, parsed, metadata, anime_identity);
+                    match resolve_source_for_library_item(item, parsed, metadata, anime_identity) {
+                        SourceResolution::Resolved(parsed) => Some(parsed),
+                        SourceResolution::Unresolved => None,
+                        SourceResolution::AmbiguousAnimeNumbering => {
+                            diagnostics.anime_ambiguous_numbering = true;
+                            None
+                        }
+                    };
                 if let Some(parsed) = parsed {
                     diagnostics.any_resolved_candidate = true;
                     if !source_shape_matches_media_type(item, &parsed) {
@@ -741,10 +752,15 @@ fn match_source_slice(
             let metadata = metadata_map
                 .get(&library_idx)
                 .and_then(|meta| meta.as_ref());
-            let parsed = resolve_source_for_library_item(item, parsed, metadata, anime_identity);
-            let Some(parsed) = parsed else {
-                continue;
-            };
+            let parsed =
+                match resolve_source_for_library_item(item, parsed, metadata, anime_identity) {
+                    SourceResolution::Resolved(parsed) => parsed,
+                    SourceResolution::Unresolved => continue,
+                    SourceResolution::AmbiguousAnimeNumbering => {
+                        diagnostics.anime_ambiguous_numbering = true;
+                        continue;
+                    }
+                };
             diagnostics.any_resolved_candidate = true;
 
             if !source_shape_matches_media_type(item, &parsed) {
@@ -913,47 +929,74 @@ fn normalized_version_part(value: Option<&str>) -> Option<String> {
     }
 }
 
+/// Outcome of resolving a parsed source against a specific library item.
+#[derive(Debug, Clone)]
+enum SourceResolution {
+    /// The source resolved to a concrete (possibly remapped) source item.
+    Resolved(SourceItem),
+    /// The source could not be resolved for this library item.
+    Unresolved,
+    /// Anime season-local and cumulative numbering interpretations both fit
+    /// but disagree, with no authoritative mapping to break the tie.
+    AmbiguousAnimeNumbering,
+}
+
 fn resolve_source_for_library_item(
     item: &LibraryItem,
     parsed: &SourceItem,
     metadata: Option<&ContentMetadata>,
     anime_identity: Option<&AnimeIdentityGraph>,
-) -> Option<SourceItem> {
+) -> SourceResolution {
     if item.media_type != MediaType::Tv {
-        return Some(parsed.clone());
+        return SourceResolution::Resolved(parsed.clone());
     }
 
     if item.content_type != ContentType::Anime {
         if parsed.season.is_some() && parsed.episode.is_some() {
-            return Some(parsed.clone());
+            return SourceResolution::Resolved(parsed.clone());
         }
-        return None;
+        return SourceResolution::Unresolved;
     }
 
     if let (Some(season), Some(episode)) = (parsed.season, parsed.episode) {
         let mut resolved = parsed.clone();
-        if let Some((mapped_season, mapped_episode)) =
-            resolve_anime_scene_episode_mapping(item, metadata, anime_identity, season, episode)
-        {
-            resolved.season = Some(mapped_season);
-            resolved.episode = Some(mapped_episode);
+        match resolve_anime_scene_episode_mapping(item, metadata, anime_identity, season, episode) {
+            AnimeEpisodeResolution::Resolved(mapped_season, mapped_episode) => {
+                resolved.season = Some(mapped_season);
+                resolved.episode = Some(mapped_episode);
+            }
+            AnimeEpisodeResolution::Unresolved => {}
+            AnimeEpisodeResolution::Ambiguous => {
+                return SourceResolution::AmbiguousAnimeNumbering;
+            }
         }
-        return Some(resolved);
+        return SourceResolution::Resolved(resolved);
     }
 
     if parsed.season.is_some() {
-        return None;
+        return SourceResolution::Unresolved;
     }
 
-    let absolute_episode = parsed.episode?;
-    let (season, episode) = anime_identity
+    let Some(absolute_episode) = parsed.episode else {
+        return SourceResolution::Unresolved;
+    };
+    let resolution = match anime_identity
         .and_then(|graph| graph.resolve_absolute_episode(item, absolute_episode))
-        .or_else(|| resolve_anime_episode_mapping(metadata, absolute_episode))?;
+    {
+        Some((season, episode)) => AnimeEpisodeResolution::Resolved(season, episode),
+        None => resolve_anime_episode_mapping(metadata, absolute_episode),
+    };
 
-    let mut resolved = parsed.clone();
-    resolved.season = Some(season);
-    resolved.episode = Some(episode);
-    Some(resolved)
+    match resolution {
+        AnimeEpisodeResolution::Resolved(season, episode) => {
+            let mut resolved = parsed.clone();
+            resolved.season = Some(season);
+            resolved.episode = Some(episode);
+            SourceResolution::Resolved(resolved)
+        }
+        AnimeEpisodeResolution::Unresolved => SourceResolution::Unresolved,
+        AnimeEpisodeResolution::Ambiguous => SourceResolution::AmbiguousAnimeNumbering,
+    }
 }
 
 fn source_shape_matches_media_type(item: &LibraryItem, parsed: &SourceItem) -> bool {
@@ -1026,27 +1069,41 @@ fn candidate_metadata_compatible(
     true
 }
 
+/// Outcome of mapping an anime episode number against library metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AnimeEpisodeResolution {
+    /// The episode maps to exactly one (season, episode) destination.
+    Resolved(u32, u32),
+    /// No plausible mapping exists; callers keep their existing behavior.
+    Unresolved,
+    /// Season-local and cumulative interpretations both fit but disagree,
+    /// and there is no authoritative mapping to break the tie.
+    Ambiguous,
+}
+
 fn resolve_anime_scene_episode_mapping(
     item: &LibraryItem,
     metadata: Option<&ContentMetadata>,
     anime_identity: Option<&AnimeIdentityGraph>,
     parsed_season: u32,
     parsed_episode: u32,
-) -> Option<(u32, u32)> {
+) -> AnimeEpisodeResolution {
     if parsed_episode == 0 {
-        return None;
+        return AnimeEpisodeResolution::Unresolved;
     }
 
-    if let Some(resolved) = anime_identity
+    if let Some((season, episode)) = anime_identity
         .and_then(|graph| graph.resolve_scene_episode(item, parsed_season, parsed_episode))
     {
-        return Some(resolved);
+        return AnimeEpisodeResolution::Resolved(season, episode);
     }
 
-    let metadata = metadata?;
+    let Some(metadata) = metadata else {
+        return AnimeEpisodeResolution::Unresolved;
+    };
     let seasons = anime_regular_seasons(metadata);
     if seasons.is_empty() {
-        return None;
+        return AnimeEpisodeResolution::Unresolved;
     }
 
     if let Some(season) = seasons
@@ -1054,38 +1111,46 @@ fn resolve_anime_scene_episode_mapping(
         .find(|season| season.season_number == parsed_season)
     {
         if season_has_episode(season, parsed_episode) {
-            return Some((parsed_season, parsed_episode));
+            return AnimeEpisodeResolution::Resolved(parsed_season, parsed_episode);
         }
 
-        return None;
+        return AnimeEpisodeResolution::Unresolved;
     }
 
-    let max_regular_season = seasons.iter().map(|season| season.season_number).max()?;
+    let Some(max_regular_season) = seasons.iter().map(|season| season.season_number).max() else {
+        return AnimeEpisodeResolution::Unresolved;
+    };
     if parsed_season <= max_regular_season {
-        return None;
+        return AnimeEpisodeResolution::Unresolved;
     }
 
-    anime_identity
-        .and_then(|graph| graph.resolve_absolute_episode(item, parsed_episode))
-        .or_else(|| resolve_anime_episode_mapping(Some(metadata), parsed_episode))
+    if let Some((season, episode)) =
+        anime_identity.and_then(|graph| graph.resolve_absolute_episode(item, parsed_episode))
+    {
+        return AnimeEpisodeResolution::Resolved(season, episode);
+    }
+
+    resolve_anime_episode_mapping(Some(metadata), parsed_episode)
 }
 
 fn resolve_anime_episode_mapping(
     metadata: Option<&ContentMetadata>,
     absolute_episode: u32,
-) -> Option<(u32, u32)> {
+) -> AnimeEpisodeResolution {
     if absolute_episode == 0 {
-        return None;
+        return AnimeEpisodeResolution::Unresolved;
     }
 
-    let metadata = metadata?;
+    let Some(metadata) = metadata else {
+        return AnimeEpisodeResolution::Unresolved;
+    };
     let seasons = anime_regular_seasons(metadata);
     if seasons.is_empty() {
-        return None;
+        return AnimeEpisodeResolution::Unresolved;
     }
 
     if seasons.len() == 1 && season_has_episode(seasons[0], absolute_episode) {
-        return Some((seasons[0].season_number, absolute_episode));
+        return AnimeEpisodeResolution::Resolved(seasons[0].season_number, absolute_episode);
     }
 
     let exact_matches: Vec<u32> = seasons
@@ -1098,17 +1163,18 @@ fn resolve_anime_episode_mapping(
     match (exact_matches.as_slice(), cumulative) {
         ([season], Some((cum_season, cum_episode))) => {
             if *season == cum_season && absolute_episode == cum_episode {
-                Some((cum_season, cum_episode))
-            } else if absolute_episode > 50 {
-                // Long-running anime often keep a high season-local episode number.
-                Some((*season, absolute_episode))
+                AnimeEpisodeResolution::Resolved(cum_season, cum_episode)
             } else {
-                Some((cum_season, cum_episode))
+                // Season-local and cumulative interpretations both fit but
+                // point at different episodes. Without an authoritative
+                // mapping, guessing risks linking the wrong episode, so
+                // surface the ambiguity instead of picking one.
+                AnimeEpisodeResolution::Ambiguous
             }
         }
-        ([season], None) => Some((*season, absolute_episode)),
-        ([], Some((season, episode))) => Some((season, episode)),
-        _ => None,
+        ([season], None) => AnimeEpisodeResolution::Resolved(*season, absolute_episode),
+        ([], Some((season, episode))) => AnimeEpisodeResolution::Resolved(season, episode),
+        _ => AnimeEpisodeResolution::Unresolved,
     }
 }
 

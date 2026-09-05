@@ -7,57 +7,28 @@
 {% block content %}
 <div class="page-header page-header--split">
     <div>
-    <div class="page-meta">
-        <p class="page-kicker">Maintenance</p>
-        <span class="page-taxonomy page-taxonomy--inspection">Preview</span>
+        <h1>Discover</h1>
+        <p class="page-lead">Read-only placement preview for tagged folders; apply stays outside the web UI.</p>
     </div>
-    <h1>Discover</h1>
-    <p class="page-lead">Preview candidate placements for tagged folders without writing links.</p>
-    </div>
-    <div class="header-badges">
-        <span class="badge badge-info">Async Preview</span>
+    <div class="page-header__aside">
         {% if selected_library.is_empty() %}
-        <span class="badge badge-secondary">All Libraries</span>
+        <span class="badge badge-info">All libraries</span>
         {% else %}
-        <span class="badge badge-secondary">{{ selected_library }}</span>
+        <span class="badge badge-info">{{ selected_library }}</span>
         {% endif %}
+        <a class="doc-link" href="https://github.com/LAP87/Symlinkarr/wiki/Discover-and-Queue" target="_blank" rel="noreferrer noopener">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14L21 3"/></svg>
+            Discover preview rules
+        </a>
     </div>
 </div>
 
-<details class="card disclosure-card">
-    <summary class="disclosure-card__summary">
-        <div class="disclosure-card__copy">
-            <span class="disclosure-card__eyebrow">Guide</span>
-            <h2 class="disclosure-card__title">Discover preview rules</h2>
-            <p class="disclosure-card__hint">Open for the read-only placement rules.</p>
-        </div>
-        <div class="disclosure-card__meta">
-            <span class="badge badge-secondary">Wiki</span>
-            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
-        </div>
-    </summary>
-    <div class="disclosure-card__body">
-        <div class="page-help-links">
-            <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Discover-and-Queue" target="_blank" rel="noreferrer noopener">
-                <span class="help-link__eyebrow">Learn more</span>
-                <span class="help-link__title">Discover preview rules</span>
-            </a>
-        </div>
-    </div>
-</details>
-
-<div class="alert alert-info">
-    <strong>Web discover is intentionally read-only.</strong>
-    This page now previews real placements, but apply stays outside the web UI until unattended matching is trustworthy enough for folders, seasons, and target ownership.
-</div>
-
-<div class="split-grid">
+<div class="page-sections">
 <section class="card">
     <div class="section-head">
         <div>
-            <p class="section-kicker">Scope</p>
-            <h2 class="section-title">Filter discover review</h2>
-            <p class="section-copy">Narrow the run to one library when you want a faster review or a clearer report. Leave it open for a full-system pass.</p>
+            <h2 class="section-title">Scope</h2>
+            <p class="section-copy">Narrow the run to one library for a faster review, or leave it open for a full pass.</p>
         </div>
     </div>
     <form action="/discover" method="get" id="discover-form" class="stack-form">
@@ -65,12 +36,12 @@
             <div class="form-group">
                 <label class="form-label" for="library">Target library</label>
                 <select id="library" name="library" class="form-control">
-                <option value="" {% if selected_library.is_empty() %}selected{% endif %}>All Libraries</option>
-                {% for lib in libraries %}
-                <option value="{{ lib.name }}" {% if selected_library == lib.name %}selected{% endif %}>{{ lib.name }}</option>
-                {% endfor %}
-            </select>
-        </div>
+                    <option value="" {% if selected_library.is_empty() %}selected{% endif %}>All libraries</option>
+                    {% for lib in libraries %}
+                    <option value="{{ lib.name }}" {% if selected_library == lib.name %}selected{% endif %}>{{ lib.name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
         </div>
         <label class="toggle-row">
             <input type="checkbox" name="refresh_cache" value="true" {% if refresh_cache %}checked{% endif %}>
@@ -80,11 +51,10 @@
             </div>
         </label>
         <div class="actions">
-            <button type="submit" class="btn btn-primary">Refresh Discover</button>
+            <button type="submit" class="btn btn-primary">Refresh preview</button>
         </div>
     </form>
 </section>
-</div>
 
 <div
     id="discover-results"
@@ -95,15 +65,14 @@
 >
     <section class="card">
         <div class="empty-state">
-            <strong>Loading discover preview <span class="htmx-indicator">&#8987;</span></strong>
-            <p class="text-muted">
-                {% if refresh_cache %}
-                Refresh cache is enabled, so this pass may take noticeably longer while RD data is synced before placement review.
-                {% else %}
-                The page loads right away; folder plans and placement tables appear once the discover pipeline finishes.
-                {% endif %}
-            </p>
+            <span class="empty-state__title">Loading discover preview <span class="htmx-indicator">&#8987;</span></span>
+            {% if refresh_cache %}
+            Refresh cache is enabled, so this pass takes longer while RD data syncs before placement review.
+            {% else %}
+            Folder plans and placement tables appear once the discover pipeline finishes.
+            {% endif %}
         </div>
     </section>
+</div>
 </div>
 {% endblock %}

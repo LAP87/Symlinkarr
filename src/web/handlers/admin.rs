@@ -487,6 +487,24 @@ pub(crate) async fn post_import_apply(
     }
 
     let draft = form.draft();
+    let mut operation =
+        match crate::operations::OperationCoordinator::new(state.database.as_ref().clone())
+            .acquire(crate::operations::OperationRequest::new(
+                "import_apply",
+                "web",
+                None,
+            ))
+            .await
+        {
+            Ok(operation) => operation,
+            Err(err) => {
+                return (
+                    StatusCode::CONFLICT,
+                    Html(format!("Import apply rejected: {}", err)),
+                )
+                    .into_response()
+            }
+        };
     let feedback;
     let mut result = None;
 
@@ -660,6 +678,17 @@ pub(crate) async fn post_import_apply(
         }
     }
 
+    let operation_result = feedback.as_ref().is_some_and(|feedback| feedback.success);
+    let finalization = if operation_result {
+        operation
+            .succeed(Some("Import apply completed"), None)
+            .await
+    } else {
+        operation.fail("Import apply completed with errors").await
+    };
+    if let Err(err) = finalization {
+        error!("Could not finalize import operation: {}", err);
+    }
     let template = ImportTemplate {
         libraries: state.config.libraries.clone(),
         draft,

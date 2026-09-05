@@ -58,7 +58,10 @@ pub(crate) async fn run_repair(
             let repairer = repair::Repairer::new();
             let selected = selected_libraries(cfg, library_filter)?;
             let selected_library_paths: Vec<_> = selected.iter().map(|l| l.path.clone()).collect();
-            let dead = repairer.scan_for_dead_symlinks(&selected_library_paths);
+            let source_paths: Vec<_> = cfg.sources.iter().map(|s| s.path.clone()).collect();
+            let dead = repairer
+                .scan_for_dead_symlinks(&selected_library_paths, &source_paths)
+                .await;
 
             if dead.is_empty() {
                 println!("✅ No dead symlinks found!");
@@ -231,8 +234,21 @@ pub(crate) async fn run_repair(
             }
 
             let client = api::decypharr::DecypharrClient::from_config(&cfg.decypharr);
-            let msg = client.trigger_repair(arr.as_deref(), vec![], true).await?;
+            if let Some(name) = arr.as_deref() {
+                println!(
+                    "ℹ️  Decypharr 2.3+ repairs every configured *Arr in one sweep; --arr {name} is ignored"
+                );
+            }
+            let msg = client.trigger_repair(None, false, true).await?;
             println!("✅ {}", msg);
+            if let Ok(status) = client.get_repair_status().await {
+                if let Some(next) = status.next_run_at.as_deref() {
+                    println!("   next scheduled sweep: {next}");
+                }
+                if let Some(run) = status.last_run.as_ref() {
+                    println!("   last run: {} ({})", run.id, run.status);
+                }
+            }
         }
     }
 

@@ -162,6 +162,31 @@ fn scheduler_rule(name: &str) -> ScheduleRule {
 }
 
 #[tokio::test]
+async fn scheduler_run_now_returns_conflict_before_background_spawn_and_fails_run_history() {
+    let state = test_state().await;
+    let mut rule = scheduler_rule("run-now conflict");
+    let id = state.database.create_scheduler_rule(&rule).await.unwrap();
+    rule.id = Some(id);
+    state
+        .database
+        .try_acquire_operation("library-operation", "scan", "web", Some("Anime"))
+        .await
+        .unwrap()
+        .unwrap();
+    let response = api_post_scheduler_rule_run_now(State(state.clone()), Path(id))
+        .await
+        .into_response();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let text = String::from_utf8_lossy(&body);
+    assert!(text.contains("scan"));
+    assert!(text.contains("web"));
+    assert!(text.contains("Anime"));
+    let runs = state.database.list_scheduler_runs(10).await.unwrap();
+    assert_eq!(runs[0].status, "failed");
+}
+
+#[tokio::test]
 async fn api_get_status_includes_daemon_observability() {
     let dir = tempfile::tempdir().unwrap();
     let mut cfg = test_config(dir.path());
@@ -195,6 +220,15 @@ async fn api_get_status_includes_daemon_observability() {
     assert_eq!(daemon_heartbeat.status_label, "Alive");
     assert_eq!(daemon_heartbeat.phase_label, "Sleeping");
     assert!(daemon_heartbeat.detail.contains("Next scan in 60 minutes"));
+}
+
+/// Allow test Plex DBs under the temp dir and the workspace (for
+/// `tempdir_in`-based tests). Every caller sets the same value, so parallel
+/// tests do not conflict.
+fn allow_test_plex_db_locations() {
+    let allowed =
+        std::env::join_paths([std::env::temp_dir(), std::env::current_dir().unwrap()]).unwrap();
+    std::env::set_var(PLEX_DB_ENV_VAR, allowed);
 }
 
 async fn create_test_plex_duplicate_db(path: &Path) {
@@ -542,6 +576,7 @@ async fn api_get_scan_history_respects_mode_and_limit_filters() {
 async fn api_get_scan_jobs_includes_active_background_scan() {
     let ctx = test_state().await;
     ctx.set_active_scan_for_test(Some(ActiveScanJob {
+        operation_id: 0,
         started_at: "2026-03-29 23:59:00 UTC".to_string(),
         scope_label: "Anime".to_string(),
         dry_run: true,
@@ -565,6 +600,7 @@ async fn api_get_scan_jobs_includes_active_background_scan() {
 async fn api_get_scan_status_includes_last_outcome() {
     let ctx = test_state().await;
     ctx.set_last_scan_outcome_for_test(Some(LastScanOutcome {
+        operation_id: None,
         finished_at: "2099-03-29 23:58:00 UTC".to_string(),
         scope_label: "Anime".to_string(),
         dry_run: false,
@@ -591,6 +627,7 @@ async fn api_get_scan_status_includes_last_outcome() {
 async fn api_get_scan_status_hides_stale_failed_outcome_when_newer_run_exists() {
     let ctx = test_state().await;
     ctx.set_last_scan_outcome_for_test(Some(LastScanOutcome {
+        operation_id: None,
         finished_at: "2026-03-29 09:58:00 UTC".to_string(),
         scope_label: "Anime".to_string(),
         dry_run: false,
@@ -611,13 +648,16 @@ async fn api_get_scan_status_hides_stale_failed_outcome_when_newer_run_exists() 
 #[tokio::test]
 async fn api_post_scan_rejects_when_background_scan_is_already_running() {
     let ctx = test_state().await;
-    ctx.set_active_scan_for_test(Some(ActiveScanJob {
-        started_at: "2026-03-29 23:59:00 UTC".to_string(),
-        scope_label: "Anime".to_string(),
-        dry_run: true,
-        search_missing: false,
-    }))
-    .await;
+    ctx.database
+        .try_acquire_operation(
+            "library-operation",
+            "repair_auto",
+            "scheduler",
+            Some("Anime"),
+        )
+        .await
+        .unwrap()
+        .unwrap();
 
     let response = api_post_scan(
         State(ctx),
@@ -635,9 +675,8 @@ async fn api_post_scan_rejects_when_background_scan_is_already_running() {
     let json: ApiScanResponse = serde_json::from_slice(&bytes).unwrap();
 
     assert!(!json.success);
-    assert!(json.running);
-    assert_eq!(json.scope_label.as_deref(), Some("Anime"));
-    assert!(json.message.contains("already running"));
+    assert!(json.message.contains("repair_auto"));
+    assert!(json.message.contains("scheduler"));
 }
 
 #[tokio::test]
@@ -1153,6 +1192,7 @@ async fn api_post_cleanup_audit_rejects_invalid_scope_with_bad_request() {
 async fn api_get_cleanup_audit_jobs_includes_active_background_audit() {
     let ctx = test_state().await;
     ctx.set_active_cleanup_audit_for_test(Some(ActiveCleanupAuditJob {
+        operation_id: 0,
         started_at: "2026-03-29 23:59:00 UTC".to_string(),
         scope_label: "Anime".to_string(),
         libraries_label: "Anime".to_string(),
@@ -1174,6 +1214,7 @@ async fn api_get_cleanup_audit_jobs_includes_active_background_audit() {
 async fn api_get_cleanup_audit_status_includes_last_outcome() {
     let ctx = test_state().await;
     ctx.set_last_cleanup_audit_outcome_for_test(Some(LastCleanupAuditOutcome {
+        operation_id: None,
         finished_at: "2026-03-29 23:58:00 UTC".to_string(),
         scope_label: "Anime".to_string(),
         libraries_label: "Anime".to_string(),
@@ -1223,6 +1264,7 @@ async fn api_get_cleanup_audit_status_hides_stale_failed_outcome_when_newer_repo
     std::fs::write(&report_path, serde_json::to_vec(&report).unwrap()).unwrap();
 
     ctx.set_last_cleanup_audit_outcome_for_test(Some(LastCleanupAuditOutcome {
+        operation_id: None,
         finished_at: "2026-03-29 09:58:00 UTC".to_string(),
         scope_label: "Anime".to_string(),
         libraries_label: "Anime".to_string(),
@@ -1245,12 +1287,11 @@ async fn api_get_cleanup_audit_status_hides_stale_failed_outcome_when_newer_repo
 #[tokio::test]
 async fn api_post_cleanup_audit_rejects_when_background_audit_is_already_running() {
     let ctx = test_state().await;
-    ctx.set_active_cleanup_audit_for_test(Some(ActiveCleanupAuditJob {
-        started_at: "2026-03-29 23:59:00 UTC".to_string(),
-        scope_label: "Anime".to_string(),
-        libraries_label: "Anime".to_string(),
-    }))
-    .await;
+    ctx.database
+        .try_acquire_operation("library-operation", "scan", "cli", Some("Anime"))
+        .await
+        .unwrap()
+        .unwrap();
 
     let response = api_post_cleanup_audit(
         State(ctx),
@@ -1266,10 +1307,8 @@ async fn api_post_cleanup_audit_rejects_when_background_audit_is_already_running
     let json: ApiCleanupAuditResponse = serde_json::from_slice(&bytes).unwrap();
 
     assert!(!json.success);
-    assert!(json.message.contains("Cleanup audit not started"));
-    assert!(json.running);
-    assert_eq!(json.scope_label.as_deref(), Some("Anime"));
-    assert_eq!(json.libraries_label.as_deref(), Some("Anime"));
+    assert!(json.message.contains("scan"));
+    assert!(json.message.contains("cli"));
 }
 
 #[tokio::test]
@@ -1443,6 +1482,7 @@ async fn api_get_anime_remediation_returns_ranked_groups() {
     std::os::windows::fs::symlink_file("C:\\source-a.mkv", &legacy_target).unwrap();
 
     let plex_db_path = root.join("plex.db");
+    allow_test_plex_db_locations();
     create_test_plex_duplicate_db(&plex_db_path).await;
     let options = SqliteConnectOptions::from_str(plex_db_path.to_str().unwrap()).unwrap();
     let pool = SqlitePoolOptions::new()
@@ -1531,6 +1571,7 @@ async fn api_get_anime_remediation_can_export_filtered_tsv() {
     .unwrap();
 
     let plex_db_path = root.join("plex.db");
+    allow_test_plex_db_locations();
     create_test_plex_duplicate_db(&plex_db_path).await;
     let options = SqliteConnectOptions::from_str(plex_db_path.to_str().unwrap()).unwrap();
     let pool = SqlitePoolOptions::new()
@@ -1619,6 +1660,7 @@ async fn api_post_anime_remediation_preview_saves_plan_in_backup_dir() {
     std::os::unix::fs::symlink("/tmp/source-a.mkv", &legacy_target).unwrap();
 
     let plex_db_path = root.join("plex.db");
+    allow_test_plex_db_locations();
     create_test_plex_duplicate_db(&plex_db_path).await;
     let options = SqliteConnectOptions::from_str(plex_db_path.to_str().unwrap()).unwrap();
     let pool = SqlitePoolOptions::new()
@@ -1707,6 +1749,7 @@ async fn api_post_anime_remediation_apply_uses_saved_plan_and_quarantines_legacy
     std::os::unix::fs::symlink(&tracked_source, &legacy_target).unwrap();
 
     let plex_db_path = root.join("plex.db");
+    allow_test_plex_db_locations();
     create_test_plex_duplicate_db(&plex_db_path).await;
     let options = SqliteConnectOptions::from_str(plex_db_path.to_str().unwrap()).unwrap();
     let pool = SqlitePoolOptions::new()
@@ -1795,7 +1838,7 @@ async fn api_post_anime_remediation_preview_rejects_missing_plex_db() {
     let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let json: ApiAnimeRemediationPreviewResponse = serde_json::from_slice(&bytes).unwrap();
     assert!(!json.success);
-    assert!(json.message.contains("Plex DB path is required"));
+    assert!(json.message.contains("Plex DB not found"));
 }
 
 #[tokio::test]
@@ -1891,4 +1934,55 @@ async fn api_post_anime_remediation_apply_rejects_when_foreign_quarantine_disabl
     assert!(json
         .message
         .contains("cleanup.prune.quarantine_foreign=true"));
+}
+
+#[test]
+fn confine_plex_db_path_allows_default_and_sibling_and_rejects_outside() {
+    let allowed_dir = tempfile::tempdir().unwrap();
+    let outside_dir = tempfile::tempdir().unwrap();
+    let default_db = allowed_dir.path().join("com.plexapp.plugins.library.db");
+    let sibling_db = allowed_dir.path().join("library-copy.db");
+    let outside_db = outside_dir.path().join("whatever.db");
+    std::fs::write(&default_db, b"db").unwrap();
+    std::fs::write(&sibling_db, b"db").unwrap();
+    std::fs::write(&outside_db, b"db").unwrap();
+
+    let roots = vec![allowed_dir.path().canonicalize().unwrap()];
+
+    assert_eq!(
+        confine_plex_db_path(default_db.to_str().unwrap(), &roots).unwrap(),
+        default_db.canonicalize().unwrap()
+    );
+    assert_eq!(
+        confine_plex_db_path(sibling_db.to_str().unwrap(), &roots).unwrap(),
+        sibling_db.canonicalize().unwrap()
+    );
+
+    let err = confine_plex_db_path(outside_db.to_str().unwrap(), &roots).unwrap_err();
+    assert!(
+        err.contains("outside the allowed Plex database directories"),
+        "{err}"
+    );
+}
+
+#[test]
+fn confine_plex_db_path_rejects_absolute_paths_without_any_allowed_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("library.db");
+    std::fs::write(&db_path, b"db").unwrap();
+
+    let err = confine_plex_db_path(db_path.to_str().unwrap(), &[]).unwrap_err();
+    assert!(err.contains(PLEX_DB_ENV_VAR), "{err}");
+}
+
+#[test]
+fn confine_plex_db_path_rejects_missing_and_non_db_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let text_path = dir.path().join("notes.txt");
+    std::fs::write(&text_path, b"not a database").unwrap();
+    let roots = vec![dir.path().canonicalize().unwrap()];
+
+    let missing = dir.path().join("missing.db");
+    assert!(confine_plex_db_path(missing.to_str().unwrap(), &roots).is_err());
+    assert!(confine_plex_db_path(text_path.to_str().unwrap(), &roots).is_err());
 }

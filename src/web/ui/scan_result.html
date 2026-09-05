@@ -7,30 +7,46 @@
 {% block content %}
 <div class="page-header page-header--split">
     <div>
-        <div class="page-meta">
-            <p class="page-kicker">Result</p>
-            <span class="page-taxonomy page-taxonomy--result">Result</span>
-        </div>
-        <h1>&#128269; Scan Result</h1>
-        <p class="page-lead">The web trigger schedules the same scan pipeline as the CLI path, without blocking the browser.</p>
-        <div class="page-help-links">
-            <a class="help-link" href="https://github.com/LAP87/Symlinkarr/wiki/Scan-History-and-Why-Not-Signals" target="_blank" rel="noreferrer noopener">
-                <span class="help-link__eyebrow">Learn more</span>
-                <span class="help-link__title">Run outcomes and why-not guide</span>
-            </a>
-        </div>
+        <h1>Scan result</h1>
+        <p class="page-lead">Web-triggered scans run the same pipeline as the CLI, in the background.</p>
     </div>
-    <div class="header-badges">
+    <div class="page-header__aside">
         {% if dry_run %}
-        <span class="badge badge-info">Dry Run</span>
+        <span class="badge badge-secondary">Dry run</span>
         {% endif %}
+        <a class="doc-link" href="https://github.com/LAP87/Symlinkarr/wiki/Scan-History-and-Why-Not-Signals" target="_blank" rel="noreferrer noopener">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14L21 3"/></svg>
+            Docs
+        </a>
     </div>
 </div>
+
+{% if success %}
+<div class="alert alert-success">
+    {% match active_scan %}
+    {% when Some with (_) %}
+    <strong>Background scan accepted.</strong>
+    {% when None %}
+    <strong>Scan completed.</strong>
+    {% endmatch %}
+    {{ message }}
+</div>
+{% else %}
+<div class="alert alert-error">
+    {% match active_scan %}
+    {% when Some with (_) %}
+    <strong>Scan not started.</strong>
+    {% when None %}
+    <strong>Scan failed.</strong>
+    {% endmatch %}
+    {{ message }}
+</div>
+{% endif %}
 
 {% match active_scan %}
 {% when Some with (job) %}
 <div class="alert alert-info">
-    <strong>&#9203; Background scan running.</strong>
+    <strong>Background scan running.</strong>
     {{ job.scope_label }} started {{ job.started_at }}.
     {% if job.dry_run %} Dry run.{% endif %}
     {% if job.search_missing %} Search missing enabled.{% endif %}
@@ -48,121 +64,57 @@
 </div>
 {% when None %}{% endmatch %}
 
-{% if success %}
-<div class="alert alert-success">
-    {% match active_scan %}
-    {% when Some with (_) %}
-    <strong>&#9989; Background scan accepted.</strong>
-    {% when None %}
-    <strong>&#9989; Scan completed.</strong>
-    {% endmatch %}
-    {{ message }}
-</div>
-{% else %}
-<div class="alert alert-error">
-    {% match active_scan %}
-    {% when Some with (_) %}
-    <strong>&#10060; Scan not started.</strong>
-    {% when None %}
-    <strong>&#10060; Scan failed.</strong>
-    {% endmatch %}
-    {{ message }}
-</div>
-{% endif %}
-
-<div class="split-grid">
+<div class="page-sections">
+    {% match latest_run %}
+    {% when Some with (run) %}
     <section class="card">
         <div class="section-head">
             <div>
-                <p class="section-kicker">Meaning</p>
-                <h2 class="section-title">What this result actually means</h2>
+                <h2 class="section-title">Latest saved run</h2>
+                <p class="section-copy">{{ run.scope_label }}, started {{ run.started_at }}.</p>
+            </div>
+            <div class="header-badges">
+                {% if run.search_missing %}
+                <span class="badge badge-warning">Search missing</span>
+                {% endif %}
+                <span class="badge badge-info mono">#{{ run.id }}</span>
             </div>
         </div>
-        {% match active_scan %}
-        {% when Some with (_) %}
-        <p class="text-muted">The browser accepted the run and the real work is still happening in the background. Use Scan History or the dashboard feed when you need to confirm the final outcome.</p>
-        {% when None %}
-        {% if success %}
-        <p class="text-muted">The run finished and saved scan details are available below.</p>
-        {% else %}
-        <p class="text-muted">The trigger failed or the run ended badly. Check the latest recorded result before retrying.</p>
-        {% endif %}
-        {% endmatch %}
-    </section>
-
-    <section class="card">
-        <div class="section-head">
-            <div>
-                <p class="section-kicker">Next Step</p>
-                <h2 class="section-title">Best follow-up</h2>
-            </div>
-        </div>
-        <ol class="steps-list text-muted">
-            {% match latest_run %}
-            {% when Some with (_) %}
-            <li>Open the run detail to review timings, skip reasons, and queue changes.</li>
-            <li>If acquisition still looks unhealthy, compare Scan with Status before rerunning.</li>
-            {% when None %}
-            <li>Return to Scan and wait for the next recorded outcome before assuming the pipeline is done.</li>
-            <li>Use the dashboard feed if you only need to confirm whether work is still running.</li>
-            {% endmatch %}
-        </ol>
-    </section>
-</div>
-
-{% match latest_run %}
-{% when Some with (run) %}
-<details class="card disclosure-card">
-    <summary class="disclosure-card__summary">
-        <div class="disclosure-card__copy">
-            <span class="disclosure-card__eyebrow">Recorded run</span>
-            <h2 class="disclosure-card__title">Latest saved run</h2>
-            <p class="disclosure-card__hint">Open when you want the quick metrics here instead of jumping straight into the full run detail page.</p>
-        </div>
-        <div class="disclosure-card__meta">
-            {% if run.search_missing %}
-            <span class="badge badge-warning">Search Missing</span>
-            {% endif %}
-            <span class="badge badge-info mono">#{{ run.id }}</span>
-            <span class="disclosure-card__chevron" aria-hidden="true">▾</span>
-        </div>
-    </summary>
-    <div class="disclosure-card__body">
-        <div class="section-head">
-            <div>
-                <p class="section-kicker">Recorded Run</p>
-                <h2 class="section-title"><a href="/scan/history/{{ run.id }}">{{ run.scope_label }}</a></h2>
-            </div>
-        </div>
-
-        <p class="text-muted mono mb-2">{{ run.started_at }}</p>
 
         <div class="metric-grid">
             <div class="metric-card"><span class="metric-label">Runtime</span><strong>{{ run.total_runtime }}</strong></div>
-            <div class="metric-card"><span class="metric-label">Matches</span><strong>{{ run.matches_found }}</strong></div>
-            <div class="metric-card"><span class="metric-label">Created</span><strong class="text-success">{{ run.links_created }}</strong></div>
-            <div class="metric-card"><span class="metric-label">Updated</span><strong>{{ run.links_updated }}</strong></div>
-            <div class="metric-card"><span class="metric-label">Acquire Hits</span><strong>{{ run.auto_acquire_successes }}</strong></div>
-            <div class="metric-card"><span class="metric-label">No Result</span><strong>{{ run.auto_acquire_no_result }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Matches</span><strong>{{ run.matches_found|thousands }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Created</span><strong class="{% if run.links_created > 0 %}text-success{% else %}text-muted{% endif %}">{{ run.links_created|thousands }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Updated</span><strong>{{ run.links_updated|thousands }}</strong></div>
+            <div class="metric-card"><span class="metric-label">Acquire hits</span><strong>{{ run.auto_acquire_successes|thousands }}</strong></div>
+            <div class="metric-card"><span class="metric-label">No result</span><strong>{{ run.auto_acquire_no_result|thousands }}</strong></div>
         </div>
 
+        <h3 class="subsection-title mt-3">Stage timings</h3>
         <div class="telemetry-grid">
             <div class="telemetry-item"><span>Source</span><strong>{{ run.source_inventory }}</strong></div>
             <div class="telemetry-item"><span>Match</span><strong>{{ run.matching }}</strong></div>
             <div class="telemetry-item"><span>Link</span><strong>{{ run.linking }}</strong></div>
-            <div class="telemetry-item"><span>Dead Sweep</span><strong>{{ run.dead_link_sweep }}</strong></div>
+            <div class="telemetry-item"><span>Dead sweep</span><strong>{{ run.dead_link_sweep }}</strong></div>
+        </div>
+    </section>
+    {% when None %}
+    <div class="empty-state">
+        <span class="empty-state__title">No saved run recorded yet.</span>
+        The scan may still be running, or it ended before a run record was written.
+        <div class="empty-state__actions">
+            <a class="btn btn-secondary" href="/scan/history">Scan History</a>
         </div>
     </div>
-</details>
-{% when None %}{% endmatch %}
+    {% endmatch %}
+</div>
 
 <div class="actions mt-2">
     {% match latest_run %}
     {% when Some with (run) %}
-    <a href="/scan/history/{{ run.id }}" class="btn btn-primary">&#128196; View Run Details</a>
+    <a href="/scan/history/{{ run.id }}" class="btn btn-primary">View run detail</a>
     {% when None %}{% endmatch %}
     <a href="/scan/history" class="btn btn-secondary">Scan History</a>
-    <a href="/scan" class="btn btn-secondary">&#8592; Back to Scan</a>
-    <a href="/" class="btn">&#127968; Dashboard</a>
+    <a href="/scan" class="btn btn-secondary">Back to scan</a>
 </div>
 {% endblock %}

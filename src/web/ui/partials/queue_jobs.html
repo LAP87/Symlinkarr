@@ -4,12 +4,12 @@
     <article class="queue-job-card">
         <div class="queue-job-card__header">
             <div>
-                <p class="queue-job-card__eyebrow">{{ job.arr_label }} · {{ job.scope_label }}</p>
-                <h3 class="queue-job-card__title">{{ job.label }}</h3>
+                <p class="queue-job-card__eyebrow">{{ job.arr_label }} &middot; {{ job.scope_label }}</p>
+                <h4 class="queue-job-card__title">{{ job.label }}</h4>
             </div>
             <div class="queue-job-card__badges">
                 <span class="badge {{ job.status_badge_class }}">{{ job.status_label }}</span>
-                <span class="badge {% if job.attempts > 0 %}badge-warning{% else %}badge-info{% endif %}">Attempts {{ job.attempts }}</span>
+                <span class="badge {% if job.attempts > 0 %}badge-warning{% else %}badge-info{% endif %}">Attempts {{ job.attempts|thousands }}</span>
             </div>
         </div>
         <div class="queue-job-card__facts">
@@ -30,7 +30,8 @@
     {% endfor %}
 </div>
 {% else %}
-<div class="alert alert-success">
-    <strong>No recent queue jobs need review.</strong>
+<div class="empty-state">
+    <span class="empty-state__title">No recent queue jobs need review.</span>
+    Auto-acquire jobs that stall, block, or fail show up here.
 </div>
 {% endif %}

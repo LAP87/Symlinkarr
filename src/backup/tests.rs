@@ -651,6 +651,60 @@ fn test_rotation_removes_snapshot_alongside_rotated_manifest() {
 }
 
 #[test]
+fn test_rotation_skips_manifest_filenames_that_escape_backup_dir() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let backup_dir = dir.path().join("backups");
+    std::fs::create_dir_all(&backup_dir).unwrap();
+
+    let victim_snapshot = dir.path().join("victim.sqlite3");
+    let victim_secret = dir.path().join("victim-secret.txt");
+    std::fs::write(&victim_snapshot, "keep me").unwrap();
+    std::fs::write(&victim_secret, "keep me").unwrap();
+
+    let manifest = BackupManifest {
+        version: 1,
+        timestamp: Utc::now(),
+        backup_type: BackupType::Scheduled,
+        label: "malicious".to_string(),
+        symlinks: vec![],
+        total_count: 0,
+        database_snapshot: Some(BackupDatabaseSnapshot {
+            filename: "../victim.sqlite3".to_string(),
+            sha256: "deadbeef".to_string(),
+            size_bytes: 7,
+        }),
+        app_state: Some(BackupAppState {
+            config_snapshot: Some(BackupManagedFile {
+                filename: "../victim-secret.txt".to_string(),
+                sha256: "deadbeef".to_string(),
+                size_bytes: 7,
+                original_path: PathBuf::from("/etc/symlinkarr/config.yaml"),
+            }),
+            secret_snapshots: vec![],
+        }),
+        content_sha256: None,
+    };
+    let manifest_path = backup_dir.join("symlinkarr-backup-20260101-120000.json");
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_string_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    remove_backup_artifacts(&manifest_path).unwrap();
+
+    assert!(!manifest_path.exists());
+    assert!(
+        victim_snapshot.exists(),
+        "rotation must not delete snapshot paths outside the backup directory"
+    );
+    assert!(
+        victim_secret.exists(),
+        "rotation must not delete app state paths outside the backup directory"
+    );
+}
+
+#[test]
 fn test_list_backups() {
     let dir = tempfile::TempDir::new().unwrap();
     let manager = BackupManager::new(&test_config(dir.path()));
@@ -1009,4 +1063,29 @@ async fn test_restore_rejects_manifest_checksum_mismatch() {
         .unwrap_err();
 
     assert!(err.to_string().contains("integrity check failed"));
+}
+
+#[test]
+fn test_looks_like_manifest_sniffs_header_without_reading_whole_file() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let manifest = dir.path().join("any-name.json");
+    std::fs::write(
+        &manifest,
+        r#"{"version":1,"timestamp":"2026-01-01T00:00:00Z","backup_type":"Scheduled","label":"x","symlinks":[]}"#,
+    )
+    .unwrap();
+    assert!(super::looks_like_manifest(&manifest));
+
+    // A foreign report whose first bytes carry no manifest marker is rejected even if
+    // the marker appears deep inside the file.
+    let foreign = dir.path().join("cleanup-audit-all.json");
+    let mut body = String::from("{\"report\":\"audit\",\"entries\":[");
+    body.push_str(&"{\"path\":\"/x\"},".repeat(600));
+    body.push_str("{\"backup_type\":\"decoy\"}]}");
+    std::fs::write(&foreign, body).unwrap();
+    assert!(!super::looks_like_manifest(&foreign));
+
+    assert!(!super::looks_like_manifest(
+        &dir.path().join("missing.json")
+    ));
 }
