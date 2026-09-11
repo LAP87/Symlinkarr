@@ -264,6 +264,8 @@ fn sample_streaming_guard_view() -> StreamingGuardView {
             "/library/anime/Show B/Season 01/S01E02.mkv".to_string(),
         ],
         error_message: None,
+        known: true,
+        note: None,
     }
 }
 

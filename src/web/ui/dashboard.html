@@ -16,7 +16,7 @@
         <span class="badge {% if stats.dead_links > 0 %}badge-danger{% else %}badge-success{% endif %}">Dead {{ stats.dead_links|thousands }}</span>
         {% match streaming_guard %}
         {% when Some with (guard) %}
-        <span class="badge {{ guard.status_badge_class }}">{% if guard.error_message.is_some() %}Streams —{% else %}Streams {{ guard.active_streams }}{% endif %}</span>
+        <span class="badge {{ guard.status_badge_class }}">{% if guard.known %}Streams {{ guard.active_streams }}{% else %}Streams —{% endif %}</span>
         {% when None %}{% endmatch %}
         {% if deferred_refresh.pending_targets > 0 %}
         <span class="badge badge-warning">Pending refresh {{ deferred_refresh.pending_targets|thousands }}</span>

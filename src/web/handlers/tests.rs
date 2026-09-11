@@ -681,6 +681,8 @@ fn dashboard_needs_attention_includes_playback_guard_when_mutations_are_waiting(
         active_streams: 2,
         protected_paths: vec!["/library/anime/Show A/S01E01.mkv".to_string()],
         error_message: None,
+        known: true,
+        note: None,
     };
     let inputs = DashboardAttentionInputs {
         latest_run: None,

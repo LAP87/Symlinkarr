@@ -125,8 +125,18 @@ struct TrackedBackgroundTask {
     handle: tokio::task::JoinHandle<()>,
 }
 
-type StreamingGuardCache =
-    Arc<Mutex<Option<(std::time::Instant, Option<templates::StreamingGuardView>)>>>;
+/// Last playback probe plus the last *successful* one, so pages can answer
+/// instantly from what is known while a fresh probe runs in the background.
+#[derive(Default)]
+pub(crate) struct StreamingGuardCacheState {
+    pub(crate) last_probe: Option<(std::time::Instant, StreamingGuardView)>,
+    pub(crate) last_good: Option<(std::time::Instant, StreamingGuardView)>,
+    pub(crate) probe_running: bool,
+}
+
+use templates::StreamingGuardView;
+
+type StreamingGuardCache = Arc<Mutex<StreamingGuardCacheState>>;
 
 /// Shared application state passed to handlers
 #[derive(Clone)]
@@ -160,7 +170,7 @@ impl WebState {
             background_jobs: Arc::new(Mutex::new(BackgroundJobState::default())),
             background_tasks: Arc::new(Mutex::new(Vec::new())),
             discover_run: Arc::new(tokio::sync::Mutex::new(())),
-            streaming_guard_cache: Arc::new(Mutex::new(None)),
+            streaming_guard_cache: Arc::new(Mutex::new(StreamingGuardCacheState::default())),
         })
     }
 

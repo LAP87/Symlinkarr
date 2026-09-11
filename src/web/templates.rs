@@ -719,6 +719,10 @@ pub struct StreamingGuardView {
     pub active_streams: usize,
     pub protected_paths: Vec<String>,
     pub error_message: Option<String>,
+    /// `active_streams` reflects a real Tautulli observation (possibly stale).
+    pub known: bool,
+    /// Soft notice, e.g. "showing the check from 40 s ago".
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Clone)]

@@ -418,7 +418,13 @@ pub(crate) fn daemon_schedule_view(
 }
 
 const RECENT_QUEUE_JOB_LIMIT: usize = 6;
-const STATUS_STREAMING_GUARD_TIMEOUT: Duration = Duration::from_millis(2500);
+/// Budget for the background Tautulli probe (get_activity can take 10+ s when
+/// Tautulli itself waits on Plex).
+const STATUS_STREAMING_GUARD_TIMEOUT: Duration = Duration::from_secs(20);
+/// How long a probe result is served as-is before a new background probe starts.
+const STATUS_STREAMING_GUARD_FRESH: Duration = Duration::from_secs(8);
+/// Oldest successful check still worth showing (with its age) when live probes fail.
+const STATUS_STREAMING_GUARD_STALE_LIMIT: Duration = Duration::from_secs(15 * 60);
 
 fn format_operator_name(raw: &str) -> String {
     let mut chars = raw.chars();
@@ -603,60 +609,126 @@ async fn recent_queue_jobs(state: &WebState, limit: usize) -> Vec<QueueJobView> 
     }
 }
 
+fn streaming_guard_live_view(paths: Vec<String>) -> StreamingGuardView {
+    StreamingGuardView {
+        status_label: if paths.is_empty() {
+            "Idle".to_string()
+        } else {
+            "Protecting".to_string()
+        },
+        status_badge_class: if paths.is_empty() {
+            "badge-success"
+        } else {
+            "badge-warning"
+        },
+        active_streams: paths.len(),
+        protected_paths: paths.into_iter().take(6).collect(),
+        error_message: None,
+        known: true,
+        note: None,
+    }
+}
+
+fn streaming_guard_unavailable_view(message: String) -> StreamingGuardView {
+    StreamingGuardView {
+        status_label: "Unavailable".to_string(),
+        status_badge_class: "badge-danger",
+        active_streams: 0,
+        protected_paths: Vec::new(),
+        error_message: Some(message),
+        known: false,
+        note: None,
+    }
+}
+
+/// Never blocks a page on Tautulli: answers from the cache and refreshes it in a
+/// background task. A failed live probe falls back to the last successful check
+/// (with its age) rather than reporting zero streams.
 async fn streaming_guard_view(state: &WebState) -> Option<StreamingGuardView> {
     if !state.config.has_tautulli() {
         return None;
     }
 
-    let mut cache = state.streaming_guard_cache.lock().await;
-    if let Some((cached_at, view)) = cache.as_ref() {
-        if cached_at.elapsed() < std::time::Duration::from_secs(8) {
-            return view.clone();
+    let (fresh_probe, last_good, spawn_probe) = {
+        let mut cache = state.streaming_guard_cache.lock().await;
+        let fresh_probe = cache
+            .last_probe
+            .as_ref()
+            .filter(|(at, _)| at.elapsed() < STATUS_STREAMING_GUARD_FRESH)
+            .map(|(_, view)| view.clone());
+        let spawn_probe = fresh_probe.is_none() && !cache.probe_running;
+        if spawn_probe {
+            cache.probe_running = true;
         }
+        (fresh_probe, cache.last_good.clone(), spawn_probe)
+    };
+
+    if let Some(view) = fresh_probe.as_ref().filter(|view| view.known) {
+        return Some(view.clone());
     }
 
-    let tautulli = TautulliClient::new(&state.config.tautulli);
-    let view = match tokio::time::timeout(
-        STATUS_STREAMING_GUARD_TIMEOUT,
-        tautulli.get_active_file_paths(),
-    )
-    .await
-    {
-        Err(_) => Some(StreamingGuardView {
-            status_label: "Unavailable".to_string(),
-            status_badge_class: "badge-danger",
-            active_streams: 0,
-            protected_paths: Vec::new(),
-            error_message: Some(format!(
-                "Tautulli did not respond within {} ms; skipping live playback check for this page load.",
-                STATUS_STREAMING_GUARD_TIMEOUT.as_millis()
-            )),
-        }),
-        Ok(Ok(paths)) => Some(StreamingGuardView {
-            status_label: if paths.is_empty() {
-                "Idle".to_string()
-            } else {
-                "Protecting".to_string()
+    if spawn_probe {
+        let cache = std::sync::Arc::clone(&state.streaming_guard_cache);
+        let tautulli = TautulliClient::new(&state.config.tautulli);
+        tokio::spawn(async move {
+            let (view, good) = match tokio::time::timeout(
+                STATUS_STREAMING_GUARD_TIMEOUT,
+                tautulli.get_active_file_paths(),
+            )
+            .await
+            {
+                Ok(Ok(paths)) => (streaming_guard_live_view(paths), true),
+                Ok(Err(err)) => (streaming_guard_unavailable_view(err.to_string()), false),
+                Err(_) => (
+                    streaming_guard_unavailable_view(format!(
+                        "Tautulli did not answer within {} s.",
+                        STATUS_STREAMING_GUARD_TIMEOUT.as_secs()
+                    )),
+                    false,
+                ),
+            };
+            let mut cache = cache.lock().await;
+            let now = std::time::Instant::now();
+            if good {
+                cache.last_good = Some((now, view.clone()));
+            }
+            cache.last_probe = Some((now, view));
+            cache.probe_running = false;
+        });
+    }
+
+    let failure = fresh_probe.and_then(|view| view.error_message);
+    Some(match last_good {
+        Some((at, mut view)) if at.elapsed() < STATUS_STREAMING_GUARD_STALE_LIMIT => {
+            let age = at.elapsed().as_secs();
+            if age >= STATUS_STREAMING_GUARD_FRESH.as_secs() || failure.is_some() {
+                view.status_badge_class = "badge-warning";
+                view.note = Some(match failure {
+                    Some(reason) => format!(
+                        "Live check failed ({reason}); showing the result from {age} s ago."
+                    ),
+                    None => format!(
+                        "Showing the check from {age} s ago while Tautulli is queried again in the background."
+                    ),
+                });
+            }
+            view
+        }
+        _ => match failure {
+            Some(reason) => streaming_guard_unavailable_view(reason),
+            None => StreamingGuardView {
+                status_label: "Checking".to_string(),
+                status_badge_class: "badge-info",
+                active_streams: 0,
+                protected_paths: Vec::new(),
+                error_message: None,
+                known: false,
+                note: Some(
+                    "Querying Tautulli in the background; reload in a few seconds.".to_string(),
+                ),
             },
-            status_badge_class: if paths.is_empty() {
-                "badge-success"
-            } else {
-                "badge-warning"
-            },
-            active_streams: paths.len(),
-            protected_paths: paths.into_iter().take(6).collect(),
-            error_message: None,
-        }),
-        Ok(Err(err)) => Some(StreamingGuardView {
-            status_label: "Unavailable".to_string(),
-            status_badge_class: "badge-danger",
-            active_streams: 0,
-            protected_paths: Vec::new(),
-            error_message: Some(err.to_string()),
-        }),
-    };
-    *cache = Some((std::time::Instant::now(), view.clone()));
-    view
+        },
+    })
 }
 
 async fn acquisition_feed_items(

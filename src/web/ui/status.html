@@ -186,6 +186,7 @@
                 </div>
                 <div class="header-badges">
                     <span class="badge {{ guard.status_badge_class }}">{{ guard.status_label }}</span>
+                    {% match guard.note %}{% when Some with (note) %}<p class="text-muted">{{ note }}</p>{% when None %}{% endmatch %}
                     <span class="badge {% if guard.active_streams > 0 %}badge-warning{% else %}badge-info{% endif %}">{{ guard.active_streams }} active</span>
                 </div>
             </div>
