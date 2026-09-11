@@ -1580,17 +1580,24 @@ async fn doctor_page_flags_existing_non_writable_backup_dir() {
 #[tokio::test]
 async fn discover_page_shell_renders_async_loader() {
     let ctx = test_context().await;
-    let response = get_discover(State(ctx.state), Query(DiscoverQuery::default()))
-        .await
-        .into_response();
-    assert_eq!(response.status(), StatusCode::OK);
-    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    let body = String::from_utf8(bytes.to_vec()).unwrap();
 
-    assert!(body.contains("Loading discover preview"));
+    // A plain visit must not start the slow pipeline: it offers a call to action.
+    let body =
+        render_body(get_discover(State(ctx.state.clone()), Query(DiscoverQuery::default())).await)
+            .await;
     assert!(body.contains("hx-get=\"/discover/content\""));
-    assert!(body.contains("apply stays outside the web UI"));
-    assert!(body.contains("Refresh preview"));
+    assert!(body.contains("hx-trigger=\"click from:#discover-build\""));
+    assert!(body.contains("id=\"discover-build\""));
+    assert!(!body.contains("hx-trigger=\"load\""));
+
+    // Submitting the scope form opts in to the async loader.
+    let query = DiscoverQuery {
+        library: Some(String::new()),
+        ..DiscoverQuery::default()
+    };
+    let body = render_body(get_discover(State(ctx.state.clone()), Query(query)).await).await;
+    assert!(body.contains("hx-trigger=\"load\""));
+    assert!(body.contains("Loading discover preview"));
 }
 
 #[tokio::test]
@@ -2079,4 +2086,22 @@ fn resolve_cleanup_report_path_rejects_symlink_escape_inside_backup_dir() {
     assert!(err
         .to_string()
         .contains("Cleanup report must be inside the configured backup directory"));
+}
+
+#[tokio::test]
+async fn discover_content_reports_when_a_pass_is_already_running() {
+    let ctx = test_context().await;
+    let _held = ctx
+        .state
+        .try_start_discover()
+        .expect("slot is free before the test claims it");
+
+    let body = render_body(
+        get_discover_content(State(ctx.state.clone()), Query(DiscoverQuery::default())).await,
+    )
+    .await;
+
+    assert!(body.contains("already running"));
+    drop(_held);
+    assert!(ctx.state.try_start_discover().is_some());
 }

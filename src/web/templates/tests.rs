@@ -725,6 +725,7 @@ fn config_template_renders_settings_rail_and_defaults() {
 #[test]
 fn discover_template_renders_guide_disclosure() {
     let template = DiscoverTemplate {
+        auto_run: false,
         libraries: vec![LibraryConfig {
             name: "Anime".to_string(),
             path: PathBuf::from("/library/anime"),

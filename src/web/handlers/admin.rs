@@ -305,6 +305,7 @@ pub(crate) async fn get_discover(
 ) -> impl IntoResponse {
     let template = DiscoverTemplate {
         libraries: state.config.libraries.clone(),
+        auto_run: query.library.is_some() || query.refresh_cache,
         selected_library: query.library.unwrap_or_default(),
         refresh_cache: query.refresh_cache,
     };
@@ -320,6 +321,31 @@ pub(crate) async fn get_discover_content(
     State(state): State<WebState>,
     Query(query): Query<DiscoverQuery>,
 ) -> impl IntoResponse {
+    fn render(template: DiscoverContentTemplate, status: StatusCode) -> (StatusCode, Html<String>) {
+        (
+            status,
+            Html(template.render().unwrap_or_else(|e| e.to_string())),
+        )
+    }
+
+    // The pipeline walks every source folder and can run for minutes; a second
+    // request (another tab, a reload) must not start a concurrent pass.
+    let Some(_run) = state.try_start_discover() else {
+        return render(
+            DiscoverContentTemplate {
+                discover_summary: DiscoverSummary::default(),
+                folder_plans: vec![],
+                discovered_items: vec![],
+                status_message: Some(
+                    "A discover pass is already running, started from another tab or page load. \
+                     Its results appear there when it finishes; try again in a few minutes."
+                        .to_string(),
+                ),
+            },
+            StatusCode::OK,
+        );
+    };
+
     match load_discovery_snapshot(
         &state.config,
         &state.database,
@@ -329,41 +355,56 @@ pub(crate) async fn get_discover_content(
     .await
     {
         Ok(snapshot) => {
-            let template = DiscoverContentTemplate {
-                discover_summary: snapshot.summary,
-                folder_plans: snapshot.folders,
-                discovered_items: snapshot.items,
-                status_message: snapshot.status_message.or_else(|| {
-                    (!query.refresh_cache).then(|| {
-                        "Showing cached or on-disk discover results only. Enable refresh when you want a slower live cache sync first."
-                            .to_string()
-                    })
-                }),
-            };
-            (
+            const MAX_PLACEMENT_ROWS: usize = 1_000;
+            let total_items = snapshot.items.len();
+            let mut discovered_items = snapshot.items;
+            let mut status_message = snapshot.status_message.or_else(|| {
+                (!query.refresh_cache).then(|| {
+                    "Showing cached or on-disk discover results only. Enable refresh when you want a slower live cache sync first."
+                        .to_string()
+                })
+            });
+            if total_items > MAX_PLACEMENT_ROWS {
+                discovered_items.truncate(MAX_PLACEMENT_ROWS);
+                let note = format!(
+                    "Showing the first {} of {} placements; narrow the scope for the full list.",
+                    crate::utils::format_thousands(MAX_PLACEMENT_ROWS as i64),
+                    crate::utils::format_thousands(total_items as i64)
+                );
+                status_message = Some(match status_message {
+                    Some(existing) => format!("{note} {existing}"),
+                    None => note,
+                });
+            }
+            render(
+                DiscoverContentTemplate {
+                    discover_summary: snapshot.summary,
+                    folder_plans: snapshot.folders,
+                    discovered_items,
+                    status_message,
+                },
                 StatusCode::OK,
-                Html(template.render().unwrap_or_else(|e| e.to_string())),
             )
         }
         Err(err) => {
             let message = err.to_string();
-            let template = DiscoverContentTemplate {
-                discover_summary: DiscoverSummary::default(),
-                folder_plans: vec![],
-                discovered_items: vec![],
-                status_message: Some(if message.contains("Unknown library filter") {
-                    format!("Invalid library filter: {}", message)
-                } else {
-                    format!("Discover failed: {}", message)
-                }),
-            };
-            (
-                if message.contains("Unknown library filter") {
+            let invalid_filter = message.contains("Unknown library filter");
+            render(
+                DiscoverContentTemplate {
+                    discover_summary: DiscoverSummary::default(),
+                    folder_plans: vec![],
+                    discovered_items: vec![],
+                    status_message: Some(if invalid_filter {
+                        format!("Invalid library filter: {}", message)
+                    } else {
+                        format!("Discover failed: {}", message)
+                    }),
+                },
+                if invalid_filter {
                     StatusCode::BAD_REQUEST
                 } else {
                     StatusCode::INTERNAL_SERVER_ERROR
                 },
-                Html(template.render().unwrap_or_else(|e| e.to_string())),
             )
         }
     }

@@ -1099,3 +1099,43 @@ async fn test_process_matches_adopts_existing_movie_path_for_same_source() {
         .expect("adopted link is recorded");
     assert_eq!(record.source_path, source);
 }
+
+#[tokio::test]
+async fn test_process_matches_dry_run_does_not_backfill_on_disk_links() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let lib_path = dir.path().join("Sample Movie {tmdb-550}");
+    fs::create_dir_all(&lib_path).unwrap();
+    let rd_dir = dir.path().join("rd");
+    fs::create_dir_all(&rd_dir).unwrap();
+    let source = rd_dir.join("sample_movie.mkv");
+    fs::write(&source, b"data").unwrap();
+
+    // Correct symlink already on disk, but unknown to the database.
+    let target = lib_path.join("Sample Movie.mkv");
+    std::os::unix::fs::symlink(&source, &target).unwrap();
+
+    let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+        .await
+        .unwrap();
+
+    let dry = Linker::new(true, true, DEFAULT_TEMPLATE);
+    let summary = dry
+        .process_matches(&[sample_movie_match(&lib_path, &source)], &db, None)
+        .await
+        .unwrap();
+    assert_eq!(summary.created, 0);
+    assert_eq!(summary.skipped, 1);
+    assert!(
+        db.get_link_by_target_path(&target).await.unwrap().is_none(),
+        "dry-run must not write link records"
+    );
+
+    let live = Linker::new(false, true, DEFAULT_TEMPLATE);
+    live.process_matches(&[sample_movie_match(&lib_path, &source)], &db, None)
+        .await
+        .unwrap();
+    assert!(
+        db.get_link_by_target_path(&target).await.unwrap().is_some(),
+        "a live run backfills the on-disk link"
+    );
+}

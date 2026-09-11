@@ -504,12 +504,18 @@ impl Linker {
                                 created_at: None,
                                 updated_at: None,
                             };
-                            db.insert_link(&record).await?;
+                            if !self.dry_run {
+                                db.insert_link(&record).await?;
+                            }
                             existing_links.insert(target_path.clone(), record);
                             self.log_link_event(
                                 db,
                                 run_token,
-                                "backfilled",
+                                if self.dry_run {
+                                    "dry_run_backfill"
+                                } else {
+                                    "backfilled"
+                                },
                                 target_path,
                                 Some(&m.source_item.path),
                                 Some(media_id.as_str()),

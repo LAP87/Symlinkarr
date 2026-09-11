@@ -1275,6 +1275,8 @@ pub struct DiscoverTemplate {
     pub libraries: Vec<LibraryConfig>,
     pub selected_library: String,
     pub refresh_cache: bool,
+    /// Only run the (slow) pipeline when the operator asked for it via the form.
+    pub auto_run: bool,
 }
 
 #[derive(Template)]

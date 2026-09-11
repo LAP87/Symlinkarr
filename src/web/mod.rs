@@ -136,6 +136,8 @@ pub struct WebState {
     browser_session_token: Arc<String>,
     background_jobs: Arc<Mutex<BackgroundJobState>>,
     background_tasks: Arc<Mutex<Vec<TrackedBackgroundTask>>>,
+    /// Held while a discover pass runs; a second request must not start another.
+    discover_run: Arc<tokio::sync::Mutex<()>>,
     streaming_guard_cache: StreamingGuardCache,
 }
 
@@ -145,6 +147,11 @@ impl WebState {
         Self::try_new(config, database).expect("failed to generate secure browser session token")
     }
 
+    /// Claim the single discover slot; `None` while another pass is running.
+    pub fn try_start_discover(&self) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        Arc::clone(&self.discover_run).try_lock_owned().ok()
+    }
+
     pub fn try_new(config: Config, database: Database) -> Result<Self> {
         Ok(Self {
             config: Arc::new(config),
@@ -152,6 +159,7 @@ impl WebState {
             browser_session_token: Arc::new(generate_browser_session_token()?),
             background_jobs: Arc::new(Mutex::new(BackgroundJobState::default())),
             background_tasks: Arc::new(Mutex::new(Vec::new())),
+            discover_run: Arc::new(tokio::sync::Mutex::new(())),
             streaming_guard_cache: Arc::new(Mutex::new(None)),
         })
     }
