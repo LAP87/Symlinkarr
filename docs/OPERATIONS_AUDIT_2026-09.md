@@ -57,3 +57,29 @@ Symlinkarr's own surface: 36 HTML routes + 4 htmx partials + `/api/v1/{cleanup/a
 ## 5. Release state
 
 `1.1.0-rc.9` is committed on `feature/review-fixes-and-ui` (the version bump sits mid-branch; the tag should point at the branch head, which also carries the `/backup` and Decypharr repair fixes) with fmt, clippy, tests and audit green — the same gates `release.yml` runs. Publishing = pushing tag `v1.1.0-rc.9` (builds linux-amd64/arm64, pushes `ghcr.io/lap87/symlinkarr:rc`, creates the pre-release). Uncommitted, deliberately left alone: `src/linker.rs` (owner's change to stop persisting `skipped` link events) and `AGENTS.md`.
+
+---
+
+## Follow-up pass — 2026-09-12 (UI/UX walk + logic check against the live library)
+
+Every page was loaded against the real test database and every read-only CLI command run;
+a dry-run `scan --library Movies` served as the end-to-end matcher/linker exercise. Fixes are
+in `7e253e4` and `866b532`.
+
+### Fixed
+| Finding | Where | Fix |
+|---|---|---|
+| **Dry-run wrote to the database** — a dry-run scan inserted 465 link rows (the "correct symlink on disk, no DB record" backfill was not gated) | `src/linker.rs` | gated on `!dry_run`, regression test |
+| **Movie filenames doubled the year** ("0.5 mm (2014) (2014).mkv") whenever the folder-derived title was used (metadata lookup miss/404) — 2,552 links in the library, most of them the film's only link | `src/linker.rs` | year no longer appended when the title already ends with `(YYYY)`; movies gained the same existing-equivalent adoption TV had, so the next scan adopts the misnamed links instead of duplicating them |
+| **"Queue 71,216" counted finished jobs** — `active_total` summed `no_result` + `failed` + `completed_unlinked` | `src/db/types.rs`, templates, `status` CLI/JSON | split into *in flight* (65,176) and *needs review* (6,040); badges, Status section, CLI panel and JSON updated |
+| "Auto-acquire queue is **blocked**" card with 0 blocked (fired on failed jobs); raw numbers in the copy | `src/web/handlers.rs` | title/message reflect what is there; thousands separators via `utils::format_thousands` |
+| Dashboard "Streams 0" while the Status page said Tautulli was unavailable; 900 ms page-load timeout | `src/web/handlers.rs`, `dashboard.html` | 2.5 s timeout; badge shows "Streams —" when the guard is unavailable |
+| **Discover auto-ran a 464 s pipeline (4 MB response) on every page load**, and a reload started a second concurrent pass | `discover.html`, `src/web/handlers/admin.rs`, `WebState` | runs only after the scope form is submitted ("Build preview" otherwise); single discover slot per process ("already running" notice); placement rows capped at 1,000 |
+| Backup rows "7298 fewer than current" unformatted; doctor showed the probe parent instead of the configured source path | `admin.rs`, `doctor.rs` | formatted; configured path shown |
+
+### Observed, not changed (decisions or larger work)
+- **Metadata cache expiry makes the first scan after 30 days slow.** `api.cache_ttl_hours: 720` had lapsed, so the Movies dry-run re-fetched TMDB metadata for all 6,896 items (`cache_hit_ratio=0%`, match phase 674 s of an 11-minute scan). Consider refreshing entries lazily/incrementally, a longer TTL for released films, or surfacing "cache cold" on the scan page.
+- **"Why not" is dominated by expected noise on scoped scans**: a Movies scan reports `matcher_media_shape_mismatch = 93,580` (TV files correctly rejected). Classifying shape mismatches as an expected filter, or labelling them "not a movie (TV episode)", would make the top-reasons list actionable.
+- **The 2,552 misnamed movie links keep their names.** Adoption prevents duplicates; renaming them to the canonical name needs a small `repair rename` (or a one-off script): for each active movie link whose filename ends `(YYYY) (YYYY)`, `rename` the symlink and update `links.target_path`.
+- **Discover is still a synchronous multi-minute request.** The right shape is a background job with progress (like scans), served from a snapshot.
+- The 465 rows the earlier dry-run inserted into `data/symlinkarr.db` describe real on-disk links and are accurate; they were left in place.
