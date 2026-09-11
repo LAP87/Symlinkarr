@@ -72,7 +72,8 @@ pub struct DashboardStats {
 
 #[derive(Debug, Clone, Default)]
 pub struct QueueOverview {
-    pub active_total: i64,
+    pub in_flight: i64,
+    pub needs_review: i64,
     pub queued: i64,
     pub downloading: i64,
     pub relinking: i64,
@@ -85,7 +86,8 @@ pub struct QueueOverview {
 impl From<AcquisitionJobCounts> for QueueOverview {
     fn from(value: AcquisitionJobCounts) -> Self {
         Self {
-            active_total: value.active_total(),
+            in_flight: value.in_flight(),
+            needs_review: value.needs_review(),
             queued: value.queued,
             downloading: value.downloading,
             relinking: value.relinking,

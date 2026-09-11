@@ -20,7 +20,7 @@
 
         <div class="metric-card">
             <span class="metric-label">Queue</span>
-            <strong>{{ queue.active_total|thousands }}</strong>
+            <strong>{{ queue.in_flight|thousands }}</strong>
             <span class="metric-meta">
                 {{ queue.queued|thousands }} queued &middot;
                 {{ queue.downloading|thousands }} downloading &middot;

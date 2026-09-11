@@ -547,7 +547,8 @@ fn dashboard_summary_template_renders_polling_fragment() {
             last_scan: Some("2026-04-22 12:00:00 UTC".to_string()),
         },
         queue: QueueOverview {
-            active_total: 3,
+            in_flight: 3,
+            needs_review: 0,
             queued: 2,
             downloading: 1,
             relinking: 0,
@@ -621,7 +622,8 @@ fn status_template_renders_recent_queue_jobs() {
         tracked_dead_links: Vec::new(),
         recent_queue_jobs: sample_queue_jobs(),
         queue: QueueOverview {
-            active_total: 2,
+            in_flight: 2,
+            needs_review: 0,
             queued: 1,
             downloading: 0,
             relinking: 0,

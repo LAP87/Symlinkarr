@@ -240,6 +240,16 @@ pub struct Linker {
     source_readiness_gate: Option<SourceReadinessGate>,
 }
 
+/// True when a title already ends with a parenthesised four-digit year, e.g. "0.5 mm (2014)".
+fn title_ends_with_year(title: &str) -> bool {
+    let trimmed = title.trim_end();
+    let Some(open) = trimmed.rfind(" (") else {
+        return false;
+    };
+    let tail = &trimmed[open + 2..];
+    tail.len() == 5 && tail.ends_with(')') && tail[..4].chars().all(|c| c.is_ascii_digit())
+}
+
 impl Linker {
     #[allow(dead_code)] // Kept for backward compatibility with older call sites
     pub fn new(dry_run: bool, strict_mode: bool, naming_template: &str) -> Self {
@@ -301,12 +311,10 @@ impl Linker {
             }
 
             let mut target_path = self.build_target_path(m)?;
-            if let Some(existing_target) =
-                self.find_existing_equivalent_tv_target(m, &target_path)?
-            {
+            if let Some(existing_target) = self.find_existing_equivalent_target(m, &target_path)? {
                 if existing_target != target_path {
                     debug!(
-                        "Adopting existing TV episode symlink path {:?} instead of creating {:?}",
+                        "Adopting existing symlink path {:?} instead of creating {:?}",
                         existing_target, target_path
                     );
                     target_path = existing_target;
@@ -705,6 +713,61 @@ impl Linker {
         preload_existing_links(db, &target_paths).await
     }
 
+    /// An already-linked path for this match that differs from the canonical target,
+    /// e.g. an episode filed under an older naming scheme or a movie whose filename
+    /// carried a doubled year. Adopting it avoids writing a duplicate symlink.
+    fn find_existing_equivalent_target(
+        &self,
+        m: &MatchResult,
+        target_path: &Path,
+    ) -> Result<Option<PathBuf>> {
+        match m.library_item.media_type {
+            MediaType::Tv => self.find_existing_equivalent_tv_target(m, target_path),
+            MediaType::Movie => self.find_existing_equivalent_movie_target(m, target_path),
+        }
+    }
+
+    /// Movie folders hold one file per version; any symlink there that resolves to the
+    /// same source is the same link under a different name.
+    fn find_existing_equivalent_movie_target(
+        &self,
+        m: &MatchResult,
+        target_path: &Path,
+    ) -> Result<Option<PathBuf>> {
+        if m.library_item.media_type != MediaType::Movie {
+            return Ok(None);
+        }
+        let Some(movie_dir) = target_path.parent() else {
+            return Ok(None);
+        };
+        if !movie_dir.is_dir() {
+            return Ok(None);
+        }
+
+        let expected_source = &m.source_item.path;
+        for entry in std::fs::read_dir(movie_dir)? {
+            let entry = entry?;
+            let candidate = entry.path();
+            if candidate == target_path {
+                continue;
+            }
+            let Ok(meta) = std::fs::symlink_metadata(&candidate) else {
+                continue;
+            };
+            if !meta.file_type().is_symlink() {
+                continue;
+            }
+            let Ok(raw_target) = std::fs::read_link(&candidate) else {
+                continue;
+            };
+            if resolve_link_target(&candidate, &raw_target) == *expected_source {
+                return Ok(Some(candidate));
+            }
+        }
+
+        Ok(None)
+    }
+
     fn find_existing_equivalent_tv_target(
         &self,
         m: &MatchResult,
@@ -807,12 +870,13 @@ impl Linker {
             }
             MediaType::Movie => {
                 // Movies: Library/Movie {id}/Movie (Year).ext
-                let year_str = m
-                    .source_item
-                    .year
-                    .map(|y| format!(" ({})", y))
-                    .unwrap_or_default();
                 let san_title = sanitize_filename(&m.library_item.title);
+                // Folder-derived titles already carry "(YYYY)" (metadata lookups that fail
+                // fall back to them); never append the year a second time.
+                let year_str = match m.source_item.year {
+                    Some(year) if !title_ends_with_year(&san_title) => format!(" ({})", year),
+                    _ => String::new(),
+                };
                 let mut filename = format!("{}{}.{}", san_title, year_str, m.source_item.extension);
                 if self.multi_version {
                     filename = append_version_label(
@@ -1034,6 +1098,11 @@ impl Linker {
         media_id: Option<&str>,
         note: Option<&str>,
     ) {
+        // Repeated skip events (especially already-correct links) are operational noise.
+        // Persist only actionable link history to keep the SQLite database bounded.
+        if action == "skipped" {
+            return;
+        }
         if let Err(e) = db
             .record_link_event_fields_with_run_token(
                 run_token,

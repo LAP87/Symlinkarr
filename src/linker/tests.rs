@@ -1030,3 +1030,72 @@ fn truncate_filename_to_limit_handles_empty_episode_title() {
     // Should not have double dash before extension
     assert!(!result.contains(" - .mkv"));
 }
+
+#[test]
+fn test_movie_target_does_not_double_year_when_title_carries_it() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let lib_path = dir.path().join("0.5 mm (2014) {tmdb-279186}");
+    let source = dir.path().join("rd").join("0.5.mm.2014.1080p.mkv");
+    let linker = Linker::new(false, true, "");
+
+    let mut folder_title = sample_movie_match(&lib_path, &source);
+    folder_title.library_item.title = "0.5 mm (2014)".to_string();
+    folder_title.source_item.year = Some(2014);
+    let target = linker.build_target_path(&folder_title).unwrap();
+    assert_eq!(
+        target.file_name().unwrap().to_string_lossy(),
+        "0.5 mm (2014).mkv"
+    );
+
+    let mut clean_title = sample_movie_match(&lib_path, &source);
+    clean_title.source_item.year = Some(2014);
+    let target = linker.build_target_path(&clean_title).unwrap();
+    assert_eq!(
+        target.file_name().unwrap().to_string_lossy(),
+        "Sample Movie (2014).mkv"
+    );
+
+    assert!(super::title_ends_with_year("Blade Runner 2049 (2017)"));
+    assert!(!super::title_ends_with_year("Blade Runner 2049"));
+    assert!(!super::title_ends_with_year("Movie (abcd)"));
+}
+
+#[tokio::test]
+async fn test_process_matches_adopts_existing_movie_path_for_same_source() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let lib_path = dir.path().join("Sample Movie (2014) {tmdb-550}");
+    fs::create_dir_all(&lib_path).unwrap();
+    let rd_dir = dir.path().join("rd");
+    fs::create_dir_all(&rd_dir).unwrap();
+    let source = rd_dir.join("sample_movie_1080p.mkv");
+    fs::write(&source, b"data").unwrap();
+
+    // A link written by the old naming (doubled year) already points at this source.
+    let existing_target = lib_path.join("Sample Movie (2014) (2014).mkv");
+    std::os::unix::fs::symlink(&source, &existing_target).unwrap();
+
+    let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+        .await
+        .unwrap();
+    let linker = Linker::new(false, true, DEFAULT_TEMPLATE);
+    let mut m = sample_movie_match(&lib_path, &source);
+    m.library_item.title = "Sample Movie (2014)".to_string();
+    m.source_item.year = Some(2014);
+    let canonical_target = linker.build_target_path(&m).unwrap();
+    assert_eq!(
+        canonical_target.file_name().unwrap().to_string_lossy(),
+        "Sample Movie (2014).mkv"
+    );
+
+    let summary = linker.process_matches(&[m], &db, None).await.unwrap();
+
+    assert_eq!(summary.created, 0, "must adopt, not duplicate");
+    assert!(existing_target.is_symlink());
+    assert!(!canonical_target.exists());
+    let record = db
+        .get_link_by_target_path(&existing_target)
+        .await
+        .unwrap()
+        .expect("adopted link is recorded");
+    assert_eq!(record.source_path, source);
+}

@@ -665,7 +665,8 @@ fn dashboard_needs_attention_includes_playback_guard_when_mutations_are_waiting(
         last_scan: Some("2026-04-22 12:00:00 UTC".to_string()),
     };
     let queue = QueueOverview {
-        active_total: 1,
+        in_flight: 1,
+        needs_review: 0,
         queued: 0,
         downloading: 0,
         relinking: 0,

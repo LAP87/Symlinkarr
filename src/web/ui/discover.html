@@ -69,7 +69,7 @@
             {% if refresh_cache %}
             Refresh cache is enabled, so this pass takes longer while RD data syncs before placement review.
             {% else %}
-            Folder plans and placement tables appear once the discover pipeline finishes.
+            Folder plans and placement tables appear once the discover pipeline finishes. It walks every source folder and matches against the library, so a full pass can take a minute or more.
             {% endif %}
         </div>
     </section>

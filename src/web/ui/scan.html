@@ -11,7 +11,7 @@
         <p class="page-lead">Run scans, review timings, and see what happened to the queue.</p>
     </div>
     <div class="page-header__aside">
-        <span class="badge {% if queue.active_total > 0 %}badge-warning{% else %}badge-success{% endif %}">Queue {{ queue.active_total|thousands }}</span>
+        <span class="badge {% if queue.in_flight > 0 %}badge-warning{% else %}badge-success{% endif %}">Queue {{ queue.in_flight|thousands }}</span>{% if queue.needs_review > 0 %}<span class="badge badge-danger">Review {{ queue.needs_review|thousands }}</span>{% endif %}
         <a class="doc-link" href="https://github.com/LAP87/Symlinkarr/wiki/Scan-History-and-Why-Not-Signals" target="_blank" rel="noreferrer noopener">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14L21 3"/></svg>
             Docs

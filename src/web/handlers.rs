@@ -57,6 +57,7 @@ use crate::db::{
 use crate::discovery::DiscoverSummary;
 use crate::media_servers::deferred_refresh_summary;
 use crate::scheduler::ScheduleRule;
+use crate::utils::format_thousands;
 
 use super::templates::*;
 use super::{
@@ -417,7 +418,7 @@ pub(crate) fn daemon_schedule_view(
 }
 
 const RECENT_QUEUE_JOB_LIMIT: usize = 6;
-const STATUS_STREAMING_GUARD_TIMEOUT: Duration = Duration::from_millis(900);
+const STATUS_STREAMING_GUARD_TIMEOUT: Duration = Duration::from_millis(2500);
 
 fn format_operator_name(raw: &str) -> String {
     let mut chars = raw.chars();
@@ -883,14 +884,23 @@ fn dashboard_needs_attention(
     }
 
     if queue.blocked > 0 || queue.failed > 0 {
+        let title = if queue.blocked > 0 {
+            "Auto-acquire queue is blocked"
+        } else {
+            "Auto-acquire jobs need review"
+        };
+        let mut parts = Vec::new();
+        if queue.blocked > 0 {
+            parts.push(format!("{} blocked", format_thousands(queue.blocked)));
+        }
+        if queue.failed > 0 {
+            parts.push(format!("{} failed", format_thousands(queue.failed)));
+        }
         items.push(needs_attention_item(
             "High",
             "badge-warning",
-            "Auto-acquire queue is blocked",
-            format!(
-                "{} blocked and {} failed job(s) need review.",
-                queue.blocked, queue.failed
-            ),
+            title,
+            format!("{} job(s) need review.", parts.join(" and ")),
             "Open Status to check the queue and provider health, then rerun a targeted scan if those jobs should move.",
             Some(activity_link("/status", "Open Status", "Status")),
         ));
@@ -901,7 +911,7 @@ fn dashboard_needs_attention(
             "Auto-acquire finished without relinking",
             format!(
                 "{} completed job(s) still need a fresh link before they become real library wins.",
-                queue.completed_unlinked
+                format_thousands(queue.completed_unlinked)
             ),
             "Open Status and review the latest queue rows before running another scan.",
             Some(activity_link("/status", "Open Status", "Status")),

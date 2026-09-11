@@ -439,6 +439,24 @@ impl ProgressLine {
     }
 }
 
+/// Group an integer with commas, e.g. `77177` -> `77,177`. Shared by the askama
+/// `thousands` filter and server-built messages.
+pub fn format_thousands(n: i64) -> String {
+    let digits = n.unsigned_abs().to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    if n < 0 {
+        format!("-{out}")
+    } else {
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

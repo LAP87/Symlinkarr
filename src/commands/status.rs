@@ -24,6 +24,8 @@ pub(crate) async fn run_status(
     let acquisition = db.get_acquisition_job_counts().await?;
     let acquisition_json = serde_json::json!({
         "active": acquisition.active_total(),
+        "in_flight": acquisition.in_flight(),
+        "needs_review": acquisition.needs_review(),
         "queued": acquisition.queued,
         "downloading": acquisition.downloading,
         "relinking": acquisition.relinking,
@@ -52,7 +54,8 @@ pub(crate) async fn run_status(
         panel_kv_row("  Dead links:", dead);
         panel_kv_row("  Total:", total);
         panel_border('╠', '═', '╣');
-        panel_kv_row("  Auto-acquire active:", acquisition.active_total());
+        panel_kv_row("  Auto-acquire in flight:", acquisition.in_flight());
+        panel_kv_row("  Needs review:", acquisition.needs_review());
         if acquisition.active_total() > 0 {
             panel_kv_row("  Queued:", acquisition.queued);
             panel_kv_row("  Downloading:", acquisition.downloading);

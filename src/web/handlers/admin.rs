@@ -730,12 +730,16 @@ pub(crate) async fn get_backup(State(state): State<WebState>) -> impl IntoRespon
             } else if backup.symlink_count > current_active_links {
                 format!(
                     "{} more than current",
-                    backup.symlink_count - current_active_links
+                    crate::utils::format_thousands(
+                        (backup.symlink_count - current_active_links) as i64
+                    )
                 )
             } else {
                 format!(
                     "{} fewer than current",
-                    current_active_links - backup.symlink_count
+                    crate::utils::format_thousands(
+                        (current_active_links - backup.symlink_count) as i64
+                    )
                 )
             };
 
