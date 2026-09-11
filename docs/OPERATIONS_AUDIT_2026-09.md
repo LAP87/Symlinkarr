@@ -64,7 +64,7 @@ Symlinkarr's own surface: 36 HTML routes + 4 htmx partials + `/api/v1/{cleanup/a
 
 Every page was loaded against the real test database and every read-only CLI command run;
 a dry-run `scan --library Movies` served as the end-to-end matcher/linker exercise. Fixes are
-in `7e253e4` and `866b532`.
+in `7e253e4`, `866b532` and `2825685`.
 
 ### Fixed
 | Finding | Where | Fix |
@@ -76,6 +76,9 @@ in `7e253e4` and `866b532`.
 | Dashboard "Streams 0" while the Status page said Tautulli was unavailable; 900 ms page-load timeout | `src/web/handlers.rs`, `dashboard.html` | 2.5 s timeout; badge shows "Streams —" when the guard is unavailable |
 | **Discover auto-ran a 464 s pipeline (4 MB response) on every page load**, and a reload started a second concurrent pass | `discover.html`, `src/web/handlers/admin.rs`, `WebState` | runs only after the scope form is submitted ("Build preview" otherwise); single discover slot per process ("already running" notice); placement rows capped at 1,000 |
 | Backup rows "7298 fewer than current" unformatted; doctor showed the probe parent instead of the configured source path | `admin.rs`, `doctor.rs` | formatted; configured path shown |
+| **Playback guard blocked every page and then showed "Unavailable / 0 streams"** — Tautulli's `get_activity` takes ~15 s on this host (it waits on Plex), so no page-load timeout could succeed | `src/web/handlers.rs`, `WebState` | answers instantly from a cache (last probe + last successful check), refreshes in a background task with a 20 s budget, shows the last good result with its age when a live probe fails; "Streams —" only when nothing is known |
+
+**Proof.** A second dry-run `scan --library Movies` after the fixes: link rows 89,269 → 89,269 (the first run had added 465), created 139 → 125, updated 29 → 4, `already_correct` 1,804 → 2,119 — the misnamed movie links are adopted instead of duplicated.
 
 ### Observed, not changed (decisions or larger work)
 - **Metadata cache expiry makes the first scan after 30 days slow.** `api.cache_ttl_hours: 720` had lapsed, so the Movies dry-run re-fetched TMDB metadata for all 6,896 items (`cache_hit_ratio=0%`, match phase 674 s of an 11-minute scan). Consider refreshing entries lazily/incrementally, a longer TTL for released films, or surfacing "cache cold" on the scan page.
