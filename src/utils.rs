@@ -457,6 +457,16 @@ pub fn format_thousands(n: i64) -> String {
     }
 }
 
+/// Skip reasons that are bookkeeping rather than something an operator can act on:
+/// files of the wrong media shape for the library being scanned, and links that were
+/// already correct. They stay in telemetry but surface as one "filtered" figure.
+pub fn is_noise_skip_reason(reason: &str) -> bool {
+    matches!(
+        reason,
+        "matcher_media_shape_mismatch" | "already_correct" | "already_correct_disk"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

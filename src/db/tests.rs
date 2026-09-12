@@ -2592,3 +2592,23 @@ async fn scheduler_updates_report_missing_rules() {
     assert!(!db.update_scheduler_rule(99_999, &rule).await.unwrap());
     assert!(!db.set_scheduler_rule_enabled(99_999, false).await.unwrap());
 }
+
+#[tokio::test]
+async fn cache_ttl_zero_never_expires_and_align_rewrites_policy() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let db = Database::new(dir.path().join("t.db").to_str().unwrap())
+        .await
+        .unwrap();
+    db.set_cached("k0", "{\"v\":1}", 0).await.unwrap();
+    assert_eq!(
+        db.get_cached("k0").await.unwrap().as_deref(),
+        Some("{\"v\":1}")
+    );
+
+    db.set_cached("k720", "{\"v\":2}", 720).await.unwrap();
+    db.set_cached("miss", "__negative__", 720).await.unwrap();
+    let changed = db.align_cache_ttl(0, 168, "__negative__").await.unwrap();
+    assert_eq!(changed, 2);
+    // Running again is a no-op.
+    assert_eq!(db.align_cache_ttl(0, 168, "__negative__").await.unwrap(), 0);
+}

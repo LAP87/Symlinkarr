@@ -475,6 +475,12 @@ pub(crate) enum RepairAction {
         #[arg(long)]
         arr: Option<String>,
     },
+    /// Rename movie symlinks that carry a doubled year, e.g. "Title (2014) (2014).mkv"
+    NormalizeNames {
+        /// Apply the renames; without this flag the command only previews
+        #[arg(long)]
+        apply: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -915,6 +921,24 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .try_init();
     let db = db::Database::new(&cfg.db_path).await?;
+    // Stored cache rows carry the TTL they were written with; make them follow the
+    // configured policy so changing cache_ttl_hours takes effect without a re-fetch.
+    match db
+        .align_cache_ttl(
+            cfg.api.cache_ttl_hours,
+            crate::api::tvdb::negative_metadata_ttl(cfg.api.cache_ttl_hours),
+            crate::api::tvdb::NEGATIVE_METADATA_SENTINEL,
+        )
+        .await
+    {
+        Ok(changed) if changed > 0 => tracing::info!(
+            "Aligned {} cached metadata entries to cache_ttl_hours={}",
+            changed,
+            cfg.api.cache_ttl_hours
+        ),
+        Ok(_) => {}
+        Err(err) => tracing::warn!("Could not align cached metadata TTLs: {}", err),
+    }
     let config_path = resolved_config_path(&cli);
 
     match cli.command {

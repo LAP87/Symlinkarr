@@ -335,6 +335,8 @@ pub struct ScanRunView {
     pub ambiguous_skipped: i64,
     pub skip_reasons: Vec<SkipReasonView>,
     pub skip_reason_highlights: Vec<SkipReasonView>,
+    /// Wrong-shape files and already-correct links: counted, never a "why not".
+    pub skip_reason_filtered: i64,
     pub skip_reason_groups: Vec<SkipReasonGroupView>,
     pub skip_reason_total: i64,
     pub skip_reason_extra_buckets: i64,
@@ -417,7 +419,11 @@ impl ScanRunView {
     }
 
     pub fn from_record(record: ScanHistoryRecord) -> Self {
-        let skip_reasons = Self::skip_reasons_from_record(&record);
+        let (noise, skip_reasons): (Vec<SkipReasonView>, Vec<SkipReasonView>) =
+            Self::skip_reasons_from_record(&record)
+                .into_iter()
+                .partition(|entry| crate::utils::is_noise_skip_reason(&entry.reason));
+        let skip_reason_filtered = noise.iter().map(|entry| entry.count).sum();
         let skip_reason_total = skip_reasons.iter().map(|entry| entry.count).sum();
         let skip_reason_highlights = skip_reasons.iter().take(3).cloned().collect::<Vec<_>>();
         let skip_reason_extra_buckets = skip_reasons
@@ -461,6 +467,7 @@ impl ScanRunView {
             ambiguous_skipped: record.ambiguous_skipped,
             skip_reasons,
             skip_reason_highlights,
+            skip_reason_filtered,
             skip_reason_groups,
             skip_reason_total,
             skip_reason_extra_buckets,

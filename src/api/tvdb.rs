@@ -9,7 +9,7 @@ use crate::db::Database;
 use crate::models::{ContentMetadata, EpisodeInfo, SeasonInfo};
 
 const TVDB_BASE_URL: &str = "https://api4.thetvdb.com/v4";
-const NEGATIVE_METADATA_SENTINEL: &str =
+pub(crate) const NEGATIVE_METADATA_SENTINEL: &str =
     r#"{"_symlinkarr_not_found":true,"title":"","aliases":[],"year":null,"seasons":[]}"#;
 
 /// TVDB API client (optional). Uses v4 API with JWT authentication.
@@ -255,7 +255,8 @@ impl TvdbClient {
             }
 
             if resp.status() == 404 {
-                cache_negative_metadata(db, &cache_key, self.cache_ttl).await;
+                cache_negative_metadata(db, &cache_key, negative_metadata_ttl(self.cache_ttl))
+                    .await;
                 anyhow::bail!("No data for TVDB {}", tvdb_id);
             }
 
@@ -272,7 +273,8 @@ impl TvdbClient {
 
             let series_resp: TvdbSeriesResponse = resp.json().await?;
             let Some(series) = series_resp.data else {
-                cache_negative_metadata(db, &cache_key, self.cache_ttl).await;
+                cache_negative_metadata(db, &cache_key, negative_metadata_ttl(self.cache_ttl))
+                    .await;
                 anyhow::bail!("No data for TVDB {}", tvdb_id);
             };
 
@@ -412,6 +414,16 @@ async fn decode_tvdb_response<T: DeserializeOwned>(
     }
 
     Ok(resp.json::<T>().await?)
+}
+
+/// A miss must be retried eventually even when positive metadata never expires.
+pub(crate) const NEGATIVE_METADATA_TTL_HOURS: u64 = 24 * 7;
+
+pub(crate) fn negative_metadata_ttl(configured_ttl_hours: u64) -> u64 {
+    match configured_ttl_hours {
+        0 => NEGATIVE_METADATA_TTL_HOURS,
+        ttl => ttl.min(NEGATIVE_METADATA_TTL_HOURS),
+    }
 }
 
 async fn cache_negative_metadata(db: &Database, cache_key: &str, ttl_hours: u64) {

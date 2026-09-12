@@ -11,7 +11,7 @@ impl Database {
         let row = sqlx::query(
             "SELECT response_json FROM api_cache
              WHERE cache_key = ?
-             AND datetime(fetched_at, '+' || ttl_hours || ' hours') > datetime('now')",
+             AND (ttl_hours = 0 OR datetime(fetched_at, '+' || ttl_hours || ' hours') > datetime('now'))",
         )
         .bind(cache_key)
         .fetch_optional(&self.pool)
@@ -28,7 +28,7 @@ impl Database {
             }
             let mut query: QueryBuilder<Sqlite> = QueryBuilder::new(
                 "SELECT cache_key, response_json FROM api_cache
-                 WHERE datetime(fetched_at, '+' || ttl_hours || ' hours') > datetime('now')
+                 WHERE (ttl_hours = 0 OR datetime(fetched_at, '+' || ttl_hours || ' hours') > datetime('now'))
                    AND cache_key IN (",
             );
             let mut separated = query.separated(", ");
@@ -44,6 +44,36 @@ impl Database {
     }
 
     /// Store an API response in the cache.
+    /// Make every stored entry follow the configured policy: positive metadata rows take
+    /// `ttl_hours` (0 = never expires), rows holding `negative_marker` keep
+    /// `negative_ttl_hours` so a miss is retried eventually. Idempotent; run at startup.
+    pub async fn align_cache_ttl(
+        &self,
+        ttl_hours: u64,
+        negative_ttl_hours: u64,
+        negative_marker: &str,
+    ) -> Result<u64> {
+        let positive = sqlx::query(
+            "UPDATE api_cache SET ttl_hours = ? WHERE ttl_hours <> ? AND response_json <> ?",
+        )
+        .bind(ttl_hours as i64)
+        .bind(ttl_hours as i64)
+        .bind(negative_marker)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        let negative = sqlx::query(
+            "UPDATE api_cache SET ttl_hours = ? WHERE ttl_hours <> ? AND response_json = ?",
+        )
+        .bind(negative_ttl_hours as i64)
+        .bind(negative_ttl_hours as i64)
+        .bind(negative_marker)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        Ok(positive + negative)
+    }
+
     pub async fn set_cached(&self, cache_key: &str, response: &str, ttl_hours: u64) -> Result<()> {
         sqlx::query(
             "INSERT INTO api_cache (cache_key, response_json, ttl_hours)
@@ -101,7 +131,7 @@ impl Database {
                 OR cache_key LIKE 'tvdb:series:%' ESCAPE '\\'
              )
              AND cache_key NOT LIKE '%:external_ids:%' ESCAPE '\\'
-             AND datetime(fetched_at, '+' || ttl_hours || ' hours') > datetime('now')",
+             AND (ttl_hours = 0 OR datetime(fetched_at, '+' || ttl_hours || ' hours') > datetime('now'))",
         )
         .fetch_all(&self.pool)
         .await?;

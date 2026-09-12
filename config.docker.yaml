@@ -47,7 +47,7 @@ api:
   tvdb_api_key: "secretfile:/app/secrets/tvdb_api_key"
   # Metadata cache is intentionally sticky. Prefer targeted refresh/invalidation
   # when a specific title looks stale instead of forcing broad TTL churn.
-  cache_ttl_hours: 87600
+  cache_ttl_hours: 0   # 0 = never expires; misses (404) are retried after 7 days
 
 realdebrid:
   api_token: "secretfile:/app/secrets/realdebrid_api_token"

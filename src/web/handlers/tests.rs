@@ -275,7 +275,8 @@ async fn dashboard_renders_latest_run_and_queue_summary() {
     assert!(body.contains("Cache hit"));
     assert!(body.contains("Media refresh was limited"));
     assert!(body.contains("Top skip reasons"));
-    assert!(body.contains("Already correct 6,200"));
+    assert!(!body.contains("Already correct 6,200"));
+    assert!(body.contains("filtered (wrong media type or already linked)"));
     assert!(body.contains("Source missing before link 3,044"));
     assert!(body.contains("Plex guard abort"));
     assert!(body.contains("Emby 1/1"));

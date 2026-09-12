@@ -474,11 +474,23 @@ pub(crate) async fn run_scan_with_origin(
     let aggregated_skip_reasons =
         aggregate_skip_reasons(&telemetry, &link_summary, &dead, &auto_acquire_summary);
     if !aggregated_skip_reasons.is_empty() {
-        user_println("   🧭 Top skip reasons:");
-        let mut top_reasons = aggregated_skip_reasons.iter().collect::<Vec<_>>();
-        top_reasons.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
-        for (reason, count) in top_reasons.into_iter().take(6) {
-            user_println(format!("      • {} = {}", reason, count));
+        let (noise, actionable): (Vec<_>, Vec<_>) = aggregated_skip_reasons
+            .iter()
+            .partition(|(reason, _)| crate::utils::is_noise_skip_reason(reason));
+        if !actionable.is_empty() {
+            user_println("   🧭 Top skip reasons:");
+            let mut top_reasons = actionable;
+            top_reasons.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+            for (reason, count) in top_reasons.into_iter().take(6) {
+                user_println(format!("      • {} = {}", reason, count));
+            }
+        }
+        let filtered: i64 = noise.iter().map(|(_, count)| **count).sum();
+        if filtered > 0 {
+            user_println(format!(
+                "   · {} file(s) filtered (wrong media type for this library, or already linked)",
+                crate::utils::format_thousands(filtered)
+            ));
         }
     }
 

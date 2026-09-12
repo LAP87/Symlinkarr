@@ -287,7 +287,7 @@ pub(super) fn default_depth() -> usize {
 }
 
 pub(super) fn default_cache_ttl() -> u64 {
-    87600 // ~10 years — metadata is intentionally sticky; freshness should come from targeted refresh signals
+    0 // never expires — metadata is intentionally sticky; freshness comes from targeted refresh signals
 }
 
 pub(super) fn default_interval() -> u64 {

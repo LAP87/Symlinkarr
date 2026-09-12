@@ -50,6 +50,7 @@ fn sample_scan_run_view() -> ScanRunView {
         ambiguous_skipped: 70,
         skip_reasons,
         skip_reason_highlights,
+        skip_reason_filtered: 0,
         skip_reason_groups,
         skip_reason_total,
         skip_reason_extra_buckets,

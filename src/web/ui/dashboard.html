@@ -327,12 +327,13 @@
                             {% endif %}
                         </td>
                         <td>
-                            {% if !run.skip_reason_highlights.is_empty() %}
+                            {% if !run.skip_reason_highlights.is_empty() || run.skip_reason_filtered > 0 %}
                             <div>
                                 {% for reason in run.skip_reason_highlights %}
                                 <span class="badge badge-secondary">{{ reason.label }} {{ reason.count|thousands }}</span>
                                 {% endfor %}
                             </div>
+                            {% if run.skip_reason_filtered > 0 %}<div class="text-faint">{{ run.skip_reason_filtered|thousands }} filtered (wrong media type or already linked)</div>{% endif %}
                             {% if run.skip_reason_extra_buckets > 0 %}
                             <div class="text-muted">+{{ run.skip_reason_extra_buckets }} more reason group(s)</div>
                             {% endif %}
