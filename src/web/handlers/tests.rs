@@ -1581,26 +1581,26 @@ async fn doctor_page_flags_existing_non_writable_backup_dir() {
 }
 
 #[tokio::test]
-async fn discover_page_shell_renders_async_loader() {
+async fn discover_page_shell_renders_run_form_and_state_loader() {
     let ctx = test_context().await;
-
-    // A plain visit must not start the slow pipeline: it offers a call to action.
     let body =
         render_body(get_discover(State(ctx.state.clone()), Query(DiscoverQuery::default())).await)
             .await;
+    assert!(body.contains("action=\"/discover/run\""));
+    assert!(body.contains("name=\"csrf_token\""));
     assert!(body.contains("hx-get=\"/discover/content\""));
-    assert!(body.contains("hx-trigger=\"click from:#discover-build\""));
-    assert!(body.contains("id=\"discover-build\""));
-    assert!(!body.contains("hx-trigger=\"load\""));
-
-    // Submitting the scope form opts in to the async loader.
-    let query = DiscoverQuery {
-        library: Some(String::new()),
-        ..DiscoverQuery::default()
-    };
-    let body = render_body(get_discover(State(ctx.state.clone()), Query(query)).await).await;
     assert!(body.contains("hx-trigger=\"load\""));
-    assert!(body.contains("Loading discover preview"));
+    assert!(body.contains("Run discover"));
+}
+
+async fn wait_for_discover(state: &WebState) {
+    for _ in 0..600 {
+        if state.active_discover().await.is_none() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("discover pass did not finish in time");
 }
 
 #[tokio::test]
@@ -1747,9 +1747,9 @@ async fn discover_content_renders_cached_gap_items() {
         .unwrap();
 
     let state = WebState::new(cfg, db);
-    let response = get_discover_content(State(state), Query(DiscoverQuery::default()))
-        .await
-        .into_response();
+    state.start_discover(None, false).await.unwrap();
+    wait_for_discover(&state).await;
+    let response = get_discover_content(State(state)).await.into_response();
     assert_eq!(response.status(), StatusCode::OK);
     let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let body = String::from_utf8(bytes.to_vec()).unwrap();
@@ -1767,23 +1767,15 @@ async fn discover_content_renders_cached_gap_items() {
 }
 
 #[tokio::test]
-async fn discover_content_rejects_invalid_library_filter() {
+async fn discover_run_rejects_invalid_library_filter() {
     let ctx = test_context().await;
-    let response = get_discover_content(
-        State(ctx.state),
-        Query(DiscoverQuery {
-            library: Some("Nope".to_string()),
-            refresh_cache: false,
-        }),
-    )
-    .await
-    .into_response();
-
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    let body = String::from_utf8(bytes.to_vec()).unwrap();
-    assert!(body.contains("Invalid library filter"));
-    assert!(body.contains("Unknown library filter"));
+    let err = ctx
+        .state
+        .start_discover(Some("Nope".to_string()), false)
+        .await
+        .unwrap_err();
+    assert!(err.contains("Nope") || err.to_lowercase().contains("unknown"));
+    assert!(ctx.state.active_discover().await.is_none());
 }
 
 #[cfg(unix)]
@@ -2092,19 +2084,23 @@ fn resolve_cleanup_report_path_rejects_symlink_escape_inside_backup_dir() {
 }
 
 #[tokio::test]
-async fn discover_content_reports_when_a_pass_is_already_running() {
+async fn discover_run_refuses_a_second_concurrent_pass_and_reports_state() {
     let ctx = test_context().await;
-    let _held = ctx
+    let job = ctx.state.start_discover(None, false).await.unwrap();
+    assert_eq!(job.scope_label, "All Libraries");
+    // A second start while the first is (or just was) running must not spawn another pass.
+    if ctx.state.active_discover().await.is_some() {
+        let err = ctx.state.start_discover(None, false).await.unwrap_err();
+        assert!(err.contains("already running"));
+    }
+    wait_for_discover(&ctx.state).await;
+    let outcome = ctx
         .state
-        .try_start_discover()
-        .expect("slot is free before the test claims it");
-
-    let body = render_body(
-        get_discover_content(State(ctx.state.clone()), Query(DiscoverQuery::default())).await,
-    )
-    .await;
-
-    assert!(body.contains("already running"));
-    drop(_held);
-    assert!(ctx.state.try_start_discover().is_some());
+        .last_discover_outcome()
+        .await
+        .expect("outcome recorded");
+    assert!(outcome.success, "{}", outcome.message);
+    let body = render_body(get_discover_content(State(ctx.state.clone())).await).await;
+    assert!(body.contains("Last discover finished"));
+    assert!(!body.contains("hx-trigger=\"every 5s\""));
 }

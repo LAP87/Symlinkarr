@@ -16,8 +16,8 @@ use tracing::{error, info};
 
 pub(crate) use admin::{
     get_backup, get_config, get_discover, get_discover_content, get_doctor, get_import,
-    post_backup_create, post_backup_restore, post_config_validate, post_import_apply,
-    post_import_preview,
+    post_backup_create, post_backup_restore, post_config_validate, post_discover_run,
+    post_import_apply, post_import_preview,
 };
 #[cfg(test)]
 use admin::{DiscoverQuery, ImportPreviewForm};
@@ -46,7 +46,6 @@ use crate::commands::cleanup::{
     CleanupPruneApplyArgs,
 };
 use crate::commands::config::validate_config_report;
-use crate::commands::discover::load_discovery_snapshot;
 use crate::commands::doctor::{collect_doctor_checks, DoctorCheckMode};
 use crate::commands::report::build_anime_remediation_report;
 use crate::commands::selected_libraries;

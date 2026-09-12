@@ -110,9 +110,29 @@ pub(crate) struct LastRepairOutcome {
     pub stale: usize,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct ActiveDiscoverJob {
+    pub started_at: String,
+    pub started_instant: std::time::Instant,
+    pub scope_label: String,
+    pub refresh_cache: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct LastDiscoverOutcome {
+    pub finished_at: String,
+    pub scope_label: String,
+    pub success: bool,
+    pub message: String,
+    pub elapsed_secs: u64,
+}
+
 #[derive(Clone, Debug, Default)]
 struct BackgroundJobState {
     active_scan: Option<ActiveScanJob>,
+    active_discover: Option<ActiveDiscoverJob>,
+    last_discover_outcome: Option<LastDiscoverOutcome>,
+    discover_snapshot: Option<Arc<crate::commands::discover::DiscoverySnapshot>>,
     active_cleanup_audit: Option<ActiveCleanupAuditJob>,
     active_repair: Option<ActiveRepairJob>,
     last_scan_outcome: Option<LastScanOutcome>,
@@ -146,8 +166,6 @@ pub struct WebState {
     browser_session_token: Arc<String>,
     background_jobs: Arc<Mutex<BackgroundJobState>>,
     background_tasks: Arc<Mutex<Vec<TrackedBackgroundTask>>>,
-    /// Held while a discover pass runs; a second request must not start another.
-    discover_run: Arc<tokio::sync::Mutex<()>>,
     streaming_guard_cache: StreamingGuardCache,
 }
 
@@ -157,11 +175,6 @@ impl WebState {
         Self::try_new(config, database).expect("failed to generate secure browser session token")
     }
 
-    /// Claim the single discover slot; `None` while another pass is running.
-    pub fn try_start_discover(&self) -> Option<tokio::sync::OwnedMutexGuard<()>> {
-        Arc::clone(&self.discover_run).try_lock_owned().ok()
-    }
-
     pub fn try_new(config: Config, database: Database) -> Result<Self> {
         Ok(Self {
             config: Arc::new(config),
@@ -169,7 +182,6 @@ impl WebState {
             browser_session_token: Arc::new(generate_browser_session_token()?),
             background_jobs: Arc::new(Mutex::new(BackgroundJobState::default())),
             background_tasks: Arc::new(Mutex::new(Vec::new())),
-            discover_run: Arc::new(tokio::sync::Mutex::new(())),
             streaming_guard_cache: Arc::new(Mutex::new(StreamingGuardCacheState::default())),
         })
     }
@@ -459,6 +471,122 @@ impl WebState {
         tasks.retain(|task| !task.handle.is_finished());
         tasks.push(TrackedBackgroundTask {
             operation_id,
+            handle,
+        });
+
+        Ok(job)
+    }
+
+    pub(crate) async fn active_discover(&self) -> Option<ActiveDiscoverJob> {
+        self.background_jobs.lock().await.active_discover.clone()
+    }
+
+    pub(crate) async fn last_discover_outcome(&self) -> Option<LastDiscoverOutcome> {
+        self.background_jobs
+            .lock()
+            .await
+            .last_discover_outcome
+            .clone()
+    }
+
+    pub(crate) async fn discover_snapshot(
+        &self,
+    ) -> Option<Arc<crate::commands::discover::DiscoverySnapshot>> {
+        self.background_jobs.lock().await.discover_snapshot.clone()
+    }
+
+    /// Run the discover pipeline in the background (it walks every source folder and
+    /// can take minutes). Read-only, so it does not take the library operation lock;
+    /// one pass at a time per process. The result is kept until the next pass finishes.
+    pub(crate) async fn start_discover(
+        &self,
+        library_filter: Option<String>,
+        refresh_cache: bool,
+    ) -> std::result::Result<ActiveDiscoverJob, String> {
+        let library_filter = library_filter
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        crate::commands::selected_libraries(self.config.as_ref(), library_filter.as_deref())
+            .map_err(|err| err.to_string())?;
+
+        let mut background_jobs = self.background_jobs.lock().await;
+        if let Some(active) = background_jobs.active_discover.as_ref() {
+            return Err(format!(
+                "a discover pass for {} is already running (started {})",
+                active.scope_label, active.started_at
+            ));
+        }
+        let job = ActiveDiscoverJob {
+            started_at: Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+            started_instant: std::time::Instant::now(),
+            scope_label: library_filter
+                .clone()
+                .unwrap_or_else(|| "All Libraries".to_string()),
+            refresh_cache,
+        };
+        background_jobs.active_discover = Some(job.clone());
+        drop(background_jobs);
+
+        let config = self.config.clone();
+        let database = self.database.clone();
+        let background_jobs = self.background_jobs.clone();
+        let background_tasks = self.background_tasks.clone();
+        let background_job = job.clone();
+        let handle = tokio::spawn(async move {
+            let result = std::panic::AssertUnwindSafe(async {
+                crate::commands::discover::load_discovery_snapshot(
+                    config.as_ref(),
+                    database.as_ref(),
+                    library_filter.as_deref(),
+                    refresh_cache,
+                )
+                .await
+            })
+            .catch_unwind()
+            .await;
+            let finished_at = Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string();
+            let elapsed_secs = background_job.started_instant.elapsed().as_secs();
+            let outcome = |success: bool, message: String| LastDiscoverOutcome {
+                finished_at: finished_at.clone(),
+                scope_label: background_job.scope_label.clone(),
+                success,
+                message,
+                elapsed_secs,
+            };
+            let (snapshot, outcome) = match result {
+                Ok(Ok(snapshot)) => {
+                    let message = format!(
+                        "{} folder plan(s) and {} placement(s) for {} in {} s.",
+                        snapshot.folders.len(),
+                        snapshot.items.len(),
+                        background_job.scope_label,
+                        elapsed_secs
+                    );
+                    info!("Discover finished: {}", message);
+                    (Some(Arc::new(snapshot)), outcome(true, message))
+                }
+                Ok(Err(err)) => {
+                    error!("Discover failed: {}", err);
+                    (None, outcome(false, err.to_string()))
+                }
+                Err(panic) => {
+                    let message = format!("discover task panicked: {}", panic_message(panic));
+                    error!("{}", message);
+                    (None, outcome(false, message))
+                }
+            };
+            let mut background_jobs = background_jobs.lock().await;
+            if snapshot.is_some() {
+                background_jobs.discover_snapshot = snapshot;
+            }
+            background_jobs.last_discover_outcome = Some(outcome);
+            background_jobs.active_discover = None;
+        });
+        let mut tasks = background_tasks.lock().await;
+        tasks.retain(|task| !task.handle.is_finished());
+        // Discover has no operations row (read-only preview); 0 marks that in drain logs.
+        tasks.push(TrackedBackgroundTask {
+            operation_id: 0,
             handle,
         });
 
@@ -963,6 +1091,7 @@ fn create_router(state: WebState) -> Router {
         // Discover
         .route("/discover", get(handlers::get_discover))
         .route("/discover/content", get(handlers::get_discover_content))
+        .route("/discover/run", post(handlers::post_discover_run))
         // Import
         .route("/import", get(handlers::get_import))
         .route("/import/preview", post(handlers::post_import_preview))

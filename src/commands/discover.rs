@@ -21,6 +21,7 @@ use crate::source_scanner::SourceScanner;
 use crate::utils::stdout_text_guard;
 use crate::{DiscoverAction, OutputFormat};
 
+#[derive(Clone, Debug)]
 pub(crate) struct DiscoverySnapshot {
     pub summary: DiscoverSummary,
     pub folders: Vec<DiscoverFolderPlan>,

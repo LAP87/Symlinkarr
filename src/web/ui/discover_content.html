@@ -1,3 +1,17 @@
+<div id="discover-results"{% if running.is_some() %} hx-get="/discover/content" hx-trigger="every 5s" hx-swap="outerHTML"{% endif %}>
+{% match running %}
+{% when Some with (job) %}
+<div class="alert alert-info">
+    <strong>Discover is running</strong> for {{ job.scope_label }} — started {{ job.started_at }}, {{ job.elapsed_secs }} s so far{% if job.refresh_cache %} (refreshing the RD cache first){% endif %}. It walks every source folder and matches it against the library; this view refreshes every 5 seconds.
+</div>
+{% when None %}{% endmatch %}
+{% match outcome %}
+{% when Some with (last) %}
+<div class="alert {% if last.success %}alert-success{% else %}alert-error{% endif %}">
+    <strong>{% if last.success %}Last discover finished{% else %}Last discover failed{% endif %}</strong> {{ last.finished_at }} ({{ last.scope_label }}, {{ last.elapsed_secs }} s). {{ last.message }}
+</div>
+{% when None %}{% endmatch %}
+{% if has_snapshot %}
 {% match status_message %}
 {% when Some with (message) %}
 <div class="alert alert-info">
@@ -123,4 +137,15 @@
         </div>
     </section>
     {% endif %}
+</div>
+{% else %}
+{% if running.is_none() %}
+<section class="card">
+    <div class="empty-state">
+        <span class="empty-state__title">No preview built yet</span>
+        Choose a scope above and run discover. The pass runs in the background and can take several minutes; this page shows its progress and result.
+    </div>
+</section>
+{% endif %}
+{% endif %}
 </div>

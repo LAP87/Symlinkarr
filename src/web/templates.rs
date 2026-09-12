@@ -1286,13 +1286,35 @@ pub struct DiscoverTemplate {
     pub libraries: Vec<LibraryConfig>,
     pub selected_library: String,
     pub refresh_cache: bool,
-    /// Only run the (slow) pipeline when the operator asked for it via the form.
-    pub auto_run: bool,
+    pub csrf_token: String,
+    /// Why a requested run did not start (already running, unknown library).
+    pub notice: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiscoverRunView {
+    pub scope_label: String,
+    pub started_at: String,
+    pub elapsed_secs: u64,
+    pub refresh_cache: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiscoverOutcomeView {
+    pub finished_at: String,
+    pub scope_label: String,
+    pub success: bool,
+    pub message: String,
+    pub elapsed_secs: u64,
 }
 
 #[derive(Template)]
 #[template(path = "web/ui/discover_content.html")]
 pub struct DiscoverContentTemplate {
+    /// A pass is running; the partial re-polls itself while this is set.
+    pub running: Option<DiscoverRunView>,
+    pub outcome: Option<DiscoverOutcomeView>,
+    pub has_snapshot: bool,
     pub discover_summary: DiscoverSummary,
     pub folder_plans: Vec<DiscoverFolderPlan>,
     pub discovered_items: Vec<DiscoverPlacement>,

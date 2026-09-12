@@ -728,7 +728,8 @@ fn config_template_renders_settings_rail_and_defaults() {
 #[test]
 fn discover_template_renders_guide_disclosure() {
     let template = DiscoverTemplate {
-        auto_run: false,
+        csrf_token: "token".to_string(),
+        notice: None,
         libraries: vec![LibraryConfig {
             name: "Anime".to_string(),
             path: PathBuf::from("/library/anime"),
@@ -1367,6 +1368,9 @@ fn prune_preview_template_renders_playback_guard_warning() {
 #[test]
 fn discover_content_template_renders_guidance_and_help_link() {
     let template = DiscoverContentTemplate {
+        running: None,
+        outcome: None,
+        has_snapshot: true,
         discover_summary: DiscoverSummary {
             folders: 1,
             placements: 2,

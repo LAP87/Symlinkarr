@@ -23,6 +23,13 @@
     </div>
 </div>
 
+{% match notice %}
+{% when Some with (message) %}
+<div class="alert alert-error">
+    <strong>Discover not started.</strong>
+    {{ message }}
+</div>
+{% when None %}{% endmatch %}
 <div class="page-sections">
 <section class="card">
     <div class="section-head">
@@ -31,7 +38,8 @@
             <p class="section-copy">Narrow the run to one library for a faster review, or leave it open for a full pass.</p>
         </div>
     </div>
-    <form action="/discover" method="get" id="discover-form" class="stack-form">
+    <form action="/discover/run" method="post" id="discover-form" class="stack-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <div class="form-grid">
             <div class="form-group">
                 <label class="form-label" for="library">Target library</label>
@@ -51,34 +59,15 @@
             </div>
         </label>
         <div class="actions">
-            <button type="submit" class="btn btn-primary">Refresh preview</button>
+            <button type="submit" class="btn btn-primary">Run discover</button>
         </div>
     </form>
 </section>
 
-<div
-    id="discover-results"
-    hx-get="/discover/content"
-    hx-include="#discover-form"
-    hx-trigger="{% if auto_run %}load{% else %}click from:#discover-build{% endif %}"
-    hx-swap="innerHTML"
->
+<div id="discover-results" hx-get="/discover/content" hx-trigger="load" hx-swap="outerHTML">
     <section class="card">
         <div class="empty-state">
-            {% if auto_run %}
-            <span class="empty-state__title">Loading discover preview <span class="htmx-indicator">&#8987;</span></span>
-            {% if refresh_cache %}
-            Refresh cache is enabled, so this pass takes longer while RD data syncs before placement review.
-            {% else %}
-            Folder plans and placement tables appear once the discover pipeline finishes. It walks every source folder and matches against the library, so a full pass can take several minutes.
-            {% endif %}
-            {% else %}
-            <span class="empty-state__title">No preview built yet</span>
-            A discover pass walks every source folder and matches it against the library, so it can take several minutes and only starts on request.
-            <div class="empty-state__actions">
-                <button type="button" id="discover-build" class="btn btn-primary">Build preview</button>
-            </div>
-            {% endif %}
+            <span class="empty-state__title">Loading discover state <span class="htmx-indicator">&#8987;</span></span>
         </div>
     </section>
 </div>
