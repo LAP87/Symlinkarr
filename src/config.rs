@@ -318,6 +318,9 @@ pub struct ApiConfig {
     pub tvdb_api_key: String,
     /// How long to cache API responses (hours)
     #[serde(default = "default_cache_ttl")]
+    /// Hours before cached API metadata expires; 0 = never (default). Metadata is
+    /// intentionally sticky — refresh it on demand (import --refresh-metadata,
+    /// discover with refresh). Negative lookups (404s) are retried after 7 days.
     pub cache_ttl_hours: u64,
 }
 
@@ -762,12 +765,6 @@ impl Config {
                 "backup.max_safety_backups=0 keeps unlimited safety snapshots; use a bounded value"
                     .to_string(),
             );
-        }
-
-        if self.api.cache_ttl_hours == 0 {
-            report
-                .errors
-                .push("api.cache_ttl_hours must be greater than 0".to_string());
         }
 
         if self.daemon.interval_minutes == 0 {

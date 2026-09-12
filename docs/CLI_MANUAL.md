@@ -322,6 +322,7 @@ Repair dead symlinks or trigger upstream repair.
 symlinkarr repair [--library <LIBRARY>] scan
 symlinkarr repair [--library <LIBRARY>] auto [--dry-run] [--self-heal]
 symlinkarr repair [--library <LIBRARY>] trigger [--arr <ARR>]
+symlinkarr repair [--library <LIBRARY>] normalize-names [--apply]
 ```
 
 Examples:
@@ -332,6 +333,8 @@ symlinkarr repair auto --dry-run
 symlinkarr repair auto --self-heal
 symlinkarr repair trigger --arr sonarr
 ```
+
+`normalize-names` fixes movie symlinks whose filename carries the same year twice (`Title (2014) (2014).mkv`, an old folder-title fallback bug): it previews by default and with `--apply` renames each symlink in place and moves its database record; a canonical file that already serves the same source makes the doubled link a duplicate, which is removed. Run it once after upgrading.
 
 `trigger` starts a Decypharr repair sweep through `POST /api/repair/run` (Decypharr 2.3 or newer; older builds return 404). The sweep is global across every configured *Arr, so `--arr` is accepted for compatibility but ignored; the command prints the next scheduled sweep and the last run afterwards.
 

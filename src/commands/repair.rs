@@ -250,6 +250,12 @@ pub(crate) async fn run_repair(
                 }
             }
         }
+        RepairAction::NormalizeNames { apply } => {
+            let selected = selected_libraries(cfg, library_filter)?;
+            let roots: Vec<std::path::PathBuf> =
+                selected.iter().map(|lib| lib.path.clone()).collect();
+            normalize_movie_names(db, &roots, apply).await?;
+        }
     }
 
     Ok(())
@@ -520,5 +526,270 @@ mod tests {
                 std::path::PathBuf::from("/library/Show - S01E02.mkv"),
             ]
         );
+    }
+}
+
+/// "Title (2014) (2014).mkv" -> "Title (2014).mkv" when the same year is doubled.
+pub(crate) fn doubled_year_canonical_name(file_name: &str) -> Option<String> {
+    fn strip_trailing_year(s: &str) -> Option<(&str, &str)> {
+        let s = s.trim_end();
+        let open = s.rfind(" (")?;
+        let year = s[open + 2..].strip_suffix(')')?;
+        (year.len() == 4 && year.chars().all(|c| c.is_ascii_digit())).then_some((&s[..open], year))
+    }
+    let (stem, ext) = file_name.rsplit_once('.')?;
+    let (once, last_year) = strip_trailing_year(stem)?;
+    let (_, first_year) = strip_trailing_year(once)?;
+    (first_year == last_year).then(|| format!("{once}.{ext}"))
+}
+
+/// Fix movie links whose filename doubled the year (an old folder-title fallback bug).
+/// Preview by default; with `apply`, renames the symlink in place (same directory, atomic)
+/// and moves the database record. A canonical file that already serves the same source
+/// makes the doubled link a duplicate, which is removed; a canonical file serving a
+/// different source is left alone and reported. A record whose doubled symlink is gone
+/// but whose canonical file exists is simply re-pointed (reconciled).
+pub(crate) async fn normalize_movie_names(
+    db: &Database,
+    library_roots: &[std::path::PathBuf],
+    apply: bool,
+) -> Result<()> {
+    let mut planned = 0usize;
+    let mut counts = std::collections::BTreeMap::<&'static str, usize>::new();
+    for link in db.get_active_links().await? {
+        if link.media_type != crate::models::MediaType::Movie {
+            continue;
+        }
+        if !library_roots
+            .iter()
+            .any(|root| link.target_path.starts_with(root))
+        {
+            continue;
+        }
+        let Some(name) = link.target_path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let Some(canonical) = doubled_year_canonical_name(name) else {
+            continue;
+        };
+        let new_path = link.target_path.with_file_name(&canonical);
+        planned += 1;
+        let old_exists = link.target_path.symlink_metadata().is_ok();
+        let new_exists = new_path.symlink_metadata().is_ok();
+        let action = match (old_exists, new_exists) {
+            (true, false) => "rename",
+            (true, true) => match std::fs::read_link(&new_path) {
+                Ok(raw)
+                    if crate::utils::resolve_link_target(&new_path, &raw) == link.source_path =>
+                {
+                    "remove-duplicate"
+                }
+                _ => "skip-conflict",
+            },
+            (false, true) => "reconcile-record",
+            (false, false) => "skip-missing",
+        };
+        *counts.entry(action).or_default() += 1;
+        if !apply {
+            if planned <= 25 {
+                println!("   {action:<17} {name}  ->  {canonical}");
+            }
+            continue;
+        }
+        match action {
+            "rename" => {
+                std::fs::rename(&link.target_path, &new_path)?;
+                db.update_link_target_path(&link.target_path, &new_path)
+                    .await?;
+            }
+            "remove-duplicate" => {
+                std::fs::remove_file(&link.target_path)?;
+                db.mark_removed_path(&link.target_path).await?;
+            }
+            "reconcile-record" => {
+                db.update_link_target_path(&link.target_path, &new_path)
+                    .await?;
+            }
+            _ => {}
+        }
+    }
+    // Phase 2: doubled-year symlinks on disk that no active record tracks (orphans from
+    // earlier runs). Renaming them is enough — the next scan backfills the record.
+    let mut orphans = 0usize;
+    for root in library_roots {
+        for entry in walkdir::WalkDir::new(root)
+            .follow_links(false)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_symlink())
+        {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let Some(canonical) = doubled_year_canonical_name(name) else {
+                continue;
+            };
+            if db
+                .get_link_by_target_path(path)
+                .await?
+                .is_some_and(|r| r.status == crate::models::LinkStatus::Active)
+            {
+                continue; // handled in phase 1
+            }
+            let new_path = path.with_file_name(&canonical);
+            if new_path.symlink_metadata().is_ok() {
+                continue; // canonical already there; leave the stray for cleanup to judge
+            }
+            orphans += 1;
+            planned += 1;
+            *counts.entry("rename-untracked").or_default() += 1;
+            if !apply {
+                if orphans <= 10 {
+                    println!("   {:<17} {name}  ->  {canonical}", "rename-untracked");
+                }
+                continue;
+            }
+            std::fs::rename(path, &new_path)?;
+            if db.get_link_by_target_path(path).await?.is_some() {
+                db.update_link_target_path(path, &new_path).await?;
+            }
+        }
+    }
+    if planned == 0 {
+        println!("✅ No movie links with a doubled year found.");
+        return Ok(());
+    }
+    if !apply && planned > 25 {
+        println!("   … {} more", planned - 25);
+    }
+    println!(
+        "{} {} link(s) with a doubled year: {}",
+        if apply {
+            "✅ Processed"
+        } else {
+            "🔍 Preview:"
+        },
+        planned,
+        counts
+            .iter()
+            .map(|(action, n)| format!("{action}={n}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    if !apply {
+        println!("   Re-run with --apply to rename.");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod normalize_names_tests {
+    use super::*;
+
+    #[test]
+    fn doubled_year_is_detected_only_when_years_match() {
+        assert_eq!(
+            doubled_year_canonical_name("0.5 mm (2014) (2014).mkv").as_deref(),
+            Some("0.5 mm (2014).mkv")
+        );
+        assert_eq!(
+            doubled_year_canonical_name("A Nightmare on Elm Street (1984) (2010).mkv"),
+            None
+        );
+        assert_eq!(doubled_year_canonical_name("Movie (2014).mkv"), None);
+        assert_eq!(doubled_year_canonical_name("Movie (2014) (abcd).mkv"), None);
+    }
+
+    #[tokio::test]
+    async fn normalize_renames_reconciles_and_removes_duplicates() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path().join("film");
+        let src = dir.path().join("rd");
+        std::fs::create_dir_all(&src).unwrap();
+        let db = Database::new(dir.path().join("t.db").to_str().unwrap())
+            .await
+            .unwrap();
+        let mk =
+            |folder: &str, name: &str, source: &str| -> (std::path::PathBuf, std::path::PathBuf) {
+                let d = root.join(folder);
+                std::fs::create_dir_all(&d).unwrap();
+                let s = src.join(source);
+                std::fs::write(&s, b"x").unwrap();
+                let t = d.join(name);
+                std::os::unix::fs::symlink(&s, &t).unwrap();
+                (t, s)
+            };
+        let record =
+            |t: &std::path::Path, s: &std::path::Path, id: u32| crate::models::LinkRecord {
+                id: None,
+                source_path: s.to_path_buf(),
+                target_path: t.to_path_buf(),
+                media_id: format!("tmdb-{id}"),
+                media_type: crate::models::MediaType::Movie,
+                status: crate::models::LinkStatus::Active,
+                created_at: None,
+                updated_at: None,
+            };
+
+        // 1. plain rename
+        let (t1, s1) = mk("A (2014) {tmdb-1}", "A (2014) (2014).mkv", "a.mkv");
+        db.insert_link(&record(&t1, &s1, 1)).await.unwrap();
+        // 2. duplicate: canonical already serves the same source
+        let (t2, s2) = mk("B (2015) {tmdb-2}", "B (2015) (2015).mkv", "b.mkv");
+        std::os::unix::fs::symlink(&s2, root.join("B (2015) {tmdb-2}").join("B (2015).mkv"))
+            .unwrap();
+        db.insert_link(&record(&t2, &s2, 2)).await.unwrap();
+        // 3. reconcile: symlink already renamed on disk, record still doubled
+        let (t3, s3) = mk("C (2016) {tmdb-3}", "C (2016) (2016).mkv", "c.mkv");
+        std::fs::rename(&t3, root.join("C (2016) {tmdb-3}").join("C (2016).mkv")).unwrap();
+        db.insert_link(&record(&t3, &s3, 3)).await.unwrap();
+
+        // 4. untracked orphan on disk (no record at all)
+        let (t4, _s4) = mk("D (2017) {tmdb-4}", "D (2017) (2017).mkv", "d.mkv");
+
+        normalize_movie_names(&db, std::slice::from_ref(&root), false)
+            .await
+            .unwrap();
+        assert!(t1.symlink_metadata().is_ok(), "preview must not touch disk");
+
+        normalize_movie_names(&db, std::slice::from_ref(&root), true)
+            .await
+            .unwrap();
+        let a_new = root.join("A (2014) {tmdb-1}").join("A (2014).mkv");
+        assert!(a_new.symlink_metadata().is_ok() && t1.symlink_metadata().is_err());
+        assert_eq!(
+            db.get_link_by_target_path(&a_new)
+                .await
+                .unwrap()
+                .unwrap()
+                .source_path,
+            s1
+        );
+        assert!(t2.symlink_metadata().is_err(), "duplicate removed");
+        assert_eq!(
+            db.get_link_by_target_path(&t2)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            crate::models::LinkStatus::Removed
+        );
+        assert!(t4.symlink_metadata().is_err(), "untracked orphan renamed");
+        assert!(root
+            .join("D (2017) {tmdb-4}")
+            .join("D (2017).mkv")
+            .symlink_metadata()
+            .is_ok());
+        let c_new = root.join("C (2016) {tmdb-3}").join("C (2016).mkv");
+        assert_eq!(
+            db.get_link_by_target_path(&c_new)
+                .await
+                .unwrap()
+                .unwrap()
+                .source_path,
+            s3
+        );
+        assert!(db.get_link_by_target_path(&t3).await.unwrap().is_none());
     }
 }

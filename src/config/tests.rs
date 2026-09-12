@@ -650,12 +650,12 @@ fn runtime_config_fixture() -> Config {
 }
 
 #[test]
-fn validate_rejects_zero_api_cache_ttl() {
+fn validate_accepts_zero_api_cache_ttl_as_never_expires() {
     let mut cfg = runtime_config_fixture();
     cfg.api.cache_ttl_hours = 0;
 
     let report = cfg.validate_runtime_settings();
-    assert!(report
+    assert!(!report
         .errors
         .iter()
         .any(|err| err.contains("api.cache_ttl_hours")));

@@ -12,11 +12,11 @@
     </div>
     <div class="page-header__aside">
         <span class="badge badge-info">Scans {{ stats.total_scans|thousands }}</span>
-        <span class="badge {% if queue.active_total > 0 %}badge-warning{% else %}badge-success{% endif %}">Queue {{ queue.active_total|thousands }}</span>
+        <span class="badge {% if queue.in_flight > 0 %}badge-warning{% else %}badge-success{% endif %}">Queue {{ queue.in_flight|thousands }}</span>{% if queue.needs_review > 0 %}<span class="badge badge-danger">Review {{ queue.needs_review|thousands }}</span>{% endif %}
         <span class="badge {% if stats.dead_links > 0 %}badge-danger{% else %}badge-success{% endif %}">Dead {{ stats.dead_links|thousands }}</span>
         {% match streaming_guard %}
         {% when Some with (guard) %}
-        <span class="badge {{ guard.status_badge_class }}">Streams {{ guard.active_streams }}</span>
+        <span class="badge {{ guard.status_badge_class }}">{% if guard.known %}Streams {{ guard.active_streams }}{% else %}Streams —{% endif %}</span>
         {% when None %}{% endmatch %}
         {% if deferred_refresh.pending_targets > 0 %}
         <span class="badge badge-warning">Pending refresh {{ deferred_refresh.pending_targets|thousands }}</span>
@@ -184,7 +184,7 @@
                     <p class="section-copy">Auto-acquire jobs by state.</p>
                 </div>
                 <div class="header-badges">
-                    <span class="badge {% if queue.active_total > 0 %}badge-warning{% else %}badge-success{% endif %}">Queue {{ queue.active_total|thousands }}</span>
+                    <span class="badge {% if queue.in_flight > 0 %}badge-warning{% else %}badge-success{% endif %}">Queue {{ queue.in_flight|thousands }}</span>{% if queue.needs_review > 0 %}<span class="badge badge-danger">Review {{ queue.needs_review|thousands }}</span>{% endif %}
                     {% if queue.blocked > 0 || queue.failed > 0 %}
                     <span class="badge badge-danger">Needs review</span>
                     {% endif %}
@@ -327,12 +327,13 @@
                             {% endif %}
                         </td>
                         <td>
-                            {% if !run.skip_reason_highlights.is_empty() %}
+                            {% if !run.skip_reason_highlights.is_empty() || run.skip_reason_filtered > 0 %}
                             <div>
                                 {% for reason in run.skip_reason_highlights %}
                                 <span class="badge badge-secondary">{{ reason.label }} {{ reason.count|thousands }}</span>
                                 {% endfor %}
                             </div>
+                            {% if run.skip_reason_filtered > 0 %}<div class="text-faint">{{ run.skip_reason_filtered|thousands }} filtered (wrong media type or already linked)</div>{% endif %}
                             {% if run.skip_reason_extra_buckets > 0 %}
                             <div class="text-muted">+{{ run.skip_reason_extra_buckets }} more reason group(s)</div>
                             {% endif %}

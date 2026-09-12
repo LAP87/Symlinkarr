@@ -93,7 +93,12 @@ struct AnimeXmlMapping {
 
 impl AnimeIdentityGraph {
     pub(crate) async fn load(cfg: &Config, db: &Database) -> Option<Self> {
-        Self::load_with_ttl(db, cfg.api.cache_ttl_hours.min(ANIME_LISTS_CACHE_TTL_HOURS)).await
+        // anime-lists mappings do change; a "never expires" metadata policy must not pin them.
+        let ttl = match cfg.api.cache_ttl_hours {
+            0 => ANIME_LISTS_CACHE_TTL_HOURS,
+            ttl => ttl.min(ANIME_LISTS_CACHE_TTL_HOURS),
+        };
+        Self::load_with_ttl(db, ttl).await
     }
 
     pub(crate) async fn load_with_ttl(db: &Database, ttl_hours: u64) -> Option<Self> {

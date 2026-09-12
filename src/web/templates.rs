@@ -72,7 +72,8 @@ pub struct DashboardStats {
 
 #[derive(Debug, Clone, Default)]
 pub struct QueueOverview {
-    pub active_total: i64,
+    pub in_flight: i64,
+    pub needs_review: i64,
     pub queued: i64,
     pub downloading: i64,
     pub relinking: i64,
@@ -85,7 +86,8 @@ pub struct QueueOverview {
 impl From<AcquisitionJobCounts> for QueueOverview {
     fn from(value: AcquisitionJobCounts) -> Self {
         Self {
-            active_total: value.active_total(),
+            in_flight: value.in_flight(),
+            needs_review: value.needs_review(),
             queued: value.queued,
             downloading: value.downloading,
             relinking: value.relinking,
@@ -333,6 +335,8 @@ pub struct ScanRunView {
     pub ambiguous_skipped: i64,
     pub skip_reasons: Vec<SkipReasonView>,
     pub skip_reason_highlights: Vec<SkipReasonView>,
+    /// Wrong-shape files and already-correct links: counted, never a "why not".
+    pub skip_reason_filtered: i64,
     pub skip_reason_groups: Vec<SkipReasonGroupView>,
     pub skip_reason_total: i64,
     pub skip_reason_extra_buckets: i64,
@@ -415,7 +419,11 @@ impl ScanRunView {
     }
 
     pub fn from_record(record: ScanHistoryRecord) -> Self {
-        let skip_reasons = Self::skip_reasons_from_record(&record);
+        let (noise, skip_reasons): (Vec<SkipReasonView>, Vec<SkipReasonView>) =
+            Self::skip_reasons_from_record(&record)
+                .into_iter()
+                .partition(|entry| crate::utils::is_noise_skip_reason(&entry.reason));
+        let skip_reason_filtered = noise.iter().map(|entry| entry.count).sum();
         let skip_reason_total = skip_reasons.iter().map(|entry| entry.count).sum();
         let skip_reason_highlights = skip_reasons.iter().take(3).cloned().collect::<Vec<_>>();
         let skip_reason_extra_buckets = skip_reasons
@@ -459,6 +467,7 @@ impl ScanRunView {
             ambiguous_skipped: record.ambiguous_skipped,
             skip_reasons,
             skip_reason_highlights,
+            skip_reason_filtered,
             skip_reason_groups,
             skip_reason_total,
             skip_reason_extra_buckets,
@@ -717,6 +726,10 @@ pub struct StreamingGuardView {
     pub active_streams: usize,
     pub protected_paths: Vec<String>,
     pub error_message: Option<String>,
+    /// `active_streams` reflects a real Tautulli observation (possibly stale).
+    pub known: bool,
+    /// Soft notice, e.g. "showing the check from 40 s ago".
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1273,11 +1286,35 @@ pub struct DiscoverTemplate {
     pub libraries: Vec<LibraryConfig>,
     pub selected_library: String,
     pub refresh_cache: bool,
+    pub csrf_token: String,
+    /// Why a requested run did not start (already running, unknown library).
+    pub notice: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiscoverRunView {
+    pub scope_label: String,
+    pub started_at: String,
+    pub elapsed_secs: u64,
+    pub refresh_cache: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiscoverOutcomeView {
+    pub finished_at: String,
+    pub scope_label: String,
+    pub success: bool,
+    pub message: String,
+    pub elapsed_secs: u64,
 }
 
 #[derive(Template)]
 #[template(path = "web/ui/discover_content.html")]
 pub struct DiscoverContentTemplate {
+    /// A pass is running; the partial re-polls itself while this is set.
+    pub running: Option<DiscoverRunView>,
+    pub outcome: Option<DiscoverOutcomeView>,
+    pub has_snapshot: bool,
     pub discover_summary: DiscoverSummary,
     pub folder_plans: Vec<DiscoverFolderPlan>,
     pub discovered_items: Vec<DiscoverPlacement>,

@@ -439,6 +439,34 @@ impl ProgressLine {
     }
 }
 
+/// Group an integer with commas, e.g. `77177` -> `77,177`. Shared by the askama
+/// `thousands` filter and server-built messages.
+pub fn format_thousands(n: i64) -> String {
+    let digits = n.unsigned_abs().to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    if n < 0 {
+        format!("-{out}")
+    } else {
+        out
+    }
+}
+
+/// Skip reasons that are bookkeeping rather than something an operator can act on:
+/// files of the wrong media shape for the library being scanned, and links that were
+/// already correct. They stay in telemetry but surface as one "filtered" figure.
+pub fn is_noise_skip_reason(reason: &str) -> bool {
+    matches!(
+        reason,
+        "matcher_media_shape_mismatch" | "already_correct" | "already_correct_disk"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

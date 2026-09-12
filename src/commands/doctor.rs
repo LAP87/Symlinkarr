@@ -88,7 +88,7 @@ pub(crate) async fn collect_doctor_checks(
         checks.push(DoctorCheckResult {
             name: format!("source:{}", src.name),
             ok: health.is_healthy(),
-            detail: health.describe(&probe_path),
+            detail: health.describe(&src.path),
         });
         if health.is_healthy() {
             if let Some(layout) = decypharr_root_layout_check(src) {

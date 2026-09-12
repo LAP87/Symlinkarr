@@ -307,6 +307,8 @@ pub(crate) async fn get_discover(
         libraries: state.config.libraries.clone(),
         selected_library: query.library.unwrap_or_default(),
         refresh_cache: query.refresh_cache,
+        csrf_token: browser_csrf_token(&state),
+        notice: None,
     };
     (
         StatusCode::OK,
@@ -315,58 +317,108 @@ pub(crate) async fn get_discover(
         .into_response()
 }
 
-/// GET /discover/content - Discover content fragment
-pub(crate) async fn get_discover_content(
+#[derive(Debug, Deserialize)]
+pub(crate) struct DiscoverRunForm {
+    #[serde(default)]
+    pub csrf_token: String,
+    pub library: Option<String>,
+    #[serde(default)]
+    pub refresh_cache: bool,
+}
+
+/// POST /discover/run - start a background discover pass
+pub(crate) async fn post_discover_run(
     State(state): State<WebState>,
-    Query(query): Query<DiscoverQuery>,
-) -> impl IntoResponse {
-    match load_discovery_snapshot(
-        &state.config,
-        &state.database,
-        query.library.as_deref(),
-        query.refresh_cache,
-    )
-    .await
+    Form(form): Form<DiscoverRunForm>,
+) -> axum::response::Response {
+    if let Some(response) = require_browser_csrf_token(&state, &form.csrf_token, "/discover/run") {
+        return response;
+    }
+    let library = form
+        .library
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    match state
+        .start_discover(library.clone(), form.refresh_cache)
+        .await
     {
-        Ok(snapshot) => {
-            let template = DiscoverContentTemplate {
-                discover_summary: snapshot.summary,
-                folder_plans: snapshot.folders,
-                discovered_items: snapshot.items,
-                status_message: snapshot.status_message.or_else(|| {
-                    (!query.refresh_cache).then(|| {
-                        "Showing cached or on-disk discover results only. Enable refresh when you want a slower live cache sync first."
-                            .to_string()
-                    })
-                }),
+        Ok(_) => axum::response::Redirect::to("/discover").into_response(),
+        Err(message) => {
+            let template = DiscoverTemplate {
+                libraries: state.config.libraries.clone(),
+                selected_library: library.unwrap_or_default(),
+                refresh_cache: form.refresh_cache,
+                csrf_token: browser_csrf_token(&state),
+                notice: Some(message),
             };
             (
-                StatusCode::OK,
+                StatusCode::CONFLICT,
                 Html(template.render().unwrap_or_else(|e| e.to_string())),
             )
-        }
-        Err(err) => {
-            let message = err.to_string();
-            let template = DiscoverContentTemplate {
-                discover_summary: DiscoverSummary::default(),
-                folder_plans: vec![],
-                discovered_items: vec![],
-                status_message: Some(if message.contains("Unknown library filter") {
-                    format!("Invalid library filter: {}", message)
-                } else {
-                    format!("Discover failed: {}", message)
-                }),
-            };
-            (
-                if message.contains("Unknown library filter") {
-                    StatusCode::BAD_REQUEST
-                } else {
-                    StatusCode::INTERNAL_SERVER_ERROR
-                },
-                Html(template.render().unwrap_or_else(|e| e.to_string())),
-            )
+                .into_response()
         }
     }
+}
+
+/// GET /discover/content - current discover state: running banner, last outcome and the
+/// stored snapshot. Never runs the pipeline itself.
+pub(crate) async fn get_discover_content(State(state): State<WebState>) -> impl IntoResponse {
+    const MAX_PLACEMENT_ROWS: usize = 1_000;
+    let running = state.active_discover().await.map(|job| DiscoverRunView {
+        scope_label: job.scope_label,
+        started_at: job.started_at,
+        elapsed_secs: job.started_instant.elapsed().as_secs(),
+        refresh_cache: job.refresh_cache,
+    });
+    let outcome = state
+        .last_discover_outcome()
+        .await
+        .map(|outcome| DiscoverOutcomeView {
+            finished_at: outcome.finished_at,
+            scope_label: outcome.scope_label,
+            success: outcome.success,
+            message: outcome.message,
+            elapsed_secs: outcome.elapsed_secs,
+        });
+    let snapshot = state.discover_snapshot().await;
+    let (discover_summary, folder_plans, mut discovered_items, mut status_message) =
+        match snapshot.as_deref() {
+            Some(snapshot) => (
+                snapshot.summary.clone(),
+                snapshot.folders.clone(),
+                snapshot.items.clone(),
+                snapshot.status_message.clone(),
+            ),
+            None => (DiscoverSummary::default(), vec![], vec![], None),
+        };
+    let total_items = discovered_items.len();
+    if total_items > MAX_PLACEMENT_ROWS {
+        discovered_items.truncate(MAX_PLACEMENT_ROWS);
+        let note = format!(
+            "Showing the first {} of {} placements; narrow the scope for the full list.",
+            crate::utils::format_thousands(MAX_PLACEMENT_ROWS as i64),
+            crate::utils::format_thousands(total_items as i64)
+        );
+        status_message = Some(match status_message {
+            Some(existing) => format!("{note} {existing}"),
+            None => note,
+        });
+    }
+    let template = DiscoverContentTemplate {
+        running,
+        outcome,
+        has_snapshot: snapshot.is_some(),
+        discover_summary,
+        folder_plans,
+        discovered_items,
+        status_message,
+    };
+    (
+        StatusCode::OK,
+        Html(template.render().unwrap_or_else(|e| e.to_string())),
+    )
 }
 
 /// GET /import - Import preview page
@@ -730,12 +782,16 @@ pub(crate) async fn get_backup(State(state): State<WebState>) -> impl IntoRespon
             } else if backup.symlink_count > current_active_links {
                 format!(
                     "{} more than current",
-                    backup.symlink_count - current_active_links
+                    crate::utils::format_thousands(
+                        (backup.symlink_count - current_active_links) as i64
+                    )
                 )
             } else {
                 format!(
                     "{} fewer than current",
-                    current_active_links - backup.symlink_count
+                    crate::utils::format_thousands(
+                        (current_active_links - backup.symlink_count) as i64
+                    )
                 )
             };
 

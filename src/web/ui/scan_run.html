@@ -93,7 +93,7 @@
                 <div>
                     <h2 class="section-title">Why work was skipped</h2>
                     {% if !run.skip_reasons.is_empty() %}
-                    <p class="section-copy">{{ run.skip_reason_total|thousands }} structured skip signals across {{ run.skip_reason_groups|length }} pipeline areas.</p>
+                    <p class="section-copy">{{ run.skip_reason_total|thousands }} structured skip signals across {{ run.skip_reason_groups|length }} pipeline areas.{% if run.skip_reason_filtered > 0 %} Another {{ run.skip_reason_filtered|thousands }} were filtered (wrong media type or already linked).{% endif %}</p>
                     {% endif %}
                 </div>
             </div>

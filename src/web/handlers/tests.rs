@@ -275,7 +275,8 @@ async fn dashboard_renders_latest_run_and_queue_summary() {
     assert!(body.contains("Cache hit"));
     assert!(body.contains("Media refresh was limited"));
     assert!(body.contains("Top skip reasons"));
-    assert!(body.contains("Already correct 6,200"));
+    assert!(!body.contains("Already correct 6,200"));
+    assert!(body.contains("filtered (wrong media type or already linked)"));
     assert!(body.contains("Source missing before link 3,044"));
     assert!(body.contains("Plex guard abort"));
     assert!(body.contains("Emby 1/1"));
@@ -665,7 +666,8 @@ fn dashboard_needs_attention_includes_playback_guard_when_mutations_are_waiting(
         last_scan: Some("2026-04-22 12:00:00 UTC".to_string()),
     };
     let queue = QueueOverview {
-        active_total: 1,
+        in_flight: 1,
+        needs_review: 0,
         queued: 0,
         downloading: 0,
         relinking: 0,
@@ -680,6 +682,8 @@ fn dashboard_needs_attention_includes_playback_guard_when_mutations_are_waiting(
         active_streams: 2,
         protected_paths: vec!["/library/anime/Show A/S01E01.mkv".to_string()],
         error_message: None,
+        known: true,
+        note: None,
     };
     let inputs = DashboardAttentionInputs {
         latest_run: None,
@@ -1577,19 +1581,26 @@ async fn doctor_page_flags_existing_non_writable_backup_dir() {
 }
 
 #[tokio::test]
-async fn discover_page_shell_renders_async_loader() {
+async fn discover_page_shell_renders_run_form_and_state_loader() {
     let ctx = test_context().await;
-    let response = get_discover(State(ctx.state), Query(DiscoverQuery::default()))
-        .await
-        .into_response();
-    assert_eq!(response.status(), StatusCode::OK);
-    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    let body = String::from_utf8(bytes.to_vec()).unwrap();
-
-    assert!(body.contains("Loading discover preview"));
+    let body =
+        render_body(get_discover(State(ctx.state.clone()), Query(DiscoverQuery::default())).await)
+            .await;
+    assert!(body.contains("action=\"/discover/run\""));
+    assert!(body.contains("name=\"csrf_token\""));
     assert!(body.contains("hx-get=\"/discover/content\""));
-    assert!(body.contains("apply stays outside the web UI"));
-    assert!(body.contains("Refresh preview"));
+    assert!(body.contains("hx-trigger=\"load\""));
+    assert!(body.contains("Run discover"));
+}
+
+async fn wait_for_discover(state: &WebState) {
+    for _ in 0..600 {
+        if state.active_discover().await.is_none() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("discover pass did not finish in time");
 }
 
 #[tokio::test]
@@ -1736,9 +1747,9 @@ async fn discover_content_renders_cached_gap_items() {
         .unwrap();
 
     let state = WebState::new(cfg, db);
-    let response = get_discover_content(State(state), Query(DiscoverQuery::default()))
-        .await
-        .into_response();
+    state.start_discover(None, false).await.unwrap();
+    wait_for_discover(&state).await;
+    let response = get_discover_content(State(state)).await.into_response();
     assert_eq!(response.status(), StatusCode::OK);
     let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let body = String::from_utf8(bytes.to_vec()).unwrap();
@@ -1756,23 +1767,15 @@ async fn discover_content_renders_cached_gap_items() {
 }
 
 #[tokio::test]
-async fn discover_content_rejects_invalid_library_filter() {
+async fn discover_run_rejects_invalid_library_filter() {
     let ctx = test_context().await;
-    let response = get_discover_content(
-        State(ctx.state),
-        Query(DiscoverQuery {
-            library: Some("Nope".to_string()),
-            refresh_cache: false,
-        }),
-    )
-    .await
-    .into_response();
-
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    let body = String::from_utf8(bytes.to_vec()).unwrap();
-    assert!(body.contains("Invalid library filter"));
-    assert!(body.contains("Unknown library filter"));
+    let err = ctx
+        .state
+        .start_discover(Some("Nope".to_string()), false)
+        .await
+        .unwrap_err();
+    assert!(err.contains("Nope") || err.to_lowercase().contains("unknown"));
+    assert!(ctx.state.active_discover().await.is_none());
 }
 
 #[cfg(unix)]
@@ -2078,4 +2081,26 @@ fn resolve_cleanup_report_path_rejects_symlink_escape_inside_backup_dir() {
     assert!(err
         .to_string()
         .contains("Cleanup report must be inside the configured backup directory"));
+}
+
+#[tokio::test]
+async fn discover_run_refuses_a_second_concurrent_pass_and_reports_state() {
+    let ctx = test_context().await;
+    let job = ctx.state.start_discover(None, false).await.unwrap();
+    assert_eq!(job.scope_label, "All Libraries");
+    // A second start while the first is (or just was) running must not spawn another pass.
+    if ctx.state.active_discover().await.is_some() {
+        let err = ctx.state.start_discover(None, false).await.unwrap_err();
+        assert!(err.contains("already running"));
+    }
+    wait_for_discover(&ctx.state).await;
+    let outcome = ctx
+        .state
+        .last_discover_outcome()
+        .await
+        .expect("outcome recorded");
+    assert!(outcome.success, "{}", outcome.message);
+    let body = render_body(get_discover_content(State(ctx.state.clone())).await).await;
+    assert!(body.contains("Last discover finished"));
+    assert!(!body.contains("hx-trigger=\"every 5s\""));
 }

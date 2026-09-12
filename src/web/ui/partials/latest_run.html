@@ -95,7 +95,7 @@
             </div>
             {% endif %}
 
-            {% if !run.skip_reason_highlights.is_empty() %}
+            {% if !run.skip_reason_highlights.is_empty() || run.skip_reason_filtered > 0 %}
             <div class="card card--nested mt-2">
                 <h3 class="subsection-title">Top skip reasons</h3>
                 <div class="badge-stack">
@@ -103,6 +103,7 @@
                     <span class="badge badge-secondary">{{ reason.group }}: {{ reason.label }} {{ reason.count|thousands }}</span>
                     {% endfor %}
                 </div>
+                {% if run.skip_reason_filtered > 0 %}<div class="text-faint">{{ run.skip_reason_filtered|thousands }} filtered (wrong media type or already linked)</div>{% endif %}
                 {% if run.skip_reason_extra_buckets > 0 %}
                 <p class="text-muted mt-1">+{{ run.skip_reason_extra_buckets }} more reason group(s) in scan detail.</p>
                 {% endif %}

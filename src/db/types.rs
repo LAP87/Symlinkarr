@@ -347,6 +347,17 @@ pub struct AcquisitionJobCounts {
 }
 
 impl AcquisitionJobCounts {
+    /// Jobs still moving through the pipeline.
+    pub fn in_flight(&self) -> i64 {
+        self.queued + self.downloading + self.relinking + self.blocked
+    }
+
+    /// Jobs that stopped and need an operator decision.
+    pub fn needs_review(&self) -> i64 {
+        self.no_result + self.failed + self.completed_unlinked
+    }
+
+    /// Every job that is not a completed, linked win (in flight + needs review).
     pub fn active_total(&self) -> i64 {
         self.queued
             + self.downloading

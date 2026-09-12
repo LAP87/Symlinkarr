@@ -50,6 +50,7 @@ fn sample_scan_run_view() -> ScanRunView {
         ambiguous_skipped: 70,
         skip_reasons,
         skip_reason_highlights,
+        skip_reason_filtered: 0,
         skip_reason_groups,
         skip_reason_total,
         skip_reason_extra_buckets,
@@ -264,6 +265,8 @@ fn sample_streaming_guard_view() -> StreamingGuardView {
             "/library/anime/Show B/Season 01/S01E02.mkv".to_string(),
         ],
         error_message: None,
+        known: true,
+        note: None,
     }
 }
 
@@ -547,7 +550,8 @@ fn dashboard_summary_template_renders_polling_fragment() {
             last_scan: Some("2026-04-22 12:00:00 UTC".to_string()),
         },
         queue: QueueOverview {
-            active_total: 3,
+            in_flight: 3,
+            needs_review: 0,
             queued: 2,
             downloading: 1,
             relinking: 0,
@@ -621,7 +625,8 @@ fn status_template_renders_recent_queue_jobs() {
         tracked_dead_links: Vec::new(),
         recent_queue_jobs: sample_queue_jobs(),
         queue: QueueOverview {
-            active_total: 2,
+            in_flight: 2,
+            needs_review: 0,
             queued: 1,
             downloading: 0,
             relinking: 0,
@@ -723,6 +728,8 @@ fn config_template_renders_settings_rail_and_defaults() {
 #[test]
 fn discover_template_renders_guide_disclosure() {
     let template = DiscoverTemplate {
+        csrf_token: "token".to_string(),
+        notice: None,
         libraries: vec![LibraryConfig {
             name: "Anime".to_string(),
             path: PathBuf::from("/library/anime"),
@@ -1361,6 +1368,9 @@ fn prune_preview_template_renders_playback_guard_warning() {
 #[test]
 fn discover_content_template_renders_guidance_and_help_link() {
     let template = DiscoverContentTemplate {
+        running: None,
+        outcome: None,
+        has_snapshot: true,
         discover_summary: DiscoverSummary {
             folders: 1,
             placements: 2,

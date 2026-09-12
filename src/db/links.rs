@@ -373,6 +373,34 @@ impl Database {
 
     /// Remove a link record by target path.
     #[allow(dead_code)] // Planned for future use
+    /// Move a link record to a new target path (after the symlink itself was renamed).
+    /// A stale non-active row already holding the new path is dropped; if an active
+    /// row already owns the new path, the old record is marked removed instead.
+    pub async fn update_link_target_path(&self, old: &Path, new: &Path) -> Result<()> {
+        let old_s = old.to_string_lossy().to_string();
+        let new_s = new.to_string_lossy().to_string();
+        sqlx::query("DELETE FROM links WHERE target_path = ? AND status <> 'active'")
+            .bind(&new_s)
+            .execute(&self.pool)
+            .await?;
+        let active_at_new: Option<(i64,)> =
+            sqlx::query_as("SELECT id FROM links WHERE target_path = ? AND status = 'active'")
+                .bind(&new_s)
+                .fetch_optional(&self.pool)
+                .await?;
+        if active_at_new.is_some() {
+            return self.mark_removed_path(old).await;
+        }
+        sqlx::query(
+            "UPDATE links SET target_path = ?, updated_at = CURRENT_TIMESTAMP WHERE target_path = ?",
+        )
+        .bind(&new_s)
+        .bind(&old_s)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn mark_removed(&self, target_path: &str) -> Result<()> {
         sqlx::query(
             "UPDATE links SET status = 'removed', updated_at = CURRENT_TIMESTAMP
