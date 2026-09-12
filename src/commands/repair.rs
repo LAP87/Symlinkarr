@@ -613,6 +613,49 @@ pub(crate) async fn normalize_movie_names(
             _ => {}
         }
     }
+    // Phase 2: doubled-year symlinks on disk that no active record tracks (orphans from
+    // earlier runs). Renaming them is enough — the next scan backfills the record.
+    let mut orphans = 0usize;
+    for root in library_roots {
+        for entry in walkdir::WalkDir::new(root)
+            .follow_links(false)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_symlink())
+        {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let Some(canonical) = doubled_year_canonical_name(name) else {
+                continue;
+            };
+            if db
+                .get_link_by_target_path(path)
+                .await?
+                .is_some_and(|r| r.status == crate::models::LinkStatus::Active)
+            {
+                continue; // handled in phase 1
+            }
+            let new_path = path.with_file_name(&canonical);
+            if new_path.symlink_metadata().is_ok() {
+                continue; // canonical already there; leave the stray for cleanup to judge
+            }
+            orphans += 1;
+            planned += 1;
+            *counts.entry("rename-untracked").or_default() += 1;
+            if !apply {
+                if orphans <= 10 {
+                    println!("   {:<17} {name}  ->  {canonical}", "rename-untracked");
+                }
+                continue;
+            }
+            std::fs::rename(path, &new_path)?;
+            if db.get_link_by_target_path(path).await?.is_some() {
+                db.update_link_target_path(path, &new_path).await?;
+            }
+        }
+    }
     if planned == 0 {
         println!("✅ No movie links with a doubled year found.");
         return Ok(());
@@ -702,6 +745,9 @@ mod normalize_names_tests {
         std::fs::rename(&t3, root.join("C (2016) {tmdb-3}").join("C (2016).mkv")).unwrap();
         db.insert_link(&record(&t3, &s3, 3)).await.unwrap();
 
+        // 4. untracked orphan on disk (no record at all)
+        let (t4, _s4) = mk("D (2017) {tmdb-4}", "D (2017) (2017).mkv", "d.mkv");
+
         normalize_movie_names(&db, std::slice::from_ref(&root), false)
             .await
             .unwrap();
@@ -729,6 +775,12 @@ mod normalize_names_tests {
                 .status,
             crate::models::LinkStatus::Removed
         );
+        assert!(t4.symlink_metadata().is_err(), "untracked orphan renamed");
+        assert!(root
+            .join("D (2017) {tmdb-4}")
+            .join("D (2017).mkv")
+            .symlink_metadata()
+            .is_ok());
         let c_new = root.join("C (2016) {tmdb-3}").join("C (2016).mkv");
         assert_eq!(
             db.get_link_by_target_path(&c_new)
