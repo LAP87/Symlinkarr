@@ -86,3 +86,11 @@ in `7e253e4`, `866b532` and `2825685`.
 - **The 2,552 misnamed movie links keep their names.** Adoption prevents duplicates; renaming them to the canonical name needs a small `repair rename` (or a one-off script): for each active movie link whose filename ends `(YYYY) (YYYY)`, `rename` the symlink and update `links.target_path`.
 - **Discover is still a synchronous multi-minute request.** The right shape is a background job with progress (like scans), served from a snapshot.
 - The 465 rows the earlier dry-run inserted into `data/symlinkarr.db` describe real on-disk links and are accurate; they were left in place.
+
+### Round 2 — 2026-09-12 (decisions taken)
+| Item | Done |
+|---|---|
+| Metadata cache TTL | `api.cache_ttl_hours: 0` = never expires, now the default and set in the shipped configs; stored rows are aligned at startup. Negative lookups keep a 7-day TTL and anime-lists mappings keep their own cap. |
+| "Why not" noise | Media-shape mismatches and already-correct links are filtered out of highlights, top-reason lists, groups and the CLI summary; shown as one "N filtered" figure. |
+| Doubled-year movie names | `repair normalize-names --apply` run against the library: **3,058 renamed, 261 untracked orphans renamed, 10 duplicates removed**; 24 records had no file at either name (dead) and 3 + 6 on-disk cases keep a canonical file serving a *different* source (two versions — cleanup's call). Prod's database needs the same command once after the upgrade to reconcile its records (the files are already renamed). |
+| Discover | Background job with running banner (scope, start, elapsed), last outcome and a kept snapshot; one pass at a time; rows capped at 1,000. |
