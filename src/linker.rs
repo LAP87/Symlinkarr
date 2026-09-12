@@ -157,6 +157,12 @@ impl SourceReadinessGate {
             }
 
             if let Some(reason) = first_failure {
+                // One warning per folder: the result is cached, so every other file in
+                // this folder is skipped silently (counted in the run's skip reasons).
+                warn!(
+                    "WebDAV readability probe failed for {:?}: {}; links from this folder are skipped this run",
+                    cache_key, reason
+                );
                 SourceReadiness::Unreadable(reason)
             } else if saw_not_found {
                 // The source path may belong to a non-Decypharr source tree or a mount layout
@@ -444,7 +450,7 @@ impl Linker {
                         target_path
                     );
                 } else {
-                    info!(
+                    debug!(
                         "DB link was active but on-disk target was missing/incorrect; recreating {:?}",
                         target_path
                     );
@@ -571,7 +577,7 @@ impl Linker {
                     .ensure_readable(&m.source_item.path, source_readiness_cache)
                     .await
                 {
-                    warn!(
+                    debug!(
                         "Skipping link creation because source failed WebDAV readability probe: {:?} ({})",
                         m.source_item.path, reason
                     );
@@ -663,7 +669,7 @@ impl Linker {
 
             tx.commit().await?;
 
-            info!(
+            debug!(
                 "Symlink created: {:?} → {:?}",
                 target_path, m.source_item.path
             );
