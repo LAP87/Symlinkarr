@@ -2,7 +2,7 @@
 
 ## Release Target
 
-- package version for this push: `1.1.0-rc.8`
+- package version for this push: `1.1.0-rc.12`
 - posture: `v1.1 release candidate with Arr backfill, fail-closed acquisition ranking, current dependencies, synchronized Docker release channels, and updated operator documentation`
 - intended use: local-first host or Docker installs, with Windows 11 users running through WSL2 or a Linux container
 
