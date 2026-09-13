@@ -563,6 +563,7 @@ fn test_match_source_slice_skips_movie_candidate_for_episode_source() {
         MatchingMode::Strict,
         true,
         None,
+        &HashMap::new(),
     );
 
     assert!(chunk.best_per_source.is_empty());
@@ -595,6 +596,7 @@ fn test_exact_id_path_respects_movie_episode_shape_guard() {
         MatchingMode::Strict,
         true,
         None,
+        &HashMap::new(),
     );
 
     assert!(chunk.best_per_source.is_empty());
@@ -644,6 +646,7 @@ fn test_exact_id_path_does_not_match_prefix_of_longer_id() {
         MatchingMode::Strict,
         true,
         None,
+        &HashMap::new(),
     );
 
     assert_eq!(chunk.best_per_source.len(), 1);
@@ -684,6 +687,7 @@ fn test_tv_same_title_year_selects_matching_series() {
         MatchingMode::Strict,
         true,
         None,
+        &HashMap::new(),
     );
 
     assert_eq!(chunk.best_per_source.len(), 1);
@@ -720,6 +724,7 @@ fn test_tv_wrong_year_candidate_rejected_when_correct_show_lacks_plain_alias() {
         MatchingMode::Strict,
         true,
         None,
+        &HashMap::new(),
     );
 
     assert!(chunk.best_per_source.is_empty());
@@ -748,6 +753,7 @@ fn test_match_source_slice_records_no_library_candidates_reason() {
         MatchingMode::Strict,
         false,
         None,
+        &HashMap::new(),
     );
 
     assert!(chunk.best_per_source.is_empty());
@@ -790,6 +796,7 @@ fn test_match_source_slice_records_anime_ambiguous_numbering_reason() {
         MatchingMode::Strict,
         true,
         None,
+        &HashMap::new(),
     );
 
     assert!(chunk.best_per_source.is_empty());
@@ -822,6 +829,7 @@ fn test_match_source_slice_records_metadata_mismatch_reason() {
         MatchingMode::Strict,
         true,
         None,
+        &HashMap::new(),
     );
 
     assert!(chunk.best_per_source.is_empty());
@@ -852,6 +860,7 @@ fn test_match_source_slice_records_alias_threshold_reason() {
         MatchingMode::Strict,
         true,
         None,
+        &HashMap::new(),
     );
 
     assert!(chunk.best_per_source.is_empty());
@@ -896,6 +905,7 @@ fn test_tv_same_title_season_guard_prefers_series_with_known_season() {
         MatchingMode::Strict,
         true,
         None,
+        &HashMap::new(),
     );
 
     assert_eq!(chunk.best_per_source.len(), 1);
@@ -937,6 +947,7 @@ fn test_movie_same_title_year_selects_matching_release() {
         MatchingMode::Strict,
         true,
         None,
+        &HashMap::new(),
     );
 
     assert_eq!(chunk.best_per_source.len(), 1);
@@ -1095,4 +1106,112 @@ fn test_expand_episode_slots_caps_pathological_range() {
     };
     // Should fall back to first episode only due to cap
     assert_eq!(expand_episode_slots(&source), vec![1]);
+}
+
+#[test]
+fn test_pinned_folder_wins_over_title_matching() {
+    // The library title has nothing in common with the release name, so title matching
+    // would skip it; the pin binds the torrent folder to the item directly.
+    let library_items = vec![
+        anime_item("Harem in the Labyrinth of Another World", 402496),
+        anime_item("Unrelated Show", 1),
+    ];
+    let source_items = vec![parsed_standard_source(
+        "/mnt/rd/__all__/Isekai Meikyuu De Harem Wo S01+OVA 1080p BD Remux FLAC-TTGA/S01E02-Raising Money.mkv",
+    )];
+    let mut alias_map = HashMap::new();
+    alias_map.insert(
+        0usize,
+        vec!["harem in the labyrinth of another world".to_string()],
+    );
+    alias_map.insert(1usize, vec!["unrelated show".to_string()]);
+    let mut metadata_map = HashMap::new();
+    metadata_map.insert(0usize, None);
+    metadata_map.insert(1usize, None);
+    let alias_token_index = build_alias_token_index(&alias_map);
+
+    let unpinned = match_source_slice(
+        0,
+        &source_items,
+        &library_items,
+        &alias_map,
+        &metadata_map,
+        &alias_token_index,
+        MatchingMode::Strict,
+        false,
+        None,
+        &HashMap::new(),
+    );
+    assert!(unpinned.best_per_source.is_empty());
+
+    let mut pins = HashMap::new();
+    pins.insert(
+        "Isekai Meikyuu De Harem Wo S01+OVA 1080p BD Remux FLAC-TTGA".to_string(),
+        0usize,
+    );
+    let pinned = match_source_slice(
+        0,
+        &source_items,
+        &library_items,
+        &alias_map,
+        &metadata_map,
+        &alias_token_index,
+        MatchingMode::Strict,
+        false,
+        None,
+        &pins,
+    );
+    assert_eq!(pinned.best_per_source.len(), 1);
+    assert_eq!(pinned.best_per_source[0].media_id, "tvdb-402496");
+    assert_eq!(pinned.best_per_source[0].source_item.season, Some(1));
+    assert_eq!(pinned.best_per_source[0].source_item.episode, Some(2));
+    assert_eq!(pinned.exact_id_hits, 1);
+}
+
+#[test]
+fn test_pinned_folder_is_found_on_any_ancestor() {
+    let mut pins = HashMap::new();
+    pins.insert("Pack".to_string(), 3usize);
+    assert_eq!(
+        pinned_library_index(&pins, Path::new("/rd/__all__/Pack/Season 1/ep.mkv")),
+        Some(3)
+    );
+    assert_eq!(
+        pinned_library_index(&pins, Path::new("/rd/__all__/Pack.mkv")),
+        None,
+        "a file named like the folder is not the folder"
+    );
+    assert_eq!(
+        pinned_library_index(&pins, Path::new("/rd/__all__/Other/ep.mkv")),
+        None
+    );
+}
+
+#[tokio::test]
+async fn test_with_source_pins_resolves_through_full_matcher() {
+    let tmp = tempdir().unwrap();
+    let db = Database::new(tmp.path().join("test.db").to_str().unwrap())
+        .await
+        .unwrap();
+    let library_items = vec![anime_item(
+        "Harem in the Labyrinth of Another World",
+        402496,
+    )];
+    let source_items = vec![parsed_standard_source(
+        "/mnt/rd/__all__/Isekai Meikyuu De Harem Wo S01+OVA 1080p BD Remux FLAC-TTGA/S01E02-Raising Money.mkv",
+    )];
+    let mut pins = HashMap::new();
+    pins.insert(
+        "Isekai Meikyuu De Harem Wo S01+OVA 1080p BD Remux FLAC-TTGA".to_string(),
+        MediaId::Tvdb(402496),
+    );
+    let matcher =
+        Matcher::new(None, None, MatchingMode::Strict, MetadataMode::Off, 1).with_source_pins(pins);
+    let output = matcher
+        .find_matches_with_telemetry(&library_items, &source_items, &db)
+        .await
+        .unwrap();
+    assert_eq!(output.matches.len(), 1);
+    assert_eq!(output.matches[0].library_item.id, MediaId::Tvdb(402496));
+    assert_eq!(output.telemetry.exact_id_hits, 1);
 }

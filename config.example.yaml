@@ -80,6 +80,13 @@ prowlarr:
   url: "http://host.docker.internal:9696"
   api_key: "env:SYMLINKARR_PROWLARR_API_KEY"
 
+# Optional: handoff markers from backfill-buddy (its symlinkarr.queue_dir). Each marker pins
+# an RD torrent folder to the tvdb/tmdb id it was acquired for; scans import them and, with
+# consume_markers, delete each marker once its pin is stored. See `symlinkarr pin --help`.
+# handoff:
+#   markers_dir: "/app/handoff"
+#   consume_markers: true
+
 bazarr:
   url: "http://host.docker.internal:6767"
   api_key: "env:SYMLINKARR_BAZARR_API_KEY"

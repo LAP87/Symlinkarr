@@ -10,7 +10,7 @@ use self::naming::{sanitize_filename, truncate_filename_to_limit, truncate_str_b
 use crate::api::decypharr::{DecypharrClient, WebDavProbeError};
 use crate::config::Config;
 use crate::db::Database;
-use crate::models::{LinkRecord, LinkStatus, MatchResult, MediaType};
+use crate::models::{LinkRecord, LinkStatus, MatchResult, MediaId, MediaType};
 use crate::source_scanner::SourceScanner;
 use crate::utils::{
     cached_source_exists, cached_source_health, path_under_roots, replace_symlink_atomically,
@@ -31,6 +31,8 @@ pub struct LinkProcessSummary {
     pub skipped: u64,
     pub skip_reasons: BTreeMap<String, u64>,
     pub refresh_paths: Vec<PathBuf>,
+    /// Library items that received a new or updated link this run.
+    pub touched_media: Vec<(MediaType, MediaId)>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -381,6 +383,9 @@ impl Linker {
                     }
                     if let Some(path) = result.refresh_path {
                         summary.refresh_paths.push(path);
+                        summary
+                            .touched_media
+                            .push((m.library_item.media_type, m.library_item.id.clone()));
                     }
                 }
                 Err(e) => warn!("Failed to create link for {:?}: {}", m.source_item.path, e),

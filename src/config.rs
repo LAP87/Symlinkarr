@@ -254,6 +254,9 @@ pub struct Config {
     /// Web UI settings
     #[serde(default)]
     pub web: WebConfig,
+    /// Handoff markers from an acquisition tool such as backfill-buddy (optional)
+    #[serde(default)]
+    pub handoff: HandoffConfig,
     /// Path of the config file that was loaded, when available
     #[serde(skip)]
     pub loaded_from: Option<PathBuf>,
@@ -463,6 +466,34 @@ pub struct ProwlarrConfig {
     /// Prowlarr API key
     #[serde(default)]
     pub api_key: String,
+}
+
+/// Handoff markers written by an acquisition tool (backfill-buddy's `symlinkarr.queue_dir`).
+/// Each marker names an RD torrent folder and the tvdb/tmdb id it was acquired for; scans
+/// import them as source pins so the matcher links that folder to that library item
+/// without relying on title matching.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HandoffConfig {
+    /// Directory holding `*.json` markers. Unset disables the import.
+    #[serde(default)]
+    pub markers_dir: Option<PathBuf>,
+    /// Delete a marker once its pin is stored (the directory acts as a queue). When false,
+    /// markers are left in place and re-imported on every scan.
+    #[serde(default = "default_true")]
+    pub consume_markers: bool,
+}
+
+impl Default for HandoffConfig {
+    fn default() -> Self {
+        Self {
+            markers_dir: None,
+            consume_markers: true,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Bazarr subtitle integration
@@ -901,6 +932,20 @@ impl Config {
     }
 
     fn validate_paths(&self, report: &mut ValidationReport) {
+        if let Some(dir) = self.handoff.markers_dir.as_deref() {
+            if !dir.is_absolute() {
+                report.errors.push(format!(
+                    "handoff.markers_dir must be absolute: {}",
+                    dir.display()
+                ));
+            } else if !dir.is_dir() {
+                // Not an error: backfill-buddy creates the directory on its first handoff.
+                report.warnings.push(format!(
+                    "handoff.markers_dir does not exist yet: {} (created by backfill-buddy on its first handoff; scans import nothing until then)",
+                    dir.display()
+                ));
+            }
+        }
         for lib in &self.libraries {
             if !lib.path.is_absolute() {
                 report.errors.push(format!(

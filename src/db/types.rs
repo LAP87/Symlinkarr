@@ -164,6 +164,19 @@ pub struct AnimeSearchOverrideRecord {
     pub updated_at: String,
 }
 
+/// A pinned RD torrent folder → library item binding, as stored in `source_pins`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourcePin {
+    /// Top-level folder name on the source mount (the RD torrent folder).
+    pub source_folder: String,
+    /// Canonical `tvdb-…` / `tmdb-…` id of the library item.
+    pub media_id: String,
+    /// Where the pin came from: `handoff` (marker import) or `manual`.
+    pub origin: String,
+    pub note: Option<String>,
+    pub updated_at: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct DeadLinkSeed {
     pub source_path: PathBuf,

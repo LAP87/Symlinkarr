@@ -434,6 +434,7 @@ fn test_config_with_decypharr(base_url: &str, source_root: PathBuf) -> Config {
         security: SecurityConfig::default(),
         cleanup: CleanupPolicyConfig::default(),
         web: WebConfig::default(),
+        handoff: crate::config::HandoffConfig::default(),
         loaded_from: None,
         secret_files: Vec::new(),
     }

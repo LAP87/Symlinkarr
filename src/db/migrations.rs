@@ -160,8 +160,9 @@ impl Database {
             20 => self.migration_v20_tx(tx).await,
             21 => self.migration_v21_tx(tx).await,
             22 => self.migration_v22_tx(tx).await,
+            23 => self.migration_v23_tx(tx).await,
             _ => anyhow::bail!(
-                "Unsupported schema migration version {}. This build only knows migrations 1 through 22",
+                "Unsupported schema migration version {}. This build only knows migrations 1 through 23",
                 version
             ),
         }
@@ -743,9 +744,33 @@ impl Database {
         Ok(())
     }
 
+    /// Source pins: an RD torrent folder name bound to one library item. Consulted by the
+    /// matcher before title matching; filled from handoff markers or `symlinkarr pin add`.
+    async fn migration_v23_tx(&self, tx: &mut Transaction<'_, Sqlite>) -> Result<()> {
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS source_pins (
+                source_folder TEXT PRIMARY KEY,
+                media_id TEXT NOT NULL,
+                origin TEXT NOT NULL,
+                note TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+        )
+        .execute(&mut **tx)
+        .await?;
+
+        Ok(())
+    }
+
     #[cfg(test)]
     async fn migrate_down_one(&self, current_version: i64) -> Result<()> {
         match current_version {
+            23 => {
+                sqlx::query("DROP TABLE IF EXISTS source_pins")
+                    .execute(&self.pool)
+                    .await?;
+            }
             22 => {
                 sqlx::query("DROP INDEX IF EXISTS idx_operation_runs_history")
                     .execute(&self.pool)

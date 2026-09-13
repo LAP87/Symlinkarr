@@ -64,6 +64,7 @@ fn test_config(root: &Path) -> Config {
         security: SecurityConfig::default(),
         cleanup: CleanupPolicyConfig::default(),
         web: WebConfig::default(),
+        handoff: crate::config::HandoffConfig::default(),
         loaded_from: None,
         secret_files: Vec::new(),
     }

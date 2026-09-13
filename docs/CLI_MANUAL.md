@@ -334,6 +334,8 @@ symlinkarr repair auto --self-heal
 symlinkarr repair trigger --arr sonarr
 ```
 
+After a live scan writes links, Symlinkarr asks the configured Sonarr/Sonarr-anime/Radarr instances to rescan exactly the series and movies it touched (one command per item up to 25, otherwise a single full rescan), so the arr's file state updates immediately instead of at its next periodic disk scan.
+
 `normalize-names` fixes movie symlinks whose filename carries the same year twice (`Title (2014) (2014).mkv`, an old folder-title fallback bug): it previews by default and with `--apply` renames each symlink in place and moves its database record; a canonical file that already serves the same source makes the doubled link a duplicate, which is removed. Run it once after upgrading.
 
 `trigger` starts a Decypharr repair sweep through `POST /api/repair/run` (Decypharr 2.3 or newer; older builds return 404). The sweep is global across every configured *Arr, so `--arr` is accepted for compatibility but ignored; the command prints the next scheduled sweep and the last run afterwards.
@@ -483,6 +485,42 @@ Known anime limit:
 
 - anime specials without usable anime-lists numbering hints may still need manual search terms, because many indexers are weak at `S00Exx`-style anime queries.
 
+### `pin`
+
+Bind an RD torrent folder to one library item. The matcher checks pins before any title matching, so a pinned folder always links to its item — the way out for releases whose name the matcher cannot place (romaji titles, `[Group] Show - S01E001` numbering, ambiguous short titles).
+
+```bash
+symlinkarr pin list [--output text|json]
+symlinkarr pin add <FOLDER> <MEDIA_ID> [--note <TEXT>]
+symlinkarr pin remove <FOLDER>
+symlinkarr pin import [--dir <PATH>] [--keep]
+```
+
+Examples:
+
+```bash
+symlinkarr pin add "Isekai Meikyuu De Harem Wo S01+OVA 1080p BD Remux FLAC-TTGA" tvdb-393301
+symlinkarr pin list
+symlinkarr pin import --dir /app/handoff --keep
+```
+
+Notes:
+
+- `<FOLDER>` is the torrent folder name directly under the source root (`__all__/<FOLDER>/…`), not a path; `<MEDIA_ID>` is the `tvdb-…`/`tmdb-…` tag of the library folder.
+- a pin only decides *which* library item a folder belongs to; season/episode numbering, shape checks and the one-link-per-slot rule still apply as for any other match.
+- pins are stored in the database and survive restarts; `pin add` on an already pinned folder moves it to the new id.
+- `pin import` reads handoff markers (see `handoff.markers_dir` below) once, outside a scan. Scans do the same import automatically when the directory is configured.
+
+Handoff markers (backfill-buddy):
+
+Set `handoff.markers_dir` to the directory backfill-buddy writes its `symlinkarr.queue_dir` markers into (mount it into the container). Every scan imports the markers there as pins with origin `handoff` and, with `handoff.consume_markers: true` (the default), deletes each marker once its pin is stored — the directory acts as a queue. Markers without a `tvdb_id`/`tmdb_id` (written by a backfill-buddy older than the id-carrying handoff, or when its Arr lookup failed) are counted as "without id" and left in place for a later handoff to complete.
+
+```yaml
+handoff:
+  markers_dir: /app/handoff
+  consume_markers: true
+```
+
 ### `config`
 
 Validate config parsing, secrets indirection, and referenced paths.
@@ -516,7 +554,7 @@ symlinkarr doctor --output json
 Generate a library report, with optional filesystem vs Symlinkarr DB vs Plex DB path drift compare.
 
 ```bash
-symlinkarr report [--output text|json] [--filter movie|series] [--library <LIBRARY>] [--plex-db <PATH>] [--full-anime-duplicates] [--anime-remediation-tsv <PATH>] [--pretty]
+symlinkarr report [--output text|json] [--filter movie|series] [--library <LIBRARY>] [--plex-db <PATH>] [--full-anime-duplicates] [--anime-remediation-tsv <PATH>] [--pretty] [--linked-torrents]
 ```
 
 Examples:
@@ -528,6 +566,7 @@ symlinkarr report --plex-db "/var/lib/plex/Plex Media Server/Plug-in Support/Dat
 symlinkarr report --filter movie --plex-db "/var/lib/plex/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db" --output json --pretty
 symlinkarr report --library Anime --plex-db "/var/lib/plex/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db" --full-anime-duplicates --output json --pretty
 symlinkarr report --library Anime --plex-db "/var/lib/plex/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db" --anime-remediation-tsv /tmp/anime-remediation.tsv
+symlinkarr report --linked-torrents --pretty
 ```
 
 Notes:
@@ -539,6 +578,7 @@ Notes:
 - `--full-anime-duplicates` disables the default sample cap for anime duplicate sections so you can export the full mixed-root and Hama-split cleanup backlog
 - when `--plex-db` is present, the anime section includes a cleanup queue that ranks legacy-root/Hama-split titles by filesystem and DB impact, so you can work the backlog in a sensible order
 - `--anime-remediation-tsv` writes that anime cleanup queue as a spreadsheet-friendly TSV file and lifts the sample cap for the queue export
+- `--linked-torrents` skips the normal report and prints JSON listing the Real-Debrid torrents that back active symlinks (`rd_id`, `hash`, `folder`, `active_links`, plus `unmatched_links` for links whose folder is not in the cached RD index); it is meant for a keeper such as backfill-buddy to protect the torrents the library actually depends on
 
 ## JSON-Capable Commands
 
@@ -554,6 +594,7 @@ These top-level commands currently support `--output json`:
 - `config validate`
 - `doctor`
 - `report`
+- `pin list`
 
 ## Deprecated / Hidden Compatibility Command
 

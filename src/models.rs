@@ -37,6 +37,18 @@ impl MediaId {
         }
     }
 
+    /// Parse the canonical `tvdb-123` / `tmdb-123` form (as used in library folder tags,
+    /// the database and the CLI).
+    pub fn parse(value: &str) -> Option<MediaId> {
+        let (provider, id) = value.trim().split_once('-')?;
+        let id: u64 = id.parse().ok()?;
+        match provider.to_ascii_lowercase().as_str() {
+            "tvdb" => Some(MediaId::Tvdb(id)),
+            "tmdb" => Some(MediaId::Tmdb(id)),
+            _ => None,
+        }
+    }
+
     /// Returns the provider name ("tvdb" or "tmdb")
     #[allow(dead_code)] // Planned for future use
     pub fn provider(&self) -> &'static str {
@@ -207,6 +219,10 @@ mod tests {
     fn test_media_id_id_value() {
         assert_eq!(MediaId::Tmdb(123).id_value(), 123);
         assert_eq!(MediaId::Tvdb(456).id_value(), 456);
+        assert_eq!(MediaId::parse("tvdb-456"), Some(MediaId::Tvdb(456)));
+        assert_eq!(MediaId::parse(" TMDB-7 "), Some(MediaId::Tmdb(7)));
+        assert_eq!(MediaId::parse("imdb-tt1"), None);
+        assert_eq!(MediaId::parse("tvdb-x"), None);
     }
 
     #[test]

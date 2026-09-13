@@ -171,6 +171,15 @@ impl Database {
         Ok(())
     }
 
+    /// (torrent_id, hash, filename) for every cached RD torrent.
+    pub async fn get_rd_torrent_index(&self) -> Result<Vec<(String, String, String)>> {
+        Ok(
+            sqlx::query_as("SELECT torrent_id, hash, filename FROM rd_torrents")
+                .fetch_all(&self.pool)
+                .await?,
+        )
+    }
+
     /// Get all stored RD torrents (id, status, hash, files_json).
     pub async fn get_rd_torrents(&self) -> Result<Vec<(String, String, String, String, String)>> {
         let rows =

@@ -103,6 +103,8 @@ pub(crate) struct ReportOptions<'a> {
     pub(crate) full_anime_duplicates: bool,
     pub(crate) anime_remediation_tsv_path: Option<&'a Path>,
     pub(crate) pretty: bool,
+    /// Emit the RD torrents backing active links as JSON and nothing else.
+    pub(crate) linked_torrents: bool,
 }
 
 pub(crate) async fn run_report(
@@ -110,6 +112,9 @@ pub(crate) async fn run_report(
     db: &Database,
     options: ReportOptions<'_>,
 ) -> Result<()> {
+    if options.linked_torrents {
+        return run_linked_torrents_report(cfg, db, options.pretty).await;
+    }
     let effective_full_anime_duplicates =
         options.full_anime_duplicates || options.anime_remediation_tsv_path.is_some();
     let report = build_report(
@@ -689,3 +694,117 @@ mod anime;
 mod path_compare;
 #[cfg(test)]
 mod tests;
+
+/// The first path component of `path` under whichever configured source root contains it:
+/// the torrent folder on the mount.
+pub(crate) fn source_folder(cfg: &Config, path: &std::path::Path) -> Option<String> {
+    cfg.sources.iter().find_map(|source| {
+        path.strip_prefix(&source.path).ok().and_then(|rel| {
+            rel.components()
+                .next()
+                .map(|c| c.as_os_str().to_string_lossy().to_string())
+        })
+    })
+}
+
+/// Join active-link source folders to the cached RD torrent index. A folder is the RD
+/// filename (multi-file torrents) or the filename without its extension (single files).
+pub(crate) fn aggregate_linked_torrents(
+    index: &[(String, String, String)],
+    folders: impl IntoIterator<Item = String>,
+) -> (Vec<serde_json::Value>, u64) {
+    let mut by_folder: std::collections::HashMap<&str, (&str, &str)> =
+        std::collections::HashMap::new();
+    for (torrent_id, hash, filename) in index {
+        by_folder.insert(filename.as_str(), (torrent_id.as_str(), hash.as_str()));
+        if let Some((stem, _)) = filename.rsplit_once('.') {
+            by_folder
+                .entry(stem)
+                .or_insert((torrent_id.as_str(), hash.as_str()));
+        }
+    }
+    let mut counts: std::collections::BTreeMap<String, (&str, &str, u64)> =
+        std::collections::BTreeMap::new();
+    let mut unmatched = 0u64;
+    for folder in folders {
+        match by_folder.get(folder.as_str()) {
+            Some((id, hash)) => counts.entry(folder).or_insert((id, hash, 0)).2 += 1,
+            None => unmatched += 1,
+        }
+    }
+    let rows = counts
+        .into_iter()
+        .map(|(folder, (rd_id, hash, active_links))| {
+            serde_json::json!({
+                "rd_id": rd_id,
+                "hash": hash,
+                "folder": folder,
+                "active_links": active_links,
+            })
+        })
+        .collect();
+    (rows, unmatched)
+}
+
+/// `report --linked-torrents`: which RD torrents currently back active symlinks, for a
+/// keeper (e.g. backfill-buddy) to protect first.
+pub(crate) async fn run_linked_torrents_report(
+    cfg: &Config,
+    db: &Database,
+    pretty: bool,
+) -> Result<()> {
+    let index = db.get_rd_torrent_index().await?;
+    let folders = db
+        .get_active_links()
+        .await?
+        .into_iter()
+        .filter_map(|link| source_folder(cfg, &link.source_path));
+    let (torrents, unmatched_links) = aggregate_linked_torrents(&index, folders);
+    let doc = serde_json::json!({
+        "generated_at": chrono::Utc::now().to_rfc3339(),
+        "torrent_count": torrents.len(),
+        "unmatched_links": unmatched_links,
+        "torrents": torrents,
+    });
+    let text = if pretty {
+        serde_json::to_string_pretty(&doc)?
+    } else {
+        serde_json::to_string(&doc)?
+    };
+    println!("{text}");
+    Ok(())
+}
+
+#[cfg(test)]
+mod linked_torrents_tests {
+    use super::*;
+
+    #[test]
+    fn folders_join_to_torrents_by_filename_or_stem() {
+        let index = vec![
+            (
+                "RD1".to_string(),
+                "aaa".to_string(),
+                "Show.S01.Pack".to_string(),
+            ),
+            (
+                "RD2".to_string(),
+                "bbb".to_string(),
+                "Movie.2014.mkv".to_string(),
+            ),
+        ];
+        let folders = vec![
+            "Show.S01.Pack".to_string(),
+            "Show.S01.Pack".to_string(),
+            "Movie.2014".to_string(),
+            "Unknown".to_string(),
+        ];
+        let (rows, unmatched) = aggregate_linked_torrents(&index, folders);
+        assert_eq!(unmatched, 1);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["folder"], "Movie.2014");
+        assert_eq!(rows[0]["rd_id"], "RD2");
+        assert_eq!(rows[1]["active_links"], 2);
+        assert_eq!(rows[1]["hash"], "aaa");
+    }
+}

@@ -8,6 +8,7 @@ pub mod daemon;
 pub mod discover;
 pub mod doctor;
 pub mod importer;
+pub mod pin;
 pub mod queue;
 pub mod refresh;
 pub mod repair;
