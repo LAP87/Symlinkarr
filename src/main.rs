@@ -13,6 +13,7 @@ mod commands;
 mod config;
 mod db;
 mod discovery;
+mod handoff;
 mod import_report;
 mod library_scanner;
 mod linker;
@@ -375,6 +376,11 @@ enum Commands {
         #[command(subcommand)]
         action: CacheAction,
     },
+    /// Pin an RD torrent folder to a library item so scans link it without title matching
+    Pin {
+        #[command(subcommand)]
+        action: PinAction,
+    },
     /// Validate and inspect Symlinkarr configuration
     Config {
         #[command(subcommand)]
@@ -407,6 +413,9 @@ enum Commands {
         /// Pretty-print JSON output
         #[arg(long)]
         pretty: bool,
+        /// Export the RD torrents backing active links as JSON (for a keeper such as backfill-buddy)
+        #[arg(long)]
+        linked_torrents: bool,
     },
 }
 
@@ -432,6 +441,34 @@ pub(crate) enum CacheAction {
     },
     /// Clear all cached API metadata
     Clear,
+}
+
+#[derive(Subcommand)]
+pub(crate) enum PinAction {
+    /// List stored pins
+    List {
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        output: OutputFormat,
+    },
+    /// Pin a torrent folder (its name under the source root) to a media id such as tvdb-449988
+    Add {
+        folder: String,
+        media_id: String,
+        /// Free-text note stored with the pin
+        #[arg(long)]
+        note: Option<String>,
+    },
+    /// Remove a pin
+    Remove { folder: String },
+    /// Import handoff markers from `handoff.markers_dir` (or the given directory) now,
+    /// without running a scan
+    Import {
+        #[arg(long)]
+        dir: Option<std::path::PathBuf>,
+        /// Leave the marker files in place even when `handoff.consume_markers` is set
+        #[arg(long)]
+        keep: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1092,6 +1129,7 @@ async fn main() -> Result<()> {
             commands::backup::run_backup(&cfg, &db, action, output).await?
         }
         Commands::Cache { action } => commands::cache::run_cache(&cfg, &db, action).await?,
+        Commands::Pin { action } => commands::pin::run_pin(&cfg, &db, action).await?,
         Commands::Config { action } => commands::config::run_config(&cfg, action).await?,
         Commands::Doctor { output } => commands::doctor::run_doctor(&cfg, &db, output).await?,
         Commands::Report {
@@ -1102,6 +1140,7 @@ async fn main() -> Result<()> {
             full_anime_duplicates,
             anime_remediation_tsv,
             pretty,
+            linked_torrents,
         } => {
             let media_type_filter = match filter.as_deref() {
                 Some("movie") => Some(crate::models::MediaType::Movie),
@@ -1125,6 +1164,7 @@ async fn main() -> Result<()> {
                         .as_deref()
                         .map(std::path::Path::new),
                     pretty,
+                    linked_torrents,
                 },
             )
             .await?;

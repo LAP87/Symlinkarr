@@ -14,7 +14,7 @@ use crate::api::tmdb::TmdbClient;
 use crate::api::tvdb::TvdbClient;
 use crate::config::{ContentType, MatchingMode, MetadataMode};
 use crate::db::Database;
-use crate::models::{ContentMetadata, LibraryItem, MatchResult, MediaType, SourceItem};
+use crate::models::{ContentMetadata, LibraryItem, MatchResult, MediaId, MediaType, SourceItem};
 use crate::source_scanner::{ParserKind, SourceScanner};
 use crate::utils::{normalize, user_println, ProgressLine};
 
@@ -149,6 +149,9 @@ pub struct Matcher {
     metadata_mode: MetadataMode,
     metadata_concurrency: usize,
     multi_version: bool,
+    /// RD torrent folder name → library media id, from `source_pins`. Consulted before any
+    /// title matching so a pinned folder always lands on its pinned item.
+    source_pins: HashMap<String, MediaId>,
 }
 
 impl Matcher {
@@ -166,11 +169,17 @@ impl Matcher {
             metadata_mode,
             metadata_concurrency,
             multi_version: false,
+            source_pins: HashMap::new(),
         }
     }
 
     pub fn with_multi_version(mut self, enabled: bool) -> Self {
         self.multi_version = enabled;
+        self
+    }
+
+    pub fn with_source_pins(mut self, pins: HashMap<String, MediaId>) -> Self {
+        self.source_pins = pins;
         self
     }
 
@@ -318,6 +327,29 @@ impl Matcher {
         let anime_identity =
             AnimeIdentityGraph::load_with_ttl(db, ANIME_LISTS_CACHE_TTL_HOURS).await;
 
+        // Pinned folders resolve to a library index once; pins whose item is not in this
+        // library set (another library filter, or the folder was removed) are ignored.
+        let pinned_library_idx: HashMap<String, usize> = if self.source_pins.is_empty() {
+            HashMap::new()
+        } else {
+            let idx_by_id: HashMap<&MediaId, usize> = library_items
+                .iter()
+                .enumerate()
+                .map(|(idx, item)| (&item.id, idx))
+                .collect();
+            let resolved: HashMap<String, usize> = self
+                .source_pins
+                .iter()
+                .filter_map(|(folder, id)| idx_by_id.get(id).map(|idx| (folder.clone(), *idx)))
+                .collect();
+            info!(
+                "Source pins: {} configured, {} resolve to a library item in this run",
+                self.source_pins.len(),
+                resolved.len()
+            );
+            resolved
+        };
+
         // Step 2: Build deterministic best candidate per source
         let candidate_started = Instant::now();
         let allow_global_fallback = !library_items
@@ -350,6 +382,7 @@ impl Matcher {
                 self.mode,
                 allow_global_fallback,
                 anime_identity.as_ref(),
+                &pinned_library_idx,
             );
             (
                 chunk.best_per_source,
@@ -369,6 +402,7 @@ impl Matcher {
             let metadata_map = Arc::new(metadata_map);
             let alias_token_index = Arc::new(alias_token_index);
             let anime_identity = anime_identity.map(Arc::new);
+            let pinned_library_idx = Arc::new(pinned_library_idx);
             let chunk_size = source_items.len().div_ceil(worker_count);
             let mut workers = JoinSet::new();
 
@@ -380,6 +414,7 @@ impl Matcher {
                 let metadata_map = Arc::clone(&metadata_map);
                 let alias_token_index = Arc::clone(&alias_token_index);
                 let anime_identity = anime_identity.clone();
+                let pinned_library_idx = Arc::clone(&pinned_library_idx);
                 let mode = self.mode;
 
                 workers.spawn_blocking(move || {
@@ -393,6 +428,7 @@ impl Matcher {
                         mode,
                         allow_global_fallback,
                         anime_identity.as_deref(),
+                        pinned_library_idx.as_ref(),
                     )
                 });
             }
@@ -623,6 +659,19 @@ fn parser_kind_for_content(content_type: ContentType) -> ParserKind {
     }
 }
 
+/// The library index pinned for `path`, if any directory on its path is a pinned folder.
+/// Pins name the RD torrent folder, which sits directly under a source root, so walking
+/// the ancestors finds it in one or two steps.
+fn pinned_library_index(pins: &HashMap<String, usize>, path: &std::path::Path) -> Option<usize> {
+    if pins.is_empty() {
+        return None;
+    }
+    path.ancestors()
+        .skip(1)
+        .filter_map(|dir| dir.file_name())
+        .find_map(|name| pins.get(name.to_string_lossy().as_ref()).copied())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn match_source_slice(
     start_idx: usize,
@@ -634,6 +683,7 @@ fn match_source_slice(
     mode: MatchingMode,
     allow_global_fallback: bool,
     anime_identity: Option<&AnimeIdentityGraph>,
+    pinned_library_idx: &HashMap<String, usize>,
 ) -> MatchChunkResult {
     let parser = SourceScanner::new();
     let mut best_per_source = Vec::new();
@@ -664,12 +714,16 @@ fn match_source_slice(
         let candidate_count = candidate_library_indices.len();
         prefiltered_library_candidates += candidate_count;
 
-        // Early-exit: if the source file path contains a library item's exact media ID
-        // (e.g. "tvdb-81189" embedded in the RD path), skip scoring and use it directly.
+        // Early-exit: a pinned torrent folder, or a source file path that contains a library
+        // item's exact media ID (e.g. "tvdb-81189" embedded in the RD path), skips scoring
+        // and uses that item directly.
         let source_path_str = source.path.to_string_lossy();
-        if let Some(exact_idx) = candidate_library_indices.iter().copied().find(|&lib_idx| {
-            let id_str = library_items[lib_idx].id.to_string();
-            source_path_contains_media_id(source_path_str.as_ref(), id_str.as_str())
+        let pinned_idx = pinned_library_index(pinned_library_idx, &source.path);
+        if let Some(exact_idx) = pinned_idx.or_else(|| {
+            candidate_library_indices.iter().copied().find(|&lib_idx| {
+                let id_str = library_items[lib_idx].id.to_string();
+                source_path_contains_media_id(source_path_str.as_ref(), id_str.as_str())
+            })
         }) {
             let item = &library_items[exact_idx];
             let parser_kind = parser_kind_for_content(item.content_type);

@@ -212,6 +212,7 @@ mod tests {
             cleanup: CleanupPolicyConfig::default(),
             backup: BackupConfig::default(),
             web: WebConfig::default(),
+            handoff: crate::config::HandoffConfig::default(),
             loaded_from: None,
             secret_files: Vec::new(),
         }

@@ -266,4 +266,56 @@ impl SonarrClient {
 
         Ok(resp.json::<SonarrWantedMissingPage>().await?)
     }
+
+    /// Ask Sonarr to rescan one item on disk (or everything when `series_id` is None) so a
+    /// freshly written symlink shows up without waiting for its periodic disk scan.
+    pub async fn rescan_series(&self, series_id: Option<i64>) -> Result<()> {
+        let url = format!("{}/api/v3/command", self.base_url);
+        let mut body = serde_json::json!({ "name": "RescanSeries" });
+        if let Some(id) = series_id {
+            body["seriesId"] = serde_json::json!(id);
+        }
+        let req = self
+            .client
+            .post(&url)
+            .header("X-Api-Key", &self.api_key)
+            .json(&body);
+        let resp = http::send_with_retry(req).await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!(
+                "Sonarr RescanSeries command failed (HTTP {}): {}",
+                status,
+                text
+            );
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod rescan_tests {
+    use super::*;
+    use crate::api::test_helpers::spawn_sequence_http_server;
+
+    #[test]
+    fn rescan_series_posts_a_rescanseries_command() {
+        let Some((base_url, requests)) =
+            spawn_sequence_http_server(&[("HTTP/1.1 201 Created", r#"{"id":1}"#)])
+        else {
+            return;
+        };
+        let client = SonarrClient::new(&base_url, "secret-key");
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(client.rescan_series(Some(42)))
+            .unwrap();
+        let captured = requests.lock().unwrap();
+        let request = captured.first().unwrap();
+        assert!(request.starts_with("POST /api/v3/command HTTP/1.1"));
+        assert!(request.to_lowercase().contains("x-api-key: secret-key"));
+        assert!(request.contains(r#""name":"RescanSeries""#));
+        assert!(request.contains(r#""seriesId":42"#));
+    }
 }

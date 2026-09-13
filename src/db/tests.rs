@@ -2612,3 +2612,47 @@ async fn cache_ttl_zero_never_expires_and_align_rewrites_policy() {
     // Running again is a no-op.
     assert_eq!(db.align_cache_ttl(0, 168, "__negative__").await.unwrap(), 0);
 }
+
+#[tokio::test]
+async fn test_source_pins_upsert_counts_only_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+        .await
+        .unwrap();
+    let seed = vec![
+        (
+            "Show.S01.Pack".to_string(),
+            "tvdb-1".to_string(),
+            "handoff".to_string(),
+            None,
+        ),
+        (
+            "Movie.2014".to_string(),
+            "tmdb-2".to_string(),
+            "manual".to_string(),
+            Some("by hand".to_string()),
+        ),
+    ];
+    assert_eq!(db.upsert_source_pins(&seed).await.unwrap(), 2);
+    // Identical re-import changes nothing.
+    assert_eq!(db.upsert_source_pins(&seed).await.unwrap(), 0);
+    // Moving a folder to another id counts as a change and wins.
+    let moved = vec![(
+        "Show.S01.Pack".to_string(),
+        "tvdb-9".to_string(),
+        "manual".to_string(),
+        None,
+    )];
+    assert_eq!(db.upsert_source_pins(&moved).await.unwrap(), 1);
+
+    let pins = db.list_source_pins().await.unwrap();
+    assert_eq!(pins.len(), 2);
+    assert_eq!(pins[0].source_folder, "Movie.2014");
+    assert_eq!(pins[0].note.as_deref(), Some("by hand"));
+    assert_eq!(pins[1].media_id, "tvdb-9");
+    assert_eq!(pins[1].origin, "manual");
+
+    assert!(db.delete_source_pin("Movie.2014").await.unwrap());
+    assert!(!db.delete_source_pin("Movie.2014").await.unwrap());
+    assert_eq!(db.list_source_pins().await.unwrap().len(), 1);
+}

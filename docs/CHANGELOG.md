@@ -2,9 +2,24 @@
 
 ## Release Target
 
-- package version for this push: `1.1.0-rc.8`
+- package version for this push: `1.1.0-rc.12`
 - posture: `v1.1 release candidate with Arr backfill, fail-closed acquisition ranking, current dependencies, synchronized Docker release channels, and updated operator documentation`
 - intended use: local-first host or Docker installs, with Windows 11 users running through WSL2 or a Linux container
+
+## 2026-09-13 - v1.1.0-rc.12 backfill-buddy Cooperation
+
+### Code Changes
+
+- source pins: a new `source_pins` table (schema v23) binds an RD torrent folder to one library item; the matcher consults pins before title matching, so pinned folders link even when the release name cannot be placed (romaji titles, `[Group] Show - S01E001` numbering, ambiguous short titles).
+- `symlinkarr pin list|add|remove|import` manages pins by hand and imports handoff markers on demand.
+- `handoff.markers_dir` / `handoff.consume_markers`: every scan imports backfill-buddy's queue markers as pins (origin `handoff`) and deletes each marker once stored; markers without a tvdb/tmdb id stay for a later handoff.
+- after a live scan writes links, the touched series/movies are rescanned in Sonarr, Sonarr Anime and Radarr (`RescanSeries`/`RescanMovie`, per item up to 25, otherwise one full rescan) so Arr file state — and anything watching it — updates immediately.
+- `report --linked-torrents [--pretty]` exports the RD torrents backing active symlinks (`rd_id`, `hash`, `folder`, `active_links`, `unmatched_links`) for a keeper to protect.
+
+### Validation
+
+- unit tests for pin storage, marker import/consumption, pinned matching through `match_source_slice` and the full matcher, arr rescan planning, and the linked-torrents join.
+- dry-run Anime scan against the local database with a manual pin confirmed the pinned folder produced candidates that title matching had skipped.
 
 ## 2026-07-26 - v1.1.0-rc.8 Legacy Scheduler Upgrade
 

@@ -46,6 +46,7 @@ fn test_runtime_config(root: &Path, backup_dir: &Path) -> Config {
         security: SecurityConfig::default(),
         cleanup: CleanupPolicyConfig::default(),
         web: WebConfig::default(),
+        handoff: crate::config::HandoffConfig::default(),
         loaded_from: None,
         secret_files: Vec::new(),
     }

@@ -787,6 +787,7 @@ fn test_config(movies: PathBuf, anime: PathBuf, source: PathBuf, db_path: String
         security: SecurityConfig::default(),
         cleanup: CleanupPolicyConfig::default(),
         web: WebConfig::default(),
+        handoff: crate::config::HandoffConfig::default(),
         loaded_from: None,
         secret_files: Vec::new(),
     }

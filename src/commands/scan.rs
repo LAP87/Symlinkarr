@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -11,6 +11,8 @@ use self::telemetry::{
     log_scan_telemetry,
 };
 use crate::api::bazarr::BazarrClient;
+use crate::api::radarr::RadarrClient;
+use crate::api::sonarr::SonarrClient;
 use crate::api::tmdb::TmdbClient;
 use crate::api::tvdb::TvdbClient;
 use crate::auto_acquire::{
@@ -175,6 +177,14 @@ pub(crate) async fn run_scan_with_origin(
         None
     };
 
+    if let Some(dir) = cfg.handoff.markers_dir.as_deref() {
+        let import = crate::handoff::import_markers(db, dir, cfg.handoff.consume_markers).await;
+        if import.imported > 0 || import.without_id > 0 || import.unreadable > 0 {
+            user_println(format!("   📌 Handoff markers: {}", import.summary_line()));
+        }
+    }
+    let source_pins = load_source_pins(db).await;
+
     let matcher = Matcher::new(
         tmdb.clone(),
         tvdb,
@@ -182,7 +192,8 @@ pub(crate) async fn run_scan_with_origin(
         cfg.matching.metadata_mode,
         cfg.matching.metadata_concurrency,
     )
-    .with_multi_version(cfg.symlink.multi_version);
+    .with_multi_version(cfg.symlink.multi_version)
+    .with_source_pins(source_pins);
 
     let matching_started = Instant::now();
     let MatchRunOutput {
@@ -231,6 +242,11 @@ pub(crate) async fn run_scan_with_origin(
         match bazarr.trigger_sync().await {
             Ok(_) => user_println("   📝 Bazarr: subtitle search triggered for new content"),
             Err(e) => user_println(format!("   ⚠️  Bazarr subtitle trigger failed: {}", e)),
+        }
+    }
+    if linked_total > 0 && !effective_dry_run {
+        for line in rescan_arrs_for_touched(cfg, &link_summary.touched_media).await {
+            user_println(format!("   {line}"));
         }
     }
 
@@ -751,3 +767,201 @@ pub(crate) async fn lookup_item_imdb_id(
 
 #[cfg(test)]
 mod tests;
+
+/// Stored source pins as folder → media id. A pin with an unparsable id is skipped with a
+/// warning rather than failing the scan.
+async fn load_source_pins(db: &Database) -> HashMap<String, MediaId> {
+    let pins = match db.list_source_pins().await {
+        Ok(pins) => pins,
+        Err(err) => {
+            tracing::warn!("Could not load source pins: {}", err);
+            return HashMap::new();
+        }
+    };
+    let mut map = HashMap::with_capacity(pins.len());
+    for pin in pins {
+        match MediaId::parse(&pin.media_id) {
+            Some(id) => {
+                map.insert(pin.source_folder, id);
+            }
+            None => tracing::warn!(
+                "Source pin for {:?} has an invalid media id {:?}; ignored",
+                pin.source_folder,
+                pin.media_id
+            ),
+        }
+    }
+    map
+}
+
+/// Which arr rescans to issue for the library items a scan just touched: one command per
+/// item while the set is small, a single full rescan once it is not.
+#[derive(Debug, PartialEq)]
+enum ArrRescanPlan {
+    Nothing,
+    Items(Vec<i64>),
+    Full,
+}
+
+const ARR_RESCAN_PER_ITEM_CAP: usize = 25;
+
+fn plan_arr_rescans(touched_ids: &[i64], per_item_cap: usize) -> ArrRescanPlan {
+    let mut ids = touched_ids.to_vec();
+    ids.sort_unstable();
+    ids.dedup();
+    if ids.is_empty() {
+        ArrRescanPlan::Nothing
+    } else if ids.len() > per_item_cap {
+        ArrRescanPlan::Full
+    } else {
+        ArrRescanPlan::Items(ids)
+    }
+}
+
+fn media_id_matches(id: &MediaId, tvdb_id: i64, tmdb_id: i64) -> bool {
+    match id.provider() {
+        "tvdb" => tvdb_id == id.id_value() as i64,
+        "tmdb" => tmdb_id == id.id_value() as i64,
+        _ => false,
+    }
+}
+
+/// After links were written, ask each configured *Arr to rescan the touched series/movies
+/// so their file state (and anything watching it, e.g. a keeper's "linked" check) updates
+/// now instead of at the arr's next periodic disk scan. Failures are reported, never fatal.
+async fn rescan_arrs_for_touched(cfg: &Config, touched: &[(MediaType, MediaId)]) -> Vec<String> {
+    let mut lines = Vec::new();
+    let tv_ids: Vec<&MediaId> = touched
+        .iter()
+        .filter(|(kind, _)| *kind == MediaType::Tv)
+        .map(|(_, id)| id)
+        .collect();
+    let movie_ids: Vec<&MediaId> = touched
+        .iter()
+        .filter(|(kind, _)| *kind == MediaType::Movie)
+        .map(|(_, id)| id)
+        .collect();
+
+    if !tv_ids.is_empty() {
+        let mut instances = Vec::new();
+        if cfg.has_sonarr() {
+            instances.push((
+                "Sonarr",
+                SonarrClient::new(&cfg.sonarr.url, &cfg.sonarr.api_key),
+            ));
+        }
+        if cfg.has_sonarr_anime() {
+            instances.push((
+                "Sonarr Anime",
+                SonarrClient::new(&cfg.sonarr_anime.url, &cfg.sonarr_anime.api_key),
+            ));
+        }
+        for (label, client) in instances {
+            let series = match client.get_series().await {
+                Ok(series) => series,
+                Err(err) => {
+                    lines.push(format!(
+                        "⚠️  {label}: could not list series for rescan: {err}"
+                    ));
+                    continue;
+                }
+            };
+            let ids: Vec<i64> = series
+                .iter()
+                .filter(|s| {
+                    tv_ids
+                        .iter()
+                        .any(|id| media_id_matches(id, s.tvdb_id, s.tmdb_id))
+                })
+                .map(|s| s.id)
+                .collect();
+            match plan_arr_rescans(&ids, ARR_RESCAN_PER_ITEM_CAP) {
+                ArrRescanPlan::Nothing => {}
+                ArrRescanPlan::Items(ids) => {
+                    let mut ok = 0usize;
+                    for id in &ids {
+                        match client.rescan_series(Some(*id)).await {
+                            Ok(()) => ok += 1,
+                            Err(err) => lines
+                                .push(format!("⚠️  {label}: rescan of series {id} failed: {err}")),
+                        }
+                    }
+                    lines.push(format!("🔄 {label}: rescan requested for {ok} series"));
+                }
+                ArrRescanPlan::Full => match client.rescan_series(None).await {
+                    Ok(()) => lines.push(format!(
+                        "🔄 {label}: full rescan requested ({} series touched)",
+                        ids.len()
+                    )),
+                    Err(err) => lines.push(format!("⚠️  {label}: full rescan failed: {err}")),
+                },
+            }
+        }
+    }
+
+    if !movie_ids.is_empty() && cfg.has_radarr() {
+        let client = RadarrClient::new(&cfg.radarr.url, &cfg.radarr.api_key);
+        match client.get_movies().await {
+            Ok(movies) => {
+                let ids: Vec<i64> = movies
+                    .iter()
+                    .filter(|m| {
+                        movie_ids
+                            .iter()
+                            .any(|id| media_id_matches(id, -1, m.tmdb_id))
+                    })
+                    .map(|m| m.id)
+                    .collect();
+                match plan_arr_rescans(&ids, ARR_RESCAN_PER_ITEM_CAP) {
+                    ArrRescanPlan::Nothing => {}
+                    ArrRescanPlan::Items(ids) => {
+                        let mut ok = 0usize;
+                        for id in &ids {
+                            match client.rescan_movie(Some(*id)).await {
+                                Ok(()) => ok += 1,
+                                Err(err) => lines.push(format!(
+                                    "⚠️  Radarr: rescan of movie {id} failed: {err}"
+                                )),
+                            }
+                        }
+                        lines.push(format!("🔄 Radarr: rescan requested for {ok} movie(s)"));
+                    }
+                    ArrRescanPlan::Full => match client.rescan_movie(None).await {
+                        Ok(()) => lines.push(format!(
+                            "🔄 Radarr: full rescan requested ({} movies touched)",
+                            ids.len()
+                        )),
+                        Err(err) => lines.push(format!("⚠️  Radarr: full rescan failed: {err}")),
+                    },
+                }
+            }
+            Err(err) => lines.push(format!(
+                "⚠️  Radarr: could not list movies for rescan: {err}"
+            )),
+        }
+    }
+    lines
+}
+
+#[cfg(test)]
+mod arr_rescan_tests {
+    use super::*;
+
+    #[test]
+    fn plan_dedups_and_switches_to_full_above_cap() {
+        assert_eq!(plan_arr_rescans(&[], 25), ArrRescanPlan::Nothing);
+        assert_eq!(
+            plan_arr_rescans(&[3, 1, 3], 25),
+            ArrRescanPlan::Items(vec![1, 3])
+        );
+        let many: Vec<i64> = (0..30).collect();
+        assert_eq!(plan_arr_rescans(&many, 25), ArrRescanPlan::Full);
+    }
+
+    #[test]
+    fn media_ids_match_the_matching_provider_only() {
+        assert!(media_id_matches(&MediaId::Tvdb(449988), 449988, 0));
+        assert!(!media_id_matches(&MediaId::Tvdb(449988), 0, 449988));
+        assert!(media_id_matches(&MediaId::Tmdb(603), -1, 603));
+    }
+}

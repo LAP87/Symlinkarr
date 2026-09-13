@@ -45,6 +45,7 @@ fn test_config() -> Config {
         security: SecurityConfig::default(),
         cleanup: CleanupPolicyConfig::default(),
         web: WebConfig::default(),
+        handoff: crate::config::HandoffConfig::default(),
         loaded_from: None,
         secret_files: Vec::new(),
     }
@@ -360,6 +361,7 @@ fn validate_treats_missing_paths_as_errors() {
         security,
         cleanup: CleanupPolicyConfig::default(),
         web: WebConfig::default(),
+        handoff: crate::config::HandoffConfig::default(),
         loaded_from: None,
         secret_files: Vec::new(),
     };
@@ -418,6 +420,7 @@ fn validate_runtime_settings_skips_missing_path_errors() {
         security,
         cleanup: CleanupPolicyConfig::default(),
         web: WebConfig::default(),
+        handoff: crate::config::HandoffConfig::default(),
         loaded_from: None,
         secret_files: Vec::new(),
     };
@@ -464,6 +467,7 @@ fn validate_rejects_zero_decypharr_polling_settings() {
         security: SecurityConfig::default(),
         cleanup: CleanupPolicyConfig::default(),
         web: WebConfig::default(),
+        handoff: crate::config::HandoffConfig::default(),
         loaded_from: None,
         secret_files: Vec::new(),
     };
@@ -538,6 +542,7 @@ fn validate_allows_zero_decypharr_max_requests_per_run_as_unlimited() {
         security: SecurityConfig::default(),
         cleanup: CleanupPolicyConfig::default(),
         web: WebConfig::default(),
+        handoff: crate::config::HandoffConfig::default(),
         loaded_from: None,
         secret_files: Vec::new(),
     };
@@ -589,6 +594,7 @@ fn validate_rejects_zero_realdebrid_pagination_limits() {
         security: SecurityConfig::default(),
         cleanup: CleanupPolicyConfig::default(),
         web: WebConfig::default(),
+        handoff: crate::config::HandoffConfig::default(),
         loaded_from: None,
         secret_files: Vec::new(),
     };
@@ -644,6 +650,7 @@ fn runtime_config_fixture() -> Config {
         security: SecurityConfig::default(),
         cleanup: CleanupPolicyConfig::default(),
         web: WebConfig::default(),
+        handoff: crate::config::HandoffConfig::default(),
         loaded_from: None,
         secret_files: Vec::new(),
     }
@@ -993,6 +1000,7 @@ fn validate_reports_insecure_runtime_permissions() {
             },
         },
         web: WebConfig::default(),
+        handoff: crate::config::HandoffConfig::default(),
         loaded_from: None,
         secret_files: vec![secret_path],
     };
