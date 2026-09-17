@@ -144,13 +144,38 @@ pub(crate) async fn run_cleanup(
     }
 }
 
-async fn run_cleanup_dead(
+/// Outcome of one dead-link sweep, shared by `cleanup dead` and the scheduled sweep.
+pub(crate) struct DeadLinkSweepOutcome {
+    pub(crate) dead: crate::linker::DeadLinkSummary,
+    pub(crate) invalidation: LibraryInvalidationOutcome,
+}
+
+impl DeadLinkSweepOutcome {
+    pub(crate) fn describe(&self) -> String {
+        let mut text = format!(
+            "marked={}, removed={}, skipped={}",
+            self.dead.dead_marked, self.dead.removed, self.dead.skipped
+        );
+        if let Some(quarantined) = self.dead.dead_reasons.get("source_quarantined") {
+            text.push_str(&format!(", quarantined={quarantined}"));
+        }
+        if let Some(summary) = self.invalidation.summary_suffix() {
+            text.push_str(&format!("; media-server refresh: {summary}"));
+        }
+        text
+    }
+}
+
+/// Validate every active link under the selected libraries, mark dead ones (missing
+/// source/target, or a source inside Decypharr's `__bad__` quarantine), remove the dead
+/// symlinks, and refresh the media servers for the touched libraries.
+pub(crate) async fn sweep_dead_links(
     cfg: &Config,
     db: &Database,
     library_filter: Option<&str>,
-    output: OutputFormat,
-) -> Result<i64> {
-    info!("=== Symlinkarr Cleanup ===");
+    run_token: Option<&str>,
+    announce: bool,
+) -> Result<DeadLinkSweepOutcome> {
     let selected = selected_libraries(cfg, library_filter)?;
     let library_roots: Vec<_> = selected.iter().map(|l| l.path.clone()).collect();
 
@@ -167,9 +192,10 @@ async fn run_cleanup_dead(
         cfg.matching.mode.is_strict(),
         &cfg.symlink.naming_template,
         cfg.features.reconcile_links,
-    );
+    )
+    .with_quarantine(crate::quarantine::QuarantinedFolders::load(&cfg.sources));
     let dead = linker
-        .check_dead_links_scoped(db, Some(&library_roots), None)
+        .check_dead_links_scoped(db, Some(&library_roots), run_token)
         .await?;
     let invalidation = if dead.removed > 0 {
         maybe_refresh_media_servers_after_cleanup(
@@ -177,25 +203,46 @@ async fn run_cleanup_dead(
             &selected,
             None,
             "dead-link cleanup",
-            output != OutputFormat::Json,
+            announce,
         )
         .await
     } else {
         LibraryInvalidationOutcome::default()
     };
     info!(
-        "Handled dead links: marked={}, removed={}, skipped={}",
-        dead.dead_marked, dead.removed, dead.skipped
+        "Handled dead links: marked={}, removed={}, skipped={}, reasons={:?}",
+        dead.dead_marked, dead.removed, dead.skipped, dead.dead_reasons
     );
+    Ok(DeadLinkSweepOutcome { dead, invalidation })
+}
+
+async fn run_cleanup_dead(
+    cfg: &Config,
+    db: &Database,
+    library_filter: Option<&str>,
+    output: OutputFormat,
+) -> Result<i64> {
+    info!("=== Symlinkarr Cleanup ===");
+    let DeadLinkSweepOutcome { dead, invalidation } =
+        sweep_dead_links(cfg, db, library_filter, None, output != OutputFormat::Json).await?;
     if output == OutputFormat::Json {
         print_json(&serde_json::json!({
             "dead_marked": dead.dead_marked,
             "removed": dead.removed,
             "skipped": dead.skipped,
+            "dead_reasons": dead.dead_reasons,
             "media_server_invalidation": invalidation,
         }));
-    } else if let Some(summary) = invalidation.summary_suffix() {
-        println!("   📺 Media-server refresh: {}", summary);
+    } else {
+        if let Some(quarantined) = dead.dead_reasons.get("source_quarantined") {
+            println!(
+                "   🚫 {} link(s) pointed into Decypharr's __bad__ quarantine and were marked dead",
+                quarantined
+            );
+        }
+        if let Some(summary) = invalidation.summary_suffix() {
+            println!("   📺 Media-server refresh: {}", summary);
+        }
     }
     Ok(dead.removed as i64)
 }

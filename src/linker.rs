@@ -11,6 +11,7 @@ use crate::api::decypharr::{DecypharrClient, WebDavProbeError};
 use crate::config::Config;
 use crate::db::Database;
 use crate::models::{LinkRecord, LinkStatus, MatchResult, MediaId, MediaType};
+use crate::quarantine::QuarantinedFolders;
 use crate::source_scanner::SourceScanner;
 use crate::utils::{
     cached_source_exists, cached_source_health, path_under_roots, replace_symlink_atomically,
@@ -41,6 +42,8 @@ pub struct DeadLinkSummary {
     pub removed: u64,
     pub skipped: u64,
     pub skip_reasons: BTreeMap<String, u64>,
+    /// Why links were marked dead beyond a missing source/target (e.g. `source_quarantined`).
+    pub dead_reasons: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -246,6 +249,8 @@ pub struct Linker {
     naming_template: String,
     multi_version: bool,
     source_readiness_gate: Option<SourceReadinessGate>,
+    /// Decypharr `__bad__` torrent folders: sources inside them count as dead.
+    quarantine: QuarantinedFolders,
 }
 
 /// True when a title already ends with a parenthesised four-digit year, e.g. "0.5 mm (2014)".
@@ -277,6 +282,7 @@ impl Linker {
             naming_template: naming_template.to_string(),
             multi_version: false,
             source_readiness_gate: None,
+            quarantine: QuarantinedFolders::default(),
         }
     }
 
@@ -287,6 +293,11 @@ impl Linker {
 
     pub fn with_source_readiness_from_config(mut self, cfg: &Config) -> Self {
         self.source_readiness_gate = SourceReadinessGate::from_config(cfg);
+        self
+    }
+
+    pub fn with_quarantine(mut self, quarantine: QuarantinedFolders) -> Self {
+        self.quarantine = quarantine;
         self
     }
 
@@ -1005,6 +1016,8 @@ impl Linker {
                 &mut source_health_cache,
                 &mut parent_health_cache,
             )?;
+            // A quarantined torrent still exists on the mount but reads as empty.
+            let source_quarantined = self.quarantine.contains(&link.source_path);
             let target_meta = std::fs::symlink_metadata(&link.target_path);
 
             let target_ok = match &target_meta {
@@ -1014,12 +1027,17 @@ impl Linker {
                 _ => false,
             };
 
-            if !source_exists || !target_ok {
+            if !source_exists || source_quarantined || !target_ok {
                 warn!(
-                    "Dead link: {:?} (source_exists={}, target_ok={})",
-                    link.target_path, source_exists, target_ok
+                    "Dead link: {:?} (source_exists={}, source_quarantined={}, target_ok={})",
+                    link.target_path, source_exists, source_quarantined, target_ok
                 );
                 db.mark_dead_path(&link.target_path).await?;
+                let note = if source_quarantined && source_exists && target_ok {
+                    "source_quarantined"
+                } else {
+                    "source_or_target_invalid"
+                };
                 self.log_link_event(
                     db,
                     run_token,
@@ -1027,9 +1045,12 @@ impl Linker {
                     &link.target_path,
                     Some(&link.source_path),
                     Some(link.media_id.as_str()),
-                    Some("source_or_target_invalid"),
+                    Some(note),
                 )
                 .await;
+                if source_quarantined {
+                    increment_skip_reason(&mut summary.dead_reasons, "source_quarantined");
+                }
                 summary.dead_marked += 1;
 
                 // Only remove if it's actually a symlink (SAFETY: never remove dirs)

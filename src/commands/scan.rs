@@ -34,6 +34,7 @@ use crate::media_servers::{
     LibraryInvalidationServerOutcome, LibraryRefreshTelemetry,
 };
 use crate::models::{LibraryItem, MatchResult, MediaId, MediaType, SourceItem};
+use crate::quarantine::QuarantinedFolders;
 use crate::source_scanner::SourceScanner;
 use crate::utils::{stdout_text_guard, user_println};
 use crate::OutputFormat;
@@ -217,7 +218,8 @@ pub(crate) async fn run_scan_with_origin(
         cfg.features.reconcile_links,
     )
     .with_multi_version(cfg.symlink.multi_version)
-    .with_source_readiness_from_config(cfg);
+    .with_source_readiness_from_config(cfg)
+    .with_quarantine(QuarantinedFolders::load(&cfg.sources));
 
     let title_enrichment_started = Instant::now();
     matcher.enrich_episode_titles(&mut matches, db).await?;
@@ -311,8 +313,8 @@ pub(crate) async fn run_scan_with_origin(
         telemetry.dead_link_sweep = dead_started.elapsed();
         if dead.dead_marked > 0 {
             info!(
-                "Dead links: marked={}, removed={}, skipped={}",
-                dead.dead_marked, dead.removed, dead.skipped
+                "Dead links: marked={}, removed={}, skipped={}, reasons={:?}",
+                dead.dead_marked, dead.removed, dead.skipped, dead.dead_reasons
             );
         }
         dead
@@ -628,6 +630,30 @@ fn generate_scan_run_token() -> String {
 }
 
 async fn collect_source_items(
+    cfg: &Config,
+    db: &Database,
+) -> Result<(Vec<SourceItem>, SourceInventoryTelemetry)> {
+    let (mut items, telemetry) = collect_raw_source_items(cfg, db).await?;
+    // Decypharr mirrors quarantined (`__bad__`) torrents under `__all__`; they stat fine
+    // but read as empty, so they must never become link candidates (and must not cost a
+    // WebDAV probe each scan).
+    let quarantine = QuarantinedFolders::load(&cfg.sources);
+    if !quarantine.is_empty() {
+        let before = items.len();
+        items.retain(|item| !quarantine.contains(&item.path));
+        let dropped = before - items.len();
+        if dropped > 0 {
+            user_println(format!(
+                "   🚫 Quarantine: {} source file(s) in {} bad torrent folder(s) excluded",
+                dropped,
+                quarantine.len()
+            ));
+        }
+    }
+    Ok((items, telemetry))
+}
+
+async fn collect_raw_source_items(
     cfg: &Config,
     db: &Database,
 ) -> Result<(Vec<SourceItem>, SourceInventoryTelemetry)> {

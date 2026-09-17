@@ -152,6 +152,8 @@ symlinkarr daemon
 
 If `daemon.vacuum_enabled: true` is configured, the daemon may run one full SQLite `VACUUM` per day at or after `daemon.vacuum_hour_local`. Keep that window outside normal usage hours. Symlinkarr runs that vacuum through a dedicated maintenance connection so the normal async pool is not pinned for the whole operation.
 
+The daemon also runs one dead-link sweep per day at `daemon.dead_link_sweep_hour_local` (default `5`; set it to `null` to disable). The hourly scan never sweeps unless `daemon.search_missing` is on, so without this rule a link whose source vanished — or was moved into Decypharr's `__bad__` quarantine — stays "active" forever and repair never gets to replace it. Existing databases receive the `Daily dead-link sweep` rule once on the first daemon start after upgrading; disabling or deleting it afterwards is respected.
+
 ### `web`
 
 Run only the web UI, without starting the daemon loop.
@@ -299,6 +301,8 @@ symlinkarr cleanup remediate-anime --plex-db "/var/lib/plex/Plex Media Server/Pl
 symlinkarr cleanup remediate-anime --plex-db "/var/lib/plex/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db" --title "Gundam" --out backups/anime-remediation-gundam.json
 symlinkarr cleanup remediate-anime --apply --report backups/anime-remediation-gundam.json --confirm-token <TOKEN>
 ```
+
+`cleanup dead` marks a link dead when its source is missing, its symlink no longer points at the recorded source, **or its source sits in a torrent folder listed in Decypharr's `__bad__` quarantine** (Decypharr keeps quarantined torrents visible under `__all__`, where they stat fine but read as empty). Quarantined sources are also excluded from scan inventory, so they never become link candidates or cost a WebDAV probe. The same sweep runs daily from the scheduler (see `daemon`).
 
 Notes:
 

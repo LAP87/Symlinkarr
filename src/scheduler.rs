@@ -38,12 +38,15 @@ pub enum ScheduledEvent {
     RepairAuto,
     CleanupPruneApply,
     AnimeRemediationApply,
+    /// Validate active links and mark/remove dead ones (missing or quarantined sources).
+    DeadLinkSweep,
 }
 
 impl ScheduledEvent {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Scan => "scan",
+            Self::DeadLinkSweep => "dead_link_sweep",
             Self::Backup => "backup",
             Self::HousekeepingVacuum => "housekeeping_vacuum",
             Self::CacheRefresh => "cache_refresh",
@@ -57,6 +60,7 @@ impl ScheduledEvent {
     pub fn from_strict(value: &str) -> Result<Self> {
         match value {
             "scan" => Ok(Self::Scan),
+            "dead_link_sweep" => Ok(Self::DeadLinkSweep),
             "backup" => Ok(Self::Backup),
             "housekeeping_vacuum" => Ok(Self::HousekeepingVacuum),
             "cache_refresh" => Ok(Self::CacheRefresh),
@@ -330,6 +334,9 @@ pub fn bootstrap_rules_from_config(cfg: &Config) -> Vec<ScheduleRule> {
             JobPriority::High,
         ));
     }
+    if let Some(rule) = dead_link_sweep_rule_from_config(cfg) {
+        rules.push(rule);
+    }
     if cfg.daemon.vacuum_enabled {
         rules.push(ScheduleRule::new_bootstrap(
             "Legacy VACUUM housekeeping",
@@ -344,6 +351,22 @@ pub fn bootstrap_rules_from_config(cfg: &Config) -> Vec<ScheduleRule> {
     rules
 }
 
+pub const DEAD_LINK_SWEEP_RULE_NAME: &str = "Daily dead-link sweep";
+const DEAD_LINK_SWEEP_UPGRADE_STATE: &str = "dead_link_sweep_rule_upgrade";
+
+fn dead_link_sweep_rule_from_config(cfg: &Config) -> Option<ScheduleRule> {
+    let hour = cfg.daemon.dead_link_sweep_hour_local?;
+    Some(ScheduleRule::new_bootstrap(
+        DEAD_LINK_SWEEP_RULE_NAME,
+        ScheduledEvent::DeadLinkSweep,
+        ScheduleTrigger::Daily {
+            times: vec![format!("{:02}:00", hour)],
+        },
+        json!({ "library": null }),
+        JobPriority::Normal,
+    ))
+}
+
 pub async fn ensure_bootstrap_rules(cfg: &Config, db: &Database) -> Result<()> {
     if db.scheduler_rule_count().await? == 0 {
         for rule in bootstrap_rules_from_config(cfg) {
@@ -354,6 +377,40 @@ pub async fn ensure_bootstrap_rules(cfg: &Config, db: &Database) -> Result<()> {
     }
 
     sync_legacy_scan_safety_backup(cfg, db).await?;
+    ensure_dead_link_sweep_rule(cfg, db).await?;
+    Ok(())
+}
+
+/// Databases created before the sweep existed get the daily rule exactly once; deleting
+/// or disabling it afterwards is respected.
+async fn ensure_dead_link_sweep_rule(cfg: &Config, db: &Database) -> Result<()> {
+    if db
+        .get_scheduler_state(DEAD_LINK_SWEEP_UPGRADE_STATE)
+        .await?
+        .is_some()
+    {
+        return Ok(());
+    }
+    let already_present = db
+        .list_scheduler_rules()
+        .await?
+        .iter()
+        .any(|rule| rule.event_type == ScheduledEvent::DeadLinkSweep);
+    let outcome = match dead_link_sweep_rule_from_config(cfg) {
+        Some(rule) if !already_present => {
+            db.create_scheduler_rule(&rule).await?;
+            info!(
+                "Added scheduled rule {:?} (daily at {:02}:00 local)",
+                DEAD_LINK_SWEEP_RULE_NAME,
+                cfg.daemon.dead_link_sweep_hour_local.unwrap_or_default()
+            );
+            "created"
+        }
+        Some(_) => "present",
+        None => "disabled_by_config",
+    };
+    db.set_scheduler_state(DEAD_LINK_SWEEP_UPGRADE_STATE, outcome)
+        .await?;
     Ok(())
 }
 
@@ -574,6 +631,7 @@ pub(crate) fn operation_request_for_rule(rule: &ScheduleRule) -> Option<Operatio
         .map(str::to_string);
     let kind = match rule.event_type {
         ScheduledEvent::Scan => "scan",
+        ScheduledEvent::DeadLinkSweep => "dead_link_sweep",
         ScheduledEvent::CleanupAudit => "cleanup_audit",
         ScheduledEvent::RepairAuto => "repair_auto",
         ScheduledEvent::CleanupPruneApply => "cleanup_prune_apply",
@@ -646,6 +704,16 @@ async fn execute_event(cfg: &Config, db: &Database, rule: &ScheduleRule) -> Resu
         ScheduledEvent::CacheRefresh => {
             crate::commands::cache::run_cache(cfg, db, crate::CacheAction::Build).await?;
             Ok("Cache refresh completed".to_string())
+        }
+        ScheduledEvent::DeadLinkSweep => {
+            let library = rule
+                .event_args
+                .get("library")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty());
+            let outcome =
+                crate::commands::cleanup::sweep_dead_links(cfg, db, library, None, false).await?;
+            Ok(format!("Dead-link sweep completed: {}", outcome.describe()))
         }
         ScheduledEvent::CleanupAudit => {
             let scope = match rule
@@ -1493,8 +1561,14 @@ mod tests {
             .await
             .unwrap();
 
+        let legacy_scan = |rules: Vec<ScheduleRule>| {
+            rules
+                .into_iter()
+                .find(|rule| rule.event_type == ScheduledEvent::Scan)
+                .expect("legacy scan rule")
+        };
         ensure_bootstrap_rules(&cfg, &db).await.unwrap();
-        assert!(db.list_scheduler_rules().await.unwrap()[0].safety_backup);
+        assert!(legacy_scan(db.list_scheduler_rules().await.unwrap()).safety_backup);
         assert_eq!(
             db.get_scheduler_state(LEGACY_SCAN_SAFETY_SYNC_STATE)
                 .await
@@ -1505,6 +1579,91 @@ mod tests {
 
         cfg.backup.enabled = false;
         ensure_bootstrap_rules(&cfg, &db).await.unwrap();
-        assert!(db.list_scheduler_rules().await.unwrap()[0].safety_backup);
+        assert!(legacy_scan(db.list_scheduler_rules().await.unwrap()).safety_backup);
+    }
+
+    #[tokio::test]
+    async fn existing_databases_gain_the_dead_link_sweep_rule_exactly_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::new(dir.path().join("scheduler.db").to_str().unwrap())
+            .await
+            .unwrap();
+        let cfg: Config = serde_json::from_value(json!({ "libraries": [] })).unwrap();
+        assert_eq!(cfg.daemon.dead_link_sweep_hour_local, Some(5));
+
+        // A pre-existing rule set (no sweep yet), as in a database from before rc.13.
+        db.create_scheduler_rule(&ScheduleRule::new_bootstrap(
+            "Legacy daemon scan",
+            ScheduledEvent::Scan,
+            ScheduleTrigger::Interval {
+                every: 60,
+                unit: IntervalUnit::Minutes,
+                start: None,
+            },
+            json!({}),
+            JobPriority::Normal,
+        ))
+        .await
+        .unwrap();
+
+        ensure_bootstrap_rules(&cfg, &db).await.unwrap();
+        let rules = db.list_scheduler_rules().await.unwrap();
+        let sweep = rules
+            .iter()
+            .find(|rule| rule.event_type == ScheduledEvent::DeadLinkSweep)
+            .expect("sweep rule added");
+        assert_eq!(sweep.name, DEAD_LINK_SWEEP_RULE_NAME);
+        assert_eq!(
+            sweep.trigger,
+            ScheduleTrigger::Daily {
+                times: vec!["05:00".to_string()]
+            }
+        );
+
+        // Disabling it is respected: the upgrade never runs twice or re-enables it.
+        db.set_scheduler_rule_enabled(sweep.id.unwrap(), false)
+            .await
+            .unwrap();
+        ensure_bootstrap_rules(&cfg, &db).await.unwrap();
+        let sweeps: Vec<_> = db
+            .list_scheduler_rules()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|rule| rule.event_type == ScheduledEvent::DeadLinkSweep)
+            .collect();
+        assert_eq!(sweeps.len(), 1);
+        assert!(!sweeps[0].enabled);
+    }
+
+    #[tokio::test]
+    async fn dead_link_sweep_rule_is_skipped_when_disabled_in_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::new(dir.path().join("scheduler.db").to_str().unwrap())
+            .await
+            .unwrap();
+        let cfg: Config = serde_json::from_value(
+            json!({ "libraries": [], "daemon": { "dead_link_sweep_hour_local": null } }),
+        )
+        .unwrap();
+        assert_eq!(cfg.daemon.dead_link_sweep_hour_local, None);
+        ensure_bootstrap_rules(&cfg, &db).await.unwrap();
+        assert!(db
+            .list_scheduler_rules()
+            .await
+            .unwrap()
+            .iter()
+            .all(|rule| rule.event_type != ScheduledEvent::DeadLinkSweep));
+        assert_eq!(
+            db.get_scheduler_state(DEAD_LINK_SWEEP_UPGRADE_STATE)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("disabled_by_config")
+        );
+        assert_eq!(
+            ScheduledEvent::from_strict("dead_link_sweep").unwrap(),
+            ScheduledEvent::DeadLinkSweep
+        );
     }
 }

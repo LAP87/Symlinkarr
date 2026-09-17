@@ -349,6 +349,14 @@ pub struct DaemonConfig {
     /// Local hour (0-23) when daemon-triggered VACUUM may run
     #[serde(default = "default_vacuum_hour_local")]
     pub vacuum_hour_local: u8,
+    /// Local hour (0-23) for the daily dead-link sweep; `null` disables it. Without a sweep,
+    /// links whose source vanished or was quarantined by Decypharr stay "active" forever.
+    #[serde(default = "default_dead_link_sweep_hour_local")]
+    pub dead_link_sweep_hour_local: Option<u8>,
+}
+
+fn default_dead_link_sweep_hour_local() -> Option<u8> {
+    Some(5)
 }
 
 /// Symlink creation settings
@@ -808,6 +816,16 @@ impl Config {
             report
                 .errors
                 .push("daemon.vacuum_hour_local must be between 0 and 23".to_string());
+        }
+        if self
+            .daemon
+            .dead_link_sweep_hour_local
+            .is_some_and(|h| h > 23)
+        {
+            report.errors.push(
+                "daemon.dead_link_sweep_hour_local must be between 0 and 23 (or null to disable)"
+                    .to_string(),
+            );
         }
 
         for source in &self.sources {

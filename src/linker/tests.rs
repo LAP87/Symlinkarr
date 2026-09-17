@@ -1140,3 +1140,86 @@ async fn test_process_matches_dry_run_does_not_backfill_on_disk_links() {
         "a live run backfills the on-disk link"
     );
 }
+
+#[tokio::test]
+async fn test_dead_link_sweep_marks_quarantined_sources_dead() {
+    // Decypharr keeps a quarantined torrent visible under __all__ (stat works, reads are
+    // empty); the sweep must treat links into it as dead even though the file exists.
+    let dir = tempfile::TempDir::new().unwrap();
+    let lib_path = dir.path().join("Show {tvdb-1}");
+    let all = dir.path().join("rd/__all__");
+    fs::create_dir_all(&lib_path).unwrap();
+    fs::create_dir_all(all.join("Bad.Pack")).unwrap();
+    fs::create_dir_all(all.join("Good.Pack")).unwrap();
+    fs::create_dir_all(dir.path().join("rd/__bad__/Bad.Pack")).unwrap();
+
+    let bad_source = all.join("Bad.Pack/ep01.mkv");
+    let good_source = all.join("Good.Pack/ep02.mkv");
+    fs::write(&bad_source, "").unwrap();
+    fs::write(&good_source, "video").unwrap();
+    let bad_target = lib_path.join("Show - S01E01.mkv");
+    let good_target = lib_path.join("Show - S01E02.mkv");
+    std::os::unix::fs::symlink(&bad_source, &bad_target).unwrap();
+    std::os::unix::fs::symlink(&good_source, &good_target).unwrap();
+
+    let db = Database::new(dir.path().join("test.db").to_str().unwrap())
+        .await
+        .unwrap();
+    for (source_path, target_path) in [
+        (bad_source.clone(), bad_target.clone()),
+        (good_source.clone(), good_target.clone()),
+    ] {
+        db.insert_link(&LinkRecord {
+            id: None,
+            source_path,
+            target_path,
+            media_id: "tvdb-1".to_string(),
+            media_type: MediaType::Tv,
+            status: LinkStatus::Active,
+            created_at: None,
+            updated_at: None,
+        })
+        .await
+        .unwrap();
+    }
+
+    let quarantine = crate::quarantine::QuarantinedFolders::load(&[crate::config::SourceConfig {
+        name: "RD".to_string(),
+        path: all.clone(),
+        media_type: "auto".to_string(),
+    }]);
+    assert_eq!(quarantine.len(), 1);
+
+    // Without quarantine knowledge the link looks healthy.
+    let plain = Linker::new(true, true, "")
+        .check_dead_links_scoped(&db, Some(std::slice::from_ref(&lib_path)), None)
+        .await
+        .unwrap();
+    assert_eq!(plain.dead_marked, 0);
+
+    let summary = Linker::new(false, true, "")
+        .with_quarantine(quarantine)
+        .check_dead_links_scoped(&db, Some(std::slice::from_ref(&lib_path)), Some("run"))
+        .await
+        .unwrap();
+    assert_eq!(summary.dead_marked, 1);
+    assert_eq!(summary.removed, 1);
+    assert_eq!(summary.dead_reasons.get("source_quarantined"), Some(&1));
+    assert!(!bad_target.exists());
+    assert!(good_target.is_symlink());
+    assert_eq!(
+        db.get_link_by_target_path(&bad_target)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        LinkStatus::Dead
+    );
+    let events = db
+        .get_skip_link_events_for_run_token("run", 10)
+        .await
+        .unwrap();
+    assert!(events
+        .iter()
+        .any(|e| e.action == "dead_marked" && e.note.as_deref() == Some("source_quarantined")));
+}

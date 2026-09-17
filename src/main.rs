@@ -22,6 +22,7 @@ mod media_servers;
 mod models;
 mod operations;
 mod provider_repair;
+mod quarantine;
 mod repair;
 mod scheduler;
 mod source_scanner;
