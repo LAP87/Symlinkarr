@@ -426,19 +426,19 @@ pub(crate) fn negative_metadata_ttl(configured_ttl_hours: u64) -> u64 {
     }
 }
 
-async fn cache_negative_metadata(db: &Database, cache_key: &str, ttl_hours: u64) {
+pub(crate) async fn cache_negative_metadata(db: &Database, cache_key: &str, ttl_hours: u64) {
     if let Err(err) = db
         .set_cached(cache_key, NEGATIVE_METADATA_SENTINEL, ttl_hours)
         .await
     {
         warn!(
-            "Failed to cache negative TVDB metadata for {}: {}",
+            "Failed to cache negative metadata for {}: {}",
             cache_key, err
         );
     }
 }
 
-fn cached_metadata_is_negative(cached: &str) -> bool {
+pub(crate) fn cached_metadata_is_negative(cached: &str) -> bool {
     serde_json::from_str::<CachedMetadataSentinel>(cached)
         .map(|sentinel| sentinel._symlinkarr_not_found)
         .unwrap_or(false)

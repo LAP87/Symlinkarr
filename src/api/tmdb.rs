@@ -4,6 +4,9 @@ use serde::{de::DeserializeOwned, Deserialize};
 use tracing::{debug, warn};
 
 use crate::api::http;
+use crate::api::tvdb::{
+    cache_negative_metadata, cached_metadata_is_negative, negative_metadata_ttl,
+};
 use crate::db::Database;
 use crate::models::{ContentMetadata, EpisodeInfo, SeasonInfo};
 
@@ -137,6 +140,10 @@ impl TmdbClient {
         // Check cache first
         let cache_key = format!("tmdb:tv:{}", tmdb_id);
         if let Some(cached) = db.get_cached(&cache_key).await? {
+            if cached_metadata_is_negative(&cached) {
+                debug!("Negative cache hit for TMDB TV {}", tmdb_id);
+                anyhow::bail!("No data for TMDB TV {}", tmdb_id);
+            }
             if let Ok(metadata) = serde_json::from_str::<CachedMetadata>(&cached) {
                 debug!("Cache hit for TMDB TV {}", tmdb_id);
                 return Ok(metadata.into());
@@ -149,11 +156,14 @@ impl TmdbClient {
         }
 
         // Fetch details
-        let details: TmdbTvDetails = decode_tmdb_response(
-            http::send_with_retry(self.authenticated_get(&format!("tv/{}", tmdb_id))).await?,
-            &format!("tv metadata lookup for {}", tmdb_id),
-        )
-        .await?;
+        let resp =
+            http::send_with_retry(self.authenticated_get(&format!("tv/{}", tmdb_id))).await?;
+        if resp.status() == 404 {
+            cache_negative_metadata(db, &cache_key, negative_metadata_ttl(self.cache_ttl)).await;
+            anyhow::bail!("No data for TMDB TV {}", tmdb_id);
+        }
+        let details: TmdbTvDetails =
+            decode_tmdb_response(resp, &format!("tv metadata lookup for {}", tmdb_id)).await?;
 
         let title = details.name.unwrap_or_default();
         let year = details.first_air_date.as_deref().and_then(|d| {
@@ -216,6 +226,10 @@ impl TmdbClient {
     pub async fn get_movie_metadata(&self, tmdb_id: u64, db: &Database) -> Result<ContentMetadata> {
         let cache_key = format!("tmdb:movie:{}", tmdb_id);
         if let Some(cached) = db.get_cached(&cache_key).await? {
+            if cached_metadata_is_negative(&cached) {
+                debug!("Negative cache hit for TMDB movie {}", tmdb_id);
+                anyhow::bail!("No data for TMDB movie {}", tmdb_id);
+            }
             if let Ok(metadata) = serde_json::from_str::<CachedMetadata>(&cached) {
                 debug!("Cache hit for TMDB Movie {}", tmdb_id);
                 return Ok(metadata.into());
@@ -227,11 +241,14 @@ impl TmdbClient {
             let _ = db.invalidate_cached(&cache_key).await;
         }
 
-        let details: TmdbMovieDetails = decode_tmdb_response(
-            http::send_with_retry(self.authenticated_get(&format!("movie/{}", tmdb_id))).await?,
-            &format!("movie metadata lookup for {}", tmdb_id),
-        )
-        .await?;
+        let resp =
+            http::send_with_retry(self.authenticated_get(&format!("movie/{}", tmdb_id))).await?;
+        if resp.status() == 404 {
+            cache_negative_metadata(db, &cache_key, negative_metadata_ttl(self.cache_ttl)).await;
+            anyhow::bail!("No data for TMDB movie {}", tmdb_id);
+        }
+        let details: TmdbMovieDetails =
+            decode_tmdb_response(resp, &format!("movie metadata lookup for {}", tmdb_id)).await?;
 
         let title = details.title.unwrap_or_default();
         let year = details.release_date.as_deref().and_then(|d| {
@@ -506,6 +523,31 @@ impl From<CachedMetadata> for ContentMetadata {
 mod tests {
     use super::*;
     use reqwest::header::AUTHORIZATION;
+
+    #[tokio::test]
+    async fn negative_cache_short_circuits_movie_and_tv_lookups() {
+        // A cached not-found sentinel must fail fast without touching the network (the
+        // client has no usable key, so a request would fail differently and slowly).
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::new(dir.path().join("t.db").to_str().unwrap())
+            .await
+            .unwrap();
+        db.set_cached(
+            "tmdb:movie:628861",
+            crate::api::tvdb::NEGATIVE_METADATA_SENTINEL,
+            1,
+        )
+        .await
+        .unwrap();
+        db.set_cached("tmdb:tv:1", crate::api::tvdb::NEGATIVE_METADATA_SENTINEL, 1)
+            .await
+            .unwrap();
+        let client = TmdbClient::new("", None, 0);
+        let movie = client.get_movie_metadata(628861, &db).await.unwrap_err();
+        assert!(movie.to_string().contains("No data for TMDB movie 628861"));
+        let tv = client.get_tv_metadata(1, &db).await.unwrap_err();
+        assert!(tv.to_string().contains("No data for TMDB TV 1"));
+    }
 
     #[test]
     fn authenticated_get_uses_api_key_query_when_bearer_is_missing() {
