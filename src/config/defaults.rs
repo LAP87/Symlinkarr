@@ -55,6 +55,7 @@ impl Default for DaemonConfig {
             search_missing: false,
             vacuum_enabled: false,
             vacuum_hour_local: default_vacuum_hour_local(),
+            dead_link_sweep_hour_local: default_dead_link_sweep_hour_local(),
         }
     }
 }

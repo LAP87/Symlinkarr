@@ -2,9 +2,23 @@
 
 ## Release Target
 
-- package version for this push: `1.1.0-rc.12`
+- package version for this push: `1.1.0-rc.13`
 - posture: `v1.1 release candidate with Arr backfill, fail-closed acquisition ranking, current dependencies, synchronized Docker release channels, and updated operator documentation`
 - intended use: local-first host or Docker installs, with Windows 11 users running through WSL2 or a Linux container
+
+## 2026-09-17 - v1.1.0-rc.13 Quarantine Awareness and Daily Dead-Link Sweep
+
+### Code Changes
+
+- Decypharr `__bad__` quarantine: torrents Decypharr marked bad stay visible under `__all__` but read as empty. Scan inventory now excludes them (no more matches or WebDAV probes against them — ~300 folders and ~3,500 probes per hourly run in a damaged library) and the dead-link sweep marks existing links into them dead (`source_quarantined`) so repair can replace them.
+- `dead_link_sweep` scheduled event and `daemon.dead_link_sweep_hour_local` (default 05:00, `null` disables): the hourly scan never sweeps, so without a scheduled sweep dead links were only ever found by a manual `cleanup dead`. Existing databases gain the rule once.
+- temp symlink names are capped at 200 bytes of the target name so 250-byte (multibyte) episode titles no longer fail with `File name too long` on every scan.
+- TMDB 404s are cached negatively (tv and movie) like TVDB's, instead of being re-fetched every scan.
+
+### Validation
+
+- `cargo test` 927 passed, clippy `-D warnings`, fmt.
+- regression tests: quarantine loading/matching, sweep marking quarantined sources dead, temp-name length with multibyte titles, TMDB negative-cache short circuit, scheduler rule upgrade exactly once.
 
 ## 2026-09-13 - v1.1.0-rc.12 backfill-buddy Cooperation
 

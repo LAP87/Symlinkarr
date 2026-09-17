@@ -12,6 +12,21 @@ pub const VIDEO_EXTENSIONS: &[&str] = &[
     "mkv", "mp4", "avi", "wmv", "flv", "mov", "webm", "m4v", "ts", "m2ts", "mpg", "mpeg",
 ];
 
+/// Bytes of the target name kept in a temp symlink name: 255 (NAME_MAX) minus the
+/// `.` prefix and the widest `.symlinkarr-<pid>-<seq>.tmp` suffix (~40 bytes).
+const TEMP_SYMLINK_NAME_BUDGET: usize = 200;
+
+fn truncate_to_char_boundary(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 #[cfg(unix)]
 pub(crate) fn create_unique_temp_symlink(
     source_path: &Path,
@@ -25,6 +40,9 @@ pub(crate) fn create_unique_temp_symlink(
         .file_name()
         .ok_or_else(|| anyhow::anyhow!("target has no file name: {}", target_path.display()))?
         .to_string_lossy();
+    // Final names may use up to 250 bytes (see linker naming); the temp name adds a
+    // prefix and suffix, so keep only as much of the name as still fits under NAME_MAX.
+    let name = truncate_to_char_boundary(&name, TEMP_SYMLINK_NAME_BUDGET);
 
     for _ in 0..100 {
         let sequence = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -469,6 +487,34 @@ pub fn is_noise_skip_reason(reason: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn replace_symlink_atomically_handles_250_byte_multibyte_names() {
+        // The linker allows final names up to 250 bytes; the temp name must still fit
+        // NAME_MAX, including when the cut lands inside a multibyte character.
+        let dir = tempfile::tempdir().unwrap();
+        let title = "た".repeat(80); // 240 bytes
+        let name = format!("{title}.mkv");
+        assert!(name.len() <= 250 && name.len() > 200);
+        let target = dir.path().join(&name);
+        super::replace_symlink_atomically(std::path::Path::new("/src/file.mkv"), &target).unwrap();
+        assert_eq!(
+            std::fs::read_link(&target).unwrap(),
+            std::path::PathBuf::from("/src/file.mkv")
+        );
+        // Replacing an existing link takes the same path.
+        super::replace_symlink_atomically(std::path::Path::new("/src/other.mkv"), &target).unwrap();
+        assert_eq!(
+            std::fs::read_link(&target).unwrap(),
+            std::path::PathBuf::from("/src/other.mkv")
+        );
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            1,
+            "no temp left behind"
+        );
+    }
+
     use super::*;
 
     #[test]
