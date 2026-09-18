@@ -2,9 +2,15 @@
 
 ## Release Target
 
-- package version for this push: `1.1.0-rc.15`
+- package version for this push: `1.1.0-rc.16`
 - posture: `v1.1 release candidate with Arr backfill, fail-closed acquisition ranking, current dependencies, synchronized Docker release channels, and updated operator documentation`
 - intended use: local-first host or Docker installs, with Windows 11 users running through WSL2 or a Linux container
+
+## 2026-09-19 - v1.1.0-rc.16 Revert Cold-File Probe Retry
+
+### Code Changes
+
+- reverted the rc.14 cold-file probe retry. In production it cost 240 × 12.5 s per hourly scan (link step 367 s → 2,274 s) and rescued nothing: files that need more than 2.5 s for their first byte also need more than 10 s. Folders that fail the probe are skipped for the run exactly as before rc.14.
 
 ## 2026-09-18 - v1.1.0-rc.15 Mount Folder From Original Torrent Name
 
