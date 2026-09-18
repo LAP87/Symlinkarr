@@ -2,9 +2,19 @@
 
 ## Release Target
 
-- package version for this push: `1.1.0-rc.13`
+- package version for this push: `1.1.0-rc.14`
 - posture: `v1.1 release candidate with Arr backfill, fail-closed acquisition ranking, current dependencies, synchronized Docker release channels, and updated operator documentation`
 - intended use: local-first host or Docker installs, with Windows 11 users running through WSL2 or a Linux container
+
+## 2026-09-18 - v1.1.0-rc.14 Cold-File Probe Retry
+
+### Code Changes
+
+- the pre-link WebDAV readability probe retries once with 4× `symlink.source_probe_timeout_ms` when the first attempt timed out. A cold debrid file needs several seconds before its first byte (link generation + CDN warm-up) but answers in well under a second afterwards; with the single 2.5 s attempt the same ~125 folders timed out on every hourly scan and never got linked.
+
+### Validation
+
+- `cargo test` 928 passed, clippy `-D warnings`, fmt; probe tests cover the cold retry succeeding and both attempts stalling.
 
 ## 2026-09-17 - v1.1.0-rc.13 Quarantine Awareness and Daily Dead-Link Sweep
 

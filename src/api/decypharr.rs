@@ -246,6 +246,11 @@ impl DecypharrClient {
         Ok(url)
     }
 
+    /// How much longer the second attempt may take when the first one timed out. A cold
+    /// debrid file needs a link generated and a CDN warm-up before its first byte (often
+    /// several seconds); once served it answers in well under a second.
+    const COLD_PROBE_RETRY_FACTOR: u32 = 4;
+
     pub async fn probe_webdav_path(
         &self,
         relative_path: &Path,
@@ -255,18 +260,42 @@ impl DecypharrClient {
             .build_webdav_url(relative_path)
             .map_err(|err| WebDavProbeError::Unreadable(err.to_string()))?;
 
-        let mut req = self
-            .client
-            .get(url)
-            .timeout(timeout)
-            .header(reqwest::header::RANGE, "bytes=0-0");
-        if let Some((key, val)) = self.auth_header() {
-            req = req.header(key, val);
-        }
+        let send = |timeout: Duration| {
+            let mut req = self
+                .client
+                .get(url.clone())
+                .timeout(timeout)
+                .header(reqwest::header::RANGE, "bytes=0-0");
+            if let Some((key, val)) = self.auth_header() {
+                req = req.header(key, val);
+            }
+            req.send()
+        };
 
-        let resp = req.send().await.map_err(|err| {
-            WebDavProbeError::Unreadable(format!("webdav probe transport error: {}", err))
-        })?;
+        let resp = match send(timeout).await {
+            Ok(resp) => resp,
+            Err(err) if err.is_timeout() => {
+                let retry_timeout = timeout * Self::COLD_PROBE_RETRY_FACTOR;
+                debug!(
+                    "WebDAV probe of {} timed out after {:?}; retrying once with {:?} (cold file?)",
+                    relative_path.display(),
+                    timeout,
+                    retry_timeout
+                );
+                send(retry_timeout).await.map_err(|err| {
+                    WebDavProbeError::Unreadable(format!(
+                        "webdav probe transport error after cold retry ({:?}): {}",
+                        retry_timeout, err
+                    ))
+                })?
+            }
+            Err(err) => {
+                return Err(WebDavProbeError::Unreadable(format!(
+                    "webdav probe transport error: {}",
+                    err
+                )))
+            }
+        };
 
         match resp.status() {
             StatusCode::OK | StatusCode::PARTIAL_CONTENT => Ok(()),
@@ -671,18 +700,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn probe_webdav_path_retries_once_with_a_longer_timeout_for_cold_files() {
+        // First byte arrives after 120 ms: too slow for the 50 ms probe, fine for the
+        // 200 ms cold retry.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            for _ in 0..2 {
+                if let Ok((mut stream, _)) = listener.accept() {
+                    let mut req_buf = [0u8; 1024];
+                    let _ = stream.read(&mut req_buf);
+                    thread::sleep(Duration::from_millis(120));
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 206 Partial Content\r\nContent-Length: 1\r\nConnection: close\r\n\r\nx",
+                    );
+                }
+            }
+        });
+
+        let client = DecypharrClient::new(&format!("http://{}", addr), None);
+        client
+            .probe_webdav_path(
+                Path::new("__all__/cold/file.mkv"),
+                Duration::from_millis(50),
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn probe_webdav_path_times_out_when_server_stalls() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
 
         thread::spawn(move || {
-            if let Ok((mut stream, _)) = listener.accept() {
-                let mut req_buf = [0u8; 1024];
-                let _ = stream.read(&mut req_buf);
-                thread::sleep(Duration::from_millis(200));
-                let _ = stream.write_all(
-                    b"HTTP/1.1 206 Partial Content\r\nContent-Length: 1\r\nConnection: close\r\n\r\nx",
-                );
+            // Stall both the probe and its cold retry.
+            for _ in 0..2 {
+                if let Ok((mut stream, _)) = listener.accept() {
+                    let mut req_buf = [0u8; 1024];
+                    let _ = stream.read(&mut req_buf);
+                    thread::sleep(Duration::from_millis(400));
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 206 Partial Content\r\nContent-Length: 1\r\nConnection: close\r\n\r\nx",
+                    );
+                }
             }
         });
 
