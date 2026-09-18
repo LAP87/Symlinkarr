@@ -2,9 +2,20 @@
 
 ## Release Target
 
-- package version for this push: `1.1.0-rc.14`
+- package version for this push: `1.1.0-rc.15`
 - posture: `v1.1 release candidate with Arr backfill, fail-closed acquisition ranking, current dependencies, synchronized Docker release channels, and updated operator documentation`
 - intended use: local-first host or Docker installs, with Windows 11 users running through WSL2 or a Linux container
+
+## 2026-09-18 - v1.1.0-rc.15 Mount Folder From Original Torrent Name
+
+### Code Changes
+
+- the RD cache stores each torrent's mount folder (Decypharr's `original_no_ext` = the torrent's `original_filename` without a video extension). RD rewrites `filename` to the file name for single-file torrents, so deriving the folder from it pointed ~9% of cached torrents at a folder that does not exist (`source_missing_before_link` ≈ 20,000 per scan in prod). Cache sync re-fetches info for cached torrents whose derived folder is absent from the mount, within the normal per-cycle cap; `cache build` does it in one go.
+- `report --linked-torrents` joins on the stored mount folder too.
+
+### Validation
+
+- `cargo test` 931 passed, clippy `-D warnings`, fmt; tests for folder derivation, authoritative vs derived folder, and the report join.
 
 ## 2026-09-18 - v1.1.0-rc.14 Cold-File Probe Retry
 

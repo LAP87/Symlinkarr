@@ -31,6 +31,10 @@ pub struct RdTorrent {
 pub struct RdTorrentInfo {
     pub id: String,
     pub filename: String,
+    /// The torrent's original name. RD renames single-file torrents to the file name, but
+    /// Decypharr names the mount folder after this (extension stripped).
+    #[serde(default)]
+    pub original_filename: String,
     pub hash: String,
     pub bytes: i64,
     pub status: String,

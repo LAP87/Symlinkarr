@@ -14,7 +14,8 @@ pub(crate) async fn run_cache(cfg: &Config, db: &Database, action: CacheAction) 
                 anyhow::bail!("Real-Debrid API key not configured in config.yaml");
             }
             let rd_client = RealDebridClient::from_config(&cfg.realdebrid);
-            let cache = TorrentCache::new(db, &rd_client);
+            let cache = TorrentCache::new(db, &rd_client)
+                .with_mount_roots(cfg.sources.iter().map(|s| s.path.clone()));
 
             info!("=== Symlinkarr Cache Build (full, no fetch cap) ===");
             println!("Building full RD torrent cache — this may take a while for large accounts.");

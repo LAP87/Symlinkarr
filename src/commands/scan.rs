@@ -666,7 +666,8 @@ async fn collect_raw_source_items(
 
         info!("Initializing Real-Debrid cache...");
         let rd_client = RealDebridClient::from_config(&cfg.realdebrid);
-        let cache = TorrentCache::new(db, &rd_client);
+        let cache = TorrentCache::new(db, &rd_client)
+            .with_mount_roots(cfg.sources.iter().map(|s| s.path.clone()));
 
         match cache.sync().await {
             Ok(_) => info!("Real-Debrid cache synced successfully"),
