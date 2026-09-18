@@ -707,16 +707,26 @@ pub(crate) fn source_folder(cfg: &Config, path: &std::path::Path) -> Option<Stri
     })
 }
 
-/// Join active-link source folders to the cached RD torrent index. A folder is the RD
-/// filename (multi-file torrents) or the filename without its extension (single files).
+/// Join active-link source folders to the cached RD torrent index. A folder is the
+/// torrent's mount folder when the cache knows it (original name), else the RD filename
+/// (multi-file torrents) or the filename without its extension (single files).
 pub(crate) fn aggregate_linked_torrents(
-    index: &[(String, String, String)],
+    index: &[(String, String, String, String)],
     folders: impl IntoIterator<Item = String>,
 ) -> (Vec<serde_json::Value>, u64) {
+    let mount_folders: Vec<String> = index
+        .iter()
+        .map(|(_, _, filename, files_json)| {
+            crate::cache::cached_mount_folder_name(filename, files_json)
+        })
+        .collect();
     let mut by_folder: std::collections::HashMap<&str, (&str, &str)> =
         std::collections::HashMap::new();
-    for (torrent_id, hash, filename) in index {
-        by_folder.insert(filename.as_str(), (torrent_id.as_str(), hash.as_str()));
+    for ((torrent_id, hash, filename, _), mount_folder) in index.iter().zip(&mount_folders) {
+        by_folder.insert(mount_folder.as_str(), (torrent_id.as_str(), hash.as_str()));
+        by_folder
+            .entry(filename.as_str())
+            .or_insert((torrent_id.as_str(), hash.as_str()));
         if let Some((stem, _)) = filename.rsplit_once('.') {
             by_folder
                 .entry(stem)
@@ -786,25 +796,36 @@ mod linked_torrents_tests {
                 "RD1".to_string(),
                 "aaa".to_string(),
                 "Show.S01.Pack".to_string(),
+                r#"{"files":[]}"#.to_string(),
             ),
             (
                 "RD2".to_string(),
                 "bbb".to_string(),
                 "Movie.2014.mkv".to_string(),
+                r#"{"files":[]}"#.to_string(),
+            ),
+            (
+                "RD3".to_string(),
+                "ccc".to_string(),
+                "Depraved 2019.mkv".to_string(),
+                r#"{"files":[],"mount_folder":"Depraved 2019 UHD-E"}"#.to_string(),
             ),
         ];
         let folders = vec![
             "Show.S01.Pack".to_string(),
             "Show.S01.Pack".to_string(),
             "Movie.2014".to_string(),
+            "Depraved 2019 UHD-E".to_string(),
             "Unknown".to_string(),
         ];
         let (rows, unmatched) = aggregate_linked_torrents(&index, folders);
         assert_eq!(unmatched, 1);
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0]["folder"], "Movie.2014");
-        assert_eq!(rows[0]["rd_id"], "RD2");
-        assert_eq!(rows[1]["active_links"], 2);
-        assert_eq!(rows[1]["hash"], "aaa");
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0]["folder"], "Depraved 2019 UHD-E");
+        assert_eq!(rows[0]["rd_id"], "RD3");
+        assert_eq!(rows[1]["folder"], "Movie.2014");
+        assert_eq!(rows[1]["rd_id"], "RD2");
+        assert_eq!(rows[2]["active_links"], 2);
+        assert_eq!(rows[2]["hash"], "aaa");
     }
 }

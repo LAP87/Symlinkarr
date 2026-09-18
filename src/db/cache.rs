@@ -171,10 +171,10 @@ impl Database {
         Ok(())
     }
 
-    /// (torrent_id, hash, filename) for every cached RD torrent.
-    pub async fn get_rd_torrent_index(&self) -> Result<Vec<(String, String, String)>> {
+    /// (torrent_id, hash, filename, files_json) for every cached RD torrent.
+    pub async fn get_rd_torrent_index(&self) -> Result<Vec<(String, String, String, String)>> {
         Ok(
-            sqlx::query_as("SELECT torrent_id, hash, filename FROM rd_torrents")
+            sqlx::query_as("SELECT torrent_id, hash, filename, files_json FROM rd_torrents")
                 .fetch_all(&self.pool)
                 .await?,
         )

@@ -13,6 +13,75 @@ use crate::utils::ProgressLine;
 #[derive(Debug, Serialize, Deserialize)]
 struct CachedTorrentFiles {
     files: Vec<RdFile>,
+    /// Folder name on the Decypharr mount (`original_filename` without a video
+    /// extension), when the torrent info has been fetched since this field existed.
+    /// Absent on older cache rows; those fall back to deriving it from `filename`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mount_folder: Option<String>,
+}
+
+impl CachedTorrentFiles {
+    fn from_info(info: &crate::api::realdebrid::RdTorrentInfo) -> Self {
+        Self {
+            files: info.files.clone(),
+            mount_folder: mount_folder_from_original(&info.original_filename),
+        }
+    }
+}
+
+/// Decypharr (`folder_naming: original_no_ext`) names the mount folder after the torrent's
+/// original name with any video extension removed.
+fn mount_folder_from_original(original_filename: &str) -> Option<String> {
+    let trimmed = original_filename.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let path = Path::new(trimmed);
+    let is_video = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(is_video_extension);
+    if is_video {
+        path.file_stem()
+            .and_then(|stem| stem.to_str())
+            .map(str::to_string)
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn is_video_extension(ext: &str) -> bool {
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "mkv" | "mp4" | "avi" | "mov" | "wmv" | "m4v" | "ts" | "m2ts" | "webm"
+    )
+}
+
+/// Mount folder for a cached torrent row (see [`cached_mount_folder`]).
+pub fn cached_mount_folder_name(torrent_filename: &str, files_json: &str) -> String {
+    cached_mount_folder(torrent_filename, files_json).0
+}
+
+/// The folder a cached torrent should have on the mount, and whether that came from the
+/// torrent's original name (authoritative) or was derived from `filename` (a guess that
+/// is wrong for single-file torrents RD renamed).
+fn cached_mount_folder(torrent_filename: &str, files_json: &str) -> (String, bool) {
+    if let Ok(cached) = serde_json::from_str::<CachedTorrentFiles>(files_json) {
+        if let Some(folder) = cached.mount_folder {
+            return (folder, true);
+        }
+        if let Some(first) = cached.files.iter().find(|f| f.selected == 1) {
+            let relative = Path::new(first.path.trim_start_matches('/'));
+            if is_single_file_torrent_path(torrent_filename, relative) {
+                let stem = Path::new(torrent_filename)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(torrent_filename);
+                return (stem.to_string(), false);
+            }
+        }
+    }
+    (torrent_filename.to_string(), false)
 }
 
 /// Returns the number of selected files stored in a cached `files_json` blob.
@@ -29,11 +98,46 @@ fn selected_files_fingerprint(files_json: &str) -> usize {
 pub struct TorrentCache<'a> {
     db: &'a Database,
     rd: &'a RealDebridClient,
+    /// Source roots on the mount; when known, cached torrents whose derived folder is not
+    /// there get their info re-fetched so the real folder name is learned.
+    mount_roots: Vec<PathBuf>,
 }
 
 impl<'a> TorrentCache<'a> {
     pub fn new(db: &'a Database, rd: &'a RealDebridClient) -> Self {
-        Self { db, rd }
+        Self {
+            db,
+            rd,
+            mount_roots: Vec::new(),
+        }
+    }
+
+    pub fn with_mount_roots(mut self, roots: impl IntoIterator<Item = PathBuf>) -> Self {
+        self.mount_roots = roots.into_iter().collect();
+        self
+    }
+
+    /// Top-level folder names present under any mount root (one readdir per root).
+    fn mount_folder_listing(&self) -> Option<HashSet<String>> {
+        if self.mount_roots.is_empty() {
+            return None;
+        }
+        let mut names = HashSet::new();
+        let mut any_ok = false;
+        for root in &self.mount_roots {
+            match std::fs::read_dir(root) {
+                Ok(entries) => {
+                    any_ok = true;
+                    names.extend(
+                        entries
+                            .flatten()
+                            .map(|e| e.file_name().to_string_lossy().into_owned()),
+                    );
+                }
+                Err(err) => debug!("Mount root {} not listable: {}", root.display(), err),
+            }
+        }
+        any_ok.then_some(names)
     }
 
     /// Synchronize the local cache with the Real-Debrid API.
@@ -61,9 +165,28 @@ impl<'a> TorrentCache<'a> {
         // 2. Load current cache state from DB
         let db_torrents = self.db.get_rd_torrents().await?;
         let mut db_map: HashMap<String, (String, String, usize)> = HashMap::new();
-        for (id, hash, _, status, files_json) in &db_torrents {
+        // Cached rows whose folder is derived from `filename` and does not exist on the
+        // mount: the real folder is the torrent's original name, which only the per-torrent
+        // info endpoint reports.
+        let mount_listing = self.mount_folder_listing();
+        let mut needs_folder: HashSet<String> = HashSet::new();
+        for (id, hash, filename, status, files_json) in &db_torrents {
             let fingerprint = selected_files_fingerprint(files_json);
             db_map.insert(id.clone(), (hash.clone(), status.clone(), fingerprint));
+            if let Some(listing) = &mount_listing {
+                if status == "downloaded" && fingerprint > 0 {
+                    let (folder, authoritative) = cached_mount_folder(filename, files_json);
+                    if !authoritative && !listing.contains(&folder) {
+                        needs_folder.insert(id.clone());
+                    }
+                }
+            }
+        }
+        if !needs_folder.is_empty() {
+            info!(
+                "RD cache: {} torrent(s) have no folder on the mount under their derived name; re-fetching info to learn the original name",
+                needs_folder.len()
+            );
         }
 
         let api_ids: HashSet<String> = api_torrents.iter().map(|t| t.id.clone()).collect();
@@ -98,7 +221,9 @@ impl<'a> TorrentCache<'a> {
             .filter(|t| {
                 t.status == "downloaded"
                     && match db_map.get(&t.id) {
-                        Some((_, _, fp)) => *fp == 0 && t.links.is_empty(),
+                        Some((_, _, fp)) => {
+                            (*fp == 0 && t.links.is_empty()) || needs_folder.contains(&t.id)
+                        }
                         None => false, // already counted in needs_change_update
                     }
             })
@@ -160,11 +285,12 @@ impl<'a> TorrentCache<'a> {
                     } else {
                         false
                     };
-                    // Downloaded torrent with empty file info needs backfill
+                    // Downloaded torrent with empty file info, or with a folder name we
+                    // could not find on the mount, needs backfill
                     let backfill = !changed
                         && t.status == "downloaded"
-                        && *db_fingerprint == 0
-                        && api_links_count == 0;
+                        && ((*db_fingerprint == 0 && api_links_count == 0)
+                            || needs_folder.contains(&t.id));
                     (changed, backfill)
                 }
                 None => (true, false), // New torrent
@@ -186,9 +312,8 @@ impl<'a> TorrentCache<'a> {
 
                     match self.rd.get_torrent_info(&t.id).await {
                         Ok(info) => {
-                            let files_json = serde_json::to_string(&CachedTorrentFiles {
-                                files: info.files.clone(),
-                            })?;
+                            let files_json =
+                                serde_json::to_string(&CachedTorrentFiles::from_info(&info))?;
 
                             self.db
                                 .upsert_rd_torrent(
@@ -289,13 +414,18 @@ pub async fn cached_files_from_db(db: &Database, mount_path: &Path) -> Result<Ve
             }
         };
 
-        for file in cached.files {
+        for file in &cached.files {
             // Only selected files appear on mount (usually)
             if file.selected != 1 {
                 continue;
             }
 
-            let full_path = cached_mount_path(mount_path, &torrent_filename, &file.path);
+            let full_path = cached_mount_path(
+                mount_path,
+                &torrent_filename,
+                &file.path,
+                cached.mount_folder.as_deref(),
+            );
 
             all_files.push((full_path, file.bytes as u64));
         }
@@ -304,13 +434,21 @@ pub async fn cached_files_from_db(db: &Database, mount_path: &Path) -> Result<Ve
     Ok(all_files)
 }
 
-fn cached_mount_path(mount_path: &Path, torrent_filename: &str, rd_file_path: &str) -> PathBuf {
-    // Mount structure is usually /mount/TorrentName/path/inside/torrent.
-    // RD can report single-file torrents with filename="Movie.mkv" and
-    // path="/Movie.mkv", while the mount folder is actually /mount/Movie/Movie.mkv.
-    // In that case we need to drop the video extension from the folder segment.
+fn cached_mount_path(
+    mount_path: &Path,
+    torrent_filename: &str,
+    rd_file_path: &str,
+    known_mount_folder: Option<&str>,
+) -> PathBuf {
+    // Mount structure is /mount/<original torrent name>/path/inside/torrent. When the
+    // original name is known it is used as-is; otherwise derive it from `filename`, which
+    // RD rewrites to the file name for single-file torrents (drop the video extension).
     let relative_path = rd_file_path.trim_start_matches('/');
     let relative = Path::new(relative_path);
+
+    if let Some(folder) = known_mount_folder {
+        return mount_path.join(folder).join(relative);
+    }
 
     let mount_folder = if is_single_file_torrent_path(torrent_filename, relative) {
         Path::new(torrent_filename)
@@ -339,18 +477,66 @@ fn is_single_file_torrent_path(torrent_filename: &str, relative: &Path) -> bool 
         && Path::new(torrent_filename)
             .extension()
             .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| {
-                matches!(
-                    ext.to_ascii_lowercase().as_str(),
-                    "mkv" | "mp4" | "avi" | "mov" | "wmv" | "m4v" | "ts" | "m2ts" | "webm"
-                )
-            })
+            .is_some_and(is_video_extension)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::api::realdebrid::RdFile;
+
+    #[test]
+    fn mount_folder_comes_from_the_original_name_without_video_extension() {
+        assert_eq!(
+            mount_folder_from_original("Depraved 2019 UHD BluRay 2160p HDR10 HEVC x265-E"),
+            Some("Depraved 2019 UHD BluRay 2160p HDR10 HEVC x265-E".to_string())
+        );
+        assert_eq!(
+            mount_folder_from_original("Movie.2014.1080p.mkv"),
+            Some("Movie.2014.1080p".to_string())
+        );
+        assert_eq!(mount_folder_from_original("  "), None);
+    }
+
+    #[test]
+    fn known_mount_folder_overrides_the_filename_derivation() {
+        let mount = Path::new("/mnt/rd/__all__");
+        // RD renamed the single-file torrent to its file name; the mount folder is the
+        // original torrent name.
+        assert_eq!(
+            cached_mount_path(
+                mount,
+                "Depraved 2019.mkv",
+                "/Depraved 2019.mkv",
+                Some("Depraved 2019 UHD BluRay 2160p-E")
+            ),
+            PathBuf::from("/mnt/rd/__all__/Depraved 2019 UHD BluRay 2160p-E/Depraved 2019.mkv")
+        );
+        // Without it, the old derivation still applies.
+        assert_eq!(
+            cached_mount_path(mount, "Depraved 2019.mkv", "/Depraved 2019.mkv", None),
+            PathBuf::from("/mnt/rd/__all__/Depraved 2019/Depraved 2019.mkv")
+        );
+    }
+
+    #[test]
+    fn cached_mount_folder_reports_whether_it_is_authoritative() {
+        let single = r#"{"files":[{"id":1,"path":"/Depraved 2019.mkv","bytes":1,"selected":1}]}"#;
+        assert_eq!(
+            cached_mount_folder("Depraved 2019.mkv", single),
+            ("Depraved 2019".to_string(), false)
+        );
+        let known = r#"{"files":[{"id":1,"path":"/Depraved 2019.mkv","bytes":1,"selected":1}],"mount_folder":"Depraved 2019 UHD-E"}"#;
+        assert_eq!(
+            cached_mount_folder("Depraved 2019.mkv", known),
+            ("Depraved 2019 UHD-E".to_string(), true)
+        );
+        let multi = r#"{"files":[{"id":1,"path":"/Show/ep.mkv","bytes":1,"selected":1}]}"#;
+        assert_eq!(
+            cached_mount_folder("Show.S01.Pack", multi),
+            ("Show.S01.Pack".to_string(), false)
+        );
+    }
 
     #[tokio::test]
     async fn test_get_files_from_cache() {
@@ -374,7 +560,11 @@ mod tests {
                 selected: 0, // Should be ignored
             },
         ];
-        let files_json = serde_json::to_string(&CachedTorrentFiles { files }).unwrap();
+        let files_json = serde_json::to_string(&CachedTorrentFiles {
+            files,
+            mount_folder: None,
+        })
+        .unwrap();
 
         db.upsert_rd_torrent(
             "ID123",
@@ -428,7 +618,11 @@ mod tests {
             "hash_inc",
             "IncompleteTorrent",
             "downloading",
-            &serde_json::to_string(&CachedTorrentFiles { files: files1 }).unwrap(),
+            &serde_json::to_string(&CachedTorrentFiles {
+                files: files1,
+                mount_folder: None,
+            })
+            .unwrap(),
         )
         .await
         .unwrap();
@@ -445,7 +639,11 @@ mod tests {
             "hash_unsel",
             "UnselectedTorrent",
             "downloaded",
-            &serde_json::to_string(&CachedTorrentFiles { files: files2 }).unwrap(),
+            &serde_json::to_string(&CachedTorrentFiles {
+                files: files2,
+                mount_folder: None,
+            })
+            .unwrap(),
         )
         .await
         .unwrap();
@@ -462,7 +660,11 @@ mod tests {
             "hash_valid",
             "ValidTorrent",
             "downloaded",
-            &serde_json::to_string(&CachedTorrentFiles { files: files3 }).unwrap(),
+            &serde_json::to_string(&CachedTorrentFiles {
+                files: files3,
+                mount_folder: None,
+            })
+            .unwrap(),
         )
         .await
         .unwrap();
@@ -498,7 +700,7 @@ mod tests {
             "hash_monarch",
             "Monarch.Legacy.of.Monsters.S02E02.Risonanza.ITA.ENG.2160p.ATVP.WEB-DL.DDP5.1.Atmos.DV.HDR.H.25-MeM.GP.mkv",
             "downloaded",
-            &serde_json::to_string(&CachedTorrentFiles { files }).unwrap(),
+            &serde_json::to_string(&CachedTorrentFiles { files, mount_folder: None }).unwrap(),
         )
         .await
         .unwrap();
@@ -541,7 +743,11 @@ mod tests {
                 selected: 0,
             },
         ];
-        let json = serde_json::to_string(&CachedTorrentFiles { files }).unwrap();
+        let json = serde_json::to_string(&CachedTorrentFiles {
+            files,
+            mount_folder: None,
+        })
+        .unwrap();
         assert_eq!(selected_files_fingerprint(&json), 2);
 
         // All unselected → fingerprint is 0
@@ -551,7 +757,11 @@ mod tests {
             bytes: 100,
             selected: 0,
         }];
-        let json_none = serde_json::to_string(&CachedTorrentFiles { files: files_none }).unwrap();
+        let json_none = serde_json::to_string(&CachedTorrentFiles {
+            files: files_none,
+            mount_folder: None,
+        })
+        .unwrap();
         assert_eq!(selected_files_fingerprint(&json_none), 0);
 
         // Invalid JSON → fingerprint is 0 (triggers re-fetch)
@@ -575,7 +785,11 @@ mod tests {
                 selected: 1,
             },
         ];
-        let json = serde_json::to_string(&CachedTorrentFiles { files }).unwrap();
+        let json = serde_json::to_string(&CachedTorrentFiles {
+            files,
+            mount_folder: None,
+        })
+        .unwrap();
         let cached_fingerprint = selected_files_fingerprint(&json);
         assert_eq!(cached_fingerprint, 2);
 
