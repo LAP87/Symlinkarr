@@ -440,14 +440,17 @@ fn cached_mount_path(
     rd_file_path: &str,
     known_mount_folder: Option<&str>,
 ) -> PathBuf {
-    // Mount structure is /mount/<original torrent name>/path/inside/torrent. When the
-    // original name is known it is used as-is; otherwise derive it from `filename`, which
-    // RD rewrites to the file name for single-file torrents (drop the video extension).
+    // Mount structure is /mount/<original torrent name>/<file name>: Decypharr flattens the
+    // torrent's internal directories (`Season 1/ep.mkv`, `Extras/nced.mkv`) so every
+    // selected file sits directly in the torrent folder. When the original name is known
+    // it is used as-is; otherwise derive it from `filename`, which RD rewrites to the file
+    // name for single-file torrents (drop the video extension).
     let relative_path = rd_file_path.trim_start_matches('/');
     let relative = Path::new(relative_path);
+    let flattened = relative.file_name().map(Path::new).unwrap_or(relative);
 
     if let Some(folder) = known_mount_folder {
-        return mount_path.join(folder).join(relative);
+        return mount_path.join(folder).join(flattened);
     }
 
     let mount_folder = if is_single_file_torrent_path(torrent_filename, relative) {
@@ -459,7 +462,7 @@ fn cached_mount_path(
         torrent_filename.into()
     };
 
-    mount_path.join(mount_folder).join(relative)
+    mount_path.join(mount_folder).join(flattened)
 }
 
 fn is_single_file_torrent_path(torrent_filename: &str, relative: &Path) -> bool {
@@ -516,6 +519,24 @@ mod tests {
         assert_eq!(
             cached_mount_path(mount, "Depraved 2019.mkv", "/Depraved 2019.mkv", None),
             PathBuf::from("/mnt/rd/__all__/Depraved 2019/Depraved 2019.mkv")
+        );
+    }
+
+    #[test]
+    fn nested_torrent_paths_are_flattened_into_the_torrent_folder() {
+        let mount = Path::new("/mnt/rd/__all__");
+        assert_eq!(
+            cached_mount_path(mount, "Show.S01.Pack", "/Season 1/Show.S01E01.mkv", None),
+            PathBuf::from("/mnt/rd/__all__/Show.S01.Pack/Show.S01E01.mkv")
+        );
+        assert_eq!(
+            cached_mount_path(
+                mount,
+                "Show.S01.Pack",
+                "/Extras/Show.NCOP.mkv",
+                Some("Show S01 Original")
+            ),
+            PathBuf::from("/mnt/rd/__all__/Show S01 Original/Show.NCOP.mkv")
         );
     }
 
@@ -589,12 +610,9 @@ mod tests {
         assert_eq!(results.len(), 1);
         let (path, size) = &results[0];
 
-        // Expected: /mnt/realdebrid/MyTorrentName/Show/S01/Episode.mkv
-        // Note: MyTorrentName is the folder on RD mount?
-        // Usually RD mount flattens or keeps structure?
-        // The implementation assumes: mount_path.join(torrent_filename).join(relative_path)
-
-        let expected = mount.join("MyTorrentName").join("Show/S01/Episode.mkv");
+        // Decypharr flattens the torrent's internal directories, so the file sits directly
+        // in the torrent folder.
+        let expected = mount.join("MyTorrentName").join("Episode.mkv");
         assert_eq!(path, &expected);
         assert_eq!(*size, 1024);
     }
@@ -676,10 +694,7 @@ mod tests {
         let results = cache.get_files(&mount).await.unwrap();
 
         assert_eq!(results.len(), 1);
-        assert_eq!(
-            results[0].0,
-            mount.join("ValidTorrent").join("Valid/File.mkv")
-        );
+        assert_eq!(results[0].0, mount.join("ValidTorrent").join("File.mkv"));
     }
 
     #[tokio::test]

@@ -2,9 +2,19 @@
 
 ## Release Target
 
-- package version for this push: `1.1.0-rc.16`
+- package version for this push: `1.1.0-rc.17`
 - posture: `v1.1 release candidate with Arr backfill, fail-closed acquisition ranking, current dependencies, synchronized Docker release channels, and updated operator documentation`
 - intended use: local-first host or Docker installs, with Windows 11 users running through WSL2 or a Linux container
+
+## 2026-09-19 - v1.1.0-rc.17 Flattened Torrent Paths
+
+### Code Changes
+
+- the RD cache now maps every selected file to `<torrent folder>/<file name>`: Decypharr flattens a torrent's internal directories (`Season 1/ep.mkv`, `Extras/nced.mkv`) on the mount, but the cache kept the nested path, so 44,445 of 151,778 cached files (29%) were invisible to the matcher and the ones that did match were skipped as `source_missing_before_link` (~19,000 per scan). No cache rebuild needed; the mapping is computed when the cache is read.
+
+### Validation
+
+- `cargo test` 931 passed, clippy `-D warnings`, fmt; against the production cache 0 of 48,981 nested RD paths exist nested on the mount and all exist flattened.
 
 ## 2026-09-19 - v1.1.0-rc.16 Revert Cold-File Probe Retry
 
