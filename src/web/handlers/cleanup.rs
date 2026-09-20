@@ -1131,7 +1131,10 @@ pub(crate) async fn get_links(
 }
 
 /// GET /links/dead - Dead links
-pub(crate) async fn get_dead_links(State(state): State<WebState>) -> impl IntoResponse {
+pub(crate) async fn get_dead_links(
+    State(state): State<WebState>,
+    Query(query): Query<PinsQuery>,
+) -> impl IntoResponse {
     let links = match state.database.get_dead_links().await {
         Ok(l) => l,
         Err(e) => {
@@ -1151,9 +1154,47 @@ pub(crate) async fn get_dead_links(State(state): State<WebState>) -> impl IntoRe
         links,
         active_repair,
         last_repair_outcome,
+        flash_message: query.message,
+        error_message: query.error,
         csrf_token: browser_csrf_token(&state),
     };
     Html(template.render().unwrap_or_else(|e| e.to_string())).into_response()
+}
+
+/// POST /links/sweep - Trigger an on-demand dead-link sweep
+pub(crate) async fn post_dead_link_sweep(
+    State(state): State<WebState>,
+    Form(form): Form<BrowserMutationForm>,
+) -> impl IntoResponse {
+    if let Some(response) = require_browser_csrf_token(&state, &form.csrf_token, "/links/sweep") {
+        return response;
+    }
+    match crate::commands::cleanup::sweep_dead_links(
+        &state.config,
+        &state.database,
+        None,
+        None,
+        false,
+    )
+    .await
+    {
+        Ok(outcome) => {
+            let msg = format!(
+                "Dead-link sweep completed: {} marked, {} removed, {} skipped",
+                outcome.dead.dead_marked, outcome.dead.removed, outcome.dead.skipped
+            );
+            Redirect::to(&format!(
+                "/links/dead?message={}",
+                url_encode_component(&msg)
+            ))
+            .into_response()
+        }
+        Err(err) => Redirect::to(&format!(
+            "/links/dead?error={}",
+            url_encode_component(&err.to_string())
+        ))
+        .into_response(),
+    }
 }
 
 /// POST /links/repair - Repair dead links
@@ -1208,4 +1249,200 @@ pub(crate) async fn post_repair(
                 .into_response()
         }
     }
+}
+
+fn url_encode_component(s: &str) -> String {
+    form_urlencoded::byte_serialize(s.as_bytes()).collect()
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(crate) struct PinsQuery {
+    pub message: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct AddPinForm {
+    pub folder: String,
+    pub media_id: String,
+    pub note: Option<String>,
+    #[serde(default)]
+    pub csrf_token: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct DeletePinForm {
+    pub folder: String,
+    #[serde(default)]
+    pub csrf_token: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ImportPinsForm {
+    #[serde(default)]
+    pub csrf_token: String,
+    #[serde(default)]
+    pub link_now: Option<String>,
+}
+
+/// GET /pins - List source pins
+pub(crate) async fn get_pins(
+    State(state): State<WebState>,
+    Query(query): Query<PinsQuery>,
+) -> impl IntoResponse {
+    let pins = state.database.list_source_pins().await.unwrap_or_default();
+    let (markers_dir, pending_markers_count) = match &state.config.handoff.markers_dir {
+        Some(dir) => {
+            let count = std::fs::read_dir(dir)
+                .map(|entries| {
+                    entries
+                        .flatten()
+                        .filter(|e| {
+                            let p = e.path();
+                            p.is_file()
+                                && p.extension().is_some_and(|ext| ext == "json")
+                                && !p
+                                    .file_name()
+                                    .is_some_and(|n| n.to_string_lossy().starts_with('.'))
+                        })
+                        .count()
+                })
+                .unwrap_or(0);
+            (Some(dir.display().to_string()), count)
+        }
+        None => (None, 0),
+    };
+    let template = PinsTemplate {
+        pins,
+        markers_dir,
+        pending_markers_count,
+        flash_message: query.message,
+        error_message: query.error,
+        csrf_token: browser_csrf_token(&state),
+    };
+    Html(template.render().unwrap_or_else(|e| e.to_string())).into_response()
+}
+
+/// POST /pins - Add or update a source pin
+pub(crate) async fn post_pin(
+    State(state): State<WebState>,
+    Form(form): Form<AddPinForm>,
+) -> impl IntoResponse {
+    if let Some(response) = require_browser_csrf_token(&state, &form.csrf_token, "/pins") {
+        return response;
+    }
+    let folder = form.folder.trim().trim_matches('/').to_string();
+    if folder.is_empty() || folder.contains('/') {
+        return Redirect::to("/pins?error=Folder+must+be+a+single+directory+name+without+slashes")
+            .into_response();
+    }
+    let Some(id) = crate::models::MediaId::parse(&form.media_id) else {
+        return Redirect::to("/pins?error=Media+ID+must+look+like+tvdb-123+or+tmdb-123")
+            .into_response();
+    };
+    let note = form
+        .note
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty());
+    match state
+        .database
+        .upsert_source_pins(&[(folder.clone(), id.to_string(), "manual".to_string(), note)])
+        .await
+    {
+        Ok(_) => Redirect::to(&format!(
+            "/pins?message=Pinned+{}+successfully",
+            url_encode_component(&folder)
+        ))
+        .into_response(),
+        Err(e) => Redirect::to(&format!(
+            "/pins?error={}",
+            url_encode_component(&e.to_string())
+        ))
+        .into_response(),
+    }
+}
+
+/// POST /pins/delete - Remove a source pin
+pub(crate) async fn post_pin_delete(
+    State(state): State<WebState>,
+    Form(form): Form<DeletePinForm>,
+) -> impl IntoResponse {
+    if let Some(response) = require_browser_csrf_token(&state, &form.csrf_token, "/pins/delete") {
+        return response;
+    }
+    let folder = form.folder.trim();
+    match state.database.delete_source_pin(folder).await {
+        Ok(true) => Redirect::to(&format!(
+            "/pins?message=Removed+pin+for+{}",
+            url_encode_component(folder)
+        ))
+        .into_response(),
+        Ok(false) => Redirect::to("/pins?error=No+pin+found+for+that+folder").into_response(),
+        Err(e) => Redirect::to(&format!(
+            "/pins?error={}",
+            url_encode_component(&e.to_string())
+        ))
+        .into_response(),
+    }
+}
+
+/// POST /pins/import - Import handoff markers
+pub(crate) async fn post_pins_import(
+    State(state): State<WebState>,
+    Form(form): Form<ImportPinsForm>,
+) -> impl IntoResponse {
+    if let Some(response) = require_browser_csrf_token(&state, &form.csrf_token, "/pins/import") {
+        return response;
+    }
+    let Some(dir) = state.config.handoff.markers_dir.clone() else {
+        return Redirect::to(
+            "/pins?error=Handoff+markers+directory+is+not+configured+in+config.toml",
+        )
+        .into_response();
+    };
+    let consume = state.config.handoff.consume_markers;
+    let import = crate::handoff::import_markers(&state.database, &dir, consume).await;
+
+    let link_now = matches!(
+        form.link_now.as_deref(),
+        Some("true") | Some("1") | Some("yes")
+    );
+    if link_now {
+        match state.start_scan(false, false, None).await {
+            Ok(job) => {
+                let msg = format!(
+                    "{} — background scan started to link pins (scope: {})",
+                    import.summary_line(),
+                    job.scope_label
+                );
+                return Redirect::to(&format!("/pins?message={}", url_encode_component(&msg)))
+                    .into_response();
+            }
+            Err(e) => {
+                let msg = format!(
+                    "{} — pins imported, but scan could not start: {}",
+                    import.summary_line(),
+                    e
+                );
+                return Redirect::to(&format!("/pins?error={}", url_encode_component(&msg)))
+                    .into_response();
+            }
+        }
+    }
+
+    Redirect::to(&format!(
+        "/pins?message={}",
+        url_encode_component(&import.summary_line())
+    ))
+    .into_response()
+}
+
+/// GET /links/quarantine - List Decypharr quarantined folders
+pub(crate) async fn get_quarantine(State(state): State<WebState>) -> impl IntoResponse {
+    let items = crate::quarantine::QuarantinedFolders::list_details(&state.config.sources);
+    let template = QuarantineTemplate {
+        items,
+        sources_count: state.config.sources.len(),
+    };
+    Html(template.render().unwrap_or_else(|e| e.to_string())).into_response()
 }

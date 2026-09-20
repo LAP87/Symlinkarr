@@ -116,3 +116,93 @@ fn scan_details_line_marks_deferred_refreshes() {
 
     assert!(summary.contains("refresh=0/1 skipped=0 capped=0 deferred"));
 }
+
+#[tokio::test]
+async fn test_targeted_scan_restricts_to_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let library_dir = dir.path().join("library");
+    let source_dir = dir.path().join("source");
+    std::fs::create_dir_all(&library_dir).unwrap();
+    std::fs::create_dir_all(&source_dir).unwrap();
+
+    let show_folder = library_dir.join("Breaking Bad {tvdb-81189}");
+    std::fs::create_dir_all(&show_folder).unwrap();
+
+    let target_folder = source_dir.join("Breaking.Bad.S01.720p");
+    let other_folder = source_dir.join("Other.Show.S01");
+    std::fs::create_dir_all(&target_folder).unwrap();
+    std::fs::create_dir_all(&other_folder).unwrap();
+
+    let target_file = target_folder.join("Breaking.Bad.S01E01.mkv");
+    let other_file = other_folder.join("Other.Show.S01E01.mkv");
+    std::fs::write(&target_file, b"video1").unwrap();
+    std::fs::write(&other_file, b"video2").unwrap();
+
+    let db_path = dir.path().join("test.db");
+    let cfg = test_config(library_dir, source_dir, db_path.clone());
+    let db = Database::new(db_path.to_str().unwrap()).await.unwrap();
+
+    let (created, _) = run_scan(
+        &cfg,
+        &db,
+        false,
+        false,
+        OutputFormat::Json,
+        None,
+        Some("Breaking.Bad.S01.720p"),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(created, 1);
+    let active = db.get_active_links().await.unwrap();
+    assert_eq!(active.len(), 1);
+    assert_eq!(active[0].source_path, target_file);
+}
+
+fn test_config(
+    library: std::path::PathBuf,
+    source: std::path::PathBuf,
+    db_path: std::path::PathBuf,
+) -> Config {
+    Config {
+        libraries: vec![crate::config::LibraryConfig {
+            name: "TV".to_string(),
+            path: library,
+            media_type: MediaType::Tv,
+            content_type: Some(ContentType::Tv),
+            depth: 1,
+        }],
+        sources: vec![crate::config::SourceConfig {
+            name: "RD".to_string(),
+            path: source,
+            media_type: "auto".to_string(),
+        }],
+        api: crate::config::ApiConfig::default(),
+        realdebrid: crate::config::RealDebridConfig::default(),
+        decypharr: crate::config::DecypharrConfig::default(),
+        dmm: crate::config::DmmConfig::default(),
+        backup: crate::config::BackupConfig::default(),
+        db_path: db_path.display().to_string(),
+        log_level: "info".to_string(),
+        daemon: crate::config::DaemonConfig::default(),
+        symlink: crate::config::SymlinkConfig::default(),
+        matching: crate::config::MatchingConfig::default(),
+        prowlarr: crate::config::ProwlarrConfig::default(),
+        bazarr: crate::config::BazarrConfig::default(),
+        tautulli: crate::config::TautulliConfig::default(),
+        plex: crate::config::PlexConfig::default(),
+        emby: crate::config::MediaBrowserConfig::default(),
+        jellyfin: crate::config::MediaBrowserConfig::default(),
+        radarr: crate::config::RadarrConfig::default(),
+        sonarr: crate::config::SonarrConfig::default(),
+        sonarr_anime: crate::config::SonarrConfig::default(),
+        features: crate::config::FeaturesConfig::default(),
+        security: crate::config::SecurityConfig::default(),
+        cleanup: crate::config::CleanupPolicyConfig::default(),
+        web: crate::config::WebConfig::default(),
+        handoff: crate::config::HandoffConfig::default(),
+        loaded_from: None,
+        secret_files: Vec::new(),
+    }
+}

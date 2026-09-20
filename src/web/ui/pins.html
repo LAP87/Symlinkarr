@@ -1,0 +1,161 @@
+{% extends "web/ui/base.html" %}
+
+{% block title %}Source Pins - Symlinkarr{% endblock %}
+{% block nav_pins %}active{% endblock %}
+{% block body_class %}page-pins page-inspection{% endblock %}
+
+{% block content %}
+<div class="page-header page-header--split">
+    <div>
+        <h1>Source Pins</h1>
+        <p class="page-lead">Explicit bindings from provider torrent folders to library media IDs. Pins take precedence during matcher evaluation.</p>
+    </div>
+    <div class="page-header__aside">
+        <span class="badge badge-info">{{ (pins|length)|thousands }} pinned</span>
+        <a class="doc-link" href="https://github.com/LAP87/Symlinkarr/wiki" target="_blank" rel="noreferrer noopener">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14L21 3"/></svg>
+            Documentation
+        </a>
+    </div>
+</div>
+
+{% match flash_message %}
+{% when Some with (msg) %}
+<div class="alert alert-success">
+    <strong>Success:</strong> {{ msg }}
+</div>
+{% when None %}
+{% endmatch %}
+
+{% match error_message %}
+{% when Some with (err) %}
+<div class="alert alert-error">
+    <strong>Error:</strong> {{ err }}
+</div>
+{% when None %}
+{% endmatch %}
+
+<div class="page-sections">
+    <section class="card operator-links-card">
+        <div class="operator-toolbar">
+            <div class="filter-tabs">
+                <a href="/links?filter=active" class="filter-tab">Active links</a>
+                <a href="/links?filter=dead" class="filter-tab">Dead links</a>
+                <a href="/pins" class="filter-tab active">Source pins</a>
+            </div>
+            <div class="operator-toolbar__actions">
+                <a href="/links" class="btn btn-secondary">All links</a>
+                <a href="/scan" class="btn btn-primary">Run scan</a>
+            </div>
+        </div>
+
+        {% if pins|length > 0 %}
+        <div class="table-wrap">
+        <table class="data-table dense-table">
+            <thead>
+                <tr>
+                    <th>Source Folder</th>
+                    <th>Media ID</th>
+                    <th>Origin</th>
+                    <th>Note</th>
+                    <th>Updated</th>
+                    <th style="width: 80px; text-align: right;">Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for pin in pins %}
+                <tr>
+                    <td><code class="mono">{{ pin.source_folder }}</code></td>
+                    <td><code class="mono">{{ pin.media_id }}</code></td>
+                    <td>
+                        <span class="badge {% if pin.origin == "manual" %}badge-info{% else %}badge-secondary{% endif %}">
+                            {{ pin.origin }}
+                        </span>
+                    </td>
+                    <td>
+                        {% match pin.note %}
+                        {% when Some with (n) %}{{ n }}{% when None %}<span class="text-muted">&mdash;</span>{% endmatch %}
+                    </td>
+                    <td><span class="text-muted">{{ pin.updated_at }}</span></td>
+                    <td style="text-align: right;">
+                        <form action="/pins/delete" method="post" style="display: inline;" onsubmit="return confirm('Remove pin for this folder?');">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <input type="hidden" name="folder" value="{{ pin.source_folder }}">
+                            <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        </div>
+        {% else %}
+        <div class="empty-state operator-empty-state">
+            <span class="empty-state__title">No source pins stored.</span>
+            Pins lock a torrent folder name to a specific media ID (e.g. <code>tvdb-12345</code> or <code>tmdb-67890</code>), preventing misidentification.
+        </div>
+        {% endif %}
+    </section>
+
+    <div class="card-grid">
+        <section class="card">
+            <h2 class="section-title">Add Source Pin</h2>
+            <p class="section-copy">Manually bind a provider torrent folder to a specific TMDB or TVDB ID.</p>
+            <form action="/pins" method="post" class="form-stacked">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <div class="form-group">
+                    <label for="pin-folder">Torrent folder name</label>
+                    <input type="text" id="pin-folder" name="folder" class="form-control mono" placeholder="e.g. Show.Name.S01.1080p.WEB-DL" required>
+                    <span class="form-hint">Folder name inside the source mount root (do not include full path).</span>
+                </div>
+                <div class="form-group">
+                    <label for="pin-media-id">Media ID</label>
+                    <input type="text" id="pin-media-id" name="media_id" class="form-control mono" placeholder="e.g. tvdb-12345 or tmdb-67890" required>
+                    <span class="form-hint">Canonical media tag (<code>tvdb-&lt;id&gt;</code> for series, <code>tmdb-&lt;id&gt;</code> for movies).</span>
+                </div>
+                <div class="form-group">
+                    <label for="pin-note">Note (optional)</label>
+                    <input type="text" id="pin-note" name="note" class="form-control" placeholder="e.g. manual match override">
+                </div>
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-primary">Add Pin</button>
+                </div>
+            </form>
+        </section>
+
+        <section class="card">
+            <h2 class="section-title">Handoff Markers Import</h2>
+            <p class="section-copy">Import pin markers produced by Backfill-Buddy or keeper scripts.</p>
+            {% match markers_dir %}
+            {% when Some with (dir) %}
+            <p class="section-copy">Configured markers directory: <code class="mono">{{ dir }}</code></p>
+            {% if pending_markers_count > 0 %}
+            <div class="alert alert-info" style="margin-top: 0.75rem;">
+                <strong>{{ pending_markers_count }}</strong> pending marker file(s) waiting in handoff queue.
+            </div>
+            {% else %}
+            <p class="text-muted" style="margin-top: 0.5rem; font-size: 0.875rem;">No pending marker files currently in queue directory.</p>
+            {% endif %}
+            <form action="/pins/import" method="post">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <div class="form-actions" style="margin-top: 1rem; display: flex; gap: 0.5rem; align-items: center;">
+                    <button type="submit" class="btn btn-secondary">
+                        Import markers now
+                        {% if pending_markers_count > 0 %}
+                        <span class="badge badge-warning" style="margin-left: 0.5rem;">{{ pending_markers_count }}</span>
+                        {% endif %}
+                    </button>
+                    <button type="submit" name="link_now" value="true" class="btn btn-primary">
+                        Import &amp; Link now
+                    </button>
+                </div>
+            </form>
+            {% when None %}
+            <div class="empty-state" style="padding: 1rem 0;">
+                <p class="text-muted">Set <code>handoff.markers_dir</code> in <code>config.toml</code> / <code>config.yaml</code> to point to <code>backfill-buddy</code>'s <code>queue_dir</code> (e.g. <code>state/symlinkarr-handoff</code>) to enable automatic marker imports.</p>
+            </div>
+            {% endmatch %}
+        </section>
+    </div>
+</div>
+{% endblock %}

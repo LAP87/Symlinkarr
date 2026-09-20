@@ -15,9 +15,10 @@ use crate::commands::{
 use crate::config::Config;
 use crate::db::Database;
 use crate::media_servers::{
-    configured_refresh_backends, display_server_list, invalidate_after_mutation,
+    configured_refresh_backends, display_server_list, has_configured_invalidation_server,
+    invalidate_after_mutation,
 };
-use crate::models::MediaType;
+use crate::models::{MediaId, MediaType};
 use crate::repair;
 use crate::RepairAction;
 
@@ -254,7 +255,30 @@ pub(crate) async fn run_repair(
             let selected = selected_libraries(cfg, library_filter)?;
             let roots: Vec<std::path::PathBuf> =
                 selected.iter().map(|lib| lib.path.clone()).collect();
-            normalize_movie_names(db, &roots, apply).await?;
+            let summary = normalize_movie_names(db, &roots, apply).await?;
+            if apply && !summary.affected_paths.is_empty() {
+                if has_configured_invalidation_server(cfg) {
+                    let servers = configured_refresh_backends(cfg);
+                    if !servers.is_empty() {
+                        println!(
+                            "   📺 Post-normalize: refreshing affected library roots in {}...",
+                            display_server_list(&servers)
+                        );
+                    }
+                    if let Err(err) =
+                        invalidate_after_mutation(cfg, &selected, &summary.affected_paths, true)
+                            .await
+                    {
+                        tracing::warn!("Post-normalize media-server refresh failed: {}", err);
+                    }
+                }
+                for line in
+                    crate::commands::scan::rescan_arrs_for_touched(cfg, &summary.touched_media)
+                        .await
+                {
+                    println!("   {}", line);
+                }
+            }
         }
     }
 
@@ -323,9 +347,10 @@ pub(crate) async fn execute_repair_auto(
     } else {
         None
     };
-    let torrent_cache = rd_client
-        .as_ref()
-        .map(|rd| crate::cache::TorrentCache::new(db, rd));
+    let torrent_cache = rd_client.as_ref().map(|rd| {
+        crate::cache::TorrentCache::new(db, rd)
+            .with_mount_roots(cfg.sources.iter().map(|s| s.path.clone()))
+    });
     const REPAIR_CACHE_COVERAGE: f64 = 0.80;
     let cache_ref = if let Some(ref tc) = torrent_cache {
         match db.get_rd_torrent_counts().await {
@@ -397,6 +422,24 @@ pub(crate) async fn execute_repair_auto(
                 println!("   ⚠️  Post-repair media-server refresh failed: {}", err);
             }
             tracing::warn!("Post-repair media-server refresh failed: {}", err);
+        }
+    }
+
+    let touched_media: Vec<(MediaType, MediaId)> = results
+        .iter()
+        .filter_map(|r| match r {
+            repair::RepairResult::Repaired { dead_link, .. } => {
+                MediaId::parse(&dead_link.media_id).map(|id| (dead_link.media_type, id))
+            }
+            _ => None,
+        })
+        .collect();
+
+    if !dry_run && !touched_media.is_empty() {
+        for line in crate::commands::scan::rescan_arrs_for_touched(cfg, &touched_media).await {
+            if emit_text {
+                println!("   {}", line);
+            }
         }
     }
 
@@ -543,6 +586,15 @@ pub(crate) fn doubled_year_canonical_name(file_name: &str) -> Option<String> {
     (first_year == last_year).then(|| format!("{once}.{ext}"))
 }
 
+#[derive(Debug, Default)]
+#[allow(dead_code)]
+pub(crate) struct NormalizeNamesSummary {
+    pub planned: usize,
+    pub affected_paths: Vec<std::path::PathBuf>,
+    pub touched_media: Vec<(MediaType, MediaId)>,
+    pub counts: std::collections::BTreeMap<&'static str, usize>,
+}
+
 /// Fix movie links whose filename doubled the year (an old folder-title fallback bug).
 /// Preview by default; with `apply`, renames the symlink in place (same directory, atomic)
 /// and moves the database record. A canonical file that already serves the same source
@@ -553,9 +605,12 @@ pub(crate) async fn normalize_movie_names(
     db: &Database,
     library_roots: &[std::path::PathBuf],
     apply: bool,
-) -> Result<()> {
+) -> Result<NormalizeNamesSummary> {
     let mut planned = 0usize;
     let mut counts = std::collections::BTreeMap::<&'static str, usize>::new();
+    let mut affected_paths = Vec::new();
+    let mut touched_media = Vec::new();
+
     for link in db.get_active_links().await? {
         if link.media_type != crate::models::MediaType::Movie {
             continue;
@@ -601,14 +656,33 @@ pub(crate) async fn normalize_movie_names(
                 std::fs::rename(&link.target_path, &new_path)?;
                 db.update_link_target_path(&link.target_path, &new_path)
                     .await?;
+                affected_paths.push(link.target_path.clone());
+                affected_paths.push(new_path.clone());
+                if let Some(media_id) = MediaId::parse(&link.media_id) {
+                    if !touched_media.contains(&(link.media_type, media_id.clone())) {
+                        touched_media.push((link.media_type, media_id));
+                    }
+                }
             }
             "remove-duplicate" => {
                 std::fs::remove_file(&link.target_path)?;
                 db.mark_removed_path(&link.target_path).await?;
+                affected_paths.push(link.target_path.clone());
+                if let Some(media_id) = MediaId::parse(&link.media_id) {
+                    if !touched_media.contains(&(link.media_type, media_id.clone())) {
+                        touched_media.push((link.media_type, media_id));
+                    }
+                }
             }
             "reconcile-record" => {
                 db.update_link_target_path(&link.target_path, &new_path)
                     .await?;
+                affected_paths.push(new_path.clone());
+                if let Some(media_id) = MediaId::parse(&link.media_id) {
+                    if !touched_media.contains(&(link.media_type, media_id.clone())) {
+                        touched_media.push((link.media_type, media_id));
+                    }
+                }
             }
             _ => {}
         }
@@ -651,14 +725,19 @@ pub(crate) async fn normalize_movie_names(
                 continue;
             }
             std::fs::rename(path, &new_path)?;
+            affected_paths.push(path.to_path_buf());
+            affected_paths.push(new_path.clone());
             if db.get_link_by_target_path(path).await?.is_some() {
                 db.update_link_target_path(path, &new_path).await?;
             }
         }
     }
+    affected_paths.sort();
+    affected_paths.dedup();
+
     if planned == 0 {
         println!("✅ No movie links with a doubled year found.");
-        return Ok(());
+        return Ok(NormalizeNamesSummary::default());
     }
     if !apply && planned > 25 {
         println!("   … {} more", planned - 25);
@@ -680,7 +759,12 @@ pub(crate) async fn normalize_movie_names(
     if !apply {
         println!("   Re-run with --apply to rename.");
     }
-    Ok(())
+    Ok(NormalizeNamesSummary {
+        planned,
+        affected_paths,
+        touched_media,
+        counts,
+    })
 }
 
 #[cfg(test)]

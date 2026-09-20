@@ -50,6 +50,7 @@ const ROOT_AFTER_HELP: &str = r#"Feature guide:
   cache     = build the RD torrent cache or invalidate/clear sticky metadata entries
   doctor    = run preflight checks before a real scan or daemon run
   report    = export structured operator reports, including advanced legacy-anime cleanup inputs
+  pin       = pin a provider torrent folder directly to a library item (manual or handoff)
   daemon    = run scheduled scans continuously
   web       = run the built-in operator UI and JSON API
 
@@ -197,6 +198,9 @@ enum Commands {
         /// Restrict the run to one configured library name
         #[arg(long)]
         library: Option<String>,
+        /// Restrict source scanning to a specific torrent folder
+        #[arg(long, visible_alias = "source-folder")]
+        folder: Option<String>,
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         output: OutputFormat,
     },
@@ -417,6 +421,9 @@ enum Commands {
         /// Export the RD torrents backing active links as JSON (for a keeper such as backfill-buddy)
         #[arg(long)]
         linked_torrents: bool,
+        /// Export unlinked / empty library items as JSON (for companion tools such as backfill-buddy)
+        #[arg(long)]
+        unlinked_items: bool,
     },
 }
 
@@ -984,6 +991,7 @@ async fn main() -> Result<()> {
             dry_run,
             search_missing,
             library,
+            folder,
             output,
         } => {
             let scope = library.clone();
@@ -997,6 +1005,7 @@ async fn main() -> Result<()> {
                         search_missing,
                         output,
                         library.as_deref(),
+                        folder.as_deref(),
                     ),
                 )
                 .await?;
@@ -1019,7 +1028,15 @@ async fn main() -> Result<()> {
             let (created, _dead) = OperationCoordinator::new(db.clone())
                 .run(
                     OperationRequest::new("scan", "cli", scope),
-                    commands::scan::run_scan(&cfg, &db, true, false, output, library.as_deref()),
+                    commands::scan::run_scan(
+                        &cfg,
+                        &db,
+                        true,
+                        false,
+                        output,
+                        library.as_deref(),
+                        None,
+                    ),
                 )
                 .await?;
             if output == OutputFormat::Json {
@@ -1142,6 +1159,7 @@ async fn main() -> Result<()> {
             anime_remediation_tsv,
             pretty,
             linked_torrents,
+            unlinked_items,
         } => {
             let media_type_filter = match filter.as_deref() {
                 Some("movie") => Some(crate::models::MediaType::Movie),
@@ -1166,6 +1184,7 @@ async fn main() -> Result<()> {
                         .map(std::path::Path::new),
                     pretty,
                     linked_torrents,
+                    unlinked_items,
                 },
             )
             .await?;
@@ -1208,6 +1227,46 @@ mod tests {
         match cli.command {
             Commands::Web { port } => assert_eq!(port, Some(9999)),
             _ => panic!("expected web command"),
+        }
+    }
+
+    #[test]
+    fn cli_accepts_scan_with_folder() {
+        let cli = Cli::try_parse_from([
+            "symlinkarr",
+            "scan",
+            "--folder",
+            "Breaking.Bad.S01",
+            "--library",
+            "TV",
+            "--output",
+            "json",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Scan {
+                folder,
+                library,
+                output,
+                ..
+            } => {
+                assert_eq!(folder.as_deref(), Some("Breaking.Bad.S01"));
+                assert_eq!(library.as_deref(), Some("TV"));
+                assert_eq!(output, OutputFormat::Json);
+            }
+            _ => panic!("expected scan command"),
+        }
+    }
+
+    #[test]
+    fn cli_accepts_scan_with_source_folder_alias() {
+        let cli = Cli::try_parse_from(["symlinkarr", "scan", "--source-folder", "Inception.2010"])
+            .unwrap();
+        match cli.command {
+            Commands::Scan { folder, .. } => {
+                assert_eq!(folder.as_deref(), Some("Inception.2010"));
+            }
+            _ => panic!("expected scan command"),
         }
     }
 
@@ -1481,6 +1540,33 @@ mod tests {
                     anime_remediation_tsv.as_deref(),
                     Some("/tmp/anime-remediation.tsv")
                 );
+            }
+            _ => panic!("expected report command"),
+        }
+    }
+
+    #[test]
+    fn cli_accepts_report_with_unlinked_items() {
+        let cli = Cli::try_parse_from([
+            "symlinkarr",
+            "report",
+            "--library",
+            "Series",
+            "--unlinked-items",
+            "--output",
+            "json",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Report {
+                library,
+                unlinked_items,
+                output,
+                ..
+            } => {
+                assert_eq!(library.as_deref(), Some("Series"));
+                assert!(unlinked_items);
+                assert_eq!(output, OutputFormat::Json);
             }
             _ => panic!("expected report command"),
         }

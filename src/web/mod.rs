@@ -319,25 +319,51 @@ impl WebState {
         search_missing: bool,
         library_filter: Option<String>,
     ) -> std::result::Result<ActiveScanJob, String> {
+        self.start_scan_targeted(dry_run, search_missing, library_filter, None)
+            .await
+    }
+
+    pub(crate) async fn start_scan_targeted(
+        &self,
+        dry_run: bool,
+        search_missing: bool,
+        library_filter: Option<String>,
+        folder_filter: Option<String>,
+    ) -> std::result::Result<ActiveScanJob, String> {
         let library_filter = library_filter
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let folder_filter = folder_filter
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
 
         crate::commands::selected_libraries(self.config.as_ref(), library_filter.as_deref())
             .map_err(|err| err.to_string())?;
 
+        let scope_str = match (&library_filter, &folder_filter) {
+            (Some(lib), Some(folder)) => Some(format!("{lib} [{folder}]")),
+            (Some(lib), None) => Some(lib.clone()),
+            (None, Some(folder)) => Some(format!("folder: {folder}")),
+            (None, None) => None,
+        };
+
         let mut operation = OperationCoordinator::new(self.database.as_ref().clone())
-            .acquire(OperationRequest::new("scan", "web", library_filter.clone()))
+            .acquire(OperationRequest::new("scan", "web", scope_str))
             .await
             .map_err(|err| err.to_string())?;
         let mut background_jobs = self.background_jobs.lock().await;
 
+        let scope_label = match (&library_filter, &folder_filter) {
+            (Some(lib), Some(folder)) => format!("{lib} (folder: {folder})"),
+            (Some(lib), None) => lib.clone(),
+            (None, Some(folder)) => format!("folder: {folder}"),
+            (None, None) => "All Libraries".to_string(),
+        };
+
         let job = ActiveScanJob {
             operation_id: operation.id(),
             started_at: Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string(),
-            scope_label: library_filter
-                .clone()
-                .unwrap_or_else(|| "All Libraries".to_string()),
+            scope_label,
             dry_run,
             search_missing,
         };
@@ -360,6 +386,7 @@ impl WebState {
                     search_missing,
                     crate::OutputFormat::Json,
                     library_filter.as_deref(),
+                    folder_filter.as_deref(),
                 )
                 .await
             })
@@ -1082,7 +1109,13 @@ fn create_router(state: WebState) -> Router {
         // Links
         .route("/links", get(handlers::get_links))
         .route("/links/dead", get(handlers::get_dead_links))
+        .route("/links/quarantine", get(handlers::get_quarantine))
+        .route("/links/sweep", post(handlers::post_dead_link_sweep))
         .route("/links/repair", post(handlers::post_repair))
+        // Pins
+        .route("/pins", get(handlers::get_pins).post(handlers::post_pin))
+        .route("/pins/delete", post(handlers::post_pin_delete))
+        .route("/pins/import", post(handlers::post_pins_import))
         // Config
         .route("/config", get(handlers::get_config))
         .route("/config/validate", post(handlers::post_config_validate))

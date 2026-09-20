@@ -642,6 +642,7 @@ impl Repairer {
 
         let mut entries = Vec::new();
         let mut scanned_files = 0usize;
+        let quarantine = crate::quarantine::QuarantinedFolders::load_from_paths(source_paths);
 
         for source_path in source_paths {
             for entry in WalkDir::new(source_path)
@@ -650,6 +651,9 @@ impl Repairer {
                 .filter(|e| e.file_type().is_file() || e.file_type().is_symlink())
             {
                 let path = entry.path();
+                if quarantine.contains(path) {
+                    continue;
+                }
                 scanned_files += 1;
                 #[allow(clippy::manual_is_multiple_of)]
                 if scanned_files % 100_000 == 0 {
@@ -734,6 +738,7 @@ impl Repairer {
 
         let mut entries = Vec::new();
         let mut total_files = 0usize;
+        let quarantine = crate::quarantine::QuarantinedFolders::load_from_paths(source_paths);
 
         for source_path in source_paths {
             let cached_files = match cache.get_files(source_path).await {
@@ -745,6 +750,9 @@ impl Repairer {
             };
 
             for (path, file_size) in cached_files {
+                if quarantine.contains(&path) {
+                    continue;
+                }
                 total_files += 1;
 
                 let ext = path

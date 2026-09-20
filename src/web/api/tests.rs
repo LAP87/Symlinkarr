@@ -1987,3 +1987,335 @@ fn confine_plex_db_path_rejects_missing_and_non_db_files() {
     assert!(confine_plex_db_path(missing.to_str().unwrap(), &roots).is_err());
     assert!(confine_plex_db_path(text_path.to_str().unwrap(), &roots).is_err());
 }
+
+#[tokio::test]
+async fn api_get_linked_torrents_returns_aggregated_data() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = test_config(dir.path());
+    let db = Database::new(&cfg.db_path).await.unwrap();
+
+    db.upsert_rd_torrent(
+        "rd-1",
+        "hash-1",
+        "Show.S01.Pack",
+        "downloaded",
+        r#"{"files":[{"selected":1,"bytes":1000,"path":"Show.S01E01.mkv"}]}"#,
+    )
+    .await
+    .unwrap();
+
+    let source_file = cfg.sources[0]
+        .path
+        .join("Show.S01.Pack")
+        .join("Show.S01E01.mkv");
+    let target_file = cfg.libraries[0]
+        .path
+        .join("Show")
+        .join("Season 01")
+        .join("Show - S01E01.mkv");
+    db.insert_link(&LinkRecord {
+        id: None,
+        source_path: source_file,
+        target_path: target_file,
+        media_id: "tvdb-1".to_string(),
+        media_type: MediaType::Tv,
+        status: LinkStatus::Active,
+        created_at: None,
+        updated_at: None,
+    })
+    .await
+    .unwrap();
+
+    let response = api_get_linked_torrents(State(WebState::new(cfg, db)))
+        .await
+        .into_response();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+    assert_eq!(json["torrent_count"], 1);
+    assert_eq!(json["unmatched_links"], 0);
+    assert_eq!(json["torrents"][0]["rd_id"], "rd-1");
+    assert_eq!(json["torrents"][0]["folder"], "Show.S01.Pack");
+    assert_eq!(json["torrents"][0]["active_links"], 1);
+}
+
+#[tokio::test]
+async fn api_pins_crud_and_import_lifecycle() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = test_config(dir.path());
+    let markers_dir = dir.path().join("markers");
+    std::fs::create_dir_all(&markers_dir).unwrap();
+    cfg.handoff.markers_dir = Some(markers_dir.clone());
+    let db = Database::new(&cfg.db_path).await.unwrap();
+    let state = WebState::new(cfg, db);
+
+    // 1. Initial list is empty
+    let res = api_get_pins(State(state.clone())).await.into_response();
+    assert_eq!(res.status(), StatusCode::OK);
+    let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json.as_array().unwrap().len(), 0);
+
+    // 2. Reject invalid folder
+    let bad_folder = api_post_pin(
+        State(state.clone()),
+        Json(ApiCreatePinRequest {
+            folder: "foo/bar".to_string(),
+            media_id: "tvdb-1".to_string(),
+            note: None,
+        }),
+    )
+    .await
+    .into_response();
+    assert_eq!(bad_folder.status(), StatusCode::BAD_REQUEST);
+
+    // 3. Reject invalid media_id
+    let bad_id = api_post_pin(
+        State(state.clone()),
+        Json(ApiCreatePinRequest {
+            folder: "folder1".to_string(),
+            media_id: "invalid-id".to_string(),
+            note: None,
+        }),
+    )
+    .await
+    .into_response();
+    assert_eq!(bad_id.status(), StatusCode::BAD_REQUEST);
+
+    // 4. Create valid pin
+    let create_res = api_post_pin(
+        State(state.clone()),
+        Json(ApiCreatePinRequest {
+            folder: "My.Show.S01".to_string(),
+            media_id: "tvdb-12345".to_string(),
+            note: Some("test pin".to_string()),
+        }),
+    )
+    .await
+    .into_response();
+    assert_eq!(create_res.status(), StatusCode::OK);
+    let bytes = to_bytes(create_res.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["changed"], true);
+    assert_eq!(json["folder"], "My.Show.S01");
+    assert_eq!(json["media_id"], "tvdb-12345");
+
+    // 5. List shows created pin
+    let res = api_get_pins(State(state.clone())).await.into_response();
+    let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json.as_array().unwrap().len(), 1);
+    assert_eq!(json[0]["folder"], "My.Show.S01");
+    assert_eq!(json[0]["origin"], "manual");
+
+    // 6. Delete pin
+    let del_res = api_delete_pin(State(state.clone()), Path("My.Show.S01".to_string()))
+        .await
+        .into_response();
+    assert_eq!(del_res.status(), StatusCode::OK);
+    let bytes = to_bytes(del_res.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["deleted"], true);
+
+    // 7. List empty again
+    let res = api_get_pins(State(state.clone())).await.into_response();
+    let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json.as_array().unwrap().len(), 0);
+
+    // 8. Import markers from directory
+    let marker_file = markers_dir.join("marker1.json");
+    std::fs::write(
+        &marker_file,
+        r#"{"materialized_relative_path":"Imported.Show.S01/file.mkv","tvdb_id":999,"media_title":"from buddy"}"#,
+    )
+    .unwrap();
+    let import_res = api_post_pins_import(State(state.clone()), axum::body::Bytes::new())
+        .await
+        .into_response();
+    assert_eq!(import_res.status(), StatusCode::OK);
+    let bytes = to_bytes(import_res.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["imported"], 1);
+
+    // Pin is present now with origin handoff
+    let res = api_get_pins(State(state.clone())).await.into_response();
+    let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json.as_array().unwrap().len(), 1);
+    assert_eq!(json[0]["folder"], "Imported.Show.S01");
+    assert_eq!(json[0]["origin"], "handoff");
+
+    // 9. Import with link_now = true
+    let marker2 = markers_dir.join("marker2.json");
+    std::fs::write(
+        &marker2,
+        r#"{"materialized_relative_path":"LinkNow.Show.S01/file.mkv","tvdb_id":1001}"#,
+    )
+    .unwrap();
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "link_now": true
+    }))
+    .unwrap();
+    let import_res = api_post_pins_import(State(state.clone()), axum::body::Bytes::from(payload))
+        .await
+        .into_response();
+    assert_eq!(import_res.status(), StatusCode::OK);
+    let bytes = to_bytes(import_res.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["imported"], 1);
+    assert!(json.get("scan_job").is_some());
+}
+
+#[tokio::test]
+async fn api_post_links_sweep_executes_and_returns_summary() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = test_config(dir.path());
+    let db = Database::new(&cfg.db_path).await.unwrap();
+    let state = WebState::new(cfg, db);
+
+    let res = api_post_links_sweep(State(state)).await.into_response();
+    assert_eq!(res.status(), StatusCode::OK);
+    let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["success"], true);
+    assert_eq!(json["dead_marked"], 0);
+    assert_eq!(json["removed"], 0);
+    assert_eq!(json["skipped"], 0);
+    assert_eq!(json["quarantined"], 0);
+}
+
+#[tokio::test]
+async fn api_get_quarantine_returns_quarantined_items() {
+    let dir = tempfile::tempdir().unwrap();
+    let mount = dir.path();
+    std::fs::create_dir_all(mount.join("__bad__/Failed.Download")).unwrap();
+
+    let mut cfg = test_config(mount);
+    cfg.sources = vec![crate::config::SourceConfig {
+        name: "RD".to_string(),
+        path: mount.join("__all__"),
+        media_type: "auto".to_string(),
+    }];
+    let db = Database::new(&cfg.db_path).await.unwrap();
+    let state = WebState::new(cfg, db);
+
+    let res = api_get_quarantine(State(state)).await.into_response();
+    assert_eq!(res.status(), StatusCode::OK);
+    let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["total"], 1);
+    assert_eq!(json["items"][0]["name"], "Failed.Download");
+    assert_eq!(json["items"][0]["source_name"], "RD");
+}
+
+#[tokio::test]
+async fn api_get_unlinked_library_items_returns_report() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = test_config(dir.path());
+    let tv_dir = dir.path().join("tv");
+    std::fs::create_dir_all(tv_dir.join("Breaking Bad {tvdb-81189}/Season 01")).unwrap();
+    cfg.libraries.push(crate::config::LibraryConfig {
+        name: "TV".to_string(),
+        path: tv_dir,
+        media_type: crate::models::MediaType::Tv,
+        content_type: None,
+        depth: 1,
+    });
+    let db = Database::new(&cfg.db_path).await.unwrap();
+    let state = WebState::new(cfg, db);
+
+    let res = api_get_unlinked_library_items(
+        State(state.clone()),
+        Query(ApiUnlinkedItemsQuery {
+            library: None,
+            r#type: None,
+        }),
+    )
+    .await
+    .into_response();
+    assert_eq!(res.status(), StatusCode::OK);
+    let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["total_unlinked"], 1);
+    assert_eq!(json["items"][0]["title"], "Breaking Bad");
+    assert_eq!(json["items"][0]["tvdb_id"], 81189);
+    assert_eq!(json["items"][0]["season_count"], 1);
+
+    // Filter by invalid type returns 400
+    let res_invalid = api_get_unlinked_library_items(
+        State(state),
+        Query(ApiUnlinkedItemsQuery {
+            library: None,
+            r#type: Some("audiobook".to_string()),
+        }),
+    )
+    .await
+    .into_response();
+    assert_eq!(res_invalid.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn api_post_scan_target_executes_targeted_scan() {
+    let dir = tempfile::tempdir().unwrap();
+    let library_dir = dir.path().join("library");
+    let source_dir = dir.path().join("source");
+    std::fs::create_dir_all(&library_dir).unwrap();
+    std::fs::create_dir_all(&source_dir).unwrap();
+
+    let show_folder = library_dir.join("Breaking Bad {tvdb-81189}");
+    std::fs::create_dir_all(&show_folder).unwrap();
+
+    let target_folder = source_dir.join("Breaking.Bad.S01.720p");
+    std::fs::create_dir_all(&target_folder).unwrap();
+    let target_file = target_folder.join("Breaking.Bad.S01E01.mkv");
+    std::fs::write(&target_file, b"video").unwrap();
+
+    let mut cfg = test_config(dir.path());
+    cfg.libraries = vec![crate::config::LibraryConfig {
+        name: "TV".to_string(),
+        path: library_dir,
+        media_type: crate::models::MediaType::Tv,
+        content_type: None,
+        depth: 1,
+    }];
+    cfg.sources = vec![crate::config::SourceConfig {
+        name: "RD".to_string(),
+        path: source_dir,
+        media_type: "auto".to_string(),
+    }];
+    let db = Database::new(&cfg.db_path).await.unwrap();
+    let state = WebState::new(cfg, db.clone());
+
+    // Empty folder returns 400
+    let res_empty = api_post_scan_target(
+        State(state.clone()),
+        Json(ApiTargetScanRequest {
+            folder: "   ".to_string(),
+            dry_run: None,
+            library: None,
+        }),
+    )
+    .await
+    .into_response();
+    assert_eq!(res_empty.status(), StatusCode::BAD_REQUEST);
+
+    // Valid targeted scan
+    let res = api_post_scan_target(
+        State(state),
+        Json(ApiTargetScanRequest {
+            folder: "Breaking.Bad.S01.720p".to_string(),
+            dry_run: Some(false),
+            library: Some("TV".to_string()),
+        }),
+    )
+    .await
+    .into_response();
+    assert_eq!(res.status(), StatusCode::OK);
+    let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["success"], true);
+    assert_eq!(json["created_or_updated"], 1);
+    assert_eq!(json["folder"], "Breaking.Bad.S01.720p");
+}

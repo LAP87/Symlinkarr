@@ -114,6 +114,7 @@ pub(crate) async fn collect_doctor_checks(
         ok: cfg.backup.max_safety_backups > 0,
         detail: cfg.backup.max_safety_backups.to_string(),
     });
+    checks.push(handoff_markers_dir_check(cfg, mode));
 
     checks.push(optional_tool_check("media_probe.ffprobe", "ffprobe"));
     checks.push(optional_tool_check("media_probe.mediainfo", "mediainfo"));
@@ -411,6 +412,104 @@ fn optional_tool_check(name: &str, command: &str) -> DoctorCheckResult {
     }
 }
 
+fn handoff_markers_dir_check(cfg: &Config, mode: DoctorCheckMode) -> DoctorCheckResult {
+    let Some(dir) = cfg.handoff.markers_dir.as_deref() else {
+        return DoctorCheckResult {
+            name: "handoff.markers_dir".to_string(),
+            ok: true,
+            detail: "optional; not configured (set handoff.markers_dir to enable backfill-buddy queue import)".to_string(),
+        };
+    };
+
+    if !dir.is_absolute() {
+        return DoctorCheckResult {
+            name: "handoff.markers_dir".to_string(),
+            ok: false,
+            detail: format!("must be absolute: {}", dir.display()),
+        };
+    }
+
+    if dir.exists() {
+        if !dir.is_dir() {
+            return DoctorCheckResult {
+                name: "handoff.markers_dir".to_string(),
+                ok: false,
+                detail: format!("not a directory: {}", dir.display()),
+            };
+        }
+
+        if cfg.handoff.consume_markers {
+            let (ok, detail) = match mode {
+                DoctorCheckMode::Full => {
+                    if can_write_in_directory(dir) {
+                        (
+                            true,
+                            format!(
+                                "exists and writable (consume_markers=true): {}",
+                                dir.display()
+                            ),
+                        )
+                    } else {
+                        (
+                            false,
+                            format!(
+                                "exists but not writable (consume_markers=true): {}",
+                                dir.display()
+                            ),
+                        )
+                    }
+                }
+                DoctorCheckMode::ReadOnly => {
+                    let (ok, inspect_detail) = inspect_directory_without_write_probe(dir);
+                    (ok, format!("consume_markers=true; {}", inspect_detail))
+                }
+            };
+            DoctorCheckResult {
+                name: "handoff.markers_dir".to_string(),
+                ok,
+                detail,
+            }
+        } else {
+            let (ok, inspect_detail) = inspect_directory_without_write_probe(dir);
+            DoctorCheckResult {
+                name: "handoff.markers_dir".to_string(),
+                ok,
+                detail: format!("consume_markers=false; {}", inspect_detail),
+            }
+        }
+    } else {
+        let parent = dir.parent().unwrap_or_else(|| std::path::Path::new("."));
+        if !parent.exists() {
+            DoctorCheckResult {
+                name: "handoff.markers_dir".to_string(),
+                ok: false,
+                detail: format!(
+                    "missing and parent directory does not exist: {}",
+                    dir.display()
+                ),
+            }
+        } else if !parent.is_dir() {
+            DoctorCheckResult {
+                name: "handoff.markers_dir".to_string(),
+                ok: false,
+                detail: format!(
+                    "missing and parent path is not a directory: {}",
+                    dir.display()
+                ),
+            }
+        } else {
+            DoctorCheckResult {
+                name: "handoff.markers_dir".to_string(),
+                ok: true,
+                detail: format!(
+                    "does not exist yet (created on first handoff): {}",
+                    dir.display()
+                ),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -555,5 +654,97 @@ mod tests {
             media_type: "auto".to_string(),
         };
         assert!(decypharr_root_layout_check(&at_all).is_none());
+    }
+
+    use std::path::PathBuf;
+
+    fn dummy_config_with_handoff(markers_dir: Option<PathBuf>, consume_markers: bool) -> Config {
+        let yaml = format!(
+            r#"
+libraries: []
+sources: []
+backup:
+  enabled: false
+handoff:
+  markers_dir: {}
+  consume_markers: {}
+"#,
+            markers_dir
+                .as_ref()
+                .map(|p| format!("\"{}\"", p.display()))
+                .unwrap_or_else(|| "null".to_string()),
+            consume_markers
+        );
+        serde_yml::from_str(&yaml).unwrap()
+    }
+
+    #[test]
+    fn handoff_markers_dir_unconfigured_is_ok() {
+        let cfg = dummy_config_with_handoff(None, true);
+        let check = handoff_markers_dir_check(&cfg, DoctorCheckMode::Full);
+        assert!(check.ok);
+        assert_eq!(check.name, "handoff.markers_dir");
+        assert!(check.detail.contains("optional; not configured"));
+    }
+
+    #[test]
+    fn handoff_markers_dir_relative_fails() {
+        let cfg = dummy_config_with_handoff(Some(PathBuf::from("relative/handoff")), true);
+        let check = handoff_markers_dir_check(&cfg, DoctorCheckMode::Full);
+        assert!(!check.ok);
+        assert!(check.detail.contains("must be absolute"));
+    }
+
+    #[test]
+    fn handoff_markers_dir_not_a_directory_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("not_a_dir.txt");
+        std::fs::write(&file_path, "test").unwrap();
+
+        let cfg = dummy_config_with_handoff(Some(file_path), true);
+        let check = handoff_markers_dir_check(&cfg, DoctorCheckMode::Full);
+        assert!(!check.ok);
+        assert!(check.detail.contains("not a directory"));
+    }
+
+    #[test]
+    fn handoff_markers_dir_writable_passes() {
+        let dir = tempfile::tempdir().unwrap();
+        let markers = dir.path().join("markers");
+        std::fs::create_dir(&markers).unwrap();
+
+        let cfg = dummy_config_with_handoff(Some(markers), true);
+        let check = handoff_markers_dir_check(&cfg, DoctorCheckMode::Full);
+        assert!(check.ok);
+        assert!(check.detail.contains("exists and writable"));
+
+        let ro_check = handoff_markers_dir_check(&cfg, DoctorCheckMode::ReadOnly);
+        assert!(ro_check.ok);
+    }
+
+    #[test]
+    fn handoff_markers_dir_missing_with_parent_passes() {
+        let dir = tempfile::tempdir().unwrap();
+        let pending = dir.path().join("future_markers");
+
+        let cfg = dummy_config_with_handoff(Some(pending), true);
+        let check = handoff_markers_dir_check(&cfg, DoctorCheckMode::Full);
+        assert!(check.ok);
+        assert!(check
+            .detail
+            .contains("does not exist yet (created on first handoff)"));
+    }
+
+    #[test]
+    fn handoff_markers_dir_missing_without_parent_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let deeply_missing = dir.path().join("no_such_parent").join("markers");
+
+        let cfg = dummy_config_with_handoff(Some(deeply_missing), true);
+        let check = handoff_markers_dir_check(&cfg, DoctorCheckMode::Full);
+        assert!(!check.ok);
+        assert!(check
+            .detail
+            .contains("missing and parent directory does not exist"));
     }
 }

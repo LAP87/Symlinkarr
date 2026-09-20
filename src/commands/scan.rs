@@ -82,6 +82,7 @@ pub(crate) async fn run_scan(
     search_missing: bool,
     output: OutputFormat,
     library_filter: Option<&str>,
+    folder_filter: Option<&str>,
 ) -> Result<(i64, i64)> {
     run_scan_with_origin(
         cfg,
@@ -91,10 +92,12 @@ pub(crate) async fn run_scan(
         search_missing,
         output,
         library_filter,
+        folder_filter,
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_scan_with_origin(
     cfg: &Config,
     db: &Database,
@@ -103,6 +106,7 @@ pub(crate) async fn run_scan_with_origin(
     search_missing: bool,
     output: OutputFormat,
     library_filter: Option<&str>,
+    folder_filter: Option<&str>,
 ) -> Result<(i64, i64)> {
     let _stdout_guard = stdout_text_guard(output != OutputFormat::Json);
     info!("=== Symlinkarr Scan ===");
@@ -119,6 +123,7 @@ pub(crate) async fn run_scan_with_origin(
         dry_run = effective_dry_run,
         search_missing,
         library_filter = library_filter.unwrap_or("*"),
+        folder_filter = folder_filter.unwrap_or("*"),
         selected_libraries = selected_libraries.len(),
         "Starting scan"
     );
@@ -142,7 +147,8 @@ pub(crate) async fn run_scan_with_origin(
     );
 
     let source_inventory_started = Instant::now();
-    let (source_items, source_inventory_stats) = collect_source_items(cfg, db).await?;
+    let (source_items, source_inventory_stats) =
+        collect_source_items(cfg, db, folder_filter).await?;
     telemetry.source_inventory = source_inventory_started.elapsed();
     telemetry.source_inventory_stats = source_inventory_stats;
     info!(
@@ -632,8 +638,9 @@ fn generate_scan_run_token() -> String {
 async fn collect_source_items(
     cfg: &Config,
     db: &Database,
+    folder_filter: Option<&str>,
 ) -> Result<(Vec<SourceItem>, SourceInventoryTelemetry)> {
-    let (mut items, telemetry) = collect_raw_source_items(cfg, db).await?;
+    let (mut items, telemetry) = collect_raw_source_items(cfg, db, folder_filter).await?;
     // Decypharr mirrors quarantined (`__bad__`) torrents under `__all__`; they stat fine
     // but read as empty, so they must never become link candidates (and must not cost a
     // WebDAV probe each scan).
@@ -656,9 +663,76 @@ async fn collect_source_items(
 async fn collect_raw_source_items(
     cfg: &Config,
     db: &Database,
+    folder_filter: Option<&str>,
 ) -> Result<(Vec<SourceItem>, SourceInventoryTelemetry)> {
     let src_scanner = SourceScanner::new();
     let mut telemetry = SourceInventoryTelemetry::default();
+
+    if let Some(target) = folder_filter.map(str::trim).filter(|s| !s.is_empty()) {
+        info!("Targeted source scan restricted to folder: '{}'", target);
+        let mut target_items = Vec::new();
+        let target_path = std::path::Path::new(target);
+
+        for source in &cfg.sources {
+            let candidate = if target_path.is_absolute() {
+                if target_path.starts_with(&source.path) {
+                    Some(target_path.to_path_buf())
+                } else {
+                    None
+                }
+            } else {
+                let joined = source.path.join(target);
+                if joined.exists() {
+                    Some(joined)
+                } else {
+                    None
+                }
+            };
+
+            if let Some(path) = candidate {
+                let items = src_scanner.scan_folder(&path, source);
+                telemetry.filesystem_sources += 1;
+                telemetry.filesystem_items += items.len();
+                target_items.extend(items);
+            }
+        }
+
+        if target_items.is_empty() && !cfg.realdebrid.api_token.is_empty() {
+            use crate::api::realdebrid::RealDebridClient;
+            use crate::cache::TorrentCache;
+
+            let rd_client = RealDebridClient::from_config(&cfg.realdebrid);
+            let cache = TorrentCache::new(db, &rd_client)
+                .with_mount_roots(cfg.sources.iter().map(|s| s.path.clone()));
+
+            for source in &cfg.sources {
+                if let Ok(files) = cache.get_files(&source.path).await {
+                    let matching_files: Vec<_> = files
+                        .into_iter()
+                        .filter(|(path, _)| path.to_string_lossy().contains(target))
+                        .collect();
+                    for (path, _) in matching_files {
+                        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                            if crate::utils::VIDEO_EXTENSIONS.contains(&ext.to_lowercase().as_str())
+                            {
+                                if let Some(item) = src_scanner.parse_path_for_source(&path, source)
+                                {
+                                    target_items.push(item);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if !target_items.is_empty() {
+                telemetry.cached_sources = 1;
+                telemetry.cached_items = target_items.len();
+                telemetry.cache_enabled = true;
+            }
+        }
+
+        return Ok((target_items, telemetry));
+    }
 
     if !cfg.realdebrid.api_token.is_empty() {
         use crate::api::realdebrid::RealDebridClient;
@@ -764,7 +838,7 @@ pub(crate) async fn collect_source_items_for_matching(
     cfg: &Config,
     db: &Database,
 ) -> Result<Vec<SourceItem>> {
-    collect_source_items(cfg, db)
+    collect_source_items(cfg, db, None)
         .await
         .map(|(items, _telemetry)| items)
 }
@@ -797,7 +871,7 @@ mod tests;
 
 /// Stored source pins as folder → media id. A pin with an unparsable id is skipped with a
 /// warning rather than failing the scan.
-async fn load_source_pins(db: &Database) -> HashMap<String, MediaId> {
+pub(crate) async fn load_source_pins(db: &Database) -> HashMap<String, MediaId> {
     let pins = match db.list_source_pins().await {
         Ok(pins) => pins,
         Err(err) => {
@@ -856,7 +930,10 @@ fn media_id_matches(id: &MediaId, tvdb_id: i64, tmdb_id: i64) -> bool {
 /// After links were written, ask each configured *Arr to rescan the touched series/movies
 /// so their file state (and anything watching it, e.g. a keeper's "linked" check) updates
 /// now instead of at the arr's next periodic disk scan. Failures are reported, never fatal.
-async fn rescan_arrs_for_touched(cfg: &Config, touched: &[(MediaType, MediaId)]) -> Vec<String> {
+pub(crate) async fn rescan_arrs_for_touched(
+    cfg: &Config,
+    touched: &[(MediaType, MediaId)],
+) -> Vec<String> {
     let mut lines = Vec::new();
     let tv_ids: Vec<&MediaId> = touched
         .iter()

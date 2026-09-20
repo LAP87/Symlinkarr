@@ -674,6 +674,7 @@ pub struct DaemonScheduleView {
     pub interval_label: String,
     pub search_missing_label: String,
     pub vacuum_label: String,
+    pub dead_link_sweep_label: String,
     pub last_run_metric_label: String,
     pub last_run_label: String,
     pub next_due_label: String,
@@ -711,6 +712,7 @@ pub struct StatusTemplate {
     pub checks: std::collections::BTreeMap<String, HealthCheck>,
     pub deferred_refresh: DeferredRefreshSummaryView,
     pub streaming_guard: Option<StreamingGuardView>,
+    pub quarantine_folders_count: usize,
 }
 
 pub struct HealthCheck {
@@ -1231,7 +1233,27 @@ pub struct DeadLinksTemplate {
     pub links: Vec<LinkRecord>,
     pub active_repair: Option<ActiveRepairView>,
     pub last_repair_outcome: Option<BackgroundRepairOutcomeView>,
+    pub flash_message: Option<String>,
+    pub error_message: Option<String>,
     pub csrf_token: String,
+}
+
+#[derive(Template)]
+#[template(path = "web/ui/pins.html")]
+pub struct PinsTemplate {
+    pub pins: Vec<crate::db::SourcePin>,
+    pub markers_dir: Option<String>,
+    pub pending_markers_count: usize,
+    pub flash_message: Option<String>,
+    pub error_message: Option<String>,
+    pub csrf_token: String,
+}
+
+#[derive(Template)]
+#[template(path = "web/ui/quarantine.html")]
+pub struct QuarantineTemplate {
+    pub items: Vec<crate::quarantine::QuarantinedFolderDetail>,
+    pub sources_count: usize,
 }
 
 #[derive(Template)]
@@ -1437,6 +1459,7 @@ impl_template_into_response!(
     AnimeRemediationResultTemplate,
     LinksTemplate,
     DeadLinksTemplate,
+    PinsTemplate,
     RepairResultTemplate,
     ConfigTemplate,
     DoctorTemplate,

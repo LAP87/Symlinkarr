@@ -1446,3 +1446,142 @@ async fn test_build_report_full_anime_duplicates_disables_sample_cap() {
         PATH_SAMPLE_LIMIT + 3
     );
 }
+
+#[test]
+fn test_is_season_dir_name() {
+    assert!(is_season_dir_name("Season 01"));
+    assert!(is_season_dir_name("Season 1"));
+    assert!(is_season_dir_name("season 12"));
+    assert!(is_season_dir_name("Specials"));
+    assert!(is_season_dir_name("Special"));
+    assert!(is_season_dir_name("Staffel 2"));
+    assert!(is_season_dir_name("Saison 3"));
+    assert!(is_season_dir_name("S01"));
+    assert!(is_season_dir_name("s2"));
+
+    assert!(!is_season_dir_name("Featurettes"));
+    assert!(!is_season_dir_name("Subs"));
+    assert!(!is_season_dir_name("Trailers"));
+    assert!(!is_season_dir_name("Behind the Scenes"));
+}
+
+#[tokio::test]
+async fn test_build_unlinked_items_report() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let movies = dir.path().join("movies");
+    let anime = dir.path().join("anime");
+    let source = dir.path().join("rd");
+    std::fs::create_dir_all(&movies).unwrap();
+    std::fs::create_dir_all(&anime).unwrap();
+    std::fs::create_dir_all(&source).unwrap();
+
+    // 1. Movie with active symlink
+    let linked_movie_folder = movies.join("Inception (2010) {tmdb-27205}");
+    std::fs::create_dir_all(&linked_movie_folder).unwrap();
+
+    // 2. Movie without symlinks (unlinked)
+    let unlinked_movie_folder = movies.join("The Matrix (1999) {tmdb-603}");
+    std::fs::create_dir_all(&unlinked_movie_folder).unwrap();
+
+    // 3. TV show without symlinks (unlinked) with 2 season folders
+    let unlinked_tv_folder = anime.join("Frieren (2023) {tvdb-400159}");
+    std::fs::create_dir_all(unlinked_tv_folder.join("Season 01")).unwrap();
+    std::fs::create_dir_all(unlinked_tv_folder.join("Season 02")).unwrap();
+    std::fs::create_dir_all(unlinked_tv_folder.join("Featurettes")).unwrap();
+
+    // 4. TV show with active symlink
+    let linked_tv_folder = anime.join("Attack on Titan {tvdb-267440}");
+    std::fs::create_dir_all(linked_tv_folder.join("Season 01")).unwrap();
+
+    let db_path = dir.path().join("test.db");
+    let cfg = test_config(
+        movies,
+        anime,
+        source,
+        db_path.to_string_lossy().into_owned(),
+    );
+    let db = Database::new(db_path.to_str().unwrap()).await.unwrap();
+
+    // Insert active links for linked_movie and linked_tv
+    let source_movie_file = dir.path().join("rd/inception.mkv");
+    let target_movie_file = linked_movie_folder.join("Inception (2010).mkv");
+    std::fs::write(&source_movie_file, b"test").unwrap();
+    std::os::unix::fs::symlink(&source_movie_file, &target_movie_file).unwrap();
+    db.insert_link(&LinkRecord {
+        id: None,
+        source_path: source_movie_file,
+        target_path: target_movie_file,
+        media_id: "tmdb-27205".to_string(),
+        media_type: MediaType::Movie,
+        status: LinkStatus::Active,
+        created_at: None,
+        updated_at: None,
+    })
+    .await
+    .unwrap();
+
+    let source_tv_file = dir.path().join("rd/aot.mkv");
+    let target_tv_file = linked_tv_folder.join("Season 01/aot-s01e01.mkv");
+    std::fs::write(&source_tv_file, b"test").unwrap();
+    std::os::unix::fs::symlink(&source_tv_file, &target_tv_file).unwrap();
+    db.insert_link(&LinkRecord {
+        id: None,
+        source_path: source_tv_file,
+        target_path: target_tv_file,
+        media_id: "tvdb-267440".to_string(),
+        media_type: MediaType::Tv,
+        status: LinkStatus::Active,
+        created_at: None,
+        updated_at: None,
+    })
+    .await
+    .unwrap();
+
+    // Build unlinked report for all
+    let report = build_unlinked_items_report(&cfg, &db, None, None)
+        .await
+        .unwrap();
+
+    assert_eq!(report.total_unlinked, 2);
+    assert_eq!(report.items.len(), 2);
+
+    let frieren = report
+        .items
+        .iter()
+        .find(|i| i.title == "Frieren (2023)")
+        .unwrap();
+    assert_eq!(frieren.library_name, "Anime");
+    assert_eq!(frieren.media_type, MediaType::Tv);
+    assert_eq!(frieren.tvdb_id, Some(400159));
+    assert_eq!(frieren.tmdb_id, None);
+    assert_eq!(frieren.season_count, Some(2));
+    assert_eq!(
+        frieren.folder_path,
+        unlinked_tv_folder.display().to_string()
+    );
+
+    let matrix = report
+        .items
+        .iter()
+        .find(|i| i.title == "The Matrix (1999)")
+        .unwrap();
+    assert_eq!(matrix.library_name, "Movies");
+    assert_eq!(matrix.media_type, MediaType::Movie);
+    assert_eq!(matrix.tvdb_id, None);
+    assert_eq!(matrix.tmdb_id, Some(603));
+    assert_eq!(matrix.season_count, None);
+
+    // Filter by media_type Movie
+    let movie_report = build_unlinked_items_report(&cfg, &db, Some(MediaType::Movie), None)
+        .await
+        .unwrap();
+    assert_eq!(movie_report.total_unlinked, 1);
+    assert_eq!(movie_report.items[0].title, "The Matrix (1999)");
+
+    // Filter by library Anime
+    let anime_report = build_unlinked_items_report(&cfg, &db, None, Some("Anime"))
+        .await
+        .unwrap();
+    assert_eq!(anime_report.total_unlinked, 1);
+    assert_eq!(anime_report.items[0].title, "Frieren (2023)");
+}

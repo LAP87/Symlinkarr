@@ -1098,6 +1098,7 @@ async fn run_relink_scans(
             false,
             crate::OutputFormat::Text,
             filter.as_deref(),
+            None,
         ))
         .await?;
     }

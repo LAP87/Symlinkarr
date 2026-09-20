@@ -1,0 +1,85 @@
+{% extends "web/ui/base.html" %}
+
+{% block title %}Quarantined Folders - Symlinkarr{% endblock %}
+{% block nav_links %}active{% endblock %}
+{% block body_class %}page-quarantine page-inspection{% endblock %}
+
+{% block content %}
+<div class="page-header page-header--split">
+    <div>
+        <h1>Quarantined Folders</h1>
+        <p class="page-lead">Torrents moved to Decypharr's <code>__bad__</code> quarantine because they failed or were removed on Real-Debrid.</p>
+    </div>
+    <div class="page-header__aside">
+        <span class="badge {% if items|length > 0 %}badge-warning{% else %}badge-success{% endif %}">{{ items|length }} quarantined</span>
+        <span class="badge badge-info">{{ sources_count }} source(s)</span>
+    </div>
+</div>
+
+<div class="page-sections">
+    <section class="card operator-links-card">
+        <div class="operator-toolbar">
+            <div class="filter-tabs">
+                <a href="/links?filter=active" class="filter-tab">
+                    Active
+                </a>
+                <a href="/links?filter=dead" class="filter-tab">
+                    Dead
+                </a>
+                <a href="/links?filter=all" class="filter-tab">
+                    All
+                </a>
+                <a href="/pins" class="filter-tab">
+                    Source pins
+                </a>
+                <a href="/links/quarantine" class="filter-tab active">
+                    Quarantine
+                </a>
+            </div>
+            <div class="operator-toolbar__actions">
+                <a href="/links/dead" class="btn btn-secondary">View dead links</a>
+                <a href="/pins" class="btn btn-secondary">Manage pins</a>
+            </div>
+        </div>
+
+        <div class="alert alert-info" style="margin: 1rem 0;">
+            <strong>Automated Protection:</strong> Symlinkarr automatically excludes these folders from matching and repair passes. Any symlink pointing into a quarantined folder is flagged as dead during sweeps.
+        </div>
+
+        {% if items|length > 0 %}
+        <div class="table-wrap">
+        <table class="data-table dense-table">
+            <thead>
+                <tr>
+                    <th>Torrent Folder</th>
+                    <th>Source</th>
+                    <th>Quarantine Path</th>
+                    <th>Detected / Modified</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in items %}
+                <tr>
+                    <td><strong><code class="mono">{{ item.name }}</code></strong></td>
+                    <td><span class="badge badge-secondary">{{ item.source_name }}</span></td>
+                    <td class="text-muted"><code class="mono" style="font-size: 0.8125rem;">{{ item.quarantine_path }}</code></td>
+                    <td class="text-muted">
+                        {% match item.modified_at %}
+                        {% when Some with (modified) %}{{ modified }}
+                        {% when None %}<span class="text-muted">—</span>
+                        {% endmatch %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <span class="empty-state__title">No quarantined folders detected.</span>
+            All configured source roots and their sibling <code>__bad__</code> quarantine directories are currently clean.
+        </div>
+        {% endif %}
+    </section>
+</div>
+{% endblock %}

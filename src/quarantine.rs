@@ -6,9 +6,20 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
 use crate::config::SourceConfig;
+
+/// A folder identified in Decypharr's `__bad__` quarantine.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QuarantinedFolderDetail {
+    pub name: String,
+    pub source_name: String,
+    pub quarantine_path: String,
+    pub full_path: String,
+    pub modified_at: Option<String>,
+}
 
 /// Source-root paths (`<root>/<torrent folder>`) of every quarantined torrent visible from
 /// the configured sources. Empty when no source has a readable `__bad__` sibling.
@@ -18,10 +29,11 @@ pub struct QuarantinedFolders {
 }
 
 impl QuarantinedFolders {
-    pub fn load(sources: &[SourceConfig]) -> Self {
+    pub fn load_from_paths<P: AsRef<Path>>(paths: impl IntoIterator<Item = P>) -> Self {
         let mut folders = HashSet::new();
-        for source in sources {
-            for bad_dir in quarantine_dirs_for(&source.path) {
+        for path in paths {
+            let path_ref = path.as_ref();
+            for bad_dir in quarantine_dirs_for(path_ref) {
                 let entries = match fs::read_dir(&bad_dir) {
                     Ok(entries) => entries,
                     Err(err) => {
@@ -31,7 +43,7 @@ impl QuarantinedFolders {
                 };
                 let before = folders.len();
                 for entry in entries.flatten() {
-                    folders.insert(source.path.join(entry.file_name()));
+                    folders.insert(path_ref.join(entry.file_name()));
                 }
                 let added = folders.len() - before;
                 if added > 0 {
@@ -44,6 +56,10 @@ impl QuarantinedFolders {
             }
         }
         Self { folders }
+    }
+
+    pub fn load(sources: &[SourceConfig]) -> Self {
+        Self::load_from_paths(sources.iter().map(|s| &s.path))
     }
 
     pub fn is_empty(&self) -> bool {
@@ -62,6 +78,50 @@ impl QuarantinedFolders {
         path.ancestors()
             .skip(1)
             .any(|dir| self.folders.contains(dir))
+    }
+
+    /// List all quarantined folders found across configured sources with detailed metadata.
+    pub fn list_details(sources: &[SourceConfig]) -> Vec<QuarantinedFolderDetail> {
+        let mut details = Vec::new();
+        let mut seen = HashSet::new();
+
+        for src in sources {
+            for bad_dir in quarantine_dirs_for(&src.path) {
+                let entries = match fs::read_dir(&bad_dir) {
+                    Ok(entries) => entries,
+                    Err(_) => continue,
+                };
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    let file_name = entry.file_name();
+                    let name = file_name.to_string_lossy().to_string();
+                    if name.starts_with('.') {
+                        continue;
+                    }
+                    if !seen.insert(name.clone()) {
+                        continue;
+                    }
+                    let modified_at =
+                        entry
+                            .metadata()
+                            .ok()
+                            .and_then(|m| m.modified().ok())
+                            .map(|time| {
+                                let dt: chrono::DateTime<chrono::Utc> = time.into();
+                                dt.format("%Y-%m-%d %H:%M:%S UTC").to_string()
+                            });
+                    details.push(QuarantinedFolderDetail {
+                        name,
+                        source_name: src.name.clone(),
+                        quarantine_path: bad_dir.display().to_string(),
+                        full_path: path.display().to_string(),
+                        modified_at,
+                    });
+                }
+            }
+        }
+        details.sort_by(|a, b| a.name.cmp(&b.name));
+        details
     }
 }
 
@@ -116,5 +176,20 @@ mod tests {
         let q = QuarantinedFolders::load(&[source(&tmp.path().join("plain"))]);
         assert!(q.is_empty());
         assert!(!q.contains(&tmp.path().join("plain/x/y.mkv")));
+    }
+
+    #[test]
+    fn list_details_returns_quarantined_items_with_metadata() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mount = tmp.path();
+        fs::create_dir_all(mount.join("__all__/Good.Pack")).unwrap();
+        fs::create_dir_all(mount.join("__bad__/Bad.Pack")).unwrap();
+        fs::create_dir_all(mount.join("__bad__/Corrupt.Movie")).unwrap();
+
+        let details = QuarantinedFolders::list_details(&[source(&mount.join("__all__"))]);
+        assert_eq!(details.len(), 2);
+        assert_eq!(details[0].name, "Bad.Pack");
+        assert_eq!(details[0].source_name, "RD");
+        assert_eq!(details[1].name, "Corrupt.Movie");
     }
 }

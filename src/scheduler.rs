@@ -657,6 +657,7 @@ async fn execute_event(cfg: &Config, db: &Database, rule: &ScheduleRule) -> Resu
                 .and_then(Value::as_bool)
                 .unwrap_or(cfg.daemon.search_missing);
             let library = rule.event_args.get("library").and_then(Value::as_str);
+            let folder = rule.event_args.get("folder").and_then(Value::as_str);
             let (added, removed) = crate::commands::scan::run_scan_with_origin(
                 cfg,
                 db,
@@ -665,6 +666,7 @@ async fn execute_event(cfg: &Config, db: &Database, rule: &ScheduleRule) -> Resu
                 search_missing,
                 OutputFormat::Text,
                 library,
+                folder,
             )
             .await?;
             Ok(format!(

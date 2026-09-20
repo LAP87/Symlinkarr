@@ -218,6 +218,7 @@ fn sample_daemon_schedule_view() -> DaemonScheduleView {
         interval_label: "Every 60 min".to_string(),
         search_missing_label: "Enabled".to_string(),
         vacuum_label: "Daily @ 03:00 local".to_string(),
+        dead_link_sweep_label: "Daily @ 04:00 local".to_string(),
         last_run_metric_label: "Last daemon scan".to_string(),
         last_run_label: "2026-04-22 10:00:00 UTC".to_string(),
         next_due_label: "2026-04-22 11:00:00 UTC (in 45m)".to_string(),
@@ -346,6 +347,8 @@ fn dead_links_template_renders_summary_and_actions() {
             scope_label: "All Libraries".to_string(),
         }),
         last_repair_outcome: None,
+        flash_message: None,
+        error_message: None,
         csrf_token: "csrf-test-token".to_string(),
     };
 
@@ -358,6 +361,46 @@ fn dead_links_template_renders_summary_and_actions() {
     assert!(html.contains("Background repair running"));
     assert!(html.contains("badge badge-info"));
     assert!(html.contains("/wiki/Repair-and-Dead-Links"));
+}
+
+#[test]
+fn pins_template_renders_pins_and_handoff_queue_status() {
+    let template = PinsTemplate {
+        pins: vec![crate::db::SourcePin {
+            source_folder: "My.Show.S01".to_string(),
+            media_id: "tvdb-12345".to_string(),
+            origin: "handoff".to_string(),
+            note: Some("from buddy".to_string()),
+            updated_at: "2026-04-22 10:00:00".to_string(),
+        }],
+        markers_dir: Some("/state/symlinkarr-handoff".to_string()),
+        pending_markers_count: 5,
+        flash_message: None,
+        error_message: None,
+        csrf_token: "csrf-token".to_string(),
+    };
+    let html = template.render().unwrap();
+    assert!(html.contains("Source Pins"));
+    assert!(html.contains("My.Show.S01"));
+    assert!(html.contains("tvdb-12345"));
+    assert!(html.contains("/state/symlinkarr-handoff"));
+    assert!(html.contains("5"));
+    assert!(html.contains("pending marker file(s) waiting in handoff queue"));
+}
+
+#[test]
+fn pins_template_renders_unconfigured_handoff_help() {
+    let template = PinsTemplate {
+        pins: vec![],
+        markers_dir: None,
+        pending_markers_count: 0,
+        flash_message: None,
+        error_message: None,
+        csrf_token: "csrf-token".to_string(),
+    };
+    let html = template.render().unwrap();
+    assert!(html.contains("No source pins stored"));
+    assert!(html.contains("Set <code>handoff.markers_dir</code> in <code>config.toml</code> / <code>config.yaml</code>"));
 }
 
 #[test]
@@ -640,6 +683,7 @@ fn status_template_renders_recent_queue_jobs() {
         daemon_heartbeat: Some(sample_daemon_heartbeat_view()),
         checks: std::collections::BTreeMap::new(),
         deferred_refresh: DeferredRefreshSummaryView::default(),
+        quarantine_folders_count: 0,
         streaming_guard: Some(sample_streaming_guard_view()),
     };
 
@@ -668,6 +712,7 @@ fn status_template_surfaces_overdue_daemon_warning() {
             interval_label: "Every 60 min".to_string(),
             search_missing_label: "Enabled".to_string(),
             vacuum_label: "Daily @ 03:00 local".to_string(),
+            dead_link_sweep_label: "Daily @ 04:00 local".to_string(),
             last_run_metric_label: "Last daemon scan".to_string(),
             last_run_label: "2026-04-22 08:00:00 UTC".to_string(),
             next_due_label: "Due now (3h late)".to_string(),
@@ -684,6 +729,7 @@ fn status_template_surfaces_overdue_daemon_warning() {
         }),
         checks: std::collections::BTreeMap::new(),
         deferred_refresh: DeferredRefreshSummaryView::default(),
+        quarantine_folders_count: 0,
         streaming_guard: None,
     };
 
@@ -719,11 +765,32 @@ fn config_template_renders_settings_rail_and_defaults() {
     assert!(html.contains("1 sources"));
     assert!(html.contains("/library/anime"));
     assert!(html.contains("/backups"));
+    assert!(html.contains("Handoff markers directory"));
+    assert!(html.contains("Not configured"));
+    assert!(html.contains("Handoff consume markers"));
+    assert!(html.contains("Enabled"));
     assert!(html.contains("/static/js/config-rail.js"));
     // Filler removed in the phase-B settings layout.
     assert!(!html.contains("What this page is for"));
     assert!(!html.contains("Best follow-up"));
     assert!(!html.contains("Docs and recommended workflow"));
+}
+
+#[test]
+fn config_template_renders_configured_handoff() {
+    let mut config = sample_config();
+    config.handoff.markers_dir = Some(PathBuf::from("/opt/symlinkarr/handoff"));
+    config.handoff.consume_markers = false;
+
+    let template = ConfigTemplate {
+        config,
+        validation_result: None,
+        csrf_token: "token".to_string(),
+    };
+
+    let html = template.render().unwrap();
+    assert!(html.contains("/opt/symlinkarr/handoff"));
+    assert!(html.contains("Disabled"));
 }
 
 #[test]
@@ -1413,4 +1480,31 @@ fn discover_content_template_renders_guidance_and_help_link() {
     assert!(html.contains("/wiki/Discover-and-Queue"));
     assert!(html.contains("Discover never writes links"));
     assert!(html.contains("Using cached discover snapshot"));
+}
+
+#[test]
+fn quarantine_template_renders_quarantined_items_and_empty_state() {
+    let populated = QuarantineTemplate {
+        items: vec![crate::quarantine::QuarantinedFolderDetail {
+            name: "Broken.Torrent.Pack".to_string(),
+            source_name: "RD".to_string(),
+            quarantine_path: "/mnt/rd/__bad__".to_string(),
+            full_path: "/mnt/rd/__bad__/Broken.Torrent.Pack".to_string(),
+            modified_at: Some("2026-09-19 22:00:00 UTC".to_string()),
+        }],
+        sources_count: 1,
+    };
+    let html = populated.render().unwrap();
+    assert!(html.contains("Quarantined Folders"));
+    assert!(html.contains("Broken.Torrent.Pack"));
+    assert!(html.contains("1 quarantined"));
+    assert!(html.contains("/mnt/rd/__bad__"));
+
+    let empty = QuarantineTemplate {
+        items: Vec::new(),
+        sources_count: 1,
+    };
+    let empty_html = empty.render().unwrap();
+    assert!(empty_html.contains("No quarantined folders detected"));
+    assert!(empty_html.contains("0 quarantined"));
 }

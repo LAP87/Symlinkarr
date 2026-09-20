@@ -19,6 +19,22 @@
     </div>
 </div>
 
+{% match flash_message %}
+{% when Some with (msg) %}
+<div class="alert alert-success">
+    <strong>Success:</strong> {{ msg }}
+</div>
+{% when None %}
+{% endmatch %}
+
+{% match error_message %}
+{% when Some with (err) %}
+<div class="alert alert-error">
+    <strong>Error:</strong> {{ err }}
+</div>
+{% when None %}
+{% endmatch %}
+
 {% match active_repair %}
 {% when Some with (job) %}
 <div class="alert alert-info">
@@ -49,6 +65,10 @@
             </div>
             <div class="operator-toolbar__actions">
                 <a href="/links" class="btn btn-secondary">All links</a>
+                <form action="/links/sweep" method="post" class="actions">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button type="submit" class="btn btn-secondary">Sweep dead links</button>
+                </form>
                 {% if links|length > 0 %}
                 <form action="/links/repair" method="post" class="actions">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

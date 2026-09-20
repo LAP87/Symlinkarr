@@ -593,7 +593,7 @@ impl Linker {
                     .ensure_readable(&m.source_item.path, source_readiness_cache)
                     .await
                 {
-                    debug!(
+                    warn!(
                         "Skipping link creation because source failed WebDAV readability probe: {:?} ({})",
                         m.source_item.path, reason
                     );

@@ -43,6 +43,8 @@ pub struct MarkerImport {
     pub unreadable: usize,
     /// Markers deleted after their pin was stored.
     pub consumed: usize,
+    /// Folder names of imported pins.
+    pub imported_folders: Vec<String>,
 }
 
 impl MarkerImport {
@@ -160,6 +162,7 @@ pub async fn import_markers(db: &Database, dir: &Path, consume: bool) -> MarkerI
         })
         .collect();
     import.imported = rows.len();
+    import.imported_folders = by_folder.keys().cloned().collect();
     match db.upsert_source_pins(&rows).await {
         Ok(changed) => import.changed = changed,
         Err(err) => {
@@ -227,6 +230,7 @@ mod tests {
                 without_id: 1,
                 unreadable: 1,
                 consumed: 2,
+                imported_folders: vec!["Movie.2014".to_string(), "Show.S01.Pack".to_string()],
             }
         );
         let pins = db.list_source_pins().await.unwrap();
