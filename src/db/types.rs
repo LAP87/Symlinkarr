@@ -3,7 +3,17 @@ use std::path::PathBuf;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 
-use crate::models::MediaType;
+use crate::models::{MediaId, MediaType};
+
+#[derive(Debug, Clone, Default)]
+pub struct DeadLinkPruneOutcome {
+    pub removed: usize,
+    pub already_missing: usize,
+    pub skipped_dir_guard: usize,
+    pub skipped_streaming: usize,
+    pub touched_media: Vec<(MediaType, MediaId)>,
+    pub affected_paths: Vec<PathBuf>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperationRunRecord {

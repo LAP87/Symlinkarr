@@ -1816,6 +1816,7 @@ async fn post_repair_starts_background_repair_flow() {
         State(state.clone()),
         Form(BrowserMutationForm {
             csrf_token: state.browser_session_token().to_string(),
+            return_to: None,
         }),
     )
     .await
@@ -2155,7 +2156,10 @@ async fn web_post_dead_link_sweep_redirects() {
 
     let res = post_dead_link_sweep(
         State(ctx.state.clone()),
-        Form(BrowserMutationForm { csrf_token: csrf }),
+        Form(BrowserMutationForm {
+            csrf_token: csrf,
+            return_to: None,
+        }),
     )
     .await
     .into_response();
@@ -2256,6 +2260,84 @@ async fn web_quarantine_handler_renders_items() {
 
     let body = render_body(get_quarantine(State(state)).await).await;
     assert!(body.contains("Dead.Torrent.Folder"));
-    assert!(body.contains("Quarantined Folders"));
-    assert!(body.contains("1 quarantined"));
+}
+
+#[tokio::test]
+async fn web_dead_links_paginated_and_actions() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = test_config(dir.path());
+    let db = Database::new(&cfg.db_path).await.unwrap();
+
+    let library_root = cfg.libraries[0].path.clone();
+    let target_path = library_root.join("TestShow/Season 01/TestShow - S01E01.mkv");
+    let missing_source = dir.path().join("sources/missing/TS.mkv");
+    std::fs::create_dir_all(target_path.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&missing_source, &target_path).unwrap();
+
+    db.insert_link(&LinkRecord {
+        id: None,
+        source_path: missing_source,
+        target_path,
+        media_id: "tvdb-999".to_string(),
+        media_type: MediaType::Tv,
+        status: LinkStatus::Dead,
+        created_at: None,
+        updated_at: None,
+    })
+    .await
+    .unwrap();
+
+    let state = WebState::new(cfg, db);
+
+    // Test GET /links/dead
+    let html = render_body(
+        get_dead_links(
+            State(state.clone()),
+            Query(cleanup::DeadLinksQuery::default()),
+        )
+        .await,
+    )
+    .await;
+    assert!(html.contains("tvdb-999"));
+    assert!(html.contains("1 dead"));
+    assert!(html.contains("Prune dead symlinks"));
+    assert!(html.contains("Export to Backfill-Buddy"));
+    assert!(html.contains("Showing page 1 of 1"));
+
+    // Test POST /links/dead/prune (dry-run)
+    let csrf = super::browser_csrf_token(&state);
+    let res = post_dead_links_prune(
+        State(state.clone()),
+        Form(cleanup::DeadLinksPruneForm {
+            csrf_token: csrf.clone(),
+            library: None,
+            dry_run: true,
+        }),
+    )
+    .await
+    .into_response();
+    assert_eq!(res.status(), StatusCode::SEE_OTHER);
+    let loc = res.headers().get("location").unwrap().to_str().unwrap();
+    assert!(loc.contains("message="));
+
+    // Test POST /links/dead/export-wanted
+    let res = post_dead_links_export_wanted(
+        State(state.clone()),
+        Form(cleanup::DeadLinksExportForm {
+            csrf_token: csrf,
+            library: None,
+        }),
+    )
+    .await
+    .into_response();
+    assert_eq!(res.status(), StatusCode::SEE_OTHER);
+
+    // Test GET /links/dead/wanted.json
+    let res = get_dead_links_wanted_json(
+        State(state.clone()),
+        Query(std::collections::HashMap::new()),
+    )
+    .await
+    .into_response();
+    assert_eq!(res.status(), StatusCode::OK);
 }

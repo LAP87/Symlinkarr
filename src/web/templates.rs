@@ -17,8 +17,8 @@ pub(crate) use self::skip_reasons::{
 use super::filters;
 
 use super::{
-    ActiveCleanupAuditJob, ActiveRepairJob, ActiveScanJob, LastCleanupAuditOutcome,
-    LastRepairOutcome, LastScanOutcome,
+    ActiveCleanupAuditJob, ActiveDeadPruneJob, ActiveRepairJob, ActiveScanJob,
+    LastCleanupAuditOutcome, LastDeadPruneOutcome, LastRepairOutcome, LastScanOutcome,
 };
 use crate::backup::BackupAppStateRestoreSummary;
 use crate::cleanup_audit::{CleanupFinding, PrunePathAction};
@@ -263,6 +263,10 @@ pub struct BackgroundRepairOutcomeView {
     pub finished_at: String,
     pub success: bool,
     pub message: String,
+    pub repaired: usize,
+    pub failed: usize,
+    pub skipped: usize,
+    pub stale: usize,
 }
 
 impl From<LastRepairOutcome> for BackgroundRepairOutcomeView {
@@ -271,8 +275,65 @@ impl From<LastRepairOutcome> for BackgroundRepairOutcomeView {
             finished_at: value.finished_at,
             success: value.success,
             message: value.message,
+            repaired: value.repaired,
+            failed: value.failed,
+            skipped: value.skipped,
+            stale: value.stale,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct ActiveDeadPruneView {
+    pub started_at: String,
+    pub scope_label: String,
+    pub dry_run: bool,
+}
+
+impl From<ActiveDeadPruneJob> for ActiveDeadPruneView {
+    fn from(job: ActiveDeadPruneJob) -> Self {
+        Self {
+            started_at: job.started_at,
+            scope_label: job.scope_label,
+            dry_run: job.dry_run,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BackgroundDeadPruneOutcomeView {
+    pub finished_at: String,
+    pub scope_label: String,
+    pub dry_run: bool,
+    pub success: bool,
+    pub message: String,
+    pub removed: usize,
+    pub already_missing: usize,
+    #[allow(dead_code)]
+    pub skipped_dir_guard: usize,
+    pub skipped_streaming: usize,
+}
+
+impl From<LastDeadPruneOutcome> for BackgroundDeadPruneOutcomeView {
+    fn from(value: LastDeadPruneOutcome) -> Self {
+        Self {
+            finished_at: value.finished_at,
+            scope_label: value.scope_label,
+            dry_run: value.dry_run,
+            success: value.success,
+            message: value.message,
+            removed: value.removed,
+            already_missing: value.already_missing,
+            skipped_dir_guard: value.skipped_dir_guard,
+            skipped_streaming: value.skipped_streaming,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DeadLinkLibraryCountView {
+    pub name: String,
+    pub count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -1231,8 +1292,18 @@ pub struct LinksTemplate {
 #[template(path = "web/ui/dead_links.html")]
 pub struct DeadLinksTemplate {
     pub links: Vec<LinkRecord>,
+    pub total_count: usize,
+    pub page: usize,
+    pub page_size: usize,
+    pub total_pages: usize,
+    pub selected_library: Option<String>,
+    pub search_query: Option<String>,
+    pub library_counts: Vec<DeadLinkLibraryCountView>,
     pub active_repair: Option<ActiveRepairView>,
     pub last_repair_outcome: Option<BackgroundRepairOutcomeView>,
+    pub active_dead_prune: Option<ActiveDeadPruneView>,
+    pub last_dead_prune_outcome: Option<BackgroundDeadPruneOutcomeView>,
+    pub backfill_handoff_configured: bool,
     pub flash_message: Option<String>,
     pub error_message: Option<String>,
     pub csrf_token: String,

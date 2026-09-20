@@ -42,9 +42,9 @@
 
 {% match active_repair %}
 {% when Some with (job) %}
-<div class="alert alert-info">
+<div class="alert alert-info" data-live-job="repair">
     <strong>Background repair running.</strong>
-    {{ job.scope_label }} started {{ job.started_at }}. Dead Links shows the finished outcome.
+    {{ job.scope_label }} started {{ job.started_at }}. Auto-refreshing live when complete...
 </div>
 {% when None %}
 {% endmatch %}
@@ -115,4 +115,6 @@
     <a href="/links/dead" class="btn btn-primary">View dead links</a>
     <a href="/cleanup" class="btn btn-secondary">Open cleanup</a>
 </div>
+
+<script src="/static/js/dead-links.js" defer></script>
 {% endblock %}

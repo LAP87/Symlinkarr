@@ -77,6 +77,14 @@ pub fn create_router(state: WebState) -> Router<WebState> {
         .route("/cleanup/audit/jobs", get(api_get_cleanup_audit_jobs))
         .route("/cleanup/prune", post(api_post_cleanup_prune))
         .route("/links", get(api_get_links))
+        .route("/links/dead", get(api_get_dead_links))
+        .route("/links/dead/status", get(api_get_dead_links_status))
+        .route("/links/dead/prune", post(api_post_dead_links_prune))
+        .route("/links/dead/wanted", get(api_get_dead_links_wanted))
+        .route(
+            "/links/dead/export-wanted",
+            post(api_post_dead_links_export_wanted),
+        )
         .route("/links/sweep", post(api_post_links_sweep))
         .route("/quarantine", get(api_get_quarantine))
         .route("/pins", get(api_get_pins).post(api_post_pin))

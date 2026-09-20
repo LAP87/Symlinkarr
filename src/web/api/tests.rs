@@ -2319,3 +2319,128 @@ async fn api_post_scan_target_executes_targeted_scan() {
     assert_eq!(json["created_or_updated"], 1);
     assert_eq!(json["folder"], "Breaking.Bad.S01.720p");
 }
+
+#[tokio::test]
+async fn api_dead_links_prune_and_status_flow() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = test_config(dir.path());
+    let db = Database::new(&cfg.db_path).await.unwrap();
+
+    let library_root = cfg.libraries[0].path.clone();
+    let target_path = library_root.join("Show/Season 01/Show - S01E01.mkv");
+    let missing_source = dir.path().join("sources/missing/Show.S01E01.mkv");
+
+    std::fs::create_dir_all(target_path.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&missing_source, &target_path).unwrap();
+
+    db.insert_link(&LinkRecord {
+        id: None,
+        source_path: missing_source.clone(),
+        target_path: target_path.clone(),
+        media_id: "tvdb-42".to_string(),
+        media_type: MediaType::Tv,
+        status: LinkStatus::Dead,
+        created_at: None,
+        updated_at: None,
+    })
+    .await
+    .unwrap();
+
+    let state = WebState::new(cfg, db);
+
+    let res = api_post_dead_links_prune(
+        State(state.clone()),
+        Json(ApiDeadLinkPruneRequest {
+            library: None,
+            dry_run: Some(false),
+        }),
+    )
+    .await
+    .into_response();
+
+    assert_eq!(res.status(), StatusCode::ACCEPTED);
+    let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let json: ApiDeadLinkPruneResponse = serde_json::from_slice(&bytes).unwrap();
+    assert!(json.success);
+    assert!(json.running);
+
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if state.last_dead_prune_outcome().await.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    // Verify symlink was deleted from disk
+    assert!(!target_path.exists());
+    assert!(std::fs::symlink_metadata(&target_path).is_err());
+
+    // Check status endpoint
+    let status_json = api_get_dead_links_status(State(state.clone())).await.0;
+    assert!(status_json.last_prune_outcome.is_some());
+    let outcome = status_json.last_prune_outcome.unwrap();
+    assert_eq!(outcome.removed, 1);
+    assert!(outcome.success);
+}
+
+#[tokio::test]
+async fn api_dead_links_wanted_and_export_flow() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = test_config(dir.path());
+    let handoff_dir = dir.path().join("handoff");
+    cfg.handoff.markers_dir = Some(handoff_dir.clone());
+    let db = Database::new(&cfg.db_path).await.unwrap();
+
+    let library_root = cfg.libraries[0].path.clone();
+    let target_path = library_root.join("Breaking Bad/Season 01/Breaking.Bad.S01E01.mkv");
+    let missing_source = dir.path().join("sources/missing/BB.mkv");
+
+    db.insert_link(&LinkRecord {
+        id: None,
+        source_path: missing_source.clone(),
+        target_path: target_path.clone(),
+        media_id: "tvdb-81189".to_string(),
+        media_type: MediaType::Tv,
+        status: LinkStatus::Dead,
+        created_at: None,
+        updated_at: None,
+    })
+    .await
+    .unwrap();
+
+    let state = WebState::new(cfg, db);
+
+    // Test GET /api/v1/links/dead/wanted
+    let wanted_res = api_get_dead_links_wanted(
+        State(state.clone()),
+        Query(ApiDeadLinksWantedQuery { library: None }),
+    )
+    .await;
+    let bytes = to_bytes(wanted_res.into_body(), usize::MAX).await.unwrap();
+    let items: Vec<crate::commands::cleanup::DeadLinkWantedItem> =
+        serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].media_id, "tvdb-81189");
+    assert_eq!(items[0].dead_count, 1);
+
+    // Test POST /api/v1/links/dead/export-wanted
+    let export_res = api_post_dead_links_export_wanted(
+        State(state.clone()),
+        Json(ApiDeadLinksExportRequest { library: None }),
+    )
+    .await;
+    assert_eq!(export_res.status(), StatusCode::OK);
+    let bytes = to_bytes(export_res.into_body(), usize::MAX).await.unwrap();
+    let export_json: ApiDeadLinksExportResponse = serde_json::from_slice(&bytes).unwrap();
+    assert!(export_json.success);
+    assert_eq!(export_json.items_count, 1);
+    assert_eq!(export_json.dead_links_count, 1);
+    let exported_file = PathBuf::from(export_json.exported_path.unwrap());
+    assert!(exported_file.exists());
+    let file_content = std::fs::read_to_string(&exported_file).unwrap();
+    assert!(file_content.contains("tvdb-81189"));
+}

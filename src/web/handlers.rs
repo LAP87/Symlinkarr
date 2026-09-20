@@ -22,10 +22,11 @@ pub(crate) use admin::{
 #[cfg(test)]
 use admin::{DiscoverQuery, ImportPreviewForm};
 pub(crate) use cleanup::{
-    get_cleanup, get_cleanup_anime_remediation, get_cleanup_prune, get_dead_links, get_links,
-    get_pins, get_quarantine, post_cleanup_anime_remediation_apply,
-    post_cleanup_anime_remediation_preview, post_cleanup_audit, post_cleanup_prune,
-    post_dead_link_sweep, post_pin, post_pin_delete, post_pins_import, post_repair,
+    get_cleanup, get_cleanup_anime_remediation, get_cleanup_prune, get_dead_links,
+    get_dead_links_wanted_json, get_links, get_pins, get_quarantine,
+    post_cleanup_anime_remediation_apply, post_cleanup_anime_remediation_preview,
+    post_cleanup_audit, post_cleanup_prune, post_dead_link_sweep, post_dead_links_export_wanted,
+    post_dead_links_prune, post_pin, post_pin_delete, post_pins_import, post_repair,
 };
 #[cfg(test)]
 use cleanup::{AddPinForm, AnimeRemediationQuery, DeletePinForm, ImportPinsForm, PinsQuery};
@@ -1720,6 +1721,7 @@ pub async fn get_health(State(state): State<WebState>) -> impl IntoResponse {
 pub struct BrowserMutationForm {
     #[serde(default)]
     pub csrf_token: String,
+    pub return_to: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

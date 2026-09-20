@@ -1130,18 +1130,98 @@ pub(crate) async fn get_links(
     Html(template.render().unwrap_or_else(|e| e.to_string())).into_response()
 }
 
+#[derive(Debug, Deserialize, Default, Clone)]
+pub(crate) struct DeadLinksQuery {
+    pub page: Option<usize>,
+    pub page_size: Option<usize>,
+    pub library: Option<String>,
+    pub search: Option<String>,
+    pub message: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeadLinksPruneForm {
+    #[serde(default)]
+    pub csrf_token: String,
+    pub library: Option<String>,
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeadLinksExportForm {
+    #[serde(default)]
+    pub csrf_token: String,
+    pub library: Option<String>,
+}
+
 /// GET /links/dead - Dead links
 pub(crate) async fn get_dead_links(
     State(state): State<WebState>,
-    Query(query): Query<PinsQuery>,
+    Query(query): Query<DeadLinksQuery>,
 ) -> impl IntoResponse {
-    let links = match state.database.get_dead_links().await {
-        Ok(l) => l,
+    let page = query.page.unwrap_or(1).max(1);
+    let page_size = query.page_size.unwrap_or(50).clamp(10, 200);
+    let offset = ((page - 1) * page_size) as i64;
+    let limit = page_size as i64;
+
+    let selected_library = query
+        .library
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && s != "All");
+
+    let library_root = if let Some(ref lib_name) = selected_library {
+        state
+            .config
+            .libraries
+            .iter()
+            .find(|l| l.name.eq_ignore_ascii_case(lib_name))
+            .map(|l| l.path.to_string_lossy().to_string())
+    } else {
+        None
+    };
+
+    let search_term = query
+        .search
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let (links, total_count) = match state
+        .database
+        .get_dead_links_paginated(
+            limit,
+            offset,
+            library_root.as_deref(),
+            search_term.as_deref(),
+        )
+        .await
+    {
+        Ok(res) => res,
         Err(e) => {
-            error!("Failed to get dead links: {}", e);
-            vec![]
+            error!("Failed to get paginated dead links: {}", e);
+            (vec![], 0)
         }
     };
+
+    let total_pages = if total_count == 0 {
+        1
+    } else {
+        total_count.div_ceil(page_size)
+    };
+
+    let library_counts_raw = state
+        .database
+        .count_dead_links_by_library(&state.config.libraries)
+        .await
+        .unwrap_or_default();
+
+    let library_counts = library_counts_raw
+        .into_iter()
+        .map(|(name, count)| DeadLinkLibraryCountView { name, count })
+        .collect();
 
     let active_repair = state.active_repair().await.map(Into::into);
     let last_repair_outcome = if active_repair.is_none() {
@@ -1150,15 +1230,178 @@ pub(crate) async fn get_dead_links(
         None
     };
 
+    let active_dead_prune = state.active_dead_prune().await.map(Into::into);
+    let last_dead_prune_outcome = if active_dead_prune.is_none() {
+        state.last_dead_prune_outcome().await.map(Into::into)
+    } else {
+        None
+    };
+
+    let backfill_handoff_configured = state.config.handoff.markers_dir.is_some();
+
     let template = DeadLinksTemplate {
         links,
+        total_count,
+        page,
+        page_size,
+        total_pages,
+        selected_library,
+        search_query: search_term,
+        library_counts,
         active_repair,
         last_repair_outcome,
+        active_dead_prune,
+        last_dead_prune_outcome,
+        backfill_handoff_configured,
         flash_message: query.message,
         error_message: query.error,
         csrf_token: browser_csrf_token(&state),
     };
     Html(template.render().unwrap_or_else(|e| e.to_string())).into_response()
+}
+
+/// POST /links/dead/prune - Prune dead symlinks
+pub(crate) async fn post_dead_links_prune(
+    State(state): State<WebState>,
+    Form(form): Form<DeadLinksPruneForm>,
+) -> impl IntoResponse {
+    if let Some(response) = require_browser_csrf_token(&state, &form.csrf_token, "/links/dead") {
+        return response;
+    }
+
+    match state
+        .start_dead_prune(form.library.clone(), form.dry_run)
+        .await
+    {
+        Ok(job) => {
+            let msg = format!(
+                "Dead-link prune started in background for {}{}.",
+                job.scope_label,
+                if form.dry_run { " (dry-run)" } else { "" }
+            );
+            Redirect::to(&format!(
+                "/links/dead?message={}",
+                url_encode_component(&msg)
+            ))
+            .into_response()
+        }
+        Err(err) => Redirect::to(&format!(
+            "/links/dead?error={}",
+            url_encode_component(&format!("Prune not started: {}", err))
+        ))
+        .into_response(),
+    }
+}
+
+/// POST /links/dead/export-wanted - Export dead links grouped by media ID for Backfill-Buddy
+pub(crate) async fn post_dead_links_export_wanted(
+    State(state): State<WebState>,
+    Form(form): Form<DeadLinksExportForm>,
+) -> impl IntoResponse {
+    if let Some(response) = require_browser_csrf_token(&state, &form.csrf_token, "/links/dead") {
+        return response;
+    }
+
+    let library_filter = form
+        .library
+        .as_deref()
+        .filter(|s| !s.trim().is_empty() && *s != "All");
+    match crate::commands::cleanup::group_dead_links_wanted(
+        &state.config,
+        &state.database,
+        library_filter,
+    )
+    .await
+    {
+        Ok(items) => {
+            let total_dead: usize = items.iter().map(|i| i.dead_count).sum();
+            let target_dir = state
+                .config
+                .handoff
+                .markers_dir
+                .clone()
+                .unwrap_or_else(|| state.config.backup.path.clone());
+
+            let filename = format!(
+                "symlinkarr-dead-wanted-{}.json",
+                chrono::Utc::now().format("%Y%m%d-%H%M%S")
+            );
+            let target_path = target_dir.join(&filename);
+
+            if let Some(parent) = target_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+
+            match serde_json::to_string_pretty(&items) {
+                Ok(json_content) => {
+                    if let Err(e) = std::fs::write(&target_path, json_content) {
+                        return Redirect::to(&format!(
+                            "/links/dead?error={}",
+                            url_encode_component(&format!("Failed to write export file: {}", e))
+                        ))
+                        .into_response();
+                    }
+                    let msg = format!(
+                        "Exported {} wanted media items ({} dead links) to {}",
+                        items.len(),
+                        total_dead,
+                        target_path.display()
+                    );
+                    Redirect::to(&format!(
+                        "/links/dead?message={}",
+                        url_encode_component(&msg)
+                    ))
+                    .into_response()
+                }
+                Err(e) => Redirect::to(&format!(
+                    "/links/dead?error={}",
+                    url_encode_component(&format!("Failed to serialize export: {}", e))
+                ))
+                .into_response(),
+            }
+        }
+        Err(err) => Redirect::to(&format!(
+            "/links/dead?error={}",
+            url_encode_component(&format!("Failed to group dead links: {}", err))
+        ))
+        .into_response(),
+    }
+}
+
+/// GET /links/dead/wanted.json - Download dead links grouped by media ID as JSON
+pub(crate) async fn get_dead_links_wanted_json(
+    State(state): State<WebState>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let library_filter = query
+        .get("library")
+        .map(|s| s.as_str())
+        .filter(|s| !s.trim().is_empty() && *s != "All");
+    match crate::commands::cleanup::group_dead_links_wanted(
+        &state.config,
+        &state.database,
+        library_filter,
+    )
+    .await
+    {
+        Ok(items) => (
+            StatusCode::OK,
+            [
+                (axum::http::header::CONTENT_TYPE, "application/json"),
+                (
+                    axum::http::header::CONTENT_DISPOSITION,
+                    "attachment; filename=\"symlinkarr-dead-wanted.json\"",
+                ),
+            ],
+            serde_json::to_string_pretty(&items).unwrap_or_default(),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({"error": err.to_string()})),
+        )
+            .into_response(),
+    }
 }
 
 /// POST /links/sweep - Trigger an on-demand dead-link sweep
@@ -1204,6 +1447,33 @@ pub(crate) async fn post_repair(
 ) -> impl IntoResponse {
     if let Some(response) = require_browser_csrf_token(&state, &form.csrf_token, "/links/repair") {
         return response;
+    }
+
+    if let Some(ref return_to) = form.return_to {
+        if return_to.starts_with('/') {
+            match state.start_repair().await {
+                Ok(job) => {
+                    let msg = format!(
+                        "Repair started in background for {}. Showing live progress below.",
+                        job.scope_label
+                    );
+                    return Redirect::to(&format!(
+                        "{}?message={}",
+                        return_to,
+                        url_encode_component(&msg)
+                    ))
+                    .into_response();
+                }
+                Err(err) => {
+                    return Redirect::to(&format!(
+                        "{}?error={}",
+                        return_to,
+                        url_encode_component(&format!("Repair not started: {}", err))
+                    ))
+                    .into_response();
+                }
+            }
+        }
     }
 
     info!("Starting background auto repair");

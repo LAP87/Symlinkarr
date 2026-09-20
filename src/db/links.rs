@@ -3,12 +3,13 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use sqlx::{QueryBuilder, Row, Sqlite};
+use tracing::warn;
 
 use super::{
-    path_to_db_text, Database, DeadLinkSeed, MediaTypeStats,
+    escape_sql_like, path_to_db_text, Database, DeadLinkPruneOutcome, DeadLinkSeed, MediaTypeStats,
     SCOPED_ROOT_IN_MEMORY_FILTER_THRESHOLD, SCOPED_ROOT_QUERY_CHUNK_SIZE,
 };
-use crate::models::{LinkRecord, LinkStatus, MediaType};
+use crate::models::{LinkRecord, LinkStatus, MediaId, MediaType};
 
 impl Database {
     /// Insert a new link record. Returns the row ID.
@@ -544,6 +545,150 @@ impl Database {
     pub async fn get_dead_links_limited(&self, limit: i64) -> Result<Vec<LinkRecord>> {
         self.get_links_by_status_limited(LinkStatus::Dead, Some(limit))
             .await
+    }
+
+    /// Get dead links with pagination, optional library filtering and search query.
+    pub async fn get_dead_links_paginated(
+        &self,
+        limit: i64,
+        offset: i64,
+        library_root: Option<&str>,
+        search: Option<&str>,
+    ) -> Result<(Vec<LinkRecord>, usize)> {
+        let mut count_query =
+            QueryBuilder::new("SELECT COUNT(*) as cnt FROM links WHERE status = 'dead'");
+        let mut data_query = QueryBuilder::new(
+            "SELECT id, source_path, target_path, media_id, media_type, status, created_at, updated_at
+             FROM links WHERE status = 'dead'",
+        );
+
+        if let Some(root) = library_root.filter(|r| !r.trim().is_empty()) {
+            let pattern = format!("{}%", escape_sql_like(root.trim_end_matches('/')));
+            count_query.push(" AND target_path LIKE ");
+            count_query.push_bind(pattern.clone());
+            count_query.push(" ESCAPE '\\'");
+
+            data_query.push(" AND target_path LIKE ");
+            data_query.push_bind(pattern);
+            data_query.push(" ESCAPE '\\'");
+        }
+
+        if let Some(term) = search.filter(|s| !s.trim().is_empty()) {
+            let term_pattern = format!("%{}%", escape_sql_like(term.trim()));
+            count_query.push(" AND (target_path LIKE ");
+            count_query.push_bind(term_pattern.clone());
+            count_query.push(" ESCAPE '\\' OR media_id LIKE ");
+            count_query.push_bind(term_pattern.clone());
+            count_query.push(" ESCAPE '\\')");
+
+            data_query.push(" AND (target_path LIKE ");
+            data_query.push_bind(term_pattern.clone());
+            data_query.push(" ESCAPE '\\' OR media_id LIKE ");
+            data_query.push_bind(term_pattern);
+            data_query.push(" ESCAPE '\\')");
+        }
+
+        data_query.push(" ORDER BY id DESC LIMIT ");
+        data_query.push_bind(limit);
+        data_query.push(" OFFSET ");
+        data_query.push_bind(offset);
+
+        let count_row = count_query.build().fetch_one(&self.pool).await?;
+        let total: i64 = count_row.get("cnt");
+
+        let rows = data_query.build().fetch_all(&self.pool).await?;
+        let records = rows
+            .iter()
+            .map(|row| self.row_to_link_record(row))
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok((records, total as usize))
+    }
+
+    /// Count dead links grouped by library.
+    pub async fn count_dead_links_by_library(
+        &self,
+        libraries: &[crate::config::LibraryConfig],
+    ) -> Result<Vec<(String, usize)>> {
+        let mut counts = Vec::with_capacity(libraries.len());
+        for lib in libraries {
+            let root = lib.path.display().to_string();
+            let pattern = format!("{}%", escape_sql_like(root.trim_end_matches('/')));
+            let row = sqlx::query(
+                "SELECT COUNT(*) as cnt FROM links WHERE status = 'dead' AND target_path LIKE ? ESCAPE '\\'",
+            )
+            .bind(pattern)
+            .fetch_one(&self.pool)
+            .await?;
+            let cnt: i64 = row.get("cnt");
+            counts.push((lib.name.clone(), cnt as usize));
+        }
+        Ok(counts)
+    }
+
+    /// Prune dead links: safely removes broken symlinks on disk and updates their status to 'removed'.
+    pub async fn prune_dead_links_scoped(
+        &self,
+        allowed_library_roots: Option<&[PathBuf]>,
+        dry_run: bool,
+        skip_paths: &[String],
+    ) -> Result<DeadLinkPruneOutcome> {
+        let dead_links = self
+            .get_links_by_status_scoped(LinkStatus::Dead, allowed_library_roots)
+            .await?;
+        let skip_set: HashSet<&str> = skip_paths.iter().map(|s| s.as_str()).collect();
+        let mut outcome = DeadLinkPruneOutcome::default();
+        let mut touched_set: HashSet<(MediaType, MediaId)> = HashSet::new();
+        let mut affected: Vec<PathBuf> = Vec::new();
+
+        for link in dead_links {
+            let target_str = link.target_path.to_string_lossy();
+            if skip_set.contains(target_str.as_ref()) {
+                outcome.skipped_streaming += 1;
+                continue;
+            }
+
+            let symlink_exists = link.target_path.is_symlink();
+            let file_exists = link.target_path.exists();
+
+            if file_exists && !symlink_exists {
+                // Target is a regular file or directory, NOT a symlink — safety guard!
+                warn!(
+                    "SAFETY GUARD: Skipping dead link prune for {:?} — not a symlink",
+                    link.target_path
+                );
+                outcome.skipped_dir_guard += 1;
+                continue;
+            }
+
+            if symlink_exists {
+                if !dry_run {
+                    if let Err(err) = std::fs::remove_file(&link.target_path) {
+                        warn!(
+                            "Failed to remove dead symlink {:?}: {}",
+                            link.target_path, err
+                        );
+                        continue;
+                    }
+                }
+                outcome.removed += 1;
+            } else {
+                outcome.already_missing += 1;
+            }
+
+            if !dry_run {
+                self.mark_removed_path(&link.target_path).await?;
+            }
+
+            if let Some(id) = MediaId::parse(&link.media_id) {
+                touched_set.insert((link.media_type, id));
+            }
+            affected.push(link.target_path);
+        }
+
+        outcome.touched_media = touched_set.into_iter().collect();
+        outcome.affected_paths = affected;
+        Ok(outcome)
     }
 
     fn row_to_link_record(&self, row: &sqlx::sqlite::SqliteRow) -> Result<LinkRecord> {
