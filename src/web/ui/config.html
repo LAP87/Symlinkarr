@@ -247,6 +247,31 @@
                     </div>
                     <div class="def-row__value"><code class="mono">{{ config.backup.path.display() }}</code></div>
                 </div>
+                <div class="def-row">
+                    <div class="def-row__key">
+                        <div class="def-row__label">Handoff markers directory</div>
+                        <div class="def-row__hint">Queue directory where acquisition companions like backfill-buddy write match markers.</div>
+                    </div>
+                    <div class="def-row__value">
+                        {% match config.handoff.markers_dir %}
+                        {% when Some with (dir) %}<code class="mono">{{ dir.display() }}</code>
+                        {% when None %}<span class="text-muted">Not configured</span>
+                        {% endmatch %}
+                    </div>
+                </div>
+                <div class="def-row">
+                    <div class="def-row__key">
+                        <div class="def-row__label">Handoff consume markers</div>
+                        <div class="def-row__hint">Whether marker files are deleted once imported into source pins.</div>
+                    </div>
+                    <div class="def-row__value">
+                        {% if config.handoff.consume_markers %}
+                        <span class="badge badge-success">Enabled</span>
+                        {% else %}
+                        <span class="badge badge-secondary">Disabled</span>
+                        {% endif %}
+                    </div>
+                </div>
             </div>
         </section>
     </div>

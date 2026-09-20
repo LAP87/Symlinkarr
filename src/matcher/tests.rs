@@ -1215,3 +1215,30 @@ async fn test_with_source_pins_resolves_through_full_matcher() {
     assert_eq!(output.matches[0].library_item.id, MediaId::Tvdb(402496));
     assert_eq!(output.telemetry.exact_id_hits, 1);
 }
+
+#[tokio::test]
+async fn test_with_source_pins_resolves_single_file_in_root() {
+    let tmp = tempdir().unwrap();
+    let db = Database::new(tmp.path().join("test.db").to_str().unwrap())
+        .await
+        .unwrap();
+    let library_items = vec![movie_item("Oppenheimer", 872585)];
+    let source_items = vec![parsed_standard_source(
+        "/mnt/rd/__all__/Oppenheimer.2023.1080p.BluRay.x264.mkv",
+    )];
+    let mut pins = HashMap::new();
+    // Pin by full filename
+    pins.insert(
+        "Oppenheimer.2023.1080p.BluRay.x264.mkv".to_string(),
+        MediaId::Tmdb(872585),
+    );
+    let matcher =
+        Matcher::new(None, None, MatchingMode::Strict, MetadataMode::Off, 1).with_source_pins(pins);
+    let output = matcher
+        .find_matches_with_telemetry(&library_items, &source_items, &db)
+        .await
+        .unwrap();
+    assert_eq!(output.matches.len(), 1);
+    assert_eq!(output.matches[0].library_item.id, MediaId::Tmdb(872585));
+    assert_eq!(output.telemetry.exact_id_hits, 1);
+}

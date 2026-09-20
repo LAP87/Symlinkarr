@@ -29,7 +29,7 @@ const MAX_JOB_ATTEMPTS: i64 = 5;
 const SCOPED_ROOT_QUERY_CHUNK_SIZE: usize = 250;
 const SCOPED_ROOT_IN_MEMORY_FILTER_THRESHOLD: usize = 1024;
 
-fn escape_sql_like(value: &str) -> String {
+pub(crate) fn escape_sql_like(value: &str) -> String {
     value
         .replace('\\', "\\\\")
         .replace('%', "\\%")

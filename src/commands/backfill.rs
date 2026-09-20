@@ -332,6 +332,14 @@ async fn run_backfill_link_only(
         .map(|candidate| candidate.item.clone())
         .collect::<Vec<_>>();
 
+    if let Some(dir) = cfg.handoff.markers_dir.as_deref() {
+        let import = crate::handoff::import_markers(db, dir, cfg.handoff.consume_markers).await;
+        if emit_text && (import.imported > 0 || import.without_id > 0 || import.unreadable > 0) {
+            println!("   📌 Handoff markers: {}", import.summary_line());
+        }
+    }
+    let source_pins = crate::commands::scan::load_source_pins(db).await;
+
     let matcher = Matcher::new(
         tmdb.clone(),
         tvdb,
@@ -339,7 +347,8 @@ async fn run_backfill_link_only(
         cfg.matching.metadata_mode,
         cfg.matching.metadata_concurrency,
     )
-    .with_multi_version(cfg.symlink.multi_version);
+    .with_multi_version(cfg.symlink.multi_version)
+    .with_source_pins(source_pins);
 
     let mut match_output = matcher
         .find_matches_with_telemetry(&library_items, &source_items, db)
@@ -380,14 +389,24 @@ async fn run_backfill_link_only(
     }
 
     let linked_total = link_summary.created + link_summary.updated;
-    if linked_total > 0 && !effective_dry_run && has_configured_invalidation_server(cfg) {
-        if let Err(err) =
-            invalidate_after_mutation(cfg, &selected, &link_summary.refresh_paths, emit_text).await
+    if linked_total > 0 && !effective_dry_run {
+        if has_configured_invalidation_server(cfg) {
+            if let Err(err) =
+                invalidate_after_mutation(cfg, &selected, &link_summary.refresh_paths, emit_text)
+                    .await
+            {
+                warn!("Arr backfill media-server refresh failed: {}", err);
+                summary
+                    .warnings
+                    .push(format!("media-server refresh failed: {}", err));
+            }
+        }
+        for line in
+            crate::commands::scan::rescan_arrs_for_touched(cfg, &link_summary.touched_media).await
         {
-            warn!("Arr backfill media-server refresh failed: {}", err);
-            summary
-                .warnings
-                .push(format!("media-server refresh failed: {}", err));
+            if emit_text {
+                println!("   {}", line);
+            }
         }
     }
 

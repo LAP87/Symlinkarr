@@ -21,13 +21,15 @@ pub(crate) use admin::{
 };
 #[cfg(test)]
 use admin::{DiscoverQuery, ImportPreviewForm};
-#[cfg(test)]
-use cleanup::AnimeRemediationQuery;
 pub(crate) use cleanup::{
-    get_cleanup, get_cleanup_anime_remediation, get_cleanup_prune, get_dead_links, get_links,
+    get_cleanup, get_cleanup_anime_remediation, get_cleanup_prune, get_dead_links,
+    get_dead_links_wanted_json, get_links, get_pins, get_quarantine,
     post_cleanup_anime_remediation_apply, post_cleanup_anime_remediation_preview,
-    post_cleanup_audit, post_cleanup_prune, post_repair,
+    post_cleanup_audit, post_cleanup_prune, post_dead_link_sweep, post_dead_links_export_wanted,
+    post_dead_links_prune, post_pin, post_pin_delete, post_pins_import, post_repair,
 };
+#[cfg(test)]
+use cleanup::{AddPinForm, AnimeRemediationQuery, DeletePinForm, ImportPinsForm, PinsQuery};
 use scan::scan_run_views;
 #[cfg(test)]
 use scan::ScanHistoryQuery;
@@ -320,6 +322,10 @@ pub(crate) fn daemon_schedule_view(
     } else {
         "Off".to_string()
     };
+    let dead_link_sweep_label = match config.daemon.dead_link_sweep_hour_local {
+        Some(hour) => format!("Daily @ {:02}:00 local", hour),
+        None => "Off".to_string(),
+    };
     let last_recorded_scan_label = latest_overall_run
         .map(|run| run.started_at.as_str())
         .filter(|value| !value.trim().is_empty())
@@ -347,6 +353,7 @@ pub(crate) fn daemon_schedule_view(
             interval_label,
             search_missing_label,
             vacuum_label,
+            dead_link_sweep_label,
             last_run_metric_label: "Last recorded scan".to_string(),
             last_run_label: last_recorded_scan_label,
             next_due_label: "Not scheduled by daemon".to_string(),
@@ -366,6 +373,7 @@ pub(crate) fn daemon_schedule_view(
             interval_label,
             search_missing_label,
             vacuum_label,
+            dead_link_sweep_label,
             last_run_metric_label: "Last daemon scan".to_string(),
             last_run_label: last_daemon_scan_label,
             next_due_label: "After first daemon scan".to_string(),
@@ -387,6 +395,7 @@ pub(crate) fn daemon_schedule_view(
             interval_label,
             search_missing_label,
             vacuum_label,
+            dead_link_sweep_label,
             last_run_metric_label: "Last daemon scan".to_string(),
             last_run_label: last_daemon_scan_label,
             next_due_label: format!("Due now ({} late)", humanize_duration(now - next_due)),
@@ -405,6 +414,7 @@ pub(crate) fn daemon_schedule_view(
         interval_label,
         search_missing_label,
         vacuum_label,
+        dead_link_sweep_label,
         last_run_metric_label: "Last daemon scan".to_string(),
         last_run_label: last_daemon_scan_label,
         next_due_label: format!(
@@ -1599,6 +1609,10 @@ pub async fn get_status(State(state): State<WebState>) -> impl IntoResponse {
         daemon_heartbeat,
         checks,
         deferred_refresh,
+        quarantine_folders_count: crate::quarantine::QuarantinedFolders::load(
+            &state.config.sources,
+        )
+        .len(),
         streaming_guard,
     };
     Html(template.render().unwrap_or_else(|e| e.to_string())).into_response()
@@ -1707,6 +1721,7 @@ pub async fn get_health(State(state): State<WebState>) -> impl IntoResponse {
 pub struct BrowserMutationForm {
     #[serde(default)]
     pub csrf_token: String,
+    pub return_to: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

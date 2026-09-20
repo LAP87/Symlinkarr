@@ -242,6 +242,105 @@ pub(super) async fn api_post_scan(
     }
 }
 
+#[derive(Debug, Deserialize)]
+pub(super) struct ApiTargetScanRequest {
+    pub folder: String,
+    #[serde(default)]
+    pub dry_run: Option<bool>,
+    pub library: Option<String>,
+}
+
+/// POST /api/v1/scan/target
+pub(super) async fn api_post_scan_target(
+    State(state): State<WebState>,
+    Json(req): Json<ApiTargetScanRequest>,
+) -> impl IntoResponse {
+    let folder = req.folder.trim().to_string();
+    if folder.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "success": false,
+                "error": "folder parameter cannot be empty"
+            })),
+        )
+            .into_response();
+    }
+
+    let dry_run = req.dry_run.unwrap_or(false);
+    let library = req.library.filter(|l| !l.is_empty());
+    info!(folder = %folder, dry_run, library = ?library, "API: Triggering targeted scan");
+
+    let scope_desc = format!("targeted: {}", folder);
+    let mut operation =
+        match crate::operations::OperationCoordinator::new(state.database.as_ref().clone())
+            .acquire(crate::operations::OperationRequest::new(
+                "scan_target",
+                "web",
+                Some(scope_desc.clone()),
+            ))
+            .await
+        {
+            Ok(op) => op,
+            Err(e) => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(serde_json::json!({
+                        "success": false,
+                        "error": format!("Cannot run targeted scan: {}", e),
+                    })),
+                )
+                    .into_response();
+            }
+        };
+
+    let result = crate::commands::scan::run_scan_with_origin(
+        state.config.as_ref(),
+        state.database.as_ref(),
+        crate::db::ScanRunOrigin::Web,
+        dry_run,
+        false,
+        crate::OutputFormat::Json,
+        library.as_deref(),
+        Some(&folder),
+    )
+    .await;
+
+    match result {
+        Ok((added, removed)) => {
+            let summary = serde_json::json!({"added_or_updated": added, "removed": removed});
+            let _ = operation
+                .succeed(Some("Targeted scan completed"), Some(&summary.to_string()))
+                .await;
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "success": true,
+                    "message": format!("Targeted scan completed for '{}'", folder),
+                    "folder": folder,
+                    "library": library,
+                    "created_or_updated": added,
+                    "removed": removed,
+                    "dry_run": dry_run,
+                })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            let _ = operation.fail(&e.to_string()).await;
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "success": false,
+                    "error": format!("Targeted scan failed: {}", e),
+                    "folder": folder,
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
 pub(super) fn api_scan_job_from_active(job: crate::web::ActiveScanJob) -> ApiScanJob {
     ApiScanJob {
         id: 0,

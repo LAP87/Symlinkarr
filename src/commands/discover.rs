@@ -17,6 +17,7 @@ use crate::discovery::{
 use crate::library_scanner::LibraryScanner;
 use crate::linker::Linker;
 use crate::matcher::{MatchRunOutput, Matcher};
+use crate::quarantine::QuarantinedFolders;
 use crate::source_scanner::SourceScanner;
 use crate::utils::stdout_text_guard;
 use crate::{DiscoverAction, OutputFormat};
@@ -150,7 +151,8 @@ async fn collect_discovery_source_items(
 
     if refresh_cache && cfg.has_realdebrid() {
         let rd_client = RealDebridClient::from_config(&cfg.realdebrid);
-        let cache = crate::cache::TorrentCache::new(db, &rd_client);
+        let cache = crate::cache::TorrentCache::new(db, &rd_client)
+            .with_mount_roots(cfg.sources.iter().map(|s| s.path.clone()));
         if let Err(e) = cache.sync().await {
             notices.push(format!(
                 "RD cache sync failed ({}). Showing cached or on-disk results only.",
@@ -159,6 +161,7 @@ async fn collect_discovery_source_items(
         }
     }
 
+    let quarantine = QuarantinedFolders::load(&cfg.sources);
     let scanner = SourceScanner::new();
     let mut by_path = HashMap::new();
 
@@ -176,7 +179,7 @@ async fn collect_discovery_source_items(
 
         let mut cached_count = 0usize;
         for (path, _) in cached_files {
-            if !path.exists() {
+            if !path.exists() || quarantine.contains(&path) {
                 continue;
             }
 
@@ -188,6 +191,9 @@ async fn collect_discovery_source_items(
 
         if cached_count == 0 {
             for item in scanner.scan_source(source) {
+                if quarantine.contains(&item.path) {
+                    continue;
+                }
                 by_path.entry(item.path.clone()).or_insert(item);
             }
         }
@@ -539,5 +545,48 @@ mod tests {
         );
         assert_eq!(payload["items"][0]["action"], "create");
         assert_eq!(payload["folders"][0]["planned_creates"], 1);
+    }
+
+    #[tokio::test]
+    async fn load_discovery_snapshot_excludes_quarantined_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = test_config(dir.path());
+        let db = Database::new(&cfg.db_path).await.unwrap();
+
+        std::fs::create_dir_all(dir.path().join("anime").join("Missing Show {tvdb-1}")).unwrap();
+
+        let rd = dir.path().join("rd");
+        let all_dir = rd.join("__all__");
+        let bad_dir = rd.join("__bad__");
+        std::fs::create_dir_all(&all_dir).unwrap();
+        std::fs::create_dir_all(&bad_dir).unwrap();
+
+        let mut test_cfg = cfg;
+        test_cfg.sources[0].path = all_dir.clone();
+
+        let good_folder = all_dir.join("Good.Show.S01E01.1080p.WEB-DL");
+        let bad_folder = all_dir.join("Bad.Show.S01E01.1080p.WEB-DL");
+        std::fs::create_dir_all(&good_folder).unwrap();
+        std::fs::create_dir_all(&bad_folder).unwrap();
+        std::fs::create_dir_all(bad_dir.join("Bad.Show.S01E01.1080p.WEB-DL")).unwrap();
+
+        std::fs::write(
+            good_folder.join("Missing.Show.S01E01.1080p.WEB-DL.mkv"),
+            b"video",
+        )
+        .unwrap();
+        std::fs::write(
+            bad_folder.join("Missing.Show.S01E01.1080p.WEB-DL.mkv"),
+            b"video",
+        )
+        .unwrap();
+
+        let snapshot = load_discovery_snapshot(&test_cfg, &db, None, false)
+            .await
+            .unwrap();
+
+        assert_eq!(snapshot.summary.creates, 1);
+        assert_eq!(snapshot.items.len(), 1);
+        assert!(snapshot.items[0].source_path.starts_with(&good_folder));
     }
 }

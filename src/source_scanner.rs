@@ -146,16 +146,21 @@ impl SourceScanner {
     /// Decypharr's `__bad__` group holds torrents the provider removed or that
     /// failed; it is never a valid link source and is skipped entirely.
     pub fn scan_source(&self, source: &SourceConfig) -> Vec<SourceItem> {
-        info!("Scanning source: {} at {:?}", source.name, source.path);
+        self.scan_folder(&source.path, source)
+    }
 
-        if !fast_path_health(&source.path).is_healthy() {
-            warn!("Source path is not healthy: {:?}", source.path);
+    /// Scan a specific subfolder or directory within a source and return all video files found.
+    pub fn scan_folder(&self, folder: &std::path::Path, source: &SourceConfig) -> Vec<SourceItem> {
+        info!("Scanning source: {} at {:?}", source.name, folder);
+
+        if !fast_path_health(folder).is_healthy() {
+            warn!("Source path is not healthy: {:?}", folder);
             return Vec::new();
         }
 
         let mut items = Vec::new();
 
-        for entry in WalkDir::new(&source.path)
+        for entry in WalkDir::new(folder)
             .follow_links(false)
             .into_iter()
             .filter_entry(|e| !is_quarantine_dir(e))
@@ -172,7 +177,7 @@ impl SourceScanner {
             }
         }
 
-        info!("Found {} media files in {}", items.len(), source.name);
+        info!("Found {} media files in {:?}", items.len(), folder);
         items
     }
 

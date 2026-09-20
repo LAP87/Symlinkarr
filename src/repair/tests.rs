@@ -927,3 +927,28 @@ fn test_trash_quality_regex_parses_formats() {
         Some("2160".to_string())
     );
 }
+
+#[test]
+fn test_build_source_catalog_excludes_quarantined_folders() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mount = tmp.path();
+    let all_dir = mount.join("__all__");
+    let bad_dir = mount.join("__bad__");
+
+    let good_pack = all_dir.join("Good.Movie.2024");
+    let bad_pack = all_dir.join("Bad.Movie.2024");
+    let bad_quarantine = bad_dir.join("Bad.Movie.2024");
+
+    std::fs::create_dir_all(&good_pack).unwrap();
+    std::fs::create_dir_all(&bad_pack).unwrap();
+    std::fs::create_dir_all(&bad_quarantine).unwrap();
+
+    std::fs::write(good_pack.join("Good.Movie.2024.1080p.mkv"), b"fake").unwrap();
+    std::fs::write(bad_pack.join("Bad.Movie.2024.1080p.mkv"), b"fake").unwrap();
+
+    let repairer = Repairer::new();
+    let catalog = repairer.build_source_catalog(&[all_dir], ContentType::Movie);
+
+    assert_eq!(catalog.entries.len(), 1);
+    assert_eq!(catalog.entries[0].parsed_title, "Good Movie");
+}

@@ -727,6 +727,7 @@ fn dashboard_needs_attention_includes_overdue_daemon_signal() {
         interval_label: "Every 60 min".to_string(),
         search_missing_label: "Enabled".to_string(),
         vacuum_label: "Daily @ 03:00 local".to_string(),
+        dead_link_sweep_label: "Daily @ 04:00 local".to_string(),
         last_run_metric_label: "Last daemon scan".to_string(),
         last_run_label: "2026-04-22 12:00:00 UTC".to_string(),
         next_due_label: "Due now (2h late)".to_string(),
@@ -1815,6 +1816,7 @@ async fn post_repair_starts_background_repair_flow() {
         State(state.clone()),
         Form(BrowserMutationForm {
             csrf_token: state.browser_session_token().to_string(),
+            return_to: None,
         }),
     )
     .await
@@ -2104,4 +2106,238 @@ async fn discover_run_refuses_a_second_concurrent_pass_and_reports_state() {
     let body = render_body(get_discover_content(State(ctx.state.clone())).await).await;
     assert!(body.contains("Last discover finished"));
     assert!(!body.contains("hx-trigger=\"every 5s\""));
+}
+
+#[tokio::test]
+async fn web_pins_handlers_lifecycle() {
+    let ctx = test_context().await;
+    let csrf = super::browser_csrf_token(&ctx.state);
+
+    let body =
+        render_body(get_pins(State(ctx.state.clone()), Query(PinsQuery::default())).await).await;
+    assert!(body.contains("Source Pins"));
+    assert!(body.contains("No source pins stored."));
+
+    let form = AddPinForm {
+        folder: "My.Show.S01".to_string(),
+        media_id: "tvdb-12345".to_string(),
+        note: Some("manual note".to_string()),
+        csrf_token: csrf.clone(),
+    };
+    let res = post_pin(State(ctx.state.clone()), Form(form))
+        .await
+        .into_response();
+    assert_eq!(res.status(), StatusCode::SEE_OTHER);
+
+    let body =
+        render_body(get_pins(State(ctx.state.clone()), Query(PinsQuery::default())).await).await;
+    assert!(body.contains("My.Show.S01"));
+    assert!(body.contains("tvdb-12345"));
+    assert!(body.contains("manual note"));
+
+    let del_form = DeletePinForm {
+        folder: "My.Show.S01".to_string(),
+        csrf_token: csrf.clone(),
+    };
+    let res = post_pin_delete(State(ctx.state.clone()), Form(del_form))
+        .await
+        .into_response();
+    assert_eq!(res.status(), StatusCode::SEE_OTHER);
+
+    let body =
+        render_body(get_pins(State(ctx.state.clone()), Query(PinsQuery::default())).await).await;
+    assert!(body.contains("No source pins stored."));
+}
+
+#[tokio::test]
+async fn web_post_dead_link_sweep_redirects() {
+    let ctx = test_context().await;
+    let csrf = super::browser_csrf_token(&ctx.state);
+
+    let res = post_dead_link_sweep(
+        State(ctx.state.clone()),
+        Form(BrowserMutationForm {
+            csrf_token: csrf,
+            return_to: None,
+        }),
+    )
+    .await
+    .into_response();
+    assert_eq!(res.status(), StatusCode::SEE_OTHER);
+    let location = res.headers().get("location").unwrap().to_str().unwrap();
+    assert!(location.starts_with("/links/dead?message="));
+}
+
+#[tokio::test]
+async fn web_pins_import_and_pending_count() {
+    let tmp = tempfile::tempdir().unwrap();
+    let markers_dir = tmp.path().join("markers");
+    std::fs::create_dir_all(&markers_dir).unwrap();
+
+    let mut cfg = test_config(tmp.path());
+    cfg.handoff.markers_dir = Some(markers_dir.clone());
+    cfg.handoff.consume_markers = true;
+    let db = Database::new(&cfg.db_path).await.unwrap();
+    let state = WebState::new(cfg, db);
+    let csrf = super::browser_csrf_token(&state);
+
+    let marker_file = markers_dir.join("marker1.json");
+    std::fs::write(
+        &marker_file,
+        r#"{"materialized_relative_path":"Queued.Show.S01/ep1.mkv","tvdb_id":555}"#,
+    )
+    .unwrap();
+
+    let body = render_body(get_pins(State(state.clone()), Query(PinsQuery::default())).await).await;
+    assert!(body.contains("1"));
+    assert!(body.contains("pending marker file(s) waiting in handoff queue"));
+
+    let res = post_pins_import(
+        State(state.clone()),
+        Form(ImportPinsForm {
+            csrf_token: csrf,
+            link_now: None,
+        }),
+    )
+    .await
+    .into_response();
+    assert_eq!(res.status(), StatusCode::SEE_OTHER);
+
+    let body = render_body(get_pins(State(state.clone()), Query(PinsQuery::default())).await).await;
+    assert!(body.contains("Queued.Show.S01"));
+    assert!(body.contains("tvdb-555"));
+}
+
+#[tokio::test]
+async fn web_pins_import_with_link_now() {
+    let tmp = tempfile::tempdir().unwrap();
+    let markers_dir = tmp.path().join("markers");
+    std::fs::create_dir_all(&markers_dir).unwrap();
+
+    let mut cfg = test_config(tmp.path());
+    cfg.handoff.markers_dir = Some(markers_dir.clone());
+    let db = Database::new(&cfg.db_path).await.unwrap();
+    let state = WebState::new(cfg, db);
+    let csrf = super::browser_csrf_token(&state);
+
+    let marker_file = markers_dir.join("marker2.json");
+    std::fs::write(
+        &marker_file,
+        r#"{"materialized_relative_path":"Instant.Show.S01/ep1.mkv","tvdb_id":777}"#,
+    )
+    .unwrap();
+
+    let res = post_pins_import(
+        State(state.clone()),
+        Form(ImportPinsForm {
+            csrf_token: csrf,
+            link_now: Some("true".to_string()),
+        }),
+    )
+    .await
+    .into_response();
+    assert_eq!(res.status(), StatusCode::SEE_OTHER);
+
+    let body = render_body(get_pins(State(state.clone()), Query(PinsQuery::default())).await).await;
+    assert!(body.contains("Instant.Show.S01"));
+    assert!(body.contains("tvdb-777"));
+}
+
+#[tokio::test]
+async fn web_quarantine_handler_renders_items() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mount = tmp.path();
+    std::fs::create_dir_all(mount.join("__bad__/Dead.Torrent.Folder")).unwrap();
+
+    let mut cfg = test_config(mount);
+    cfg.sources = vec![crate::config::SourceConfig {
+        name: "RD".to_string(),
+        path: mount.join("__all__"),
+        media_type: "auto".to_string(),
+    }];
+    let db = Database::new(&cfg.db_path).await.unwrap();
+    let state = WebState::new(cfg, db);
+
+    let body = render_body(get_quarantine(State(state)).await).await;
+    assert!(body.contains("Dead.Torrent.Folder"));
+}
+
+#[tokio::test]
+async fn web_dead_links_paginated_and_actions() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = test_config(dir.path());
+    let db = Database::new(&cfg.db_path).await.unwrap();
+
+    let library_root = cfg.libraries[0].path.clone();
+    let target_path = library_root.join("TestShow/Season 01/TestShow - S01E01.mkv");
+    let missing_source = dir.path().join("sources/missing/TS.mkv");
+    std::fs::create_dir_all(target_path.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&missing_source, &target_path).unwrap();
+
+    db.insert_link(&LinkRecord {
+        id: None,
+        source_path: missing_source,
+        target_path,
+        media_id: "tvdb-999".to_string(),
+        media_type: MediaType::Tv,
+        status: LinkStatus::Dead,
+        created_at: None,
+        updated_at: None,
+    })
+    .await
+    .unwrap();
+
+    let state = WebState::new(cfg, db);
+
+    // Test GET /links/dead
+    let html = render_body(
+        get_dead_links(
+            State(state.clone()),
+            Query(cleanup::DeadLinksQuery::default()),
+        )
+        .await,
+    )
+    .await;
+    assert!(html.contains("tvdb-999"));
+    assert!(html.contains("1 dead"));
+    assert!(html.contains("Prune dead symlinks"));
+    assert!(html.contains("Export to Backfill-Buddy"));
+    assert!(html.contains("Showing page 1 of 1"));
+
+    // Test POST /links/dead/prune (dry-run)
+    let csrf = super::browser_csrf_token(&state);
+    let res = post_dead_links_prune(
+        State(state.clone()),
+        Form(cleanup::DeadLinksPruneForm {
+            csrf_token: csrf.clone(),
+            library: None,
+            dry_run: true,
+        }),
+    )
+    .await
+    .into_response();
+    assert_eq!(res.status(), StatusCode::SEE_OTHER);
+    let loc = res.headers().get("location").unwrap().to_str().unwrap();
+    assert!(loc.contains("message="));
+
+    // Test POST /links/dead/export-wanted
+    let res = post_dead_links_export_wanted(
+        State(state.clone()),
+        Form(cleanup::DeadLinksExportForm {
+            csrf_token: csrf,
+            library: None,
+        }),
+    )
+    .await
+    .into_response();
+    assert_eq!(res.status(), StatusCode::SEE_OTHER);
+
+    // Test GET /links/dead/wanted.json
+    let res = get_dead_links_wanted_json(
+        State(state.clone()),
+        Query(std::collections::HashMap::new()),
+    )
+    .await
+    .into_response();
+    assert_eq!(res.status(), StatusCode::OK);
 }

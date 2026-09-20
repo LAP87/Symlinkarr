@@ -247,6 +247,186 @@ async fn run_cleanup_dead(
     Ok(dead.removed as i64)
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DeadLinkWantedItem {
+    pub media_id: String,
+    pub title: String,
+    pub media_type: String,
+    pub library: String,
+    pub dead_count: usize,
+    pub sample_files: Vec<String>,
+}
+
+pub(crate) async fn execute_prune_dead_links(
+    cfg: &Config,
+    db: &Database,
+    library_filter: Option<&str>,
+    dry_run: bool,
+    emit_text: bool,
+) -> Result<crate::db::DeadLinkPruneOutcome> {
+    let selected = selected_libraries(cfg, library_filter)?;
+    let library_roots: Vec<PathBuf> = selected.iter().map(|l| l.path.clone()).collect();
+
+    ensure_runtime_directories_healthy(&selected, &cfg.sources, "cleanup dead-link pruning")
+        .await?;
+
+    if cfg.backup.enabled {
+        if dry_run {
+            if emit_text {
+                println!("   ℹ️  Skipping safety snapshot in --dry-run mode");
+            }
+        } else {
+            if emit_text {
+                println!("   🛡️ Creating safety snapshot before dead-link prune...");
+            }
+            let bm = crate::backup::BackupManager::new(&cfg.backup);
+            bm.create_safety_snapshot(db, "dead_link_prune").await?;
+        }
+    }
+
+    let skip_paths = if cfg.has_tautulli() {
+        let tautulli = TautulliClient::new(&cfg.tautulli);
+        match tautulli.get_active_file_paths().await {
+            Ok(paths) => {
+                if !paths.is_empty() && emit_text {
+                    println!(
+                        "   🎬 Tautulli: {} active streams detected — protecting those files",
+                        paths.len()
+                    );
+                }
+                paths
+            }
+            Err(e) => {
+                if emit_text {
+                    println!(
+                        "   ⚠️  Tautulli query failed ({}), proceeding without guard",
+                        e
+                    );
+                }
+                vec![]
+            }
+        }
+    } else {
+        vec![]
+    };
+
+    let outcome = db
+        .prune_dead_links_scoped(Some(&library_roots), dry_run, &skip_paths)
+        .await?;
+
+    if !dry_run && outcome.removed > 0 {
+        let servers = configured_refresh_backends(cfg);
+        if emit_text && !servers.is_empty() {
+            println!(
+                "   📺 Post-prune: refreshing affected library roots in {}...",
+                display_server_list(&servers)
+            );
+        }
+        if let Err(err) =
+            invalidate_after_mutation(cfg, &selected, &outcome.affected_paths, emit_text).await
+        {
+            if emit_text {
+                println!("   ⚠️  Post-prune media-server refresh failed: {}", err);
+            }
+            tracing::warn!("Post-prune media-server refresh failed: {}", err);
+        }
+    }
+
+    if !dry_run && !outcome.touched_media.is_empty() {
+        for line in
+            crate::commands::scan::rescan_arrs_for_touched(cfg, &outcome.touched_media).await
+        {
+            if emit_text {
+                println!("   {}", line);
+            }
+        }
+    }
+
+    Ok(outcome)
+}
+
+pub(crate) async fn group_dead_links_wanted(
+    cfg: &Config,
+    db: &Database,
+    library_filter: Option<&str>,
+) -> Result<Vec<DeadLinkWantedItem>> {
+    let selected = selected_libraries(cfg, library_filter)?;
+    let library_roots: Vec<PathBuf> = selected.iter().map(|l| l.path.clone()).collect();
+    let dead_links = db
+        .get_links_by_status_scoped(crate::models::LinkStatus::Dead, Some(&library_roots))
+        .await?;
+
+    use std::collections::BTreeMap;
+    let mut map: BTreeMap<String, (String, String, String, usize, Vec<String>)> = BTreeMap::new();
+
+    for link in dead_links {
+        let media_type_str = match link.media_type {
+            crate::models::MediaType::Movie => "movie",
+            crate::models::MediaType::Tv => "tv",
+        };
+        let lib_name = selected
+            .iter()
+            .find(|l| link.target_path.starts_with(&l.path))
+            .map(|l| l.name.clone())
+            .unwrap_or_else(|| "Unknown".to_string());
+
+        let folder_title = link
+            .target_path
+            .parent()
+            .and_then(|p| {
+                let file_name = p.file_name()?.to_string_lossy();
+                let lower = file_name.to_lowercase();
+                if lower.starts_with("season ") || lower.starts_with("specials") {
+                    p.parent()?
+                        .file_name()
+                        .map(|s| s.to_string_lossy().to_string())
+                } else {
+                    Some(file_name.to_string())
+                }
+            })
+            .unwrap_or_else(|| link.media_id.clone());
+
+        let filename = link
+            .target_path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        let entry = map.entry(link.media_id.clone()).or_insert_with(|| {
+            (
+                folder_title,
+                media_type_str.to_string(),
+                lib_name,
+                0,
+                Vec::new(),
+            )
+        });
+        entry.3 += 1;
+        if entry.4.len() < 5 {
+            entry.4.push(filename);
+        }
+    }
+
+    let mut items: Vec<DeadLinkWantedItem> = map
+        .into_iter()
+        .map(
+            |(media_id, (title, media_type, library, dead_count, sample_files))| {
+                DeadLinkWantedItem {
+                    media_id,
+                    title,
+                    media_type,
+                    library,
+                    dead_count,
+                    sample_files,
+                }
+            },
+        )
+        .collect();
+
+    items.sort_by_key(|a| std::cmp::Reverse(a.dead_count));
+    Ok(items)
+}
+
 async fn run_cleanup_audit(
     cfg: &Config,
     db: &Database,

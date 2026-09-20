@@ -39,6 +39,8 @@ use super::{
 };
 use cleanup::*;
 use misc::*;
+mod pins;
+use pins::*;
 use scan::*;
 use scheduler::*;
 
@@ -49,11 +51,17 @@ pub fn create_router(state: WebState) -> Router<WebState> {
         .route("/health", get(api_get_health))
         .route("/discover", get(api_get_discover))
         .route("/scan", post(api_post_scan))
+        .route("/scan/target", post(api_post_scan_target))
         .route("/scan/status", get(api_get_scan_status))
         .route("/scan/jobs", get(api_get_scan_jobs))
         .route("/scan/history", get(api_get_scan_history))
         .route("/scan/{id}", get(api_get_scan_run))
         .route("/report/anime-remediation", get(api_get_anime_remediation))
+        .route("/report/linked-torrents", get(api_get_linked_torrents))
+        .route(
+            "/report/unlinked-library-items",
+            get(api_get_unlinked_library_items),
+        )
         .route(
             "/cleanup/anime-remediation/preview",
             post(api_post_anime_remediation_preview),
@@ -69,6 +77,19 @@ pub fn create_router(state: WebState) -> Router<WebState> {
         .route("/cleanup/audit/jobs", get(api_get_cleanup_audit_jobs))
         .route("/cleanup/prune", post(api_post_cleanup_prune))
         .route("/links", get(api_get_links))
+        .route("/links/dead", get(api_get_dead_links))
+        .route("/links/dead/status", get(api_get_dead_links_status))
+        .route("/links/dead/prune", post(api_post_dead_links_prune))
+        .route("/links/dead/wanted", get(api_get_dead_links_wanted))
+        .route(
+            "/links/dead/export-wanted",
+            post(api_post_dead_links_export_wanted),
+        )
+        .route("/links/sweep", post(api_post_links_sweep))
+        .route("/quarantine", get(api_get_quarantine))
+        .route("/pins", get(api_get_pins).post(api_post_pin))
+        .route("/pins/{folder}", axum::routing::delete(api_delete_pin))
+        .route("/pins/import", post(api_post_pins_import))
         .route("/config/validate", get(api_get_config_validate))
         .route("/doctor", get(api_get_doctor))
         .route("/cache/invalidate", post(api_post_cache_invalidate))

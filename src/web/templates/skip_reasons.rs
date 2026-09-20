@@ -156,7 +156,7 @@ fn skip_reason_presentation(reason: &str) -> SkipReasonPresentation {
         "source_unreadable_before_link" => SkipReasonPresentation {
             group: SkipReasonGroupKind::Linking,
             label: "Source unreadable before link".to_string(),
-            help: "The source still existed, but could not be read safely at link time."
+            help: "The source file failed the WebDAV readability probe (e.g. Decypharr or Real-Debrid download error/timeout). Check Decypharr logs or verify torrent availability."
                 .to_string(),
         },
         "regular_file_guard" => SkipReasonPresentation {

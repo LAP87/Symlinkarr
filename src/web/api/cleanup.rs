@@ -919,3 +919,363 @@ pub(super) async fn api_post_cleanup_prune(
         ),
     }
 }
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct ApiDeadLinksQuery {
+    pub page: Option<usize>,
+    pub page_size: Option<usize>,
+    pub library: Option<String>,
+    pub search: Option<String>,
+}
+
+#[derive(Serialize)]
+pub(super) struct ApiDeadLinkItem {
+    pub id: i64,
+    pub source_path: String,
+    pub target_path: String,
+    pub media_id: String,
+    pub media_type: String,
+    pub status: String,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+}
+
+#[derive(Serialize)]
+pub(super) struct ApiDeadLinksResponse {
+    pub total: usize,
+    pub page: usize,
+    pub page_size: usize,
+    pub total_pages: usize,
+    pub items: Vec<ApiDeadLinkItem>,
+}
+
+pub(super) async fn api_get_dead_links(
+    State(state): State<WebState>,
+    Query(query): Query<ApiDeadLinksQuery>,
+) -> impl IntoResponse {
+    let page = query.page.unwrap_or(1).max(1);
+    let page_size = query.page_size.unwrap_or(50).clamp(1, 200);
+    let offset = ((page - 1) * page_size) as i64;
+    let limit = page_size as i64;
+
+    let selected_library = query
+        .library
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && s != "All");
+
+    let library_root = if let Some(ref lib_name) = selected_library {
+        state
+            .config
+            .libraries
+            .iter()
+            .find(|l| l.name.eq_ignore_ascii_case(lib_name))
+            .map(|l| l.path.to_string_lossy().to_string())
+    } else {
+        None
+    };
+
+    let search_term = query
+        .search
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let (links, total_count) = match state
+        .database
+        .get_dead_links_paginated(
+            limit,
+            offset,
+            library_root.as_deref(),
+            search_term.as_deref(),
+        )
+        .await
+    {
+        Ok(res) => res,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    let total_pages = if total_count == 0 {
+        1
+    } else {
+        total_count.div_ceil(page_size)
+    };
+
+    let items = links
+        .into_iter()
+        .map(|l| ApiDeadLinkItem {
+            id: l.id.unwrap_or(0),
+            source_path: l.source_path.to_string_lossy().to_string(),
+            target_path: l.target_path.to_string_lossy().to_string(),
+            media_id: l.media_id,
+            media_type: format!("{:?}", l.media_type),
+            status: format!("{:?}", l.status),
+            created_at: l.created_at,
+            updated_at: l.updated_at,
+        })
+        .collect();
+
+    Json(ApiDeadLinksResponse {
+        total: total_count,
+        page,
+        page_size,
+        total_pages,
+        items,
+    })
+    .into_response()
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct ApiDeadLinkPruneRequest {
+    pub library: Option<String>,
+    pub dry_run: Option<bool>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct ApiDeadLinkPruneResponse {
+    pub success: bool,
+    pub message: String,
+    pub running: bool,
+    pub started_at: Option<String>,
+    pub scope_label: Option<String>,
+    pub dry_run: bool,
+}
+
+pub(super) async fn api_post_dead_links_prune(
+    State(state): State<WebState>,
+    Json(req): Json<ApiDeadLinkPruneRequest>,
+) -> impl IntoResponse {
+    let dry_run = req.dry_run.unwrap_or(false);
+    match state.start_dead_prune(req.library, dry_run).await {
+        Ok(job) => (
+            StatusCode::ACCEPTED,
+            Json(ApiDeadLinkPruneResponse {
+                success: true,
+                message: format!(
+                    "Dead-link prune started in background for {}. Poll /api/v1/links/dead/status for results.",
+                    job.scope_label
+                ),
+                running: true,
+                started_at: Some(job.started_at),
+                scope_label: Some(job.scope_label),
+                dry_run,
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::CONFLICT,
+            Json(ApiDeadLinkPruneResponse {
+                success: false,
+                message: format!("Dead-link prune not started: {}", err),
+                running: state.active_dead_prune().await.is_some(),
+                started_at: None,
+                scope_label: None,
+                dry_run,
+            }),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct ApiDeadPruneJob {
+    pub status: String,
+    pub started_at: String,
+    pub scope_label: String,
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct ApiDeadPruneOutcome {
+    pub finished_at: String,
+    pub scope_label: String,
+    pub dry_run: bool,
+    pub success: bool,
+    pub message: String,
+    pub removed: usize,
+    pub already_missing: usize,
+    pub skipped_dir_guard: usize,
+    pub skipped_streaming: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct ApiDeadLinksStatusResponse {
+    pub active_repair: Option<ApiRepairJob>,
+    pub last_repair_outcome: Option<ApiRepairOutcome>,
+    pub active_prune: Option<ApiDeadPruneJob>,
+    pub last_prune_outcome: Option<ApiDeadPruneOutcome>,
+}
+
+pub(super) async fn api_get_dead_links_status(
+    State(state): State<WebState>,
+) -> Json<ApiDeadLinksStatusResponse> {
+    Json(ApiDeadLinksStatusResponse {
+        active_repair: state.active_repair().await.map(|job| ApiRepairJob {
+            status: "running".to_string(),
+            started_at: job.started_at,
+            scope_label: job.scope_label,
+        }),
+        last_repair_outcome: state
+            .last_repair_outcome()
+            .await
+            .map(|outcome| ApiRepairOutcome {
+                finished_at: outcome.finished_at,
+                scope_label: outcome.scope_label,
+                success: outcome.success,
+                message: outcome.message,
+                repaired: outcome.repaired,
+                failed: outcome.failed,
+                skipped: outcome.skipped,
+                stale: outcome.stale,
+            }),
+        active_prune: state.active_dead_prune().await.map(|job| ApiDeadPruneJob {
+            status: "running".to_string(),
+            started_at: job.started_at,
+            scope_label: job.scope_label,
+            dry_run: job.dry_run,
+        }),
+        last_prune_outcome: state.last_dead_prune_outcome().await.map(|outcome| {
+            ApiDeadPruneOutcome {
+                finished_at: outcome.finished_at,
+                scope_label: outcome.scope_label,
+                dry_run: outcome.dry_run,
+                success: outcome.success,
+                message: outcome.message,
+                removed: outcome.removed,
+                already_missing: outcome.already_missing,
+                skipped_dir_guard: outcome.skipped_dir_guard,
+                skipped_streaming: outcome.skipped_streaming,
+            }
+        }),
+    })
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct ApiDeadLinksWantedQuery {
+    pub library: Option<String>,
+}
+
+pub(super) async fn api_get_dead_links_wanted(
+    State(state): State<WebState>,
+    Query(query): Query<ApiDeadLinksWantedQuery>,
+) -> Response {
+    let library_filter = query
+        .library
+        .as_deref()
+        .filter(|s| !s.trim().is_empty() && *s != "All");
+    match crate::commands::cleanup::group_dead_links_wanted(
+        &state.config,
+        &state.database,
+        library_filter,
+    )
+    .await
+    {
+        Ok(items) => Json(items).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct ApiDeadLinksExportRequest {
+    pub library: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct ApiDeadLinksExportResponse {
+    pub success: bool,
+    pub message: String,
+    pub items_count: usize,
+    pub dead_links_count: usize,
+    pub exported_path: Option<String>,
+}
+
+pub(super) async fn api_post_dead_links_export_wanted(
+    State(state): State<WebState>,
+    Json(req): Json<ApiDeadLinksExportRequest>,
+) -> Response {
+    let library_filter = req
+        .library
+        .as_deref()
+        .filter(|s| !s.trim().is_empty() && *s != "All");
+    match crate::commands::cleanup::group_dead_links_wanted(
+        &state.config,
+        &state.database,
+        library_filter,
+    )
+    .await
+    {
+        Ok(items) => {
+            let total_dead: usize = items.iter().map(|i| i.dead_count).sum();
+            let target_dir = state
+                .config
+                .handoff
+                .markers_dir
+                .clone()
+                .unwrap_or_else(|| state.config.backup.path.clone());
+
+            let filename = format!(
+                "symlinkarr-dead-wanted-{}.json",
+                chrono::Utc::now().format("%Y%m%d-%H%M%S")
+            );
+            let target_path = target_dir.join(&filename);
+
+            if let Some(parent) = target_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+
+            match serde_json::to_string_pretty(&items) {
+                Ok(json_content) => {
+                    if let Err(e) = std::fs::write(&target_path, json_content) {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(serde_json::json!({
+                                "success": false,
+                                "error": format!("Failed to write export file: {}", e),
+                            })),
+                        )
+                            .into_response();
+                    }
+                    Json(ApiDeadLinksExportResponse {
+                        success: true,
+                        message: format!(
+                            "Exported {} wanted media items ({} dead links) to {}",
+                            items.len(),
+                            total_dead,
+                            target_path.display()
+                        ),
+                        items_count: items.len(),
+                        dead_links_count: total_dead,
+                        exported_path: Some(target_path.to_string_lossy().to_string()),
+                    })
+                    .into_response()
+                }
+                Err(e) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "success": false,
+                        "error": format!("Failed to serialize export: {}", e),
+                    })),
+                )
+                    .into_response(),
+            }
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "success": false,
+                "error": e.to_string(),
+            })),
+        )
+            .into_response(),
+    }
+}

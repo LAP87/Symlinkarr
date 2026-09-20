@@ -76,6 +76,14 @@ pub(crate) struct ActiveRepairJob {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) struct ActiveDeadPruneJob {
+    pub operation_id: i64,
+    pub started_at: String,
+    pub scope_label: String,
+    pub dry_run: bool,
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct LastScanOutcome {
     pub operation_id: Option<i64>,
     pub finished_at: String,
@@ -111,6 +119,20 @@ pub(crate) struct LastRepairOutcome {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) struct LastDeadPruneOutcome {
+    pub operation_id: Option<i64>,
+    pub finished_at: String,
+    pub scope_label: String,
+    pub dry_run: bool,
+    pub success: bool,
+    pub message: String,
+    pub removed: usize,
+    pub already_missing: usize,
+    pub skipped_dir_guard: usize,
+    pub skipped_streaming: usize,
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct ActiveDiscoverJob {
     pub started_at: String,
     pub started_instant: std::time::Instant,
@@ -135,9 +157,11 @@ struct BackgroundJobState {
     discover_snapshot: Option<Arc<crate::commands::discover::DiscoverySnapshot>>,
     active_cleanup_audit: Option<ActiveCleanupAuditJob>,
     active_repair: Option<ActiveRepairJob>,
+    active_dead_prune: Option<ActiveDeadPruneJob>,
     last_scan_outcome: Option<LastScanOutcome>,
     last_cleanup_audit_outcome: Option<LastCleanupAuditOutcome>,
     last_repair_outcome: Option<LastRepairOutcome>,
+    last_dead_prune_outcome: Option<LastDeadPruneOutcome>,
 }
 
 struct TrackedBackgroundTask {
@@ -250,6 +274,24 @@ impl WebState {
             })
     }
 
+    pub(crate) async fn active_dead_prune(&self) -> Option<ActiveDeadPruneJob> {
+        if let Some(job) = self.background_jobs.lock().await.active_dead_prune.clone() {
+            return Some(job);
+        }
+        self.database
+            .active_operation(LIBRARY_OPERATION_LOCK)
+            .await
+            .ok()
+            .flatten()
+            .filter(|run| run.kind == "dead_prune")
+            .map(|run| ActiveDeadPruneJob {
+                operation_id: run.id,
+                started_at: run.started_at,
+                scope_label: run.scope.unwrap_or_else(|| "All Libraries".to_string()),
+                dry_run: false,
+            })
+    }
+
     pub(crate) async fn last_scan_outcome(&self) -> Option<LastScanOutcome> {
         let outcome = self.background_jobs.lock().await.last_scan_outcome.clone();
         let _ = outcome.as_ref().and_then(|outcome| outcome.operation_id);
@@ -273,6 +315,17 @@ impl WebState {
             .lock()
             .await
             .last_repair_outcome
+            .clone();
+        let _ = outcome.as_ref().and_then(|outcome| outcome.operation_id);
+        outcome
+    }
+
+    pub(crate) async fn last_dead_prune_outcome(&self) -> Option<LastDeadPruneOutcome> {
+        let outcome = self
+            .background_jobs
+            .lock()
+            .await
+            .last_dead_prune_outcome
             .clone();
         let _ = outcome.as_ref().and_then(|outcome| outcome.operation_id);
         outcome
@@ -319,25 +372,51 @@ impl WebState {
         search_missing: bool,
         library_filter: Option<String>,
     ) -> std::result::Result<ActiveScanJob, String> {
+        self.start_scan_targeted(dry_run, search_missing, library_filter, None)
+            .await
+    }
+
+    pub(crate) async fn start_scan_targeted(
+        &self,
+        dry_run: bool,
+        search_missing: bool,
+        library_filter: Option<String>,
+        folder_filter: Option<String>,
+    ) -> std::result::Result<ActiveScanJob, String> {
         let library_filter = library_filter
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let folder_filter = folder_filter
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
 
         crate::commands::selected_libraries(self.config.as_ref(), library_filter.as_deref())
             .map_err(|err| err.to_string())?;
 
+        let scope_str = match (&library_filter, &folder_filter) {
+            (Some(lib), Some(folder)) => Some(format!("{lib} [{folder}]")),
+            (Some(lib), None) => Some(lib.clone()),
+            (None, Some(folder)) => Some(format!("folder: {folder}")),
+            (None, None) => None,
+        };
+
         let mut operation = OperationCoordinator::new(self.database.as_ref().clone())
-            .acquire(OperationRequest::new("scan", "web", library_filter.clone()))
+            .acquire(OperationRequest::new("scan", "web", scope_str))
             .await
             .map_err(|err| err.to_string())?;
         let mut background_jobs = self.background_jobs.lock().await;
 
+        let scope_label = match (&library_filter, &folder_filter) {
+            (Some(lib), Some(folder)) => format!("{lib} (folder: {folder})"),
+            (Some(lib), None) => lib.clone(),
+            (None, Some(folder)) => format!("folder: {folder}"),
+            (None, None) => "All Libraries".to_string(),
+        };
+
         let job = ActiveScanJob {
             operation_id: operation.id(),
             started_at: Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string(),
-            scope_label: library_filter
-                .clone()
-                .unwrap_or_else(|| "All Libraries".to_string()),
+            scope_label,
             dry_run,
             search_missing,
         };
@@ -360,6 +439,7 @@ impl WebState {
                     search_missing,
                     crate::OutputFormat::Json,
                     library_filter.as_deref(),
+                    folder_filter.as_deref(),
                 )
                 .await
             })
@@ -900,6 +980,185 @@ impl WebState {
         Ok(job)
     }
 
+    pub(crate) async fn start_dead_prune(
+        &self,
+        library_filter: Option<String>,
+        dry_run: bool,
+    ) -> std::result::Result<ActiveDeadPruneJob, String> {
+        let library_filter = library_filter
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty() && value != "All");
+
+        let scope_str = library_filter.clone();
+        let mut operation = OperationCoordinator::new(self.database.as_ref().clone())
+            .acquire(OperationRequest::new("dead_prune", "web", scope_str))
+            .await
+            .map_err(|err| err.to_string())?;
+
+        let scope_label = library_filter
+            .clone()
+            .unwrap_or_else(|| "All Libraries".to_string());
+        let job = ActiveDeadPruneJob {
+            operation_id: operation.id(),
+            started_at: Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+            scope_label: scope_label.clone(),
+            dry_run,
+        };
+
+        let mut background_jobs = self.background_jobs.lock().await;
+        background_jobs.active_dead_prune = Some(job.clone());
+        drop(background_jobs);
+
+        let config = self.config.clone();
+        let database = self.database.clone();
+        let background_jobs = self.background_jobs.clone();
+        let background_tasks = self.background_tasks.clone();
+        let background_job = job.clone();
+        let operation_id = operation.id();
+
+        let handle = tokio::spawn(async move {
+            let result = std::panic::AssertUnwindSafe(async {
+                crate::commands::cleanup::execute_prune_dead_links(
+                    config.as_ref(),
+                    database.as_ref(),
+                    library_filter.as_deref(),
+                    dry_run,
+                    false,
+                )
+                .await
+            })
+            .catch_unwind()
+            .await;
+
+            match &result {
+                Ok(Ok(outcome)) => {
+                    let summary = serde_json::json!({
+                        "removed": outcome.removed,
+                        "already_missing": outcome.already_missing,
+                        "skipped_dir_guard": outcome.skipped_dir_guard,
+                        "skipped_streaming": outcome.skipped_streaming,
+                        "dry_run": dry_run,
+                    });
+                    if let Err(err) = operation
+                        .succeed(
+                            Some("Dead-link prune completed"),
+                            Some(&summary.to_string()),
+                        )
+                        .await
+                    {
+                        error!("Could not finalize dead-link prune operation run: {}", err);
+                    }
+                }
+                Ok(Err(err)) => {
+                    if let Err(finalize_err) = operation.fail(&err.to_string()).await {
+                        error!(
+                            "Could not finalize failed dead-link prune operation run: {}",
+                            finalize_err
+                        );
+                    }
+                }
+                Err(panic) => {
+                    let message = format!(
+                        "internal panic while running background dead-link prune: {}",
+                        panic_message_ref(panic)
+                    );
+                    if let Err(finalize_err) = operation.fail(&message).await {
+                        error!(
+                            "Could not finalize panicked dead-link prune operation run: {}",
+                            finalize_err
+                        );
+                    }
+                }
+            }
+
+            let finished_at = Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string();
+            let outcome = match result {
+                Ok(Ok(prune_outcome)) => {
+                    let message = if dry_run {
+                        format!(
+                            "Dry run completed: {} broken symlink(s) would be pruned, {} already missing from disk, {} protected by stream guard.",
+                            prune_outcome.removed, prune_outcome.already_missing, prune_outcome.skipped_streaming
+                        )
+                    } else {
+                        format!(
+                            "Pruned {} dead link(s) ({} already missing from disk). {} skipped due to active streams.",
+                            prune_outcome.removed, prune_outcome.already_missing, prune_outcome.skipped_streaming
+                        )
+                    };
+                    info!(
+                        "Background dead-link prune completed (scope={}, dry_run={}): {}",
+                        background_job.scope_label, dry_run, message
+                    );
+                    LastDeadPruneOutcome {
+                        operation_id: Some(background_job.operation_id),
+                        finished_at,
+                        scope_label: background_job.scope_label.clone(),
+                        dry_run,
+                        success: true,
+                        message,
+                        removed: prune_outcome.removed,
+                        already_missing: prune_outcome.already_missing,
+                        skipped_dir_guard: prune_outcome.skipped_dir_guard,
+                        skipped_streaming: prune_outcome.skipped_streaming,
+                    }
+                }
+                Ok(Err(err)) => {
+                    error!(
+                        "Background dead-link prune failed (scope={}): {}",
+                        background_job.scope_label, err
+                    );
+                    LastDeadPruneOutcome {
+                        operation_id: Some(background_job.operation_id),
+                        finished_at,
+                        scope_label: background_job.scope_label.clone(),
+                        dry_run,
+                        success: false,
+                        message: err.to_string(),
+                        removed: 0,
+                        already_missing: 0,
+                        skipped_dir_guard: 0,
+                        skipped_streaming: 0,
+                    }
+                }
+                Err(panic) => {
+                    let message = format!(
+                        "internal panic while running background dead-link prune: {}",
+                        panic_message(panic)
+                    );
+                    error!(
+                        "Background dead-link prune panicked (scope={}): {}",
+                        background_job.scope_label, message
+                    );
+                    LastDeadPruneOutcome {
+                        operation_id: Some(background_job.operation_id),
+                        finished_at,
+                        scope_label: background_job.scope_label.clone(),
+                        dry_run,
+                        success: false,
+                        message,
+                        removed: 0,
+                        already_missing: 0,
+                        skipped_dir_guard: 0,
+                        skipped_streaming: 0,
+                    }
+                }
+            };
+
+            let mut background_jobs = background_jobs.lock().await;
+            background_jobs.last_dead_prune_outcome = Some(outcome);
+            background_jobs.active_dead_prune = None;
+        });
+
+        let mut tasks = background_tasks.lock().await;
+        tasks.retain(|task| !task.handle.is_finished());
+        tasks.push(TrackedBackgroundTask {
+            operation_id,
+            handle,
+        });
+
+        Ok(job)
+    }
+
     #[cfg(test)]
     pub(crate) async fn set_active_scan_for_test(&self, job: Option<ActiveScanJob>) {
         self.background_jobs.lock().await.active_scan = job;
@@ -1082,7 +1341,22 @@ fn create_router(state: WebState) -> Router {
         // Links
         .route("/links", get(handlers::get_links))
         .route("/links/dead", get(handlers::get_dead_links))
+        .route("/links/dead/prune", post(handlers::post_dead_links_prune))
+        .route(
+            "/links/dead/export-wanted",
+            post(handlers::post_dead_links_export_wanted),
+        )
+        .route(
+            "/links/dead/wanted.json",
+            get(handlers::get_dead_links_wanted_json),
+        )
+        .route("/links/quarantine", get(handlers::get_quarantine))
+        .route("/links/sweep", post(handlers::post_dead_link_sweep))
         .route("/links/repair", post(handlers::post_repair))
+        // Pins
+        .route("/pins", get(handlers::get_pins).post(handlers::post_pin))
+        .route("/pins/delete", post(handlers::post_pin_delete))
+        .route("/pins/import", post(handlers::post_pins_import))
         // Config
         .route("/config", get(handlers::get_config))
         .route("/config/validate", post(handlers::post_config_validate))

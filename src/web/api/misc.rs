@@ -16,6 +16,7 @@ pub(super) struct ApiDaemonSchedule {
     pub interval_label: String,
     pub search_missing_label: String,
     pub vacuum_label: String,
+    pub dead_link_sweep_label: String,
     pub last_run_metric_label: String,
     pub last_run_label: String,
     pub next_due_label: String,
@@ -167,6 +168,7 @@ pub(super) async fn api_get_status(State(state): State<WebState>) -> Json<ApiSta
             interval_label: daemon_schedule.interval_label,
             search_missing_label: daemon_schedule.search_missing_label,
             vacuum_label: daemon_schedule.vacuum_label,
+            dead_link_sweep_label: daemon_schedule.dead_link_sweep_label,
             last_run_metric_label: daemon_schedule.last_run_metric_label,
             last_run_label: daemon_schedule.last_run_label,
             next_due_label: daemon_schedule.next_due_label,
@@ -432,6 +434,142 @@ pub(super) async fn api_post_cache_invalidate(
 pub(super) async fn api_delete_cache(State(state): State<WebState>) -> Response {
     match crate::commands::cache::clear_metadata_cache(&state.database).await {
         Ok(deleted) => Json(CacheClearResponse { cleared: deleted }).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// GET /api/v1/report/linked-torrents
+pub(super) async fn api_get_linked_torrents(State(state): State<WebState>) -> Response {
+    match crate::commands::report::build_linked_torrents_report(&state.config, &state.database)
+        .await
+    {
+        Ok(report) => Json(report).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct ApiLinksSweepResponse {
+    pub success: bool,
+    pub message: String,
+    pub dead_marked: u64,
+    pub removed: u64,
+    pub skipped: u64,
+    pub quarantined: u64,
+    pub media_servers_refreshed: bool,
+}
+
+/// POST /api/v1/links/sweep
+pub(super) async fn api_post_links_sweep(State(state): State<WebState>) -> Response {
+    match crate::commands::cleanup::sweep_dead_links(
+        &state.config,
+        &state.database,
+        None,
+        None,
+        false,
+    )
+    .await
+    {
+        Ok(outcome) => {
+            let quarantined = outcome
+                .dead
+                .dead_reasons
+                .get("source_quarantined")
+                .copied()
+                .unwrap_or(0);
+            let message = outcome.describe();
+            let media_servers_refreshed = outcome
+                .invalidation
+                .refresh
+                .as_ref()
+                .is_some_and(|r| r.refreshed_batches > 0)
+                || outcome
+                    .invalidation
+                    .servers
+                    .iter()
+                    .any(|s| s.refresh.refreshed_batches > 0);
+            Json(ApiLinksSweepResponse {
+                success: true,
+                message,
+                dead_marked: outcome.dead.dead_marked,
+                removed: outcome.dead.removed,
+                skipped: outcome.dead.skipped,
+                quarantined,
+                media_servers_refreshed,
+            })
+            .into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "success": false,
+                "error": e.to_string(),
+            })),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Serialize)]
+pub(super) struct ApiQuarantineResponse {
+    pub total: usize,
+    pub items: Vec<crate::quarantine::QuarantinedFolderDetail>,
+}
+
+/// GET /api/v1/quarantine
+pub(super) async fn api_get_quarantine(
+    State(state): State<WebState>,
+) -> Json<ApiQuarantineResponse> {
+    let items = crate::quarantine::QuarantinedFolders::list_details(&state.config.sources);
+    Json(ApiQuarantineResponse {
+        total: items.len(),
+        items,
+    })
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(super) struct ApiUnlinkedItemsQuery {
+    pub library: Option<String>,
+    pub r#type: Option<String>,
+}
+
+/// GET /api/v1/report/unlinked-library-items
+pub(super) async fn api_get_unlinked_library_items(
+    State(state): State<WebState>,
+    Query(query): Query<ApiUnlinkedItemsQuery>,
+) -> Response {
+    let media_type_filter = match query.r#type.as_deref() {
+        Some("movie") => Some(crate::models::MediaType::Movie),
+        Some("series") | Some("tv") => Some(crate::models::MediaType::Tv),
+        Some(invalid) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": format!("Invalid type filter: '{}'. Must be 'movie' or 'series'.", invalid)
+                })),
+            )
+                .into_response();
+        }
+        None => None,
+    };
+
+    match crate::commands::report::build_unlinked_items_report(
+        &state.config,
+        &state.database,
+        media_type_filter,
+        query.library.as_deref(),
+    )
+    .await
+    {
+        Ok(report) => Json(report).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": e.to_string()})),

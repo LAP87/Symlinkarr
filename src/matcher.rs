@@ -659,9 +659,10 @@ fn parser_kind_for_content(content_type: ContentType) -> ParserKind {
     }
 }
 
-/// The library index pinned for `path`, if any directory on its path is a pinned folder.
-/// Pins name the RD torrent folder, which sits directly under a source root, so walking
-/// the ancestors finds it in one or two steps.
+/// The library index pinned for `path`, if any directory on its path is a pinned folder,
+/// or if a single-file release in the root matches by file name or stem.
+/// Pins name the RD torrent folder or single-file release, which sits directly under a source
+/// root, so walking ancestors followed by the file itself finds it directly.
 fn pinned_library_index(pins: &HashMap<String, usize>, path: &std::path::Path) -> Option<usize> {
     if pins.is_empty() {
         return None;
@@ -670,6 +671,10 @@ fn pinned_library_index(pins: &HashMap<String, usize>, path: &std::path::Path) -
         .skip(1)
         .filter_map(|dir| dir.file_name())
         .find_map(|name| pins.get(name.to_string_lossy().as_ref()).copied())
+        .or_else(|| {
+            path.file_name()
+                .and_then(|name| pins.get(name.to_string_lossy().as_ref()).copied())
+        })
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -11,7 +11,7 @@
         <p class="page-lead">Symlinks whose source file is missing. Repair first, prune only when nothing can replace them.</p>
     </div>
     <div class="page-header__aside">
-        <span class="badge {% if links|length > 0 %}badge-danger{% else %}badge-success{% endif %}">{{ (links|length)|thousands }} dead</span>
+        <span class="badge {% if total_count > 0 %}badge-danger{% else %}badge-success{% endif %}">{{ total_count|thousands }} dead</span>
         <a class="doc-link" href="https://github.com/LAP87/Symlinkarr/wiki/Repair-and-Dead-Links" target="_blank" rel="noreferrer noopener">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14L21 3"/></svg>
             Repair workflow
@@ -19,47 +19,154 @@
     </div>
 </div>
 
+{% match flash_message %}
+{% when Some with (msg) %}
+<div class="alert alert-success">
+    <strong>Success:</strong> {{ msg }}
+</div>
+{% when None %}
+{% endmatch %}
+
+{% match error_message %}
+{% when Some with (err) %}
+<div class="alert alert-error">
+    <strong>Error:</strong> {{ err }}
+</div>
+{% when None %}
+{% endmatch %}
+
 {% match active_repair %}
 {% when Some with (job) %}
-<div class="alert alert-info">
-    <strong>Background repair running.</strong>
-    Started {{ job.started_at }} for {{ job.scope_label }}. Refresh this page for the finished outcome.
+<div class="alert alert-info" data-live-job="repair">
+    <div style="display: flex; align-items: center; justify-content: space-between; width: 100%; flex-wrap: wrap; gap: 0.5rem;">
+        <div>
+            <strong>Background repair running.</strong>
+            Started {{ job.started_at }} for {{ job.scope_label }}.
+            <span class="text-muted" style="margin-left: 0.5rem;">Auto-refreshing live...</span>
+        </div>
+    </div>
+</div>
+{% when None %}
+{% endmatch %}
+
+{% match active_dead_prune %}
+{% when Some with (job) %}
+<div class="alert alert-warning" data-live-job="dead_prune">
+    <div style="display: flex; align-items: center; justify-content: space-between; width: 100%; flex-wrap: wrap; gap: 0.5rem;">
+        <div>
+            <strong>Background dead-link prune running.</strong>
+            Started {{ job.started_at }} for {{ job.scope_label }}{% if job.dry_run %} (dry-run){% endif %}.
+            <span class="text-muted" style="margin-left: 0.5rem;">Auto-refreshing live...</span>
+        </div>
+    </div>
 </div>
 {% when None %}
 {% endmatch %}
 
 {% match last_repair_outcome %}
 {% when Some with (outcome) %}
-<div class="alert {% if outcome.success %}alert-success{% else %}alert-error{% endif %}">
-    <strong>{% if outcome.success %}Latest background repair completed.{% else %}Latest background repair failed.{% endif %}</strong>
-    {{ outcome.message }}
-    <span class="text-muted">{{ outcome.finished_at }}</span>
+<div class="alert {% if outcome.success %}alert-success{% else %}alert-error{% endif %}" style="display: flex; flex-direction: column; gap: 0.5rem;">
+    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
+        <strong>{% if outcome.success %}Latest background repair completed.{% else %}Latest background repair failed.{% endif %}</strong>
+        <span class="text-muted" style="font-size: 0.8125rem;">{{ outcome.finished_at }}</span>
+    </div>
+    <div class="metric-grid metric-grid--compact" style="margin-top: 0.25rem;">
+        <div class="metric-card"><span class="metric-label">Repaired</span><strong class="{% if outcome.repaired > 0 %}text-success{% else %}text-muted{% endif %}">{{ outcome.repaired|thousands }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Unrepairable</span><strong class="{% if outcome.failed > 0 %}text-error{% else %}text-success{% endif %}">{{ outcome.failed|thousands }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Skipped</span><strong class="text-muted">{{ outcome.skipped|thousands }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Stale cleaned</span><strong class="{% if outcome.stale > 0 %}text-success{% else %}text-muted{% endif %}">{{ outcome.stale|thousands }}</strong></div>
+    </div>
+    <p style="margin: 0.25rem 0 0 0; font-size: 0.875rem;">{{ outcome.message }}</p>
+</div>
+{% when None %}
+{% endmatch %}
+
+{% match last_dead_prune_outcome %}
+{% when Some with (outcome) %}
+<div class="alert {% if outcome.success %}alert-success{% else %}alert-error{% endif %}" style="display: flex; flex-direction: column; gap: 0.5rem;">
+    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
+        <strong>{% if outcome.dry_run %}Latest dead-link prune preview (dry-run){% else %}Latest dead-link prune completed{% endif %}</strong>
+        <span class="text-muted" style="font-size: 0.8125rem;">{{ outcome.finished_at }} &bull; {{ outcome.scope_label }}</span>
+    </div>
+    <div class="metric-grid metric-grid--compact" style="margin-top: 0.25rem;">
+        <div class="metric-card"><span class="metric-label">Pruned</span><strong class="{% if outcome.removed > 0 %}text-success{% else %}text-muted{% endif %}">{{ outcome.removed|thousands }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Already missing</span><strong class="text-muted">{{ outcome.already_missing|thousands }}</strong></div>
+        <div class="metric-card"><span class="metric-label">Protected streams</span><strong class="text-muted">{{ outcome.skipped_streaming|thousands }}</strong></div>
+    </div>
+    <p style="margin: 0.25rem 0 0 0; font-size: 0.875rem;">{{ outcome.message }}</p>
 </div>
 {% when None %}
 {% endmatch %}
 
 <div class="page-sections">
     <section class="card">
-        <div class="operator-toolbar">
+        <div class="operator-toolbar" style="flex-wrap: wrap; gap: 1rem;">
             <div>
                 <h2 class="section-title">Dead-link records</h2>
-                {% if links|length > 0 %}
-                <p class="section-copy">{{ (links|length)|thousands }} dead links. Auto-repair looks for a replacement source before anything is pruned.</p>
+                {% if total_count > 0 %}
+                <p class="section-copy">{{ total_count|thousands }} dead links. Auto-repair looks for a replacement source before anything is pruned.</p>
                 {% endif %}
             </div>
-            <div class="operator-toolbar__actions">
+            <div class="operator-toolbar__actions" style="display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center;">
                 <a href="/links" class="btn btn-secondary">All links</a>
-                {% if links|length > 0 %}
+                <a href="/cleanup" class="btn btn-secondary">Cleanup</a>
+                <form action="/links/sweep" method="post" class="actions">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button type="submit" class="btn btn-secondary">Sweep dead links</button>
+                </form>
+                {% if total_count > 0 %}
                 <form action="/links/repair" method="post" class="actions">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                    <button type="submit" class="btn btn-primary">Auto-repair all</button>
+                    <input type="hidden" name="return_to" value="/links/dead">
+                    <button type="submit" class="btn btn-primary" title="Search Real-Debrid for replacement torrents to repair broken links">Auto-repair all</button>
                 </form>
+                <form action="/links/dead/prune" method="post" class="actions" style="display: inline-flex; align-items: center; gap: 0.35rem;">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    {% match selected_library %}{% when Some with (lib) %}<input type="hidden" name="library" value="{{ lib }}">{% when None %}{% endmatch %}
+                    <label style="font-size: 0.8125rem; display: inline-flex; align-items: center; gap: 0.25rem; cursor: pointer; user-select: none;">
+                        <input type="checkbox" name="dry_run" value="true"> Dry run
+                    </label>
+                    <button type="submit" class="btn btn-danger" title="Permanently delete broken symlinks on disk, update records to removed, and trigger media server / Arr rescans">Prune dead symlinks</button>
+                </form>
+                <form action="/links/dead/export-wanted" method="post" class="actions">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    {% match selected_library %}{% when Some with (lib) %}<input type="hidden" name="library" value="{{ lib }}">{% when None %}{% endmatch %}
+                    <button type="submit" class="btn btn-secondary" title="Group unrepairable dead links by TVDB/TMDB ID and export for Backfill-Buddy">Export to Backfill-Buddy</button>
+                </form>
+                <a href="/links/dead/wanted.json{% match selected_library %}{% when Some with (lib) %}?library={{ lib }}{% when None %}{% endmatch %}" class="btn btn-secondary" title="Download JSON list of dead media items for backfill">Download JSON</a>
                 {% endif %}
             </div>
         </div>
 
+        <div style="margin-top: 1rem; border-top: 1px solid var(--border-color, #e2e8f0); padding-top: 1rem;">
+            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.75rem;">
+                <div class="filter-tabs">
+                    <a href="/links/dead{% match search_query %}{% when Some with (q) %}?search={{ q }}{% when None %}{% endmatch %}" class="filter-tab {% match selected_library %}{% when None %}active{% when Some with (l) %}{% if l.as_str() == "All" %}active{% endif %}{% endmatch %}">
+                        All Libraries ({{ total_count|thousands }})
+                    </a>
+                    {% for lib in library_counts %}
+                    <a href="/links/dead?library={{ lib.name }}{% match search_query %}{% when Some with (q) %}&search={{ q }}{% when None %}{% endmatch %}" class="filter-tab {% match selected_library %}{% when Some with (l) %}{% if l.as_str() == lib.name.as_str() %}active{% endif %}{% when None %}{% endmatch %}">
+                        {{ lib.name }} ({{ lib.count|thousands }})
+                    </a>
+                    {% endfor %}
+                </div>
+                <form action="/links/dead" method="get" style="display: flex; gap: 0.5rem; align-items: center;">
+                    {% match selected_library %}{% when Some with (lib) %}
+                    <input type="hidden" name="library" value="{{ lib }}">
+                    {% when None %}{% endmatch %}
+                    <input type="text" name="search" class="form-input" placeholder="Search media ID or path..." value="{% match search_query %}{% when Some with (q) %}{{ q }}{% when None %}{% endmatch %}" style="max-width: 260px; font-size: 0.875rem;">
+                    <button type="submit" class="btn btn-secondary btn-sm">Search</button>
+                    {% match search_query %}
+                    {% when Some with (_) %}
+                    <a href="/links/dead{% match selected_library %}{% when Some with (lib) %}?library={{ lib }}{% when None %}{% endmatch %}" class="btn btn-secondary btn-sm">Clear</a>
+                    {% when None %}
+                    {% endmatch %}
+                </form>
+            </div>
+        </div>
+
         {% if links|length > 0 %}
-        <div class="table-wrap">
+        <div class="table-wrap" style="margin-top: 1rem;">
         <table class="data-table dense-table">
             <thead>
                 <tr>
@@ -86,12 +193,28 @@
             </tbody>
         </table>
         </div>
+
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 1rem; padding: 0.5rem 0; flex-wrap: wrap; gap: 0.5rem;">
+            <div class="text-muted" style="font-size: 0.875rem;">
+                Showing page {{ page }} of {{ total_pages }} ({{ total_count|thousands }} total dead links, {{ page_size }} per page){% if backfill_handoff_configured %} &bull; Backfill handoff queue active{% endif %}
+            </div>
+            <div style="display: flex; gap: 0.5rem;">
+                {% if page > 1 %}
+                <a href="/links/dead?page={{ page - 1 }}{% match selected_library %}{% when Some with (lib) %}&library={{ lib }}{% when None %}{% endmatch %}{% match search_query %}{% when Some with (q) %}&search={{ q }}{% when None %}{% endmatch %}" class="btn btn-secondary btn-sm">&laquo; Previous</a>
+                {% endif %}
+                {% if page < total_pages %}
+                <a href="/links/dead?page={{ page + 1 }}{% match selected_library %}{% when Some with (lib) %}&library={{ lib }}{% when None %}{% endmatch %}{% match search_query %}{% when Some with (q) %}&search={{ q }}{% when None %}{% endmatch %}" class="btn btn-secondary btn-sm">Next &raquo;</a>
+                {% endif %}
+            </div>
+        </div>
         {% else %}
-        <div class="empty-state">
+        <div class="empty-state" style="margin-top: 1rem;">
             <span class="empty-state__title">No dead links recorded.</span>
             Every tracked symlink still resolves to its source file.
         </div>
         {% endif %}
     </section>
 </div>
+
+<script src="/static/js/dead-links.js" defer></script>
 {% endblock %}

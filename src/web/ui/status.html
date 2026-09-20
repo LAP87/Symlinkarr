@@ -111,6 +111,8 @@
                 <div class="metric-card"><span class="metric-label">Next scan</span><strong>{{ daemon_schedule.next_due_label }}</strong></div>
                 <div class="metric-card"><span class="metric-label">Search missing</span><strong>{{ daemon_schedule.search_missing_label }}</strong></div>
                 <div class="metric-card"><span class="metric-label">Vacuum</span><strong>{{ daemon_schedule.vacuum_label }}</strong></div>
+                <div class="metric-card"><span class="metric-label">Dead-link sweep</span><strong>{{ daemon_schedule.dead_link_sweep_label }}</strong></div>
+                <a href="/links/quarantine" class="metric-card metric-card--link" style="text-decoration: none; color: inherit;"><span class="metric-label">Quarantine folders</span><strong class="{% if quarantine_folders_count > 0 %}text-warning{% endif %}">{{ quarantine_folders_count }}</strong></a>
                 {% match daemon_heartbeat %}
                 {% when Some with (heartbeat) %}
                 <div class="metric-card"><span class="metric-label">Heartbeat</span><strong>{{ heartbeat.last_seen_label }}</strong></div>
