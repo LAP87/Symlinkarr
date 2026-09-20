@@ -2,9 +2,22 @@
 
 ## Release Target
 
-- package version for this push: `1.1.0-rc.17`
+- package version for this push: `1.1.0-rc.18`
 - posture: `v1.1 release candidate with Arr backfill, fail-closed acquisition ranking, current dependencies, synchronized Docker release channels, and updated operator documentation`
 - intended use: local-first host or Docker installs, with Windows 11 users running through WSL2 or a Linux container
+
+## 2026-09-20 - v1.1.0-rc.18 Backfill-Buddy Ecosystem & Dynamic Dead-Link Management
+
+### Code Changes
+
+- **Dynamic Dead Links UX & Safe Pruning**: `/links/dead` now uses live background polling with auto-reload, transparent repair/prune outcome metric cards, paginated listing (50 items/page default) with library tabs and instant search, safe dead-link pruning with Tautulli streaming guards and Arr rescan triggers, and Backfill-Buddy wanted export/download (`wanted.json` and marker creation).
+- **Backfill-Buddy Ecosystem & Handoff Watcher**: Added real-time handoff-queue marker watcher in daemon mode, single-folder targeted scan API/CLI, source pins management UI (`/pins`) and API (`/api/v1/pins`) with "Import & Link Now", unlinked library items report CLI/API, and Decypharr Quarantine Inspector (`/quarantine`).
+- **WebDAV Readability Diagnostics**: Elevated WebDAV readability probe failure to `warn!` with actionable troubleshooting guidance.
+- **Doctor Healthcheck**: Added validation for companion handoff marker directories in `symlinkarr doctor`.
+
+### Validation
+
+- `cargo test` 966 passed, clippy `-D warnings`, fmt, `cargo audit` 0 vulnerabilities.
 
 ## 2026-09-19 - v1.1.0-rc.17 Flattened Torrent Paths
 
